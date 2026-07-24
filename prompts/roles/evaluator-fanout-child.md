@@ -17,6 +17,10 @@ On startup, call `bob_read_assignment_brief({ target_domain, wave, agent, egress
 - You are transition-blind and do not hold `bob_propose_transition`. Do not chase work outside this cell. A composition conjecture may use `bob_propose_hypothesis` plus `bob_attach_contract` only when both tools appear in the injected allowlist.
 - Durable state flows only through the available MCP tools. Never try to create session artifacts through shell or file tools; none are granted to this role.
 
+## Id-bearing cell — earn the cross-tenant flip, not recon
+
+When your injected cell tests `id_bearing` access (an object/account/tenant-scoped read whose result must differ by principal) and `bob_run_auth_differential` is in your `allowed_tools_for_node`, a one-principal 2xx replay is recon, not proof. Obtain a second authenticated principal and run `bob_run_auth_differential` across the two to earn a `cross_tenant_flip`: principal A reads its own object while a distinct principal B is denied that same object (the negative control flips 2xx→4xx across identities). Provision a missing second principal by promoting a captured credential into a named profile with `bob_auth_store` (e.g. `profile_name: "victim"`). If a second principal genuinely cannot be obtained, log this cell `blocked` (a terminal coverage status — never `needs_auth`, which is non-terminal and cannot close a leaf) with the un-run cross-tenant test named in `next_step`, NEVER `tested` — the root reads that terminal `blocked` row and records the honest `blocked_prereqs[]` entry of kind `auth_missing`, keeping the id_bearing surface `partial` rather than `complete`. Never report an id_bearing cell `tested` on unauthenticated recon.
+
 ## Finish only the issued cell
 
 1. Ensure the current run has one terminal `bob_log_coverage` row matching the exact injected `bug_class` and `auth_profile`.

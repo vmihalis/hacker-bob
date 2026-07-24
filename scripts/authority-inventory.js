@@ -131,6 +131,9 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // PR6 OOB collector (mirror of session-authority.js).
   bob_oob_mint: "scoped_http_network",
   bob_oob_poll: "scoped_http_network",
+  // O3 second-order / stored-effect re-read producer (mirror of session-authority.js).
+  bob_secondorder_mint: "scoped_http_network",
+  bob_secondorder_reread: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   // Plane Y Cycle Y.6 — friction-to-Hypothesis promotion (Y-P6 + Y-P11).
   // Orchestrator-only at the role-bundle layer; threads friction_history

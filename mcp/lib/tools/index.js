@@ -10,6 +10,13 @@ const TOOL_MODULES = Object.freeze([
   require("./bob-http-xss-confirm.js"),
   require("./bob-oob-mint.js"),
   require("./bob-oob-poll.js"),
+  // Second-order / stored-effect re-read producer (O3). Same mint/reread SPLIT as
+  // the OOB collector: bob_secondorder_mint is the NON-signing allocator (server-
+  // mints a canary + silent decoy, binds distinct in-scope injection/observation
+  // endpoints, no network); bob_secondorder_reread is the SIGNING producer (Bob-
+  // controlled safeFetch re-read + exact-parsed-leaf oracle, MEDIUM ceiling).
+  require("./bob-secondorder-mint.js"),
+  require("./bob-secondorder-reread.js"),
   require("./bob-nuclei-scan.js"),
   require("./read-http-audit.js"),
   require("./start-next-wave.js"),

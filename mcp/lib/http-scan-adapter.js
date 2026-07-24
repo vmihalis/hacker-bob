@@ -94,6 +94,7 @@ function makePerCallHttpScanFetcher({
   target_domain,
   block_internal_hosts,
   egress_profile,
+  freshness,
 }) {
   if (typeof httpScanFn !== "function") {
     throw new Error("httpScanFn must be a function");
@@ -101,6 +102,14 @@ function makePerCallHttpScanFetcher({
   if (typeof target_domain !== "string" || target_domain.length === 0) {
     throw new Error("target_domain must be a non-empty string");
   }
+  // Opt-in per-arm transport freshness (the auth-differential sweep opts in; the composition
+  // live-verifier and the belief object-auth probe leave it OFF and are byte-identical to today).
+  // When on, each call carries request cache-control so a cached/stale response can never stand
+  // in for a live cross-tenant arm. These directives ride httpScan's existing args.headers
+  // pathway (http-scan.js:190) and survive applyAuthProfileHeaders (preserved by presence,
+  // auth.js:81) so an auth profile cannot overwrite them. Request headers never enter the
+  // response signature or the row preimage, so results_hash / row_mac stay deterministic.
+  const freshnessOn = freshness === true;
   return async function fetch_fn({ url, method, auth_profile }) {
     const sentWithAuth = typeof auth_profile === "string" && auth_profile.length > 0;
     const args = {
@@ -110,6 +119,9 @@ function makePerCallHttpScanFetcher({
       response_mode: "full",
       block_internal_hosts: block_internal_hosts === true,
     };
+    if (freshnessOn) {
+      args.headers = { "Cache-Control": "no-cache, no-store", "Pragma": "no-cache" };
+    }
     if (sentWithAuth) args.auth_profile = auth_profile;
     if (typeof egress_profile === "string" && egress_profile.length > 0) {
       args.egress_profile = egress_profile;

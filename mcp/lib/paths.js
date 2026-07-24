@@ -570,6 +570,17 @@ function oobTokensJsonlPath(domain) {
   return path.join(sessionDir(domain), "oob-tokens.jsonl");
 }
 
+// Second-order / stored-effect re-read collector — the canary->surface binding ledger.
+// AUDIT-GRADED (see AUDIT_GRADED_BASENAMES): each row binds a pair of server-minted
+// canaries (canary + silent decoy) to the routed surface_id + the injection/observation
+// endpoint loci resolved at mint time, and bob_secondorder_reread re-reads it to stamp the
+// signed row. The bound proof target is RE-DERIVED live from the audit-graded routed
+// surface at re-read (never a stored target), so a Bash-planted binding cannot launder an
+// attacker-chosen target; audit-grading additionally blocks an agent Write to the ledger.
+function secondorderTokensJsonlPath(domain) {
+  return path.join(sessionDir(domain), "secondorder-tokens.jsonl");
+}
+
 // Cycle O.4: repo-runs/<run_id>.{stdout,stderr} are the bounded (16 MB
 // each) capture files for each docker run. Lives under sessionDir so
 // session-read-guard.sh can extend BLOCKED_DIRS to it in cycle O.7.
@@ -680,6 +691,16 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // the bind is the primary non-forgeability guarantee; the audit-grade move makes
   // isAuditGradedPath true so the negative-grep / composer whitelist also cover it.
   "invariant-runs.jsonl",
+  // The auth-differential sweep ledger (per-endpoint cross-tenant-flip rows). Audit-graded for
+  // the SAME rationale as invariant-runs.jsonl: a same-uid agent could otherwise Write an
+  // UNSIGNED flipped row past the best-effort hook to launder an id-bearing surface's completion
+  // coverage. Both consumers (claims.js authDifferentialCovered, agent-run-completion.js
+  // hasAuthDifferentialSweepForSurface) STRICTLY MAC-assert every flipped row before crediting;
+  // the row MAC is the primary non-forgeability layer and audit-grading closes the residual
+  // negative-grep / composer-whitelist coverage. Written ONLY by bob_run_auth_differential (not a
+  // wrapWriteTool composer), so it is NOT in AUDIT_GRADED_WRITER_TOOLS — parity with
+  // bob_run_invariant_for_finding.
+  "auth-differential-results.json",
   // Web-standalone finding-differential verified_pass ledger. MCP-write-only so a
   // standalone-class verdict cannot be hand-forged; the grade-time gate for
   // residual reportable findings (auth-bypass/IDOR/SSRF/business-logic/info-
@@ -696,6 +717,12 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // ledger READ is additionally O_NOFOLLOW/realpath-hardened in oob-collector.js so
   // a Bash-planted symlink cannot smuggle a binding either.
   "oob-tokens.jsonl",
+  // Second-order re-read collector: the canary->surface binding ledger. Audit-graded
+  // because bob_secondorder_reread re-reads it to bind the signed row to the routed
+  // surface + server-minted canary/decoy; an agent Write would forge that binding (the
+  // second-order analogue of the OOB #111 surface gate). The signed row's target is
+  // re-derived live from the routed surface at re-read, not from this ledger.
+  "secondorder-tokens.jsonl",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -815,12 +842,13 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   // is blocked) but NOT audit-graded — it carries leads that re-verify on reuse,
   // never a hash-bound verdict the grader reads.
   "mechanism-candidates.jsonl",
-  // invariant-runs.jsonl is NOW in AUDIT_GRADED_BASENAMES (see above): a same-uid agent
-  // appending an unsigned invariant row could otherwise launder a cross-stack
-  // verified_pass. The two sets are asserted DISJOINT, so it lives in exactly one.
+  // invariant-runs.jsonl and auth-differential-results.json are NOW in AUDIT_GRADED_BASENAMES
+  // (see above): a same-uid agent appending an unsigned invariant row could otherwise launder a
+  // cross-stack verified_pass, and an unsigned cross-tenant-flip row could otherwise launder an
+  // id-bearing surface's completion coverage. The two sets are asserted DISJOINT, so each lives
+  // in exactly one.
   "schema-contracts.jsonl",
   "doc-delta-results.json",
-  "auth-differential-results.json",
   "evm-role-table-results.json",
   "spawn-ledger.jsonl",
   // T8 inventory closure — securityHubExportJsonlPath() ledger of exported AWS
@@ -1171,6 +1199,7 @@ module.exports = {
   offensiveRunsDir,
   offensiveRunsJsonlPath,
   oobTokensJsonlPath,
+  secondorderTokensJsonlPath,
   queuePolicyPath,
   reportMarkdownPath,
   resolveEvidencePath,

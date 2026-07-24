@@ -29,6 +29,10 @@ Do not spawn. Test the assigned surface directly and finish through the same roo
 - Durable evaluate state flows ONLY through MCP tools. Never create or backfill `coverage.jsonl`, `technique-attempts.jsonl`, `handoff-w*`, `findings*`, `surface-leads.json`, the spawn ledger, or any session artifact through `Bash`/`Write`. `Write` is intentionally unavailable.
 - Respect `coverage_summary`, `audit_summary`, `circuit_breaker_summary`, and exclusion lists as safety feedback — do not re-test what is already `tested`/`blocked` or hammer hosts returning 403/429/timeouts.
 
+## Id-bearing crown — earn the cross-tenant flip before closing
+
+If your assigned surface is `id_bearing` (object/account/tenant-scoped access that must differ by principal), it earns done through a live cross-tenant differential, not recon. BEFORE you write `surface_status: complete`, run `bob_run_auth_differential` across ≥2 authenticated principals on the frozen id-bearing endpoints to earn a per-endpoint `cross_tenant_flip`: principal A reads its own object while a distinct principal B is denied that same object (the negative control flips 2xx→4xx across identities). A one-principal replay, a coverage row, a `bypass_attempts` narrative, or a child's `BOB_CHILD_CELL_DONE` pointer does NOT earn it. If only one principal exists, provision a second before closing — promote a captured credential into a named profile with `bob_auth_store` (e.g. `profile_name: "victim"`), then run the differential. If a second principal genuinely cannot be obtained, record a `blocked_prereqs[]` entry of kind `auth_missing` naming the un-run cross-tenant test and set `surface_status: partial`. Never mark an id_bearing crown `complete` on unauthenticated recon or a coverage/bypass narrative — a missing second principal is partial, not done.
+
 ## Finish as the wave root
 
 1. Ensure at least one completion-status `bob_log_technique_attempt` exists for the surface with non-empty evidence.

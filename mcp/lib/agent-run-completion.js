@@ -694,6 +694,21 @@ function frozenIdBearingEndpoints(assignment) {
   return new Set(eps.filter((e) => typeof e === "string" && e));
 }
 
+// Mirrors claims.js exploitTargetHostInScope (the grade-time gate's B3 host check): the cited
+// URL's host must be the target domain or a subdomain of it. An unparseable URL is out of scope
+// (false). Kept in lockstep with the gate so finalize and grade agree on which effective_url a
+// flip row was actually fetched under — never re-implement one without the other.
+function finalizeHostInScope(targetUrl, domain) {
+  let host;
+  try {
+    host = new URL(targetUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const scope = String(domain).toLowerCase();
+  return host === scope || host.endsWith(`.${scope}`);
+}
+
 function rowHasTwoProfileSweep(row) {
   // Executed cross-tenant coverage requires a per-endpoint FLIP (MCP-computed): one VALIDATED
   // principal ACCESSED the object (2xx) while a DISTINCT VALIDATED principal was DENIED it
@@ -709,6 +724,37 @@ function hasAuthDifferentialSweepForSurface(marker, assignment) {
   const results = readAuthDifferentialResults(marker.target_domain);
   const rows = results && Array.isArray(results.per_endpoint) ? results.per_endpoint : [];
   const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
+  // Cycle B keyed layer: resolve the row verifier ONCE (a disk key read), then require every
+  // credited flip row to carry a VERIFYING row_mac under the auth-differential context. rowMacVerifies
+  // wraps assertRowMac to a boolean (STRICT — an unsigned/tampered/forged/cross-context row throws
+  // -> false), checked BEFORE rowHasTwoProfileSweep so a Bash-forged flip never clears the id-bearing
+  // surface at finalize. Fail closed: a pre-keypair session's null verifier rejects any present row_mac.
+  const { assertRowMac, AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("./offensive-row-mac.js");
+  const { resolveRowVerifierSafely } = require("./handoff-signing-key.js");
+  const rowVerifier = resolveRowVerifierSafely(marker.target_domain);
+  const rowMacVerifies = (row) => {
+    try {
+      assertRowMac(AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT, row, rowVerifier);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // B3 base_url-relabel defense (mirrors the grade-time gate in claims.js): the runner stamps
+  // effective_url = joinUrl(base_url, endpoint) — the URL actually fetched — into the row_mac
+  // preimage, so a MAC-verified row's effective_url is the real tested URL. The signed `endpoint`
+  // alone templatizes to a frozen crown path even when the arm was fetched under a relabeled
+  // base_url: an OFF-SCOPE host, or a benign PATH PREFIX that hid an easy same-host target. When
+  // effective_url is present, additionally require it to resolve to an in-scope host AND to
+  // templatize to one of THIS surface's frozen id-bearing endpoints; a mismatch is not credited
+  // (fail closed). An ABSENT field is a legacy/pre-urlbind row: skip only this extra check
+  // (back-compat) — the MAC, flip, surface_id-bind, and endpoint-template checks stand.
+  const effectiveUrlResolves = (row) => {
+    if (typeof row.effective_url !== "string" || !row.effective_url) return true;
+    if (!finalizeHostInScope(row.effective_url, marker.target_domain)) return false;
+    const effectiveTemplate = templatizeIdBearingEndpoint(row.effective_url);
+    return effectiveTemplate !== null && endpoints.has(effectiveTemplate);
+  };
   return rows.some((row) => (
     row
     && typeof row.endpoint === "string"
@@ -716,16 +762,60 @@ function hasAuthDifferentialSweepForSurface(marker, assignment) {
     // id-bearing endpoints (matched in TEMPLATE form) — no bleed from another surface.
     && row.surface_id === marker.surface_id
     && endpoints.has(templatizeIdBearingEndpoint(row.endpoint))
+    && rowMacVerifies(row)
+    && effectiveUrlResolves(row)
     && rowHasTwoProfileSweep(row)
   ));
+}
+
+// Mirrors claims.js ID_BEARING_ACCESS_CONTROL_CWES (the grade-time gate's B1 access-control set).
+// An id-bearing crown's obligation is a CROSS-TENANT object-authorization test, so its clearing
+// EXECUTED finding must be an access-control class. A same-surface executed SSRF/XSS proves impact
+// but NOT that object-level authorization was ever probed, so it does not discharge the crown
+// obligation (the auth-differential FLIP still does). bug_class is not persisted on the finding
+// record; the CANONICAL CWE is (catalog-canonical on read-back), so class is resolved from the CWE
+// alone. Only catalog CWEs reach here — a novel/non-catalog CWE degrades to null on read-back — so
+// an unrecognized class HOLDS the surface as an honest partial, the SAFE (fail-toward-HOLD)
+// direction. Kept in lockstep with the gate so finalize cannot settle a crown grade would hold.
+const ID_BEARING_ACCESS_CONTROL_CWES = new Set([
+  "CWE-639", // Authorization Bypass Through User-Controlled Key (IDOR)
+  "CWE-284", // Improper Access Control
+  "CWE-285", // Improper Authorization
+  "CWE-862", // Missing Authorization
+  "CWE-863", // Incorrect Authorization
+]);
+
+// The subset of recorded finding ids whose CANONICAL CWE is an access-control class, resolved from
+// the persisted claims. Fails CLOSED: an unreadable claims ledger yields an empty set, so no
+// finding-differential clears an id-bearing surface (the safe HOLD direction) — the auth-diff sweep
+// path remains the independent, authoritative clearing lever.
+function accessControlFindingIdsForDomain(domain) {
+  const ids = new Set();
+  try {
+    for (const finding of findingPayloadsFromClaims(domain)) {
+      if (!finding || !finding.id) continue;
+      if (typeof finding.cwe === "string" && ID_BEARING_ACCESS_CONTROL_CWES.has(finding.cwe)) {
+        ids.add(finding.id);
+      }
+    }
+  } catch { /* unreadable claims — no finding-differential clears (safe HOLD direction) */ }
+  return ids;
 }
 
 function hasVerifiedFindingDifferentialForSurface(marker) {
   const summary = readFindingDifferentialVerifiedSummary(marker.target_domain);
   const verified = summary && summary.verified_by_finding;
   if (verified == null || typeof verified !== "object" || Array.isArray(verified)) return false;
-  return Object.values(verified).some((entry) => (
-    entry && entry.surface_id === marker.surface_id
+  // B1 mirror (id-bearing independence): a verified finding-differential clears an id-bearing
+  // crown ONLY when the finding is an access-control class — a same-surface executed SSRF/XSS
+  // never discharges the cross-tenant object-authorization obligation. verified_by_finding is keyed
+  // by finding_id (the same id space as findingPayloadsFromClaims), so the class is looked up by
+  // that key. Consistent with the grade-time gate's hasAccessControlExecuted.
+  const accessControlFindingIds = accessControlFindingIdsForDomain(marker.target_domain);
+  return Object.entries(verified).some(([findingId, entry]) => (
+    entry
+    && entry.surface_id === marker.surface_id
+    && accessControlFindingIds.has(findingId)
   ));
 }
 

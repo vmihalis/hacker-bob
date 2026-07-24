@@ -153,11 +153,45 @@ function writeAuthFile(authPath, content) {
   }
 }
 
+// A profile carries SYNTHETIC PROVENANCE when it was stamped through the in-process
+// bob_auto_signup -> authStore seam (the 2nd-arg path in authStore, signup.js:493). The MCP
+// tool dispatcher only ever calls tool.handler(args) with ONE argument, so a dispatcher-path
+// bob_auth_store can never produce these markers. This is the signal that a profile is an
+// ORCHESTRATOR-PROVISIONED principal ("attacker"/"victim"). Keyed ONLY on the BOOLEAN
+// `synthetic === true` — the sole UN-FORGEABLE marker: bob_auth_store's headers/cookies schema
+// coerces every caller value to a STRING, so a header named `synthetic` can only ever be "true"
+// (!== boolean true), and a string marker like `provisioned_via` is caller-forgeable (a header
+// named provisioned_via becomes a top-level profile key via buildHeaderProfile's Object.assign).
+// The 2nd-arg provenance stamp always sets the boolean (auth.js provenance block), and the IDOR
+// producer's refuse-to-sign gate likewise AND-requires the boolean, so this is the same contract.
+function profileCarriesSyntheticProvenance(profile) {
+  return !!(profile && typeof profile === "object" && profile.synthetic === true);
+}
+
 function persistAuthProfiles(domain, profilesByName) {
   const authPath = resolveAuthJsonPath(domain);
   const result = withSessionLock(domain, () => {
     const existing = readAuthJson(authPath);
     const doc = migrateAuthJson(existing);
+    // NAMESPACE-CLOBBER GUARD: refuse to OVERWRITE an existing profile that carries synthetic
+    // provenance (an orchestrator-provisioned principal) unless THIS write itself carries that
+    // provenance (the in-process bob_auto_signup 2nd-arg path — a legitimate token refresh). A
+    // dispatcher-path bob_auth_store (reachable by evaluator-web, F3) never stamps provenance,
+    // so an evaluator that promotes a captured credential can freely CREATE a new profile name
+    // or overwrite a non-provenance name it made, but can never poison a concurrent worker's
+    // provisioned "attacker"/"victim". Checked under the session lock, before any write, so the
+    // read->write is atomic against a concurrent provision. Fails toward HOLD, never a silent
+    // no-op.
+    for (const [profileName, profile] of Object.entries(profilesByName)) {
+      const prior = doc.profiles ? doc.profiles[profileName] : undefined;
+      if (profileCarriesSyntheticProvenance(prior) && !profileCarriesSyntheticProvenance(profile)) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `refusing to overwrite provisioned auth profile "${profileName}": it was orchestrator-provisioned (synthetic provenance) and this write carries none — store the captured credential under a new profile name (e.g. tenant_b)`,
+          { success: false, profile_name: profileName, auth_path: authPath },
+        );
+      }
+    }
     for (const [profileName, profile] of Object.entries(profilesByName)) {
       doc.profiles[profileName] = { ...profile };
     }
@@ -225,6 +259,9 @@ function authStore(args, options = {}) {
     try {
       persisted = persistAuthProfiles(domain, { [profileName]: profile });
     } catch (error) {
+      // The namespace-clobber refusal is a caller-facing ToolError (STATE_CONFLICT); surface
+      // it verbatim rather than masking it as an opaque INTERNAL_ERROR.
+      if (error instanceof ToolError) throw error;
       throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `failed to persist auth profile: ${error.message || String(error)}`, {
         success: false,
         profile_name: profileName,
@@ -364,15 +401,15 @@ function principalFingerprint(profile) {
   // Prefer a stable identity claim over the raw credential blob when available.
   const identity = jwtIdentityClaims(normalizedProfile);
   if (identity) return hashCanonicalJson({ __principal_identity: identity }).slice(0, 32);
+  // A principal is defined by what it TRANSMITS to the target (the headers/cookies actually sent),
+  // never by Bob-local metadata the target never sees. Fingerprinting over non-transmitted
+  // credentials/local_storage would let two profiles that send the IDENTICAL cookie (one real
+  // session) present as two distinct principals — a forged distinctness the auth-differential
+  // completion gate must not accept. Hash ONLY the transmitted material (JWT identity preferred
+  // above); PROFILE_METADATA_KEYS (credentials, local_storage, provenance, mailbox) are excluded.
   const material = {};
   for (const key of Object.keys(normalizedProfile).filter((k) => !PROFILE_METADATA_KEYS.has(k)).sort()) {
     material[key] = normalizedProfile[key];
-  }
-  if (normalizedProfile.credentials && typeof normalizedProfile.credentials === "object") {
-    material.__credentials = normalizedProfile.credentials;
-  }
-  if (normalizedProfile.local_storage && typeof normalizedProfile.local_storage === "object") {
-    material.__local_storage = normalizedProfile.local_storage;
   }
   if (Object.keys(material).length === 0) return null;
   return hashCanonicalJson(material).slice(0, 32);

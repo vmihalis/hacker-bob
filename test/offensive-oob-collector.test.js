@@ -19,6 +19,8 @@ const COLLECTOR_PATH = path.join(__dirname, "..", "mcp", "lib", "oob-collector.j
 const {
   oobMint,
   oobPoll,
+  oobSmoke,
+  oobConfigHint,
   loadOobConfig,
   resolveBinding,
   readOobTokenRecords,
@@ -149,11 +151,19 @@ test("inert: unconfigured sink → mint and poll write nothing, no network", () 
   const mintResult = await oobMint(mintArgs(domain), { config: inert });
   assert.equal(mintResult.minted, false);
   assert.equal(mintResult.reason, "oob_sink_not_configured");
+  // ADDITIVE: the machine reason is preserved verbatim; a non-empty hint now names
+  // exactly which env vars to set (regression guard for the additive-message contract).
+  assert.ok(typeof mintResult.hint === "string" && mintResult.hint.length > 0, "mint inert must carry a hint");
+  for (const v of ["BOB_OOB_HOST", "BOB_OOB_POLL_URL", "BOB_OOB_SELF_EGRESS_IP"]) {
+    assert.ok(mintResult.hint.includes(v), `mint hint must name ${v}`);
+  }
   assert.equal(fs.existsSync(oobTokensJsonlPath(domain)), false);
 
   const pollResult = await oobPoll({ target_domain: domain, token_handle: "oobh-nope" }, { config: inert });
   assert.equal(pollResult.confirmed, false);
   assert.equal(pollResult.available, false);
+  // poll's inert return also carries the additive hint (same single-source helper).
+  assert.ok(typeof pollResult.hint === "string" && pollResult.hint.length > 0, "poll inert must carry a hint");
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
@@ -615,3 +625,82 @@ test("ATTRIBUTION: an HTTP OOB positive with NO configured session-egress IP doe
   assert.notEqual(verdict.result, "verified_pass");
   assert.match(verdict.reason, /UNESTABLISHED|no configured session-egress|attribution/i);
 }));
+
+// ───────────────────────── oob smoke / readiness (operator-owned) ───────────
+// Non-signing, non-provisioning readiness check: validate an operator-configured sink
+// in one call. Unconfigured -> names the exact env vars. Configured -> mint a SAMPLE
+// token (no binding, no ledger, no cap), assert payload forms, do one read-only probe.
+
+test("smoke unconfigured: names exactly which env vars to set; signs/writes nothing, no session", () => withTempHome(async () => {
+  const res = await oobSmoke({}, { config: loadOobConfig({}) });
+  assert.equal(res.ready, false);
+  assert.equal(res.configured, false);
+  assert.equal(res.reason, "oob_sink_not_configured");
+  for (const v of ["BOB_OOB_HOST", "BOB_OOB_POLL_URL", "BOB_OOB_SELF_EGRESS_IP"]) {
+    assert.ok(res.hint.includes(v), `hint must name ${v}`);
+  }
+  // Presence-only booleans, never the values.
+  assert.equal(typeof res.env_present.BOB_OOB_HOST, "boolean");
+  assert.equal(typeof res.env_present.BOB_OOB_POLL_URL, "boolean");
+  assert.equal(typeof res.env_present.BOB_OOB_SELF_EGRESS_IP, "boolean");
+}));
+
+test("smoke configured (stub sink round-trips): ready + no signed row and no binding written", () => withTempHome(async () => {
+  const domain = "oob-smoke-ok.example.test";
+  // No session set up on purpose — smoke needs none.
+  const res = await oobSmoke({}, { config: CONFIG, interaction_source: () => ({ interactions: [] }) });
+  assert.equal(res.ready, true);
+  assert.equal(res.configured, true);
+  assert.equal(res.sink_reachable, true);
+  assert.equal(res.payload_forms_ok, true);
+  // NO signing, NO binding: neither audit-graded ledger exists for the domain.
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+  assert.equal(fs.existsSync(oobTokensJsonlPath(domain)), false);
+}));
+
+test("smoke configured (stub sink throws): not ready, sink_unreachable", () => withTempHome(async () => {
+  const res = await oobSmoke({}, {
+    config: CONFIG,
+    interaction_source: () => { throw new Error("boom: daemon down"); },
+  });
+  assert.equal(res.ready, false);
+  assert.equal(res.configured, true);
+  assert.equal(res.sink_reachable, false);
+  assert.equal(res.reason, "sink_unreachable");
+  assert.ok(typeof res.hint === "string" && res.hint.length > 0);
+}));
+
+test("smoke configured without BOB_OOB_SELF_EGRESS_IP: self_egress_configured=false + recommendation note", () => withTempHome(async () => {
+  const res = await oobSmoke({}, { config: CONFIG, interaction_source: () => ({ interactions: [] }) });
+  assert.equal(res.ready, true);
+  assert.equal(res.self_egress_configured, false);
+  assert.ok(res.note.includes("BOB_OOB_SELF_EGRESS_IP"), "note must recommend the egress IP");
+
+  const withEgress = await oobSmoke({}, { config: CONFIG_SELF, interaction_source: () => ({ interactions: [] }) });
+  assert.equal(withEgress.self_egress_configured, true);
+}));
+
+test("oobConfigHint: each inert reason gets a pointed, non-empty string", () => {
+  for (const reason of [
+    "oob_sink_not_configured",
+    "oob_host_internal",
+    "oob_poll_url_not_https",
+    "oob_poll_host_internal",
+    "oob_config_invalid",
+  ]) {
+    const hint = oobConfigHint(reason);
+    assert.ok(typeof hint === "string" && hint.length > 0, `hint for ${reason}`);
+  }
+});
+
+test("write-fence: the oobSmoke function body never references the signing/binding/lock primitives", () => {
+  const src = fs.readFileSync(COLLECTOR_PATH, "utf8");
+  const start = src.indexOf("async function oobSmoke(");
+  assert.ok(start >= 0, "oobSmoke must be defined");
+  const end = src.indexOf("\nmodule.exports", start);
+  assert.ok(end > start, "oobSmoke must precede module.exports");
+  const body = src.slice(start, end);
+  for (const forbidden of ["buildAndSignOffensiveRow", "appendOobTokenRecordHardened", "withSessionLock"]) {
+    assert.ok(!body.includes(forbidden), `oobSmoke must not reference ${forbidden}`);
+  }
+});

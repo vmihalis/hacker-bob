@@ -174,6 +174,11 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // the one aim-exempt egress to the constant Bob-owned sink.
   bob_oob_mint: "scoped_http_network",
   bob_oob_poll: "scoped_http_network",
+  // O3 second-order / stored-effect re-read producer. Same class as the other
+  // offensive HTTP producers: mint writes the binding (no network), reread is the
+  // scope-validated safeFetch re-read of the in-scope observation endpoint.
+  bob_secondorder_mint: "scoped_http_network",
+  bob_secondorder_reread: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   bob_propose_friction_promotion: "initialized_session_mutation",
   // Plane Y Cycle Y.7 — adversarial transcript scan (Y-D6 + Y-P9). Pure

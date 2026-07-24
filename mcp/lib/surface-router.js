@@ -313,6 +313,58 @@ function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvent
   const targetDomain = assertNonEmptyString(domain, "target_domain");
   const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints, queuePolicy });
   const filePath = surfaceRoutesPath(targetDomain);
+  // Monotonic id-bearing guard: a surface a PRIOR sanctioned route recorded as
+  // id_bearing:true can never be silently DOWNGRADED to id_bearing:false by a
+  // re-derive. The downgrade needs no signing key: an agent edits the
+  // agent-writable attack_surface.json to strip the id markers the detector keys
+  // on, then triggers a sanctioned bob_route_surfaces re-route which mints a fresh
+  // route (and a fresh MAC) with id_bearing:false — silently un-crowning the
+  // surface so the earned-done gate stops requiring a real cross-tenant isolation
+  // test. MAC-binding surface-routes.json does not close this: the re-derive
+  // re-signs. So bind to the PRIOR route's assertion directly — a surface that was
+  // EVER id-bearing stays id_bearing:true and keeps its frozen id_bearing_endpoints.
+  // Fail-open on the prior read: first run (no prior file) or an unrecoverable prior
+  // simply means no monotonic floor to enforce; routing proceeds byte-identical. The
+  // guard is purely ADDITIVE — it only re-asserts id_bearing (over-tag toward the
+  // safe HOLD direction), and a genuine first-time false / legit true->true /
+  // false->true is never touched.
+  let priorIdBearing = null;
+  try {
+    const prior = readSurfaceRoutesStrict(targetDomain);
+    const priorRoutes = prior && prior.document && Array.isArray(prior.document.routes)
+      ? prior.document.routes
+      : [];
+    for (const priorRoute of priorRoutes) {
+      if (priorRoute && priorRoute.id_bearing === true
+        && typeof priorRoute.surface_id === "string" && priorRoute.surface_id) {
+        if (priorIdBearing === null) priorIdBearing = new Map();
+        priorIdBearing.set(
+          priorRoute.surface_id,
+          Array.isArray(priorRoute.id_bearing_endpoints) ? priorRoute.id_bearing_endpoints : [],
+        );
+      }
+    }
+  } catch {
+    priorIdBearing = null;
+  }
+  if (priorIdBearing !== null && priorIdBearing.size > 0) {
+    for (const route of document.routes) {
+      // Only a freshly-derived routable route carries id_bearing:false (an
+      // unroutable route has no id_bearing field, so `=== false` skips it — the
+      // guard never forces an id-bearing marker onto an unroutable disposition).
+      if (route && route.id_bearing === false && priorIdBearing.has(route.surface_id)) {
+        route.id_bearing = true;
+        // Preserve the frozen prior endpoints; a false-derived route never wrote its
+        // own set, so the prior template list is the authoritative coverage binding.
+        const priorEps = priorIdBearing.get(route.surface_id);
+        route.id_bearing_endpoints = Array.isArray(priorEps) ? priorEps.slice() : [];
+        // The stronger FLIP obligation is a LIVE derivation of the now-true id_bearing
+        // and the current distinct-principal count (a 2nd principal added/removed
+        // between runs legitimately changes it), never a frozen field.
+        route.auth_differential_required = authProfileCount >= 2;
+      }
+    }
+  }
   // Validate every generated route BEFORE persisting. classifySurfaceCapability cannot emit an
   // empty/pack-mismatched evaluator_agent today, but a future pack/derivation regression that did
   // would otherwise be silently written and only blow up later on read (bricking unrelated

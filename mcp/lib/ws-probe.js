@@ -94,6 +94,84 @@ function wsUrlToHttpUrl(wsUrl) {
 const WS_MAX_FRAME_BYTES = 1_000_000;
 const WS_MAX_TOTAL_BYTES = 1_000_000;
 
+// Bounds on caller-settable handshake headers. These cap the UPGRADE request so a
+// caller cannot smuggle an oversized or multi-header payload into the HTTP handshake.
+const WS_MAX_CUSTOM_HEADERS = 16;
+const WS_MAX_HEADER_NAME_BYTES = 256;
+const WS_MAX_HEADER_VALUE_BYTES = 4096;
+
+// RFC 7230 token — the legal set for an HTTP header name. Anything outside it (spaces,
+// separators, and every control char incl. CR/LF) is rejected. PURE.
+function assertSafeHeaderName(name) {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("header name must be a non-empty string");
+  }
+  if (Buffer.byteLength(name) > WS_MAX_HEADER_NAME_BYTES) {
+    throw new Error(`header name exceeds ${WS_MAX_HEADER_NAME_BYTES} bytes`);
+  }
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
+    throw new Error(`invalid header name "${name}" (illegal token or control chars)`);
+  }
+}
+
+// A header value must be a bounded string with NO CR/LF or other C0/DEL control chars,
+// so the value cannot inject additional header lines / smuggle a second HTTP request
+// into the WebSocket upgrade. PURE.
+function assertSafeHeaderValue(name, value) {
+  if (typeof value !== "string") {
+    throw new Error(`header "${name}" value must be a string`);
+  }
+  if (Buffer.byteLength(value) > WS_MAX_HEADER_VALUE_BYTES) {
+    throw new Error(`header "${name}" value exceeds ${WS_MAX_HEADER_VALUE_BYTES} bytes`);
+  }
+  if (/[\x00-\x1F\x7F]/.test(value)) {
+    throw new Error(`header "${name}" value contains control characters`);
+  }
+}
+
+// buildCallerHeaders — assemble the caller-settable NON-CREDENTIAL base handshake
+// headers (User-Agent + a small bounded custom-header map). These are transport headers
+// that go to BOTH arms of the CSWSH differential (see cswshArmHeaders), so they can
+// never forge a credential-dependent verdict. Every name/value is validated (CR/LF and
+// control chars rejected; count/length bounded) — a validation failure throws so the
+// handler can fail closed with the request NOT sent. PURE: returns a NEW object, never
+// mutates args. Credentials belong on an auth_profile, not here.
+function buildCallerHeaders(userAgent, headers) {
+  const out = {};
+  if (userAgent != null) {
+    if (typeof userAgent !== "string") throw new Error("user_agent must be a string");
+    assertSafeHeaderValue("User-Agent", userAgent);
+    out["User-Agent"] = userAgent;
+  }
+  if (headers != null) {
+    if (typeof headers !== "object" || Array.isArray(headers)) {
+      throw new Error("headers must be an object of string values");
+    }
+    const entries = Object.entries(headers);
+    if (entries.length > WS_MAX_CUSTOM_HEADERS) {
+      throw new Error(`headers exceeds the ${WS_MAX_CUSTOM_HEADERS}-entry cap`);
+    }
+    for (const [name, value] of entries) {
+      assertSafeHeaderName(name);
+      assertSafeHeaderValue(name, value);
+      out[name] = value;
+    }
+  }
+  return out;
+}
+
+// cswshArmHeaders — the header maps for the two CSWSH handshake arms. The authed arm
+// carries the full extraHeaders (base + any auth-profile credentials); the uncredentialed
+// control carries ONLY the non-credential base headers (User-Agent / custom). Both get
+// the foreign Origin, so the two arms differ EXACTLY by credential material — a UA-based
+// WAF 403 hits both arms identically and can never forge cswsh_vulnerable=true. PURE.
+function cswshArmHeaders({ headers, baseHeaders, foreignOrigin }) {
+  return {
+    authed: { ...(headers || {}), Origin: foreignOrigin },
+    control: { ...(baseHeaders || {}), Origin: foreignOrigin },
+  };
+}
+
 const JSON_RPC_STANDARD_METHODS = [
   "eth_blockNumber",
   "net_version",
@@ -366,13 +444,16 @@ async function attemptHandshakeNative(url, headers, { timeoutMs, agent, lookup }
   }
 }
 
-async function runCswshProbeNative(url, { origin, timeoutMs, headers, agent, lookup, hasAuth }) {
+async function runCswshProbeNative(url, { origin, timeoutMs, headers, baseHeaders, agent, lookup, hasAuth }) {
   const foreignOrigin = origin || "https://evil.example.com";
-  const authed = await attemptHandshakeNative(url, { ...headers, Origin: foreignOrigin }, { timeoutMs, agent, lookup });
-  // The uncredentialed control isolates the credential dependence: extraHeaders only
-  // ever carries auth-profile material, so { Origin } is the no-credential attempt.
+  const arms = cswshArmHeaders({ headers, baseHeaders, foreignOrigin });
+  const authed = await attemptHandshakeNative(url, arms.authed, { timeoutMs, agent, lookup });
+  // The uncredentialed control isolates the credential dependence: it carries the SAME
+  // non-credential base headers (User-Agent / custom) as the authed arm but NONE of the
+  // auth-profile credential material, so the two arms differ ONLY by credentials — a
+  // transport-header WAF (e.g. a UA-based 403) hits both arms and cannot forge a verdict.
   const control = hasAuth
-    ? await attemptHandshakeNative(url, { Origin: foreignOrigin }, { timeoutMs, agent, lookup })
+    ? await attemptHandshakeNative(url, arms.control, { timeoutMs, agent, lookup })
     : null;
   const verdict = classifyCswsh({
     hasAuth: !!hasAuth,
@@ -527,7 +608,31 @@ async function wsProbe(args) {
     });
   }
 
-  let extraHeaders = {};
+  // Caller-settable NON-CREDENTIAL base handshake headers (User-Agent + bounded custom
+  // headers). Validated fail-closed: a CR/LF or control char, an oversized value, or too
+  // many headers rejects the request BEFORE any socket opens (like auth_missing/egress_error).
+  let baseHeaders;
+  try {
+    baseHeaders = buildCallerHeaders(args.user_agent, args.headers);
+  } catch (error) {
+    audit({
+      status: null,
+      error: error.message || String(error),
+      scope_decision: "invalid_header",
+      ...scopeAuditFields(initialScopeDecision),
+    });
+    return JSON.stringify({
+      error: `${error.message || String(error)} — request was NOT sent.`,
+      scope_decision: "invalid_header",
+      ...egressContext,
+      ...internalHostContext,
+    });
+  }
+
+  // extraHeaders = the AUTHED header set. Without an auth_profile it is exactly the base
+  // (non-credential) headers; with one, the profile's credential/header fields are merged
+  // on top. baseHeaders stays pure (see cswsh control arm below).
+  let extraHeaders = baseHeaders;
 
   if (authProfile) {
     const auth = resolveAuthProfile(authProfile, httpEquivUrl, targetDomain);
@@ -537,7 +642,9 @@ async function wsProbe(args) {
       // email, email_origin, provisioned_via, expiry provenance fields). A hand-rolled
       // `k !== "credentials"` denylist would leak that provenance to the target as WS
       // handshake headers and deanonymize the scanner — same chokepoint bob_http_scan uses.
-      extraHeaders = applyAuthProfileHeaders(extraHeaders, auth);
+      // applyAuthProfileHeaders is PURE (new object) and preserves caller keys by presence,
+      // so an explicit user_agent overrides a profile-supplied one and baseHeaders is untouched.
+      extraHeaders = applyAuthProfileHeaders(baseHeaders, auth);
     } else {
       audit({
         status: null,
@@ -585,7 +692,7 @@ async function wsProbe(args) {
     if (mode === "json_rpc_enumerate") {
       probeResult = await runJsonRpcEnumerateNative(url, connect);
     } else if (mode === "cswsh_probe") {
-      probeResult = await runCswshProbeNative(url, { ...connect, origin: origin || "https://evil.example.com", hasAuth });
+      probeResult = await runCswshProbeNative(url, { ...connect, baseHeaders, origin: origin || "https://evil.example.com", hasAuth });
     } else if (mode === "subscription_probe") {
       probeResult = await runSubscriptionProbeNative(url, { ...connect, messages: args.messages, maxMessages });
     } else {
@@ -649,4 +756,6 @@ module.exports = {
   wsConnectPlan,
   collectMessagesNative,
   matchJsonRpcResponse,
+  buildCallerHeaders,
+  cswshArmHeaders,
 };

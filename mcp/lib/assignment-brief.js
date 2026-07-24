@@ -982,6 +982,51 @@ function slimSurfaceForBrief(surface) {
   };
 }
 
+// Depth (A1) — carry the route-frozen id-bearing obligation into the brief.
+// The assignment stores id_bearing (detector result), the FROZEN id-bearing
+// endpoint TEMPLATES, and the auth_differential_required flag at route time
+// (wave-assignment-store.js). The evaluator brief must surface the known-
+// mandatory cross-tenant experiment for that surface so the brief promises
+// exactly what the finalize/grade gate will require — never more, never less.
+// The endpoint list is the only variable-length field and is capped via the
+// existing cappedSurfaceArray; the guidance is a fixed literal (no unbounded
+// scalar). The whole key is omitted for non-id_bearing surfaces (drop-empty).
+const ID_BEARING_ENDPOINT_BRIEF_LIMIT = 40; // mirrors interesting_params cap
+const ID_BEARING_OBLIGATION_TEXT = [
+  "This surface is id-bearing: the frozen id_bearing_endpoints expose per-object ids, so a cross-tenant IDOR/BOLA flip is the known-mandatory experiment for this surface.",
+  "Call bob_list_auth_profiles, then run bob_run_auth_differential across >=2 distinct authenticated principals on those frozen endpoints (do not re-derive endpoints from attack_surface.json).",
+  "The negative control must FLIP per endpoint: principal A reads its own object (allowed) while a distinct principal B is denied that same object (forbidden) — a same-object cross-tenant divergence, not two unrelated 200s.",
+  "If <2 principals are provisionable or the flip cannot be run, mark the surface partial with a blocked_prereqs entry naming the un-run test — do NOT mark it complete. A coverage row or bypass_attempt narrative does not clear an id-bearing surface.",
+].join(" ");
+
+// Pure, fail-soft obligation builder. Sourced ONLY from the on-disk, route-
+// frozen (MCP-owned) assignment fields — never re-derived from agent-writable
+// attack_surface.json (the reason id_bearing_endpoints were frozen at route
+// time). The fire predicate mirrors the finalize gate at
+// agent-run-completion.js (id_bearing || auth_differential_required) so the
+// brief never promises an experiment the gate won't require nor omits one it
+// will demand. Legacy/absent fields yield null (omitted key), never a throw.
+function buildIdBearingObligationForBrief(assignment) {
+  const source = assignment && typeof assignment === "object" && !Array.isArray(assignment)
+    ? assignment
+    : {};
+  const authDifferentialRequired = source.auth_differential_required === true;
+  const isIdBearing = source.id_bearing === true || authDifferentialRequired;
+  if (!isIdBearing) return null;
+  const { values, limits } = cappedSurfaceArray(
+    source.id_bearing_endpoints,
+    ID_BEARING_ENDPOINT_BRIEF_LIMIT,
+  );
+  return {
+    id_bearing: true,
+    auth_differential_required: authDifferentialRequired,
+    ...(values.length
+      ? { id_bearing_endpoints: values, id_bearing_endpoints_limits: limits }
+      : {}),
+    obligation: ID_BEARING_OBLIGATION_TEXT,
+  };
+}
+
 function readSurfaceInfoForBrief(domain, routeMetadata) {
   if (routeMetadata.brief_profile === "oss") {
     const projected = currentSurfaces(domain);
@@ -1516,6 +1561,12 @@ function readAssignmentBrief(args) {
     routeMetadata.evaluator_agent,
   );
 
+  // Depth (A1) — the id-bearing surface's known-mandatory auth-differential
+  // obligation, carried from the route-frozen (MCP-owned) assignment fields.
+  // null (key omitted) for non-id_bearing surfaces so the brief shape is
+  // unchanged for those.
+  const idBearingObligation = buildIdBearingObligationForBrief(assignment);
+
   return JSON.stringify({
     untrusted_content_policy: UNTRUSTED_CONTENT_POLICY,
     run_context: {
@@ -1567,6 +1618,11 @@ function readAssignmentBrief(args) {
     // Y-P14d. Null until Y.6 lands role-trace-expectations.js OR when
     // the assignment's evaluator_agent has no mapped entry.
     ...(traceReadingExpectations ? { trace_reading_expectations: traceReadingExpectations } : {}),
+    // Depth (A1) — top-level, conditional. Present only for an id-bearing (or
+    // auth_differential_required) surface; carries the route-frozen endpoints
+    // and the fixed obligation guidance. A top-level key (not a WEB slice-
+    // registry entry) keeps the web slice key-list assertion valid.
+    ...(idBearingObligation ? { id_bearing_obligation: idBearingObligation } : {}),
     ...profileExtras,
   }, null, 2);
 }
@@ -2263,6 +2319,10 @@ module.exports = {
   cellFloorPlanningKeysForSurface,
   buildChildFanoutPlanForSurface,
   readAssignmentBrief,
+  // Depth (A1) — id-bearing obligation carried into the brief.
+  ID_BEARING_ENDPOINT_BRIEF_LIMIT,
+  ID_BEARING_OBLIGATION_TEXT,
+  buildIdBearingObligationForBrief,
   renderAvailableCliToolsSection,
   renderAvailableCliToolsSectionSync,
   evaluatorKnowledgeCandidatePaths,

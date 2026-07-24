@@ -25,6 +25,19 @@ module.exports = Object.freeze({
         type: "string",
         description: "Custom Origin header for cswsh_probe. Default: https://evil.example.com.",
       },
+      user_agent: {
+        type: "string",
+        maxLength: 4096,
+        description:
+          "Optional User-Agent for the WebSocket handshake (e.g. to pass an edge WAF that 403s a default UA). Non-credential: sent to BOTH arms of the CSWSH differential. CR/LF and control chars are rejected.",
+      },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        maxProperties: 16,
+        description:
+          "Optional bounded map (max 16) of extra non-credential handshake request headers. Names/values with CR/LF or control chars are rejected and values are length-capped. Use auth_profile for credentials, not this.",
+      },
       auth_profile: { type: "string", description: "Optional auth profile name." },
       egress_profile: {
         type: "string",

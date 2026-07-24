@@ -116,6 +116,7 @@
   "test/surface-graph-builder.test.js",
   "test/surface-graph-slice-brief.test.js",
   "test/assignment-brief-size.test.js",
+  "test/assignment-brief-id-bearing-obligation.test.js",
   "test/untrusted-envelope.test.js",
   "test/determinism-ci.test.js",
   "test/chain-state-tree.test.js",
@@ -201,6 +202,7 @@
   "test/offensive-reflect-producer.test.js",
   "test/offensive-xss-exec-producer.test.js",
   "test/offensive-oob-collector.test.js",
+  "test/offensive-secondorder-producer.test.js",
   "test/offensive-nuclei-producer.test.js",
   "test/offensive-cors-producer.test.js",
   "test/offensive-massread-producer.test.js",
@@ -413,5 +415,7 @@
   "test/approval-gate-producer-to-resume-integration.test.js",
   "test/engine-singleton-lock.test.js",
   "test/engine-caller-auth.test.js",
-  "test/fork-snapshot-secret-redaction.test.js"
+  "test/fork-snapshot-secret-redaction.test.js",
+  "test/gate-completeness.test.js",
+  "test/param-lineage.test.js"
 ]

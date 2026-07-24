@@ -28,6 +28,12 @@ const { appendJsonlLine } = require("../mcp/lib/storage.js");
 const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
 const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
 const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+const { initSession } = require("../mcp/lib/session-state.js");
+const {
+  readSessionStateStrict,
+  writeSessionStateDocument,
+} = require("../mcp/lib/session-state-store.js");
+const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
 const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
 const {
   claimsJsonlPath,
@@ -512,5 +518,92 @@ test("bob_compose_report content hash binds the CVSS block; non-reportable findi
     const recomputed = require("crypto").createHash("sha256").update(rendered, "utf8").digest("hex");
     assert.equal(result.report_content_hash, recomputed);
     assert.ok(rendered.includes("CVSS:3.1/"), "the bound markdown must contain the derived vector");
+  });
+});
+
+// --- H2: "surfaces we could not test, and why" (blocked prerequisites) ---
+
+// Seed a currently-blocked surface: a blocked_prereq_history entry AND a
+// matching frontier blocker.asserted event so summarizeBlockedPrereqs's
+// currentBlockers ∩ blocked_prereq_history projection returns the surface.
+function seedBlockedSurface(domain, { surfaceId, kind, identifierHint, reason, wave = 1 }) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  const { raw, state } = readSessionStateStrict(domain);
+  const historyEntry = { wave, surface_id: surfaceId, kind, reason };
+  if (identifierHint) historyEntry.identifier_hint = identifierHint;
+  writeSessionStateDocument(domain, raw, {
+    ...state,
+    blocked_prereq_history: [historyEntry],
+  });
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "blocker.asserted",
+    surface_id: surfaceId,
+    payload: { terminally_blocked: true, wave, kind, identifier_hint: identifierHint, reason },
+    source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+  });
+}
+
+test("bob_compose_report renders a 'surfaces we could not test' section for a currently-blocked surface", () => {
+  withTempHome(() => {
+    const domain = "audit.example.com";
+    seedBlockedSurface(domain, {
+      surfaceId: "surface-admin",
+      kind: "auth_missing",
+      identifierHint: "attacker",
+      reason: "no attacker auth profile registered",
+    });
+
+    const result = callTool(composeReportTool, {
+      target_domain: domain,
+      sections: [{
+        kind: "impact",
+        heading: "Recon summary",
+        prose: "Recon-only summary; no exploitable finding recorded.",
+        provenance: "operator_osint",
+        evidence_refs: [],
+      }],
+    });
+
+    assert.equal(result.blocked_surfaces_rendered, true);
+    const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
+    // Distinct first-class section heading + informational disclaimer.
+    assert.match(rendered, /## Surfaces Not Tested \(blocked prerequisites\)/);
+    assert.match(rendered, /surfaces we could not test, and why/);
+    // Human label + identifier hint for the kind.
+    assert.match(rendered, /### Authentication profile missing \(attacker\)/);
+    // The affected surface id.
+    assert.match(rendered, /surface-admin/);
+    // The typed reason ("not tested because ...").
+    assert.match(rendered, /Not tested because:\*\* no attacker auth profile registered/);
+    // The concrete per-kind next step.
+    assert.match(rendered, /Next step:\*\* Register an auth profile/);
+    // The section bytes are covered by the single report_content_hash.
+    const recomputed = require("crypto").createHash("sha256").update(rendered, "utf8").digest("hex");
+    assert.equal(result.report_content_hash, recomputed);
+  });
+});
+
+test("bob_compose_report omits the blocked-surfaces section when no surface is blocked", () => {
+  withTempHome(() => {
+    const domain = "audit.example.com";
+    // A real session with no blocked_prereq_history / blocker events.
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+
+    const result = callTool(composeReportTool, {
+      target_domain: domain,
+      sections: [{
+        kind: "impact",
+        heading: "Recon summary",
+        prose: "Recon-only summary; no exploitable finding recorded.",
+        provenance: "operator_osint",
+        evidence_refs: [],
+      }],
+    });
+
+    assert.equal(result.blocked_surfaces_rendered, false);
+    const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
+    // Drop-empty: no heading, no empty scaffold.
+    assert.doesNotMatch(rendered, /## Surfaces Not Tested/);
   });
 });

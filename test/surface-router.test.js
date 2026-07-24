@@ -26,7 +26,10 @@ const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
 const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
 const { findRoutedSurface } = require("../mcp/lib/offensive-http-common.js");
 // S1 detector is injected into routing by the tool handler; tests inject it too.
-const { surfaceExposesIdBearingCollection: idBearingDetector } = require("../mcp/lib/offensive-idor-producer.js");
+const {
+  surfaceExposesIdBearingCollection: idBearingDetector,
+  surfaceIdBearingEndpoints: idBearingEndpoints,
+} = require("../mcp/lib/offensive-idor-producer.js");
 const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
@@ -481,4 +484,117 @@ test("deriveUnroutableSurfacesFromRoutes classifies a drift row (null pack, no d
   assert.equal(result.error, null, "a well-formed drift row is not a corruption error");
   assert.deepEqual(Array.from(result.surfaceIds), ["drift:sc"], "the pack-less drift row is parked unroutable");
   assert.equal(result.surfaces[0].unroutable_reason, "unknown chain_family");
+}));
+
+// Monotonic id-bearing guard: a surface a PRIOR sanctioned route recorded as
+// id_bearing:true cannot be silently DOWNGRADED to id_bearing:false by a re-derive
+// that reads an agent-stripped attack_surface.json (the KEY-FREE downgrade — no
+// signing key needed, MAC-binding does not help because the re-derive re-signs).
+
+test("routeSurfacesInternal: a prior id_bearing:true surface cannot be downgraded to false on re-route (KEY-FREE downgrade blocked)", () => withTempHome(() => {
+  const domain = "router-monotonic-downgrade.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+
+  // First (honest) route: the crown surface exposes an id-bearing item endpoint.
+  const idBearingSurface = {
+    id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/{id}"],
+  };
+  const first = routeSurfacesInternal(domain, {
+    attackSurfaceInfo: { source: "test", document: { surfaces: [idBearingSurface] } },
+    authProfileCount: 2, idBearingDetector, idBearingEndpoints,
+  });
+  const firstRoute = first.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(firstRoute.id_bearing, true, "the crown is id-bearing on the honest first route");
+  assert.ok(Array.isArray(firstRoute.id_bearing_endpoints) && firstRoute.id_bearing_endpoints.length > 0,
+    "the honest route freezes the id-bearing endpoint templates");
+  const frozenEndpoints = firstRoute.id_bearing_endpoints;
+
+  // Attacker edits the agent-writable attack_surface.json to strip the id marker:
+  // the SAME surface_id now looks like a bare collection (detector would derive false).
+  const strippedSurface = {
+    id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"],
+  };
+  // Sanity: the detector genuinely no longer flags the stripped surface.
+  assert.equal(idBearingDetector(strippedSurface), false, "the stripped surface derives id_bearing:false in isolation");
+
+  const second = routeSurfacesInternal(domain, {
+    attackSurfaceInfo: { source: "test", document: { surfaces: [strippedSurface] } },
+    authProfileCount: 2, idBearingDetector, idBearingEndpoints,
+  });
+  const secondRoute = second.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(secondRoute.id_bearing, true, "a surface that was EVER id-bearing stays id_bearing:true (no silent downgrade)");
+  assert.deepEqual(secondRoute.id_bearing_endpoints, frozenEndpoints, "the frozen prior id_bearing_endpoints are preserved");
+  assert.equal(secondRoute.auth_differential_required, true, "the flip obligation is re-derived from the now-true id_bearing and the live principal count");
+
+  // The persisted file reads back with the crown still id-bearing.
+  const read = readSurfaceRoutesStrict(domain);
+  const persisted = read.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(persisted.id_bearing, true, "the persisted re-route keeps the crown id-bearing");
+  assert.deepEqual(persisted.id_bearing_endpoints, frozenEndpoints);
+}));
+
+test("routeSurfacesInternal: monotonic guard does NOT fabricate id_bearing for a surface that was never id-bearing (genuine false unaffected)", () => withTempHome(() => {
+  const domain = "router-monotonic-neverid.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const collectionSurface = {
+    id: "plain:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"],
+  };
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [collectionSurface] } };
+
+  const first = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  assert.equal(first.document.routes[0].id_bearing, false, "a collection-only surface is genuinely not id-bearing");
+
+  // Re-route with the same non-id-bearing surface: the guard must not fabricate a floor.
+  const second = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  assert.equal(second.document.routes[0].id_bearing, false, "no prior true => genuine first-time false is unaffected");
+  assert.equal(second.document.routes[0].auth_differential_required, false);
+}));
+
+test("routeSurfacesInternal: monotonic guard is a no-op on first run and preserves a legit true->true re-route", () => withTempHome(() => {
+  const domain = "router-monotonic-firstrun.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const idBearingSurface = {
+    id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/orders/{id}"],
+  };
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [idBearingSurface] } };
+
+  // First run (no prior surface-routes.json) must not throw and derives id_bearing normally.
+  let first;
+  assert.doesNotThrow(() => {
+    first = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  }, "first run tolerates the missing prior routes file");
+  assert.equal(first.document.routes[0].id_bearing, true);
+  const firstEndpoints = first.document.routes[0].id_bearing_endpoints;
+
+  // A legit true->true re-route (surface still id-bearing) is byte-identical for id_bearing.
+  const second = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  assert.equal(second.document.routes[0].id_bearing, true);
+  assert.deepEqual(second.document.routes[0].id_bearing_endpoints, firstEndpoints);
+}));
+
+test("routeSurfaces (live): a prior id_bearing:true surface stays id-bearing when attack_surface.json is later stripped", () => withTempHome(() => {
+  const domain = "router-monotonic-live.example.test";
+  // Honest discovery: an id-bearing item endpoint. The live path injects the detector
+  // + endpoints via the tool handler, so route through routeSurfaces with them injected.
+  writeAttackSurface(domain, [
+    { id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/accounts/{id}"] },
+  ]);
+  const firstRaw = routeSurfaces({ target_domain: domain }, { idBearingDetector, idBearingEndpoints });
+  assert.equal(JSON.parse(firstRaw).routed, true);
+  const firstRead = readSurfaceRoutesStrict(domain);
+  const firstRoute = firstRead.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(firstRoute.id_bearing, true, "crown is id-bearing after honest discovery");
+  const frozen = firstRoute.id_bearing_endpoints;
+  assert.ok(Array.isArray(frozen) && frozen.length > 0);
+
+  // Attacker rewrites the agent-writable attack_surface.json to strip the id marker.
+  writeAttackSurface(domain, [
+    { id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/accounts"] },
+  ]);
+  const secondRaw = routeSurfaces({ target_domain: domain }, { idBearingDetector, idBearingEndpoints });
+  assert.equal(JSON.parse(secondRaw).routed, true);
+  const secondRead = readSurfaceRoutesStrict(domain);
+  const secondRoute = secondRead.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(secondRoute.id_bearing, true, "the live re-derive cannot silently downgrade the crown");
+  assert.deepEqual(secondRoute.id_bearing_endpoints, frozen, "frozen endpoints survive the live re-route");
 }));

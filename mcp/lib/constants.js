@@ -18,6 +18,20 @@ const SAFE_ORACLE_KINDS = [
   "blind_boolean_timing",
   "benign_command_marker",
 ];
+// The oracle_kind values a producer may STAMP into a MAC-covered offensive-runs row.
+// A stamped oracle_kind marks a row whose evidence is NOT a self-contained executed
+// binding — an out-of-band external callback (bob_oob_poll) or a second-order stored-
+// effect re-read (bob_secondorder_reread), both observed through a channel DISTINCT
+// from the injection point. The read-time exploit-run skip (claims.js
+// exploitRunSkipReverifies) keys on membership here to REFUSE self-skip, so such a row
+// must earn a finding-differential verified_pass against a decoy-silent control rather
+// than self-close on a single positive. Self-contained producers (IDOR / reflected-XSS)
+// stamp NO oracle_kind (null). Single source consumed by offensive-capture-writer's
+// stampable-set validator AND the claims read-time skip, so the two can never drift.
+const OFFENSIVE_ROW_ORACLE_KIND_VALUES = [
+  "out_of_band_interaction",
+  "second_order_reread",
+];
 const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
@@ -241,6 +255,7 @@ module.exports = {
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
   OFFENSIVE_OUTCOME_VALUES,
+  OFFENSIVE_ROW_ORACLE_KIND_VALUES,
   PRODUCER_NODE_KIND,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,

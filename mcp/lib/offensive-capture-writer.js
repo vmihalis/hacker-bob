@@ -14,6 +14,7 @@ const {
 } = require("./claims.js");
 const {
   SEVERITY_VALUES,
+  OFFENSIVE_ROW_ORACLE_KIND_VALUES,
 } = require("./constants.js");
 const {
   OFFENSIVE_ROW_MAC_CONTEXT,
@@ -62,14 +63,15 @@ const OFFENSIVE_ROW_OUTCOMES = Object.freeze(new Set([
   "exploited_safely", "blocked_by_defense", "blocked_by_infra",
 ]));
 
-// The closed set of oracle kinds a producer may stamp into a row (MAC-covered sibling). An
-// out-of-band-interaction row is one whose evidence is an external callback, gated specially
-// at read time (the exploit_run skip refuses to treat it as a self-contained binding). Like
-// offensiveOutcome, this is a CONTROLLED field validated against a frozen set so an arbitrary
-// string can never become a signed oracle_kind.
-const OFFENSIVE_ROW_ORACLE_KINDS = Object.freeze(new Set([
-  "out_of_band_interaction",
-]));
+// The closed set of oracle kinds a producer may stamp into a row (MAC-covered sibling). A
+// stamped oracle_kind marks a row whose evidence is NOT a self-contained executed binding —
+// an out-of-band external callback (out_of_band_interaction) or a second-order stored-effect
+// re-read (second_order_reread) — gated specially at read time (the exploit_run skip refuses
+// to treat it as a self-contained binding). Like offensiveOutcome, this is a CONTROLLED field
+// validated against a frozen set so an arbitrary string can never become a signed oracle_kind.
+// Single-sourced from constants.OFFENSIVE_ROW_ORACLE_KIND_VALUES so the stampable set and the
+// claims read-time skip that keys on the same values can never drift.
+const OFFENSIVE_ROW_ORACLE_KINDS = Object.freeze(new Set(OFFENSIVE_ROW_ORACLE_KIND_VALUES));
 
 // run_id is a single clean [A-Za-z0-9-] segment so sha256OffensiveCaptureSecure
 // (claim-freeze.js) accepts it as a direct child leaf of offensive-runs/.

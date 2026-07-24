@@ -635,6 +635,95 @@ test("evaluator prompts require cited reachability assertions for OSS native fin
   }
 });
 
+test("evaluator prompts front-load the id_bearing cross-tenant differential", () => {
+  const surfaces = [
+    "prompts/roles/evaluator.md",
+    ".claude/agents/evaluator-agent.md",
+  ];
+  for (const surface of surfaces) {
+    const body = readFile(surface);
+    // Fires on the id_bearing surface predicate the finalize/grade gate keys on.
+    assert.match(body, /id[_-]bearing/, `${surface} must scope the directive to id_bearing surfaces`);
+    // Proactive / before-closing cue — the whole point is it runs ahead of the gate.
+    assert.match(body, /BEFORE you close anything/, `${surface} must front-load the directive before closing`);
+    assert.match(body, /proactive/, `${surface} must frame the differential as proactive`);
+    // Earned-done bar: run the differential to earn a per-endpoint cross_tenant_flip.
+    assert.match(body, /bob_run_auth_differential/, `${surface} must direct running bob_run_auth_differential`);
+    assert.match(body, /cross_tenant_flip/, `${surface} must name the cross_tenant_flip earned-done bar`);
+    // Second-principal acquisition through already-named provisioning primitives.
+    assert.match(body, /bob_auto_signup/, `${surface} must offer bob_auto_signup as a second-principal path`);
+    assert.match(body, /record->flush/, `${surface} must offer the browser record->flush credential-capture path`);
+    // Crown-reaching primitives.
+    assert.match(body, /bob_browser_session_\*/, `${surface} must point at authenticated browser sessions`);
+    assert.match(body, /UA-settable `bob_ws_probe`/, `${surface} must point at the UA-settable ws_probe`);
+    // Honest, un-fakeable partial fallback when no second principal is obtainable.
+    assert.match(body, /blocked_prereqs\[\]/, `${surface} must require a concrete blocked_prereqs entry`);
+    assert.match(body, /kind `auth_missing`/, `${surface} must name the auth_missing blocker kind`);
+    assert.match(body, /surface_status: partial/, `${surface} must fall to surface_status: partial`);
+    // Never close a crown on unauth recon or a coverage/bypass narrative.
+    assert.match(body, /unauthenticated recon or a coverage\/bypass narrative/, `${surface} must forbid closing on unauth recon or a coverage/bypass narrative`);
+  }
+});
+
+test("nested fanout actuation leaves carry the id_bearing cross-tenant differential stanza", () => {
+  // The nested coverage-fanout root (closes the surface) and its synchronous leaf
+  // (tests one id_bearing cell) must carry the same earned-done directive the flat
+  // evaluator front-loads: an id_bearing crown reaches done only through a real
+  // cross_tenant_flip, and a missing second principal is an honest partial, never a
+  // false complete. Source bodies AND their generated agent files are checked so a
+  // stale regenerate cannot silently drop the directive from the actuated prompt.
+  const fanoutSurfaces = [
+    "prompts/roles/evaluator-fanout.md",
+    ".claude/agents/evaluator-fanout.md",
+    "prompts/roles/evaluator-fanout-child.md",
+    ".claude/agents/evaluator-fanout-child.md",
+  ];
+  for (const surface of fanoutSurfaces) {
+    const body = readFile(surface);
+    // Scoped to the id_bearing predicate the finalize/grade gate keys on.
+    assert.match(body, /id_bearing/, `${surface} must scope the directive to id_bearing surfaces`);
+    // Earned-done bar: run the differential to earn a per-endpoint cross_tenant_flip.
+    assert.match(body, /bob_run_auth_differential/, `${surface} must direct running bob_run_auth_differential`);
+    assert.match(body, /cross_tenant_flip/, `${surface} must name the cross_tenant_flip earned-done bar`);
+    assert.match(body, /negative control flips 2xx/, `${surface} must describe the negative-control flip`);
+    // Second-principal provisioning through the named auth-store promotion.
+    assert.match(body, /bob_auth_store/, `${surface} must offer bob_auth_store second-principal promotion`);
+    // Honest, un-fakeable partial fallback when no second principal is obtainable.
+    assert.match(body, /blocked_prereqs\[\]/, `${surface} must require a concrete blocked_prereqs entry`);
+    assert.match(body, /auth_missing/, `${surface} must name the auth_missing blocker kind`);
+    assert.match(body, /partial/, `${surface} must fall to a partial, not a false complete`);
+    // Never close a crown on unauthenticated recon.
+    assert.match(body, /unauthenticated recon/, `${surface} must forbid closing on unauthenticated recon`);
+  }
+
+  // Root-specific: it owns surface_status and must gate BEFORE writing complete; a
+  // child's BOB_CHILD_CELL_DONE pointer does not earn the flip on its behalf.
+  for (const rootSurface of [
+    "prompts/roles/evaluator-fanout.md",
+    ".claude/agents/evaluator-fanout.md",
+  ]) {
+    const body = readFile(rootSurface);
+    assert.match(body, /BEFORE you write `surface_status: complete`/, `${rootSurface} must gate before writing surface_status: complete`);
+    assert.match(body, /BOB_CHILD_CELL_DONE` pointer does NOT earn it/, `${rootSurface} must reject a child pointer as proof`);
+    assert.match(body, /surface_status: partial/, `${rootSurface} must fall to surface_status: partial`);
+  }
+
+  // Child-specific: it does not own the handoff, so a missing second principal is a
+  // terminal `blocked` coverage row (never `tested`, and never the NON-terminal `needs_auth`
+  // which cannot close a nested leaf), which the root reads to record the blocked_prereqs entry
+  // and keep the surface partial.
+  for (const childSurface of [
+    "prompts/roles/evaluator-fanout-child.md",
+    ".claude/agents/evaluator-fanout-child.md",
+  ]) {
+    const body = readFile(childSurface);
+    assert.match(body, /log this cell `blocked`/, `${childSurface} must log the missing-principal cell as the terminal blocked status`);
+    assert.doesNotMatch(body, /log this cell `needs_auth`/, `${childSurface} must not direct the non-terminal needs_auth status (jams the leaf)`);
+    assert.match(body, /allowed_tools_for_node/, `${childSurface} must gate on the injected cell tool allow-list`);
+    assert.match(body, /NEVER `tested`/, `${childSurface} must forbid a tested row on unearned recon`);
+  }
+});
+
 // NOTE: the roadmap-era "Kimi hunter catalogue routes OSS brief profiles through
 // the generic worker path" test was dropped when Δ1 integrated onto main's Kimi v2
 // adapter (PR #67). Main's Kimi adapter does not yet render OSS brief-profile
@@ -1349,6 +1438,10 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // the browser-transport broken-auth/BFLA differential signed-row producer — MEDIUM for the
   // authn-vs-anon differential, HIGH when the v2 victim arm proves a cross-principal break);
   // web budget bumps by +1 (web 53→54), SC unchanged.
+  // Second-order producer adds bob_secondorder_mint + bob_secondorder_reread to evaluator-web
+  // ONLY (same narrow grant; mint is a non-signing canary allocator, reread is the MEDIUM-ceiling
+  // stored-effect signed-row producer). Both are opaque-context (server-minted canary/decoy, masked
+  // oracle return, no brief surfacing); web budget bumps by +2 (web 56→58), SC unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
@@ -1360,7 +1453,12 @@ test("evaluator agents stay under their MCP tool budget", () => {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
     // web evaluator carries bob_run_auth_differential so it can run the sweep that
     // the auth-differential completion gate (AD1) requires before surface complete.
-    const budget = pack.spawn.profile === "web" ? 56 : EVALUATOR_MCP_TOOL_BUDGET;
+    // It also carries bob_auth_store (evaluator-web only): a minimal-privilege credential
+    // promoter (no network/browser/account-creation) so an evaluator that captured a second
+    // principal in-wave can register it as a named profile and run the differential without an
+    // orchestrator round-trip; the dispatcher seam cannot stamp synthetic provenance, so the
+    // grant cannot widen the provenance-gated producer arm (web 58→59).
+    const budget = pack.spawn.profile === "web" ? 59 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

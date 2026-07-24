@@ -995,7 +995,90 @@ function renderCoverageClosure(parts, closure) {
   parts.push("");
 }
 
-function renderMarkdown(domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations = [], coverageClosure = null) {
+// H2 — human labels + concrete unblock next-steps keyed on the blocked-prereq
+// kind families (the same set summarizeBlockedPrereqs ranks via
+// BLOCKED_PREREQ_KIND_ACTIONABILITY in session-summary.js). An unrecognized
+// kind falls back to the raw kind + the generic next step, so a novel blocker
+// family still renders honestly.
+const BLOCKED_PREREQ_KIND_LABELS = Object.freeze({
+  auth_missing: "Authentication profile missing",
+  egress_unreachable: "Egress unreachable",
+  funded_wallet_missing: "Funded wallet missing",
+  key_material_missing: "Key material missing",
+  external_credential_missing: "External credential missing",
+});
+const BLOCKED_PREREQ_KIND_NEXT_STEPS = Object.freeze({
+  auth_missing:
+    "Register an auth profile (bob_list_auth_profiles / auth_store) for the required role, "
+    + "clear the block with bob_clear_terminal_block, then re-run the surface.",
+  egress_unreachable:
+    "Configure the egress profile so the target is reachable, clear the block with "
+    + "bob_clear_terminal_block, then re-run the surface.",
+  funded_wallet_missing:
+    "Provision a funded wallet for the required chain, clear the block with "
+    + "bob_clear_terminal_block, then re-run the surface.",
+  key_material_missing:
+    "Provide the required key material, clear the block with bob_clear_terminal_block, "
+    + "then re-run the surface.",
+  external_credential_missing:
+    "Supply the external credential, clear the block with bob_clear_terminal_block, "
+    + "then re-run the surface.",
+});
+const BLOCKED_PREREQ_KIND_NEXT_STEP_DEFAULT =
+  "Provision the missing prerequisite, clear the block with bob_clear_terminal_block, "
+  + "then re-run the surface.";
+
+// Server-derived "surfaces we could not test, and why" annotation — the
+// annotate-don't-gate sibling of the CVSS / coverage-closure blocks. Read-only
+// projection of the currently-blocked surface set (currentBlockers ∩
+// blocked_prereq_history via summarizeBlockedPrereqs); rendered into the
+// markdown so the content hash + ReportSnapshot bind it, but it never gates the
+// report and is never written back onto a finding. Returns null (renders
+// nothing) on any read error OR when no blocked surface groups exist
+// (drop-empty — no fabricated coverage, no empty scaffold).
+function buildBlockedSurfaces(domain) {
+  try {
+    const { readBlockedPrereqsSummary } = require("../session-summary.js");
+    const summary = readBlockedPrereqsSummary(domain);
+    if (!summary) return null;
+    const groups = Array.isArray(summary.by_kind) ? summary.by_kind : [];
+    if (!(summary.total_blocked_surfaces > 0) || groups.length === 0) return null;
+    return summary;
+  } catch {
+    return null;
+  }
+}
+
+function renderBlockedSurfaces(parts, blocked) {
+  if (!blocked) return;
+  const groups = Array.isArray(blocked.by_kind) ? blocked.by_kind : [];
+  if (groups.length === 0) return;
+  parts.push("## Surfaces Not Tested (blocked prerequisites)");
+  parts.push("");
+  parts.push(
+    "INFORMATIONAL only — these surfaces we could not test, and why. Each was NOT reached "
+    + "because a prerequisite was missing (distinct from a surface that was tested with no "
+    + "finding). Each entry names why it was not tested and the concrete next step to unblock it.",
+  );
+  parts.push("");
+  for (const group of groups) {
+    const label = BLOCKED_PREREQ_KIND_LABELS[group.kind] || group.kind;
+    const hintSuffix = group.identifier_hint ? ` (${group.identifier_hint})` : "";
+    parts.push(`### ${label}${hintSuffix}`);
+    parts.push("");
+    const surfaceIds = Array.isArray(group.surface_ids) ? group.surface_ids : [];
+    const count = Number.isInteger(group.surface_count) ? group.surface_count : surfaceIds.length;
+    parts.push(`- **Affected surfaces (${count}):** ${surfaceIds.join(", ") || "(unspecified)"}`);
+    const reason = group.latest_reason || "prerequisite not satisfied";
+    parts.push(`- **Not tested because:** ${reason}`);
+    parts.push(
+      `- **Next step:** ${BLOCKED_PREREQ_KIND_NEXT_STEPS[group.kind] || BLOCKED_PREREQ_KIND_NEXT_STEP_DEFAULT}`,
+    );
+    parts.push("");
+  }
+}
+
+function renderMarkdown(domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations = [], coverageClosure = null, blockedSurfaces = null) {
   const parts = [OPERATOR_EDIT_BANNER];
   parts.push(`# Hacker Bob Report — ${domain}`);
   parts.push("");
@@ -1034,6 +1117,7 @@ function renderMarkdown(domain, sections, severitySummary, reproSteps, amendment
   }
   renderCvssAnnotations(parts, cvssAnnotations);
   renderCoverageClosure(parts, coverageClosure);
+  renderBlockedSurfaces(parts, blockedSurfaces);
   if (amendments.length > 0) {
     parts.push("## Operator Amendments");
     parts.push("");
@@ -1145,8 +1229,12 @@ function handler(args) {
     // Read-only coverage-closure projection, rendered server-side like the CVSS
     // block; null (and rendered nothing) for sessions with no cell floor.
     const coverageClosure = buildCoverageClosure(domain);
+    // Read-only "surfaces we could not test, and why" projection (H2), rendered
+    // server-side like the CVSS / coverage-closure blocks; null (and rendered
+    // nothing) for sessions with no currently-blocked surface groups.
+    const blockedSurfaces = buildBlockedSurfaces(domain);
     const markdown = renderMarkdown(
-      domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations, coverageClosure,
+      domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations, coverageClosure, blockedSurfaces,
     );
     const reportPath = reportMarkdownPath(domain);
     fs.writeFileSync(reportPath, markdown, "utf8");
@@ -1161,6 +1249,7 @@ function handler(args) {
       amendments_rendered: amendments.length,
       cvss_annotations_rendered: cvssAnnotations.length,
       coverage_closure_rendered: coverageClosure != null,
+      blocked_surfaces_rendered: blockedSurfaces != null,
     };
     // CONSTRAINT 5: degrade is never silent. When the sandbox gate downgraded
     // bob_verified sections to advisory, surface it in the structured result so a
