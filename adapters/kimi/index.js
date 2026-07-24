@@ -10,6 +10,10 @@ const {
 } = require("../../scripts/lib/kimi-role-renderer.js");
 const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
 const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
+const {
+  bobMcpServerEntry,
+  isBobManagedMcpServerEntry,
+} = require("../../scripts/lib/workspace-sessions-root.js");
 
 const id = "kimi";
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
@@ -193,16 +197,13 @@ function managedDirs() {
   ];
 }
 
-function mergeConfig({ serverPath }) {
+function mergeConfig({ serverPath, sessionsRoot = null }) {
   return {
     mcpServers: {
       // Canonical v2.0 server key. v1.x installs used the legacy `bountyagent`
       // key; install() migrates a Bob-managed legacy entry to this key and
       // uninstall() removes either (CHANGELOG v2.0 + docs/TROUBLESHOOTING.md).
-      "hacker-bob": {
-        command: "node",
-        args: [serverPath],
-      },
+      "hacker-bob": bobMcpServerEntry({ serverPath, sessionsRoot }),
       brutalist: { ...BRUTALIST_MCP_SERVER, args: [...BRUTALIST_MCP_SERVER.args] },
     },
   };
@@ -217,21 +218,20 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function expectedMcpServer(targetAbs) {
-  return {
-    command: "node",
-    args: [path.join(targetAbs, "mcp", "server.js")],
-  };
-}
-
+// Bob-managed means command + args point at THIS project's server, with at most
+// the Bob-managed BOB_SESSIONS_ROOT env block. Any other env key or field means
+// an operator owns the entry; doctor and uninstall leave it alone.
 function mcpServerMatches(server, targetAbs) {
-  return JSON.stringify(server) === JSON.stringify(expectedMcpServer(targetAbs));
+  return isBobManagedMcpServerEntry(server, {
+    serverPath: path.join(targetAbs, "mcp", "server.js"),
+  });
 }
 
 function install({
   sourceRoot,
   targetAbs,
   serverPath,
+  sessionsRoot = null,
   commitSha,
   installedAt,
   installerSource,
@@ -303,7 +303,7 @@ function install({
     ...existingMcp,
     mcpServers: {
       ...existingServers,
-      ...mergeConfig({ serverPath }).mcpServers,
+      ...mergeConfig({ serverPath, sessionsRoot }).mcpServers,
     },
   };
   safeFs.writeJson(mcpPath, nextMcp, {

@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
@@ -38,12 +39,170 @@ function labAuthorizationPath(domain) {
   return path.join(sessionDir(domain), "lab-authorization.json");
 }
 
+const SESSIONS_ROOT_BASENAME = "hacker-bob-sessions";
+const SESSIONS_ROOT_ENV_VAR = "BOB_SESSIONS_ROOT";
+
+function defaultSessionsRoot() {
+  return path.join(os.homedir(), SESSIONS_ROOT_BASENAME);
+}
+
+// Canonicalizes `target` through fs.realpathSync, tolerating a not-yet-created
+// leaf: the nearest existing ancestor is resolved and the missing tail is
+// re-joined. Used only for the disjointness comparison, where a symlinked
+// ancestor (/var -> /private/var on macOS) would otherwise make two identical
+// roots look distinct.
+function canonicalizeNearest(target) {
+  let current = target;
+  const tail = [];
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return tail.length ? path.join(real, ...tail) : real;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return target;
+      tail.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+// True when one path is a strict ancestor of the other. Equality is NOT
+// nesting: an override that names exactly the default root is the same root,
+// and same-root engines are still mutually excluded by the engine singleton
+// lock. A strictly nested root, by contrast, SHARES session state with the
+// root that contains it while electing a SEPARATE engine — precisely the
+// fx-gate-bypass condition the singleton lock exists to prevent.
+function isStrictlyNested(left, right) {
+  if (left === right) return false;
+  return left.startsWith(right + path.sep) || right.startsWith(left + path.sep);
+}
+
+// Filesystem IDENTITY of a path (device + inode), or null when it does not exist.
+function pathIdentity(target) {
+  try {
+    const stats = fs.statSync(target);
+    return `${stats.dev}:${stats.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+// True when `inner` is STRICTLY inside `outer`, decided by filesystem identity of
+// each existing ancestor rather than by string comparison. A byte-wise compare
+// misses aliases the platform itself collapses to one directory: most importantly
+// a CASE VARIANT on a case-insensitive volume (macOS realpathSync does NOT
+// normalize case, so ~/HACKER-BOB-SESSIONS/w and ~/hacker-bob-sessions/w are one
+// directory that string comparison reads as two), and equally a symlinked or
+// bind-mounted ancestor. Walking from the PARENT keeps equality out of scope: an
+// override naming exactly the default root is the same root, which the engine
+// singleton lock already covers.
+function isStrictlyInsideByIdentity(inner, outer) {
+  const outerIdentity = pathIdentity(outer);
+  if (!outerIdentity) return false;
+  let current = path.dirname(inner);
+  for (;;) {
+    if (pathIdentity(current) === outerIdentity) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+function rejectSessionsRootOverride(reason) {
+  throw new Error(
+    `${SESSIONS_ROOT_ENV_VAR} is not a safe session root: ${reason}. `
+    + "This is operator configuration (set it in the installer-managed `.mcp.json` "
+    + "env block for one workspace; an agent cannot change the engine's boot env). "
+    + "The engine refuses to boot rather than silently fall back to "
+    + `${defaultSessionsRoot()}, because a silent fallback would let two workspaces `
+    + "collide on one session root without anyone noticing.",
+  );
+}
+
+// Validates an operator-supplied session-root override. Runs EXACTLY ONCE, at
+// module load (see SESSIONS_ROOT_OVERRIDE below). Every failure throws; there
+// is no fallback path.
+function resolveSessionsRootOverride(env) {
+  const raw = typeof env[SESSIONS_ROOT_ENV_VAR] === "string"
+    ? env[SESSIONS_ROOT_ENV_VAR].trim()
+    : "";
+  if (!raw) return null;
+  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
+    rejectSessionsRootOverride("it contains a NUL byte or control character");
+  }
+  if (!path.isAbsolute(raw)) {
+    rejectSessionsRootOverride(`it must be an absolute path, got ${JSON.stringify(raw)}`);
+  }
+  const resolved = path.resolve(raw);
+
+  // Create it 0700 if absent, then judge what is actually on disk. mkdirSync
+  // is a no-op when the leaf already exists (including when it is a symlink to
+  // a directory) — the lstat below is what decides, not the mkdir.
+  try {
+    fs.mkdirSync(resolved, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    rejectSessionsRootOverride(`it could not be created (${error && error.message})`);
+  }
+  let stats;
+  try {
+    stats = fs.lstatSync(resolved);
+  } catch (error) {
+    rejectSessionsRootOverride(`it could not be inspected (${error && error.message})`);
+  }
+  // Same root assertions mcp/lib/engine-lock.js applies before it elects an
+  // engine, applied here at boot so an unsafe root is refused before a single
+  // audit-graded byte is written to it. engine-lock.js keeps re-asserting them
+  // independently; this does not replace that check.
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    rejectSessionsRootOverride("it must resolve to a real directory, not a symlink");
+  }
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    rejectSessionsRootOverride("it must be owned by the user running the engine");
+  }
+  if ((stats.mode & 0o022) !== 0) {
+    rejectSessionsRootOverride("it must not be writable by group or other users");
+  }
+
+  // Roots must be DISJOINT. Only the default root is knowable from inside this
+  // process, so that is the pair we can enforce; operators keeping several
+  // overridden workspaces must likewise keep those roots mutually unnested.
+  const defaultRoot = defaultSessionsRoot();
+  if (isStrictlyNested(resolved, defaultRoot)
+      || isStrictlyNested(canonicalizeNearest(resolved), canonicalizeNearest(defaultRoot))
+      || isStrictlyInsideByIdentity(resolved, defaultRoot)
+      || isStrictlyInsideByIdentity(defaultRoot, resolved)) {
+    rejectSessionsRootOverride(
+      `it is nested with the default session root ${defaultRoot}; a nested root shares `
+      + "session state with the root that contains it while electing a second engine",
+    );
+  }
+  return resolved;
+}
+
+// BOOT-FROZEN, by design and not for speed. The override is read from the
+// environment ONCE, here at module load, and never again: if sessionsRoot()
+// re-read process.env per call, a mid-process env mutation could redirect
+// audit-graded writes to a fresh, empty root and escape the ledger that the
+// already-running engine is enforcing gates against. A module-scope `const`
+// holding a string (or null) is the freeze — it cannot be reassigned, and
+// there is no setter, no tool, and no agent-reachable path that changes it.
+const SESSIONS_ROOT_OVERRIDE = resolveSessionsRootOverride(process.env);
+
 // Canonical session root. All session reads and writes resolve here. The
 // pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or
 // auto-copied; operators clean up a leftover legacy root with
 // `hacker-bob install --purge-legacy-session-root`.
+//
+// With no BOB_SESSIONS_ROOT set (the default), this is byte-identical to what
+// it has always been: ~/hacker-bob-sessions, resolved from os.homedir() at
+// call time. With the override set, two Claude Code workspaces can run engines
+// CONCURRENTLY by pointing at DISJOINT roots: engines on disjoint roots share
+// no session state at all, so the fx-gate-bypass defense holds by
+// construction, while the engine singleton lock stays exactly as strong WITHIN
+// each root.
 function sessionsRoot() {
-  return path.join(os.homedir(), "hacker-bob-sessions");
+  return SESSIONS_ROOT_OVERRIDE === null ? defaultSessionsRoot() : SESSIONS_ROOT_OVERRIDE;
 }
 
 const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";

@@ -22,9 +22,49 @@ import shlex
 import sys
 
 
+# Per-workspace session roots. The installer gives each workspace its OWN
+# disjoint session root (BOB_SESSIONS_ROOT, written into the host config and
+# frozen at engine boot by mcp/lib/paths.js) so two workspaces can run engines
+# concurrently. This guard must protect the root the engine actually writes to,
+# so the configured root is discovered here — from the environment first, then
+# from the workspace host config, which is authoritative even if the host does
+# not export the variable to hooks.
+#
+# STRICTLY ADDITIVE: the canonical and legacy default roots below are always
+# guarded, so a missing, blank, or bogus override can only ever add protection,
+# never remove it.
+def _configured_sessions_roots():
+    roots = []
+
+    def add(value):
+        if not isinstance(value, str):
+            return
+        value = value.strip()
+        if not value.startswith("/") or "\x00" in value:
+            return
+        candidate = pathlib.Path(value)
+        if candidate not in roots:
+            roots.append(candidate)
+
+    add(os.environ.get("BOB_SESSIONS_ROOT"))
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    for relative in (".mcp.json", os.path.join(".kimi", "mcp.json")):
+        try:
+            with open(os.path.join(project, relative), "r", encoding="utf-8") as handle:
+                servers = json.load(handle).get("mcpServers")
+            if not isinstance(servers, dict):
+                continue
+            for entry in servers.values():
+                if isinstance(entry, dict) and isinstance(entry.get("env"), dict):
+                    add(entry["env"].get("BOB_SESSIONS_ROOT"))
+        except Exception:
+            continue
+    return tuple(roots)
+
+
 # Cycle P.2: guard both canonical and legacy session roots so MCP-owned
 # files stay protected across the v2.0/v2.1 coexistence window.
-SESSIONS_ROOTS = (
+SESSIONS_ROOTS = _configured_sessions_roots() + (
     pathlib.Path.home() / "hacker-bob-sessions",
     pathlib.Path.home() / "bounty-agent-sessions",
 )
@@ -129,6 +169,27 @@ def extract_cd_targets(command):
     return bases
 
 
+def _session_root_config_paths():
+    """The host-config files _configured_sessions_roots() reads the session root
+    from. They decide WHICH roots this guard fences, so they are themselves
+    write-fenced: an agent that could rewrite them could drop the configured
+    root and un-fence the engine's real session directory (the default root
+    would still be guarded, so the loss of coverage would be silent). The
+    installer, doctor, and dev-sync edit these outside the agent tool path and
+    are unaffected."""
+    project = pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    resolved = []
+    for relative in (".mcp.json", os.path.join(".kimi", "mcp.json")):
+        try:
+            resolved.append((project / relative).resolve(strict=False))
+        except OSError:
+            continue
+    return tuple(resolved)
+
+
+SESSION_ROOT_CONFIG_PATHS = _session_root_config_paths()
+
+
 def check_file(raw_path, base_dirs=None):
     """Returns filename to block, or None to allow.
 
@@ -143,6 +204,14 @@ def check_file(raw_path, base_dirs=None):
             candidates.append(base / resolved)
 
     for candidate in candidates:
+        # Fenced regardless of session root: these carry the root the guard
+        # protects (see _session_root_config_paths).
+        try:
+            if candidate.resolve(strict=False) in SESSION_ROOT_CONFIG_PATHS:
+                return candidate.name
+        except OSError:
+            pass
+
         rel = session_relative(candidate)
         if rel is None:
             continue

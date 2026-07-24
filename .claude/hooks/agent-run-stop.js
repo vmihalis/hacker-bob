@@ -223,6 +223,29 @@ function projectRoot() {
   return process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..", "..");
 }
 
+// This hook loads mcp/lib/paths.js in-process, and paths.js freezes the session
+// root from the environment at first require. The installer gives each
+// workspace its OWN session root so two workspaces can run engines
+// concurrently; if this hook resolved the default root instead, it would look
+// for handoffs in a directory the engine never writes to. Seed the value from
+// the workspace's `.mcp.json` — the same operator config the engine boots from
+// — but never override an environment that already carries it: the host's boot
+// env is authoritative, and this only fills a gap.
+function seedConfiguredSessionsRoot() {
+  if ((process.env.BOB_SESSIONS_ROOT || "").trim()) return;
+  try {
+    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot(), ".mcp.json"), "utf8"));
+    const entry = mcp && mcp.mcpServers && mcp.mcpServers["hacker-bob"];
+    const configured = entry && entry.env && entry.env.BOB_SESSIONS_ROOT;
+    if (typeof configured === "string" && path.isAbsolute(configured.trim())) {
+      process.env.BOB_SESSIONS_ROOT = configured.trim();
+    }
+  } catch {
+    // No workspace config, unreadable, or malformed: paths.js keeps its default
+    // root, which is exactly the pre-override behavior.
+  }
+}
+
 function loadAgentCompletion() {
   return require(path.join(projectRoot(), "mcp", "lib", "agent-run-completion.js"));
 }
@@ -533,6 +556,7 @@ function markerTelemetryInput({
 }
 
 function main() {
+  seedConfiguredSessionsRoot();
   const now = new Date();
   let payload = {};
   let marker = null;

@@ -12,6 +12,10 @@ const {
 const {
   updateClaudeRoleFiles,
 } = require("../../scripts/lib/claude-role-renderer.js");
+const {
+  bobMcpServerEntry,
+  isBobManagedMcpServerEntry,
+} = require("../../scripts/lib/workspace-sessions-root.js");
 
 const id = "claude";
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
@@ -197,10 +201,10 @@ function managedDirs() {
   ];
 }
 
-function mergeConfig({ existingMcp, existingSettings, serverPath }) {
+function mergeConfig({ existingMcp, existingSettings, serverPath, sessionsRoot = null }) {
   return {
-    mcp: mergeMcp(existingMcp || {}, serverPath),
-    settings: mergeSettings(existingSettings || {}, config.defaultClaudeSettings()),
+    mcp: mergeMcp(existingMcp || {}, serverPath, { sessionsRoot }),
+    settings: mergeSettings(existingSettings || {}, config.defaultClaudeSettings(), { sessionsRoot }),
   };
 }
 
@@ -329,15 +333,14 @@ function updateCommandFiles({ check = false, root = DEFAULT_ROOT } = {}) {
   return changed;
 }
 
-function expectedMcpServer(targetAbs) {
-  return {
-    command: "node",
-    args: [path.join(targetAbs, "mcp", "server.js")],
-  };
-}
-
+// Bob-managed means command + args point at THIS project's server. The optional
+// BOB_SESSIONS_ROOT env block is Bob-managed too (its value is operator config,
+// so it is never asserted); any other env key or field means an operator owns
+// the entry and doctor/uninstall must not claim it.
 function mcpServerMatches(server, targetAbs) {
-  return JSON.stringify(server) === JSON.stringify(expectedMcpServer(targetAbs));
+  return isBobManagedMcpServerEntry(server, {
+    serverPath: path.join(targetAbs, "mcp", "server.js"),
+  });
 }
 
 function hookKey(hook) {
@@ -461,6 +464,7 @@ function install({
   readJsonIfExists,
   removeIfExists,
   serverPath,
+  sessionsRoot = null,
   writeJson,
 }) {
   const claudeDir = path.join(targetAbs, ".claude");
@@ -560,6 +564,7 @@ function install({
     existingMcp: readJsonIfExists(mcpPath, {}),
     existingSettings: readJsonIfExists(settingsPath, {}),
     serverPath,
+    sessionsRoot,
   });
   writeJson(mcpPath, mergedConfig.mcp);
   writeJson(settingsPath, mergedConfig.settings);

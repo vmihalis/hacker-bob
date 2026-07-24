@@ -28,6 +28,16 @@ const {
 const {
   executeLifecycleMutation,
 } = require("./lib/lifecycle-custodian.js");
+const {
+  SESSIONS_ROOT_ENV_VAR,
+  defaultSessionsRoot,
+  defaultSessionsRootHasSessions,
+  ensureSessionsRoot,
+  pinnedSessionsRootFromMcpConfig,
+  pinnedSessionsRootFromSettings,
+  resolveWorkspaceSessionsRoot,
+  workspaceSessionsRoot,
+} = require("./lib/workspace-sessions-root.js");
 
 const BOB_RESOURCE_DIR = ".hacker-bob";
 const NEUTRAL_INSTALL_SCHEMA_VERSION = 2;
@@ -1951,6 +1961,38 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   }
 
   const serverPath = path.join(targetAbs, "mcp", "server.js");
+
+  // Per-workspace session root. mcp/lib/engine-lock.js elects exactly ONE
+  // engine per session root (the fx-gate-bypass defense), so two workspaces can
+  // only run engines concurrently when their roots are DISJOINT. Resolved ONCE
+  // here — before any adapter writes config — and stamped into every host's
+  // config so all adapters in this workspace agree on one root.
+  // Tolerant reads: these files are consulted only for an already-configured
+  // root. A malformed host config is the owning adapter's error to raise (the
+  // Claude adapter still throws on its own read); it must not turn an unrelated
+  // adapter's install into a JSON parse crash.
+  const readConfigForSessionRoot = (filePath) => {
+    try {
+      return readJsonIfExists(filePath, {});
+    } catch {
+      return {};
+    }
+  };
+  const existingMcpConfig = readConfigForSessionRoot(path.join(targetAbs, ".mcp.json"));
+  const existingKimiMcpConfig = readConfigForSessionRoot(path.join(targetAbs, ".kimi", "mcp.json"));
+  const existingClaudeSettingsConfig = readConfigForSessionRoot(path.join(targetAbs, ".claude", "settings.json"));
+  const defaultRootHadSessions = defaultSessionsRootHasSessions();
+  const sessionRootResolution = resolveWorkspaceSessionsRoot({
+    targetAbs,
+    pinned: [
+      pinnedSessionsRootFromMcpConfig(existingMcpConfig),
+      pinnedSessionsRootFromMcpConfig(existingKimiMcpConfig),
+      pinnedSessionsRootFromSettings(existingClaudeSettingsConfig),
+    ],
+    previouslyInstalled: !!previousInstallMetadata || existingAdapters.length > 0,
+  });
+  const sessionsRoot = sessionRootResolution.sessionsRoot;
+
   const installedAt = new Date().toISOString();
   const packageName = manifest.name || "hacker-bob";
   const commitSha = sourceCommitSha(sourceRoot);
@@ -1971,6 +2013,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
         readJsonIfExists,
         removeIfExists,
         serverPath,
+        sessionsRoot,
         writeJson,
       });
     } else if (adapterId === "generic-mcp") {
@@ -1979,6 +2022,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
         targetAbs,
         readJsonIfExists,
         serverPath,
+        sessionsRoot,
       });
     } else {
       adapterResults[adapterId] = adapter.install({
@@ -1986,6 +2030,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
         sourceRoot,
         targetAbs,
         serverPath,
+        sessionsRoot,
       });
     }
   }
@@ -2010,7 +2055,10 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
     // A stale update hint is cosmetic; never fail an otherwise valid install.
   }
 
-  fs.mkdirSync(path.join(os.homedir(), "hacker-bob-sessions"), { recursive: true });
+  // 0700 so the root already satisfies the ownership/mode assertions
+  // mcp/lib/paths.js and mcp/lib/engine-lock.js apply at engine boot.
+  const effectiveSessionsRoot = sessionsRoot || defaultSessionsRoot();
+  ensureSessionsRoot(effectiveSessionsRoot);
 
   // Y.10 (Y-D12 / D6 + D14) — provision the operator session-cap nonce at
   // ~/.bob/session-cap (mode 0600) so bob_set_queue_policy({partial_surface_
@@ -2039,6 +2087,11 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
     installedAdapters: metadataAdapters,
     adapterResults,
     targetAbs,
+    sessionsRoot: effectiveSessionsRoot,
+    sessionsRootSource: sessionRootResolution.source,
+    sessionsRootDefault: defaultSessionsRoot(),
+    sessionsRootCandidate: workspaceSessionsRoot(targetAbs),
+    defaultSessionsRootHasSessions: defaultRootHadSessions,
     claudeDir: adapterResults.claude ? adapterResults.claude.claudeDir : null,
     bobResourceDir,
     packageName,
@@ -2066,6 +2119,32 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
 function installProject(projectDir, options = {}) {
   const targetAbs = path.resolve(projectDir || ".");
   return installProjectWithTargetAuthority(targetAbs, options, null);
+}
+
+// Session-root operator notice. Each workspace gets its OWN root so two
+// workspaces can run engines concurrently; the engine singleton lock still
+// elects one engine per root, so a SHARED root means the second workspace is
+// refused. The two cases that need operator attention are (a) this workspace
+// moved off the shared default root that still holds sessions, and (b) this
+// workspace stayed on the shared default root because moving would have
+// orphaned those sessions.
+function printSessionRootNotice(summary) {
+  if (summary.sessionsRootSource === "derived" && summary.defaultSessionsRootHasSessions) {
+    console.log(`    NOTE: ${summary.sessionsRootDefault}/ still holds sessions from a shared-root install.`);
+    console.log("          They are NOT lost — this workspace simply no longer reads that root. Move any you still want:");
+    console.log(`            mv ${summary.sessionsRootDefault}/<target-domain> ${summary.sessionsRoot}/`);
+    return;
+  }
+  if (summary.sessionsRootSource === "shared_default") {
+    console.log("    NOTE: keeping the shared default root because it still holds sessions from this install.");
+    console.log("          Concurrent engines need DISJOINT roots. To give this workspace its own:");
+    console.log(`            mv ${summary.sessionsRootDefault}/<target-domain> ${summary.sessionsRootCandidate}/`);
+    console.log("          then re-run the installer (an empty default root resolves to the per-workspace root).");
+    return;
+  }
+  if (summary.sessionsRootSource === "operator_pinned") {
+    console.log(`    (pinned by ${SESSIONS_ROOT_ENV_VAR} in this workspace's config; operator-owned, preserved verbatim)`);
+  }
 }
 
 function printInstallSummary(summary) {
@@ -2101,7 +2180,8 @@ function printInstallSummary(summary) {
   console.log(`  MCP runtime (mcp/{${MCP_TOP_LEVEL_RUNTIME_FILES.join(", ")}}, lib/*.js, lib/tools/*.js, nested package files ${summary.runtimePackageFiles}, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
-  console.log("  ~/hacker-bob-sessions/  (canonical session root; run with --purge-legacy-session-root to remove a pre-v2.0 ~/bounty-agent-sessions/)");
+  console.log(`  ${summary.sessionsRoot}/  (this workspace's session root; run with --purge-legacy-session-root to remove a pre-v2.0 ~/bounty-agent-sessions/)`);
+  printSessionRootNotice(summary);
   console.log("");
   console.log("Dependency check:");
   console.log("");

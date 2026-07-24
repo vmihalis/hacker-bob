@@ -180,6 +180,19 @@ if adapter_includes "claude"; then
   echo "  $CLAUDE_DIR/settings.json"
 fi
 
+# Per-workspace session root. Bob elects one engine per root, so a dev workspace
+# and any other installed workspace can run engines concurrently only while
+# their roots stay disjoint. Surfaced here because dev-sync silences the
+# installer/merge output that would otherwise name it.
+if [[ -f "$TARGET_ABS/.mcp.json" ]]; then
+  SESSIONS_ROOT="$(node -e 'const j=require(process.argv[1]); const e=j.mcpServers && j.mcpServers["hacker-bob"]; process.stdout.write((e && e.env && e.env.BOB_SESSIONS_ROOT) || "")' "$TARGET_ABS/.mcp.json")"
+  if [[ -n "$SESSIONS_ROOT" ]]; then
+    echo "  session root: $SESSIONS_ROOT"
+  else
+    echo "  session root: shared default (~/hacker-bob-sessions) — no BOB_SESSIONS_ROOT configured"
+  fi
+fi
+
 if [[ $RUN_HEALTH_CHECK -eq 1 ]]; then
   echo ""
   echo "Running MCP runtime load check..."

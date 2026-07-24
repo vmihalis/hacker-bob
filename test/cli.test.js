@@ -906,7 +906,13 @@ test("CLI uninstall --yes removes Bob-managed files and preserves unrelated conf
         { name: "operator", proxy_url: "${BOB_EGRESS_OPERATOR_PROXY}", region: "EU", description: "Operator-owned", enabled: true },
       ],
     }, null, 2)}\n`);
-    fs.writeFileSync(path.join(tempHome, "hacker-bob-sessions", "keep.txt"), "keep\n");
+    // Session data lives under the workspace's own session root (the installer
+    // configures one per workspace so two workspaces can run engines
+    // concurrently). Uninstall removes Bob's files from the project; it must
+    // never touch collected session evidence.
+    const installedSessionsRoot = JSON.parse(fs.readFileSync(path.join(workspace, ".mcp.json"), "utf8"))
+      .mcpServers["hacker-bob"].env.BOB_SESSIONS_ROOT;
+    fs.writeFileSync(path.join(installedSessionsRoot, "keep.txt"), "keep\n");
 
     const output = execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes", "--json"], {
       cwd: ROOT,
@@ -951,7 +957,7 @@ test("CLI uninstall --yes removes Bob-managed files and preserves unrelated conf
       entry.hooks &&
       entry.hooks.some((hook) => /scope-guard\.sh|session-write-guard\.sh/.test(hook.command))
     )));
-    assert.ok(fs.existsSync(path.join(tempHome, "hacker-bob-sessions", "keep.txt")));
+    assert.ok(fs.existsSync(path.join(installedSessionsRoot, "keep.txt")));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });

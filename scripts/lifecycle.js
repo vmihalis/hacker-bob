@@ -40,6 +40,9 @@ const {
   inspectBobOwnedRuntimeStatically,
   inspectMcpServerStatically,
 } = require("./lib/static-runtime-inspection.js");
+const {
+  bobMcpServerEntry,
+} = require("./lib/workspace-sessions-root.js");
 
 // When --adapter is omitted on doctor/uninstall, prefer to act on whatever is
 // actually installed in this project rather than the install-time default.
@@ -236,11 +239,14 @@ function addNeutralInstallChecks(checks, targetAbs, adapterIds) {
   }
 }
 
-function expectedMcpServer(targetAbs) {
-  return {
-    command: "node",
-    args: [path.join(targetAbs, "mcp", "server.js")],
-  };
+// Single source of the Bob-managed server-entry shape, so a consumer of this
+// export can never encode a stale one (the entry may carry the Bob-managed
+// BOB_SESSIONS_ROOT env block when the workspace has its own session root).
+function expectedMcpServer(targetAbs, { sessionsRoot = null } = {}) {
+  return bobMcpServerEntry({
+    serverPath: path.join(targetAbs, "mcp", "server.js"),
+    sessionsRoot,
+  });
 }
 
 function fileNamesInDir(targetAbs, relativeDir, predicate) {

@@ -506,6 +506,41 @@ def main():
             record(result.returncode == expected, f"[{adapter}] {desc}",
                    expected, result.returncode, result.stderr)
 
+        # Session-root config fence. Each workspace gets its own BOB_SESSIONS_ROOT,
+        # which the guard discovers from the workspace host config — so those files
+        # decide WHICH roots get fenced. An agent that could rewrite them would drop
+        # the configured root and silently un-fence the engine's real session dir
+        # (the default root stays guarded, so the loss of coverage is invisible).
+        # They are therefore fenced themselves, without over-blocking the same
+        # basename outside the project.
+        with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as other:
+            os.makedirs(os.path.join(ws, ".kimi"), exist_ok=True)
+            cfg = {"mcpServers": {"hacker-bob": {"command": "node", "args": ["x"],
+                   "env": {"BOB_SESSIONS_ROOT": os.path.join(ws, "root")}}}}
+            for rel in (".mcp.json", os.path.join(".kimi", "mcp.json")):
+                with open(os.path.join(ws, rel), "w", encoding="utf-8") as fh:
+                    json.dump(cfg, fh)
+            ws_env = dict(os.environ, CLAUDE_PROJECT_DIR=ws)
+            root_cases = [
+                ("in-project .mcp.json -> block (root-config fence)",
+                 {"tool_input": {"file_path": os.path.join(ws, ".mcp.json"), "content": "x"}}, 2),
+                ("in-project .kimi/mcp.json -> block (root-config fence)",
+                 {"tool_input": {"file_path": os.path.join(ws, ".kimi", "mcp.json"), "content": "x"}}, 2),
+                ("bash redirect to in-project .mcp.json -> block",
+                 {"tool_input": {"command": "printf x > " + os.path.join(ws, ".mcp.json")}}, 2),
+                (".mcp.json OUTSIDE the project -> allow (no over-block)",
+                 {"tool_input": {"file_path": os.path.join(other, ".mcp.json"), "content": "x"}}, 0),
+                ("ordinary in-project file -> allow",
+                 {"tool_input": {"file_path": os.path.join(ws, "notes.md"), "content": "x"}}, 0),
+            ]
+            for desc, payload, expected in root_cases:
+                live = subprocess.run(
+                    ["bash", hook], input=json.dumps(payload),
+                    capture_output=True, text=True, env=ws_env,
+                )
+                record(live.returncode == expected, f"[{adapter}] {desc}",
+                       expected, live.returncode, live.stderr)
+
         # Liveness 1: a missing/unreadable manifest must FAIL CLOSED (block). The
         # hook sets WRITE_GUARD_TABLES_FILE to "$(dirname "$0")/write-guard-tables.json",
         # so copy the hook into a temp dir with NO manifest beside it.
