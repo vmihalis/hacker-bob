@@ -15,10 +15,50 @@ import shlex
 import sys
 
 
+# Per-workspace session roots. The installer gives each workspace its OWN
+# disjoint session root (BOB_SESSIONS_ROOT, written into the host config and
+# frozen at engine boot by mcp/lib/paths.js) so two workspaces can run engines
+# concurrently. This guard must protect the root the engine actually writes to,
+# so the configured root is discovered here — from the environment first, then
+# from the workspace host config, which is authoritative even if the host does
+# not export the variable to hooks.
+#
+# STRICTLY ADDITIVE: the canonical and legacy default roots below are always
+# guarded, so a missing, blank, or bogus override can only ever add protection,
+# never remove it.
+def _configured_sessions_roots():
+    roots = []
+
+    def add(value):
+        if not isinstance(value, str):
+            return
+        value = value.strip()
+        if not value.startswith("/") or "\x00" in value:
+            return
+        candidate = pathlib.Path(value)
+        if candidate not in roots:
+            roots.append(candidate)
+
+    add(os.environ.get("BOB_SESSIONS_ROOT"))
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    for relative in (".mcp.json", os.path.join(".kimi", "mcp.json")):
+        try:
+            with open(os.path.join(project, relative), "r", encoding="utf-8") as handle:
+                servers = json.load(handle).get("mcpServers")
+            if not isinstance(servers, dict):
+                continue
+            for entry in servers.values():
+                if isinstance(entry, dict) and isinstance(entry.get("env"), dict):
+                    add(entry["env"].get("BOB_SESSIONS_ROOT"))
+        except Exception:
+            continue
+    return tuple(roots)
+
+
 # Cycle P.2: guard both the canonical `hacker-bob-sessions` root and the
 # legacy `bounty-agent-sessions` root so direct reads remain blocked during
 # the v2.0/v2.1 coexistence window.
-SESSIONS_ROOTS = (
+SESSIONS_ROOTS = _configured_sessions_roots() + (
     pathlib.Path.home() / "hacker-bob-sessions",
     pathlib.Path.home() / "bounty-agent-sessions",
 )

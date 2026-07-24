@@ -10,6 +10,13 @@ const {
 const {
   STALE_HOOK_SCRIPT_NAMES,
 } = require("./lib/package-policy.js");
+const {
+  SESSIONS_ROOT_ENV_VAR,
+  bobMcpServerEntry,
+  pinnedSessionsRootFromMcpConfig,
+  pinnedSessionsRootFromSettings,
+  resolveWorkspaceSessionsRoot,
+} = require("./lib/workspace-sessions-root.js");
 const { TOOLS } = require("../mcp/lib/tool-registry.js");
 
 // Canonical primary tool names this install ships. Drives the upgrade rewrite:
@@ -406,7 +413,15 @@ function mergeHooks(existingHooks, bobHooks) {
   return next;
 }
 
-function mergeSettings(existing, bobSettings) {
+// `sessionsRoot` is mirrored into `settings.env` so the HOST-side surfaces
+// resolve the same root as the engine: `.claude/hooks/agent-run-stop.js`
+// requires mcp/lib/paths.js directly, and the session read/write guards resolve
+// the roots they protect from the environment. Without the mirror those would
+// keep pointing at the default root while the engine wrote to the overridden
+// one — handoff validation would read an empty directory and the guards would
+// stop protecting the files that actually exist. Null leaves settings.env
+// untouched.
+function mergeSettings(existing, bobSettings, { sessionsRoot = null } = {}) {
   const permissionsMigrated = migrateLegacySettings(existing).value;
   const hooksMigrated = migrateLegacyHookCommands(permissionsMigrated).value;
   const next = hooksMigrated && typeof hooksMigrated === "object" && !Array.isArray(hooksMigrated)
@@ -439,6 +454,12 @@ function mergeSettings(existing, bobSettings) {
   const existingHooks = next.hooks && typeof next.hooks === "object" ? next.hooks : {};
   next.hooks = mergeHooks(existingHooks, bobSettings.hooks);
   next.statusLine = bobSettings.statusLine;
+  if (sessionsRoot) {
+    const existingEnv = next.env && typeof next.env === "object" && !Array.isArray(next.env)
+      ? next.env
+      : {};
+    next.env = { ...existingEnv, [SESSIONS_ROOT_ENV_VAR]: sessionsRoot };
+  }
   return next;
 }
 
@@ -451,7 +472,11 @@ const BRUTALIST_MCP_SERVER = Object.freeze({
   args: ["-y", "@brutalist/mcp@1.18.7"],
 });
 
-function mergeMcp(existing, serverPath) {
+// `sessionsRoot` is the per-workspace session root this install configures (see
+// scripts/lib/workspace-sessions-root.js). Null — the default — writes no env
+// block and the entry is byte-identical to pre-override installs. Operator-owned
+// sibling servers and unrelated top-level keys are preserved either way.
+function mergeMcp(existing, serverPath, { sessionsRoot = null } = {}) {
   const migrated = migrateLegacyMcp(existing).value;
   const next = migrated && typeof migrated === "object" && !Array.isArray(migrated)
     ? { ...migrated }
@@ -459,10 +484,7 @@ function mergeMcp(existing, serverPath) {
   next.mcpServers = next.mcpServers && typeof next.mcpServers === "object" && !Array.isArray(next.mcpServers)
     ? { ...next.mcpServers }
     : {};
-  next.mcpServers[CANONICAL_SERVER_KEY] = {
-    command: "node",
-    args: [serverPath],
-  };
+  next.mcpServers[CANONICAL_SERVER_KEY] = bobMcpServerEntry({ serverPath, sessionsRoot });
   next.mcpServers.brutalist = { ...BRUTALIST_MCP_SERVER, args: [...BRUTALIST_MCP_SERVER.args] };
   return next;
 }
@@ -485,11 +507,26 @@ function main() {
     logger: (message) => console.log(message),
   });
 
-  writeJson(mcpPath, mergeMcp(migration.mcp, serverPath));
-  writeJson(settingsPath, mergeSettings(migration.settings, bobSettings));
+  // Same resolution the installer runs. This entry point is invoked directly by
+  // dev-sync.sh AFTER install.sh, so it must land on the same root the install
+  // just configured — the already-written env pin makes that automatic.
+  const { sessionsRoot } = resolveWorkspaceSessionsRoot({
+    targetAbs: target,
+    pinned: [
+      pinnedSessionsRootFromMcpConfig(migration.mcp),
+      pinnedSessionsRootFromSettings(migration.settings),
+    ],
+    previouslyInstalled: !!(migration.mcp
+      && migration.mcp.mcpServers
+      && migration.mcp.mcpServers[CANONICAL_SERVER_KEY]),
+  });
+
+  writeJson(mcpPath, mergeMcp(migration.mcp, serverPath, { sessionsRoot }));
+  writeJson(settingsPath, mergeSettings(migration.settings, bobSettings, { sessionsRoot }));
 
   console.log(`merged ${mcpPath}`);
   console.log(`merged ${settingsPath}`);
+  if (sessionsRoot) console.log(`session root: ${sessionsRoot}`);
 }
 
 if (require.main === module) {

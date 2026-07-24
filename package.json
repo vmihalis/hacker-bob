@@ -149,7 +149,7 @@
     "test:physical-packages": "node scripts/run-physical-package-tests.js --portable",
     "test:physical-native-darwin": "node scripts/run-physical-package-tests.js --native-darwin",
     "test:physical-native-darwin:required": "node scripts/run-physical-package-tests.js --native-darwin-required",
-    "test:install": "node --test test/install-smoke.test.js test/installer-legacy-upgrade.test.js test/optional-provider-lifecycle.test.js",
+    "test:install": "node --test test/install-smoke.test.js test/install-session-root.test.js test/installer-legacy-upgrade.test.js test/optional-provider-lifecycle.test.js",
     "test:update": "node --test test/update-check.test.js",
     "test:cli": "node --test test/cli.test.js",
     "test:adapter-detection": "node --test test/adapter-detection.test.js",

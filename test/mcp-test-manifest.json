@@ -10,6 +10,7 @@
   "test/session-state-store.test.js",
   "test/session-state-legacy-phase.test.js",
   "test/session-root-canonical-only.test.js",
+  "test/session-root-override.test.js",
   "test/purge-legacy-session-root.test.js",
   "test/governance-contracts.test.js",
   "test/physical-effects-contract.test.js",

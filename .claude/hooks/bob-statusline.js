@@ -32,10 +32,16 @@ process.stdin.on('end', () => {
       else ctx = ` \x1b[5;31m${bar} ${used}%\x1b[0m`;
     }
 
-    // Bounty session status — resolved only from the canonical
-    // `hacker-bob-sessions` root.
+    // Bounty session status — resolved from THIS workspace's session root. The
+    // installer gives each workspace its own root (BOB_SESSIONS_ROOT, exported
+    // through the workspace's settings env) so two workspaces can run engines
+    // concurrently; without it the status line would report a root this
+    // workspace's engine never writes to. Falls back to the canonical default.
     let bounty = '';
-    const sessDir = path.join(os.homedir(), 'hacker-bob-sessions');
+    const configuredRoot = (process.env.BOB_SESSIONS_ROOT || '').trim();
+    const sessDir = path.isAbsolute(configuredRoot)
+      ? configuredRoot
+      : path.join(os.homedir(), 'hacker-bob-sessions');
     try {
       const dirs = fs.readdirSync(sessDir)
         .map(d => {
