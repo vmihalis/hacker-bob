@@ -2994,7 +2994,13 @@ test("optional-provider CLI fails closed for mutation while status stays inert a
   const statusResult = run("status");
   assert.equal(statusResult.status, 0, statusResult.stderr);
   const status = JSON.parse(statusResult.stdout);
-  assert.equal(status.status, "absent");
+  // This case drives the REAL CLI, so it reports against the REAL host, and the registry pins an
+  // exact node_major (the CI matrix alone spans more than one). A not-installed package projects
+  // "absent" only when the host qualifies and "unsupported_host" otherwise, so assert that RULE
+  // against the projection's own supported_host rather than hard-coding one machine's answer.
+  // The compatibility algorithm itself is covered by the host-pinned cases above.
+  assert.equal(status.installed, false, "premise: nothing is installed");
+  assert.equal(status.status, status.supported_host ? "absent" : "unsupported_host");
   assert.equal(status.activation_performed, false);
   assert.equal(status.hardware_probe_performed, false);
   assert.equal(status.hardware_access_authorized, false);
