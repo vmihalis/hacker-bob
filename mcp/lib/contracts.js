@@ -57,6 +57,9 @@ const {
   isPlainObject,
 } = require("./verification-contracts.js");
 const {
+  normalizePhysicalResourceBundleBinding,
+} = require("./physical-resource-contract.js");
+const {
   normalizeOptionalObject,
 } = require("./fabric-common.js");
 const {
@@ -517,6 +520,15 @@ function normalizeContract(input) {
       }),
     })),
   };
+  const physicalResourceBundle = input.physical_resource_bundle == null
+    ? undefined
+    : normalizePhysicalResourceBundleBinding(
+      input.physical_resource_bundle,
+      "physical_resource_bundle",
+    );
+  if (physicalResourceBundle !== undefined) {
+    hashable.physical_resource_bundle = physicalResourceBundle;
+  }
   const contractHash = hashCanonicalJson(hashable);
 
   // cross_stack_verification is INTENTIONALLY excluded from `hashable` above so
@@ -535,6 +547,9 @@ function normalizeContract(input) {
   };
   if (crossStackVerification !== undefined) {
     out.cross_stack_verification = crossStackVerification;
+  }
+  if (physicalResourceBundle !== undefined) {
+    out.physical_resource_bundle = physicalResourceBundle;
   }
   return Object.freeze(out);
 }

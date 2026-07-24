@@ -103,5 +103,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["invariant-runs.jsonl"],
+ session_artifacts_written: ["invariant-runs.jsonl"],
+  required_session_axes: ["contracts"],
 });

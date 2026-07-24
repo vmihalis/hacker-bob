@@ -26,6 +26,12 @@ module.exports = Object.freeze({
       "block_internal_hosts": {
         "type": "boolean",
         "description": "Optional one-way strict override for the brief context. When omitted, Bob reports the session's persisted effective internal-host policy."
+      },
+      "remaining_depth": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5,
+        "description": "For a NESTED child sub-evaluator ONLY: pass the remaining_depth you were injected with (from your parent's child_fanout_plan.children[].remaining_depth) so your brief's child_fanout_plan decrements and leafs out. Omit it at the wave root."
       }
     },
     "required": [
@@ -35,7 +41,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: readAssignmentBrief,
-  role_bundles: ["evaluator-shared"],
+  role_bundles: ["evaluator-shared", "evaluator-physical"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

@@ -44,6 +44,12 @@ const DEFAULT_MAC_FIELD = "row_mac";
 const INVARIANT_RUN_MAC_CONTEXT = "bob.invariant-run.v1";
 const REPO_COMMAND_RUN_MAC_CONTEXT = "bob.repo-command-run.v1";
 const CLAIM_FREEZE_MAC_CONTEXT = "bob.claim-freeze.v1";
+// The auth-differential sweep ledger (auth-differential-results.json per_endpoint rows).
+// Joins the Cycle B family: it binds its OWN domain-separation context into the signed
+// preimage so a cross-tenant-flip row minted for the sweep ledger cannot be replayed as a
+// row for another ledger even though all reuse the same per-session ed25519 key. Reuses
+// signRowWithMac/verifyRowWithMac/assertRowMac verbatim — NOT a new MAC scheme.
+const AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT = "bob.auth-differential-row.v1";
 
 // Sign over the WHOLE row minus the MAC envelope field, so every trusted field is
 // bound; flipping any of them invalidates the MAC. The excluded field defaults to
@@ -299,6 +305,7 @@ module.exports = {
   INVARIANT_RUN_MAC_CONTEXT,
   REPO_COMMAND_RUN_MAC_CONTEXT,
   CLAIM_FREEZE_MAC_CONTEXT,
+  AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT,
   signRowWithMac,
   verifyRowWithMac,
   assertRowMacOrLegacy,

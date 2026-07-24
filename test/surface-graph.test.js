@@ -46,9 +46,10 @@ test("normalizeEdge canonicalizes and computes a stable hash", () => {
   assert.equal(edge.edge_hash, repeated.edge_hash);
 });
 
-test("normalizeEdge clamps confidence to [0, 1] and defaults missing confidence to 1", () => {
-  assert.equal(normalizeEdge({ ...jsToApi(), confidence: 1.5 }).confidence, 1);
-  assert.equal(normalizeEdge({ ...jsToApi(), confidence: -3 }).confidence, 0);
+test("normalizeEdge rejects invalid confidence instead of silently changing provenance", () => {
+  assert.throws(() => normalizeEdge({ ...jsToApi(), confidence: 1.5 }), /between 0 and 1/);
+  assert.throws(() => normalizeEdge({ ...jsToApi(), confidence: -3 }), /between 0 and 1/);
+  assert.throws(() => normalizeEdge({ ...jsToApi(), confidence: Number.NaN }), /between 0 and 1/);
   assert.equal(normalizeEdge(jsToApi()).confidence, 1);
 });
 

@@ -12,7 +12,22 @@ const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
 const PACKAGE_VERSION = require("../package.json").version;
 const { BRUTALIST_MCP_SERVER } = require("../scripts/merge-claude-config.js");
+const CLAUDE_CONFIG = require("../adapters/claude/config.js");
 const execFileAsync = promisify(execFile);
+const LIFECYCLE_CUSTODIAN_TEST_PRELOAD = path.join(
+  __dirname,
+  "fixtures",
+  "lifecycle-custodian-test-preload.js",
+);
+const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+process.env.NODE_OPTIONS = [
+  `--require=${LIFECYCLE_CUSTODIAN_TEST_PRELOAD}`,
+  ORIGINAL_NODE_OPTIONS,
+].filter(Boolean).join(" ");
+test.after(() => {
+  if (ORIGINAL_NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+  else process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+});
 
 test("CLI help explains per-project installs and global CLI behavior", () => {
   const output = execFileSync(process.execPath, [CLI, "--help"], {
@@ -95,7 +110,7 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     const codexMcp = JSON.parse(fs.readFileSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".mcp.json"), "utf8"));
     assert.ok(codexMcp.mcpServers["hacker-bob"], "Codex plugin .mcp.json must keep hacker-bob");
     assert.ok(codexMcp.mcpServers.brutalist, "Codex plugin .mcp.json must register the optional brutalist MCP server post-install");
-    assert.deepEqual(codexMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.14.7"]);
+    assert.deepEqual(codexMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.18.7"]);
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-evaluate", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-status", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-debug", "SKILL.md")));
@@ -352,7 +367,7 @@ test("CLI generic MCP adapter install and uninstall preserve unrelated MCP confi
     assert.ok(installedMcp.mcpServers["hacker-bob"]);
     assert.ok(!installedMcp.mcpServers.bountyagent);
     assert.ok(installedMcp.mcpServers.brutalist, "generic-mcp install must register the optional brutalist MCP server");
-    assert.deepEqual(installedMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.14.7"]);
+    assert.deepEqual(installedMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.18.7"]);
 
     const output = execFileSync(process.execPath, [CLI, "uninstall", workspace, "--adapter", "generic-mcp", "--yes", "--json"], {
       cwd: ROOT,
@@ -772,12 +787,14 @@ test("CLI doctor --json returns stable machine-readable checks", () => {
       "claude_mcp_dependency_patchright",
       "claude_policy_replay_harness",
       "mcp_server_loadable",
+      "bob_owned_runtime_integrity",
+      "runtime_dependency_custody",
       "resource_knowledge",
       "resource_bypass_tables",
     ]) {
       assert.ok(result.checks.some((check) => check.id === id), `${id} missing`);
     }
-    assert.ok(result.checks.every((check) => ["ok", "warn"].includes(check.status)));
+    assert.ok(result.checks.every((check) => ["ok", "warn", "info"].includes(check.status)));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -918,7 +935,12 @@ test("CLI uninstall --yes removes Bob-managed files and preserves unrelated conf
     assert.equal(settings.customSetting, true);
     assert.ok(settings.permissions.allow.includes("custom-tool"));
     assert.ok(settings.permissions.allow.includes("mcp__hacker-bob__custom_user_tool"));
-    assert.ok(!settings.permissions.allow.includes("mcp__hacker-bob__bob_http_scan"));
+    for (const permission of CLAUDE_CONFIG.permissionsForAllTools()) {
+      assert.ok(
+        !settings.permissions.allow.includes(permission),
+        `uninstall must remove installed canonical permission ${permission}`,
+      );
+    }
     assert.ok(!settings.permissions.allow.includes("mcp__bountyagent__bob_http_scan"));
     assert.ok(!settings.statusLine);
     assert.ok(settings.hooks.PreToolUse.some((entry) => (

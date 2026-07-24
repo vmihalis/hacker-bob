@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -13,23 +14,39 @@ const {
 } = require("../adapters/index.js");
 const { clearUpdateCache } = require("../mcp/lib/update-check.js");
 const { commandExists } = require("./lib/command-exists.js");
+const {
+  CANONICAL_INSTALL_SUPPORT_FILES,
+  CANONICAL_RUNTIME_PACKAGE_ROOTS,
+  MCP_TOP_LEVEL_RUNTIME_FILES,
+  isCanonicalRuntimePackageFile,
+  sourceTreeFiles,
+} = require("./lib/package-policy.js");
+const {
+  retainDirectoryAncestry,
+  sameFilesystemIdentity,
+} = require("./lib/optional-provider-lifecycle.js");
+const {
+  executeLifecycleMutation,
+} = require("./lib/lifecycle-custodian.js");
 
 const BOB_RESOURCE_DIR = ".hacker-bob";
 const NEUTRAL_INSTALL_SCHEMA_VERSION = 2;
+const MCP_TOP_LEVEL_OWNERSHIP_RECEIPT_VERSION = 1;
+const MAX_MCP_TOP_LEVEL_RUNTIME_FILE_BYTES = 16 * 1024 * 1024;
+const MCP_TOP_LEVEL_RUNTIME_NAME_PATTERN = /^[A-Za-z0-9._-]+\.js$/u;
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
+const MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES = 1024 * 1024;
+const MAX_RUNTIME_DEPENDENCY_FILE_BYTES = 256 * 1024 * 1024;
+const MAX_RUNTIME_DEPENDENCY_FILES = 100_000;
+const MAX_RUNTIME_DEPENDENCY_BYTES = 512 * 1024 * 1024;
+const MAX_RUNTIME_DEPENDENCY_DEPTH = 32;
+const MAX_RUNTIME_DEPENDENCY_DIRECTORIES = 4096;
+const MAX_RUNTIME_DEPENDENCY_PACKAGES = 4096;
+const MAX_RUNTIME_DEPENDENCY_EDGES = 20_000;
+const MAX_RUNTIME_DEPENDENCY_SPEC_BYTES = 2048;
+const MAX_RUNTIME_DEPENDENCY_ANCESTORS = 32;
+const RUNTIME_DEPENDENCY_NAME_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]{0,127}\/)?[a-z0-9][a-z0-9._-]{0,127}$/u;
 
-// The top-level mcp/ runtime files the installer ships (server.js loads/spawns each). An EXPLICIT
-// manifest, NOT a glob: deny-by-default so a stray top-level mcp/*.js (a scratch/test file) never
-// ships to every install. Completeness is enforced mechanically by test/install-smoke.test.js, which
-// asserts this set EQUALS the real top-level mcp/*.js on disk — so a NEW runtime file (as
-// browser-driver.js, the Patchright DRIVER_SCRIPT_PATH server.js spawns, once was) that is added to
-// mcp/ but forgotten here FAILS the test instead of silently freezing the operational copy (the drift
-// that broke the offensive mass-read producer's authed_fetch transport while older commands worked).
-const MCP_TOP_LEVEL_RUNTIME_FILES = Object.freeze([
-  "server.js",
-  "auto-signup.js",
-  "redaction.js",
-  "browser-driver.js",
-]);
 const RESOURCE_SETS = Object.freeze([
   {
     name: "bypassTables",
@@ -129,6 +146,7 @@ function writeNeutralInstallMetadata({
   installerSource,
   commitSha,
   adapterIds,
+  mcpTopLevelRuntimeOwnership,
 }) {
   const installManifest = manifest || {};
   const version = installManifest.version || "0.0.0";
@@ -146,7 +164,91 @@ function writeNeutralInstallMetadata({
     installer_source: installerSource || "cli",
     commit_sha: commitSha || null,
     installed_adapters: normalizeAdapterIdList(adapterIds),
+    mcp_top_level_runtime_ownership: mcpTopLevelRuntimeOwnership,
   });
+}
+
+function sha256File(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function buildMcpTopLevelRuntimeOwnership(sourceRoot) {
+  return Object.freeze({
+    version: MCP_TOP_LEVEL_OWNERSHIP_RECEIPT_VERSION,
+    files: Object.freeze(MCP_TOP_LEVEL_RUNTIME_FILES.map((name) => Object.freeze({
+      name,
+      byte_size: fs.statSync(path.join(sourceRoot, "mcp", name)).size,
+      sha256: sha256File(path.join(sourceRoot, "mcp", name)),
+    }))),
+  });
+}
+
+function normalizeMcpTopLevelRuntimeOwnership(metadata, targetAbs) {
+  if (metadata == null || typeof metadata !== "object" || Array.isArray(metadata)
+      || metadata.schema_version !== NEUTRAL_INSTALL_SCHEMA_VERSION
+      || metadata.install_target !== targetAbs) return [];
+  const receipt = metadata.mcp_top_level_runtime_ownership;
+  if (receipt == null || typeof receipt !== "object" || Array.isArray(receipt)
+      || Object.keys(receipt).length !== 2
+      || receipt.version !== MCP_TOP_LEVEL_OWNERSHIP_RECEIPT_VERSION
+      || !Array.isArray(receipt.files)
+      || receipt.files.length > 128) return [];
+  const seen = new Set();
+  const normalized = [];
+  for (const file of receipt.files) {
+    if (file == null || typeof file !== "object" || Array.isArray(file)
+        || Object.keys(file).length !== 3
+        || typeof file.name !== "string"
+        || !MCP_TOP_LEVEL_RUNTIME_NAME_PATTERN.test(file.name)
+        || path.basename(file.name) !== file.name
+        || !Number.isSafeInteger(file.byte_size)
+        || file.byte_size < 0
+        || file.byte_size > MAX_MCP_TOP_LEVEL_RUNTIME_FILE_BYTES
+        || typeof file.sha256 !== "string"
+        || !SHA256_HEX_PATTERN.test(file.sha256)
+        || seen.has(file.name)) return [];
+    seen.add(file.name);
+    normalized.push({ name: file.name, byte_size: file.byte_size, sha256: file.sha256 });
+  }
+  return normalized;
+}
+
+function pruneRetiredMcpTopLevelRuntimeFiles(targetAbs, metadata) {
+  const currentNames = new Set(MCP_TOP_LEVEL_RUNTIME_FILES);
+  const mcpDir = path.join(targetAbs, "mcp");
+  const removed = [];
+  for (const record of normalizeMcpTopLevelRuntimeOwnership(metadata, targetAbs)) {
+    if (currentNames.has(record.name)) continue;
+    const candidate = path.join(mcpDir, record.name);
+    let fd = null;
+    try {
+      // The mixed-ownership mcp/ root is not pruned by negation. A retired
+      // filename is unlinked only when the installed regular file still has
+      // the exact digest Bob recorded on the preceding install. A symlink,
+      // modified former runtime, malformed receipt, or changed file identity
+      // is preserved because Bob can no longer prove exclusive ownership.
+      fd = fs.openSync(
+        candidate,
+        fs.constants.O_RDONLY
+          | (fs.constants.O_NOFOLLOW || 0)
+          | (fs.constants.O_NONBLOCK || 0)
+          | (fs.constants.O_CLOEXEC || 0),
+      );
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.size !== record.byte_size) continue;
+      const digest = crypto.createHash("sha256").update(fs.readFileSync(fd)).digest("hex");
+      if (digest !== record.sha256) continue;
+      const current = fs.lstatSync(candidate);
+      if (!current.isFile() || current.dev !== opened.dev || current.ino !== opened.ino) continue;
+      fs.unlinkSync(candidate);
+      removed.push(record.name);
+    } catch (error) {
+      if (!error || !["ENOENT", "ELOOP", "EMLINK"].includes(error.code)) throw error;
+    } finally {
+      if (fd != null) fs.closeSync(fd);
+    }
+  }
+  return removed.sort();
 }
 
 function copyFile(source, destination, mode) {
@@ -206,40 +308,1420 @@ function copyResourceSet(sourceRoot, targetAbs, resourceSet) {
   return copied;
 }
 
+function copyCanonicalInstallSupportFiles(sourceRoot, targetAbs) {
+  return CANONICAL_INSTALL_SUPPORT_FILES.map((entry) => {
+    const source = path.join(sourceRoot, entry.source);
+    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+      throw new Error(`Canonical install support file is missing: ${entry.source}`);
+    }
+    copyFile(source, path.join(targetAbs, entry.destination));
+    return entry.destination;
+  });
+}
+
+function runtimeDependencyError(message, reasonCode) {
+  const error = new Error(message);
+  Object.defineProperty(error, "code", {
+    value: "runtime_dependency_source_rejected",
+    enumerable: false,
+  });
+  Object.defineProperty(error, "reason_code", {
+    value: reasonCode,
+    enumerable: false,
+  });
+  return error;
+}
+
+function runtimeDependencyTargetError(message, reasonCode) {
+  const error = new Error(message);
+  Object.defineProperty(error, "code", {
+    value: "runtime_dependency_target_rejected",
+    enumerable: false,
+  });
+  Object.defineProperty(error, "reason_code", {
+    value: reasonCode,
+    enumerable: false,
+  });
+  return error;
+}
+
+function pathIsWithin(parentPath, candidatePath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`)
+    && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function pathsOverlap(left, right) {
+  return pathIsWithin(left, right) || pathIsWithin(right, left);
+}
+
+function containingNodeModulesRoot(packageRoot) {
+  const absolute = path.resolve(packageRoot);
+  const parent = path.dirname(absolute);
+  if (path.basename(parent) === "node_modules") return parent;
+  const grandparent = path.dirname(parent);
+  if (path.basename(grandparent) === "node_modules"
+      && /^@[a-z0-9][a-z0-9._-]{0,127}$/u.test(path.basename(parent))) {
+    return grandparent;
+  }
+  return null;
+}
+
+function runtimeDependencyResolutionBoundary(sourceRoot) {
+  const absolute = path.resolve(sourceRoot);
+  let current = absolute;
+  let boundary = absolute;
+  let count = 0;
+  for (;;) {
+    if (count > MAX_RUNTIME_DEPENDENCY_ANCESTORS) {
+      throw runtimeDependencyError(
+        "Runtime dependency source ancestry exceeded its bound",
+        "source_ancestor_bound_exceeded",
+      );
+    }
+    if (path.basename(current) === "node_modules") boundary = path.dirname(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+    count += 1;
+  }
+  return boundary;
+}
+
+function runtimeDependencySearchRoots(parentDir, boundary) {
+  const absoluteParent = path.resolve(parentDir);
+  const absoluteBoundary = path.resolve(boundary);
+  if (!pathIsWithin(absoluteBoundary, absoluteParent)) {
+    throw runtimeDependencyError(
+      "Runtime dependency resolution escaped its bounded source ancestry",
+      "source_ancestry_unowned",
+    );
+  }
+  const roots = [];
+  let current = absoluteParent;
+  for (let count = 0; count <= MAX_RUNTIME_DEPENDENCY_ANCESTORS; count += 1) {
+    if (path.basename(current) !== "node_modules") {
+      roots.push(path.join(current, "node_modules"));
+    }
+    if (current === absoluteBoundary) return Array.from(new Set(roots));
+    const parent = path.dirname(current);
+    if (parent === current || !pathIsWithin(absoluteBoundary, parent)) break;
+    current = parent;
+  }
+  throw runtimeDependencyError(
+    "Runtime dependency source ancestry exceeded its bound",
+    "source_ancestor_bound_exceeded",
+  );
+}
+
+function assertRuntimeDependencyDirectory(directoryPath, expectedUid, guard, options = {}) {
+  let stat;
+  try {
+    stat = fs.lstatSync(directoryPath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    throw runtimeDependencyError(
+      "Runtime dependency source ancestry was rejected",
+      "source_ancestry_unreadable",
+    );
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()
+      || (Number.isInteger(expectedUid) && Number.isInteger(stat.uid) && stat.uid !== expectedUid)) {
+    throw runtimeDependencyError(
+      "Runtime dependency source ancestry was rejected",
+      "source_ancestry_unowned_or_nonregular",
+    );
+  }
+  try {
+    // Retain only the bounded graph anchors selected by the caller. Internal
+    // package directories are bound by their recorded identities/name sets;
+    // retaining an FD per directory would turn empty-directory fanout into FD
+    // exhaustion while still not qualifying same-UID races.
+    if (options.retain === true) guard.add(directoryPath);
+    guard.revalidate();
+  } catch (error) {
+    if (error && error.code === "runtime_dependency_source_rejected") throw error;
+    throw runtimeDependencyError(
+      "Runtime dependency source ancestry changed during inspection",
+      "source_ancestry_substituted",
+    );
+  }
+  return true;
+}
+
+function sameRuntimeDependencyFileSnapshot(left, right) {
+  return sameFilesystemIdentity(left, right)
+    && left.mode === right.mode
+    && left.nlink === right.nlink
+    && left.size === right.size
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function sameRuntimeDependencyDirectorySnapshot(left, right) {
+  return left != null && right != null
+    && left.isDirectory() && right.isDirectory()
+    && !left.isSymbolicLink() && !right.isSymbolicLink()
+    && sameFilesystemIdentity(left, right)
+    && left.mode === right.mode
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function snapshotRuntimeDependencyFile({
+  source,
+  expectedUid,
+  sourceGuard,
+  maxBytes = MAX_RUNTIME_DEPENDENCY_FILE_BYTES,
+  captureBytes = false,
+}) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  try {
+    const before = fs.lstatSync(source);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1
+        || before.size > maxBytes
+        || (Number.isInteger(expectedUid) && Number.isInteger(before.uid)
+          && before.uid !== expectedUid)) {
+      throw runtimeDependencyError(
+        "Runtime dependency file was rejected",
+        "package_file_rejected",
+      );
+    }
+    descriptor = fs.openSync(source, flags);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || !sameRuntimeDependencyFileSnapshot(before, opened)) {
+      throw runtimeDependencyError(
+        "Runtime dependency file changed while opening",
+        "package_file_substituted",
+      );
+    }
+    sourceGuard.revalidate();
+    const hash = crypto.createHash("sha256");
+    const chunks = captureBytes ? [] : null;
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let total = 0;
+    for (;;) {
+      const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      hash.update(chunk);
+      if (chunks) chunks.push(Buffer.from(chunk));
+      total += bytesRead;
+      if (total > maxBytes) {
+        throw runtimeDependencyError(
+          "Runtime dependency file exceeded its inspection bound",
+          "package_file_bound_exceeded",
+        );
+      }
+    }
+    const afterDescriptor = fs.fstatSync(descriptor);
+    const afterPath = fs.lstatSync(source);
+    if (total !== opened.size
+        || !sameRuntimeDependencyFileSnapshot(opened, afterDescriptor)
+        || !sameRuntimeDependencyFileSnapshot(afterDescriptor, afterPath)) {
+      throw runtimeDependencyError(
+        "Runtime dependency file changed during inspection",
+        "package_file_substituted",
+      );
+    }
+    sourceGuard.revalidate();
+    return Object.freeze({
+      source,
+      snapshot: opened,
+      sha256: hash.digest("hex"),
+      contents: chunks ? Buffer.concat(chunks, total) : null,
+    });
+  } catch (error) {
+    if (error && error.code === "runtime_dependency_source_rejected") throw error;
+    throw runtimeDependencyError(
+      "Runtime dependency file changed during inspection",
+      "package_file_substituted",
+    );
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function readRuntimeDependencyManifest(sourceDir, expectedName, expectedUid, guard) {
+  const manifestPath = path.join(sourceDir, "package.json");
+  const record = snapshotRuntimeDependencyFile({
+    source: manifestPath,
+    expectedUid,
+    sourceGuard: guard,
+    maxBytes: MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES,
+    captureBytes: true,
+  });
+  if (record.snapshot.size < 2) {
+    throw runtimeDependencyError(
+      `Runtime dependency ${expectedName || "root"} package manifest was rejected`,
+      "package_manifest_nonregular",
+    );
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(record.contents.toString("utf8"));
+  } catch {
+    throw runtimeDependencyError(
+      `Runtime dependency ${expectedName || "root"} package manifest was rejected`,
+      "package_manifest_invalid",
+    );
+  }
+  if (manifest == null || typeof manifest !== "object" || Array.isArray(manifest)
+      || (expectedName != null && manifest.name !== expectedName)) {
+    throw runtimeDependencyError(
+      `Runtime dependency ${expectedName || "root"} package identity was rejected`,
+      "package_identity_mismatch",
+    );
+  }
+  return Object.freeze({ manifest, record });
+}
+
+function dependencyField(manifest, fieldName) {
+  const value = manifest[fieldName];
+  if (value === undefined) return new Map();
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw runtimeDependencyError(
+      `Runtime dependency ${fieldName} metadata was rejected`,
+      "dependency_metadata_invalid",
+    );
+  }
+  const result = new Map();
+  for (const name of Object.keys(value).sort()) {
+    const spec = value[name];
+    if (!RUNTIME_DEPENDENCY_NAME_PATTERN.test(name)
+        || typeof spec !== "string" || spec.length < 1
+        || Buffer.byteLength(spec, "utf8") > MAX_RUNTIME_DEPENDENCY_SPEC_BYTES) {
+      throw runtimeDependencyError(
+        `Runtime dependency ${fieldName} metadata was rejected`,
+        "dependency_metadata_invalid",
+      );
+    }
+    result.set(name, spec);
+  }
+  return result;
+}
+
+function runtimeDependencyEdges(manifest) {
+  const dependencies = dependencyField(manifest, "dependencies");
+  const optionalDependencies = dependencyField(manifest, "optionalDependencies");
+  const peers = dependencyField(manifest, "peerDependencies");
+  const peerMetaValue = manifest.peerDependenciesMeta;
+  const peerMeta = new Map();
+  if (peerMetaValue !== undefined) {
+    if (peerMetaValue == null || typeof peerMetaValue !== "object" || Array.isArray(peerMetaValue)) {
+      throw runtimeDependencyError(
+        "Runtime dependency peer metadata was rejected",
+        "dependency_metadata_invalid",
+      );
+    }
+    for (const name of Object.keys(peerMetaValue).sort()) {
+      const metadata = peerMetaValue[name];
+      if (!RUNTIME_DEPENDENCY_NAME_PATTERN.test(name)
+          || metadata == null || typeof metadata !== "object"
+          || Array.isArray(metadata)
+          || Object.keys(metadata).some((key) => key !== "optional")
+          || (Object.hasOwn(metadata, "optional") && typeof metadata.optional !== "boolean")) {
+        throw runtimeDependencyError(
+          "Runtime dependency peer metadata was rejected",
+          "dependency_metadata_invalid",
+        );
+      }
+      // npm manifests in the wild (for example debug@4) can retain optional
+      // peer metadata after removing the corresponding peer declaration. It
+      // carries no graph edge, but its shape is still validated and ignored.
+      if (peers.has(name)) peerMeta.set(name, metadata.optional === true);
+    }
+  }
+
+  const edges = new Map();
+  for (const [name, spec] of dependencies) {
+    edges.set(name, Object.freeze({ name, spec, optional: false, kind: "dependency" }));
+  }
+  for (const [name, spec] of optionalDependencies) {
+    edges.set(name, Object.freeze({ name, spec, optional: true, kind: "optional_dependency" }));
+  }
+  for (const [name, spec] of peers) {
+    if (!edges.has(name)) {
+      edges.set(name, Object.freeze({
+        name,
+        spec,
+        optional: peerMeta.get(name) === true,
+        kind: "peer_dependency",
+      }));
+    }
+  }
+  return Array.from(edges.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function inspectRuntimeDependencyTree({
+  packageRoot,
+  sourceUid,
+  sourceGuard,
+  budget,
+  manifestRecord,
+}) {
+  const directories = [];
+  const files = [];
+  const visit = (currentSource, relativePrefix, depth) => {
+    if (depth > MAX_RUNTIME_DEPENDENCY_DEPTH) {
+      throw runtimeDependencyError(
+        "Runtime dependency tree exceeded its depth bound",
+        "package_tree_depth_exceeded",
+      );
+    }
+    budget.directories += 1;
+    if (budget.directories > MAX_RUNTIME_DEPENDENCY_DIRECTORIES) {
+      throw runtimeDependencyError(
+        "Runtime dependency tree exceeded its directory bound",
+        "package_tree_directory_bound_exceeded",
+      );
+    }
+    if (!assertRuntimeDependencyDirectory(currentSource, sourceUid, sourceGuard)) {
+      throw runtimeDependencyError(
+        "Runtime dependency tree changed during inspection",
+        "package_tree_substituted",
+      );
+    }
+    const before = fs.lstatSync(currentSource);
+    let names;
+    try {
+      names = fs.readdirSync(currentSource).sort();
+    } catch {
+      throw runtimeDependencyError(
+        "Runtime dependency tree was unreadable",
+        "package_tree_unreadable",
+      );
+    }
+    directories.push(Object.freeze({
+      source: currentSource,
+      relative: relativePrefix,
+      snapshot: before,
+      names: Object.freeze([...names]),
+    }));
+    for (const name of names) {
+      const source = path.join(currentSource, name);
+      const relative = relativePrefix ? path.join(relativePrefix, name) : name;
+      let stat;
+      try {
+        stat = fs.lstatSync(source);
+      } catch {
+        throw runtimeDependencyError(
+          "Runtime dependency tree changed during inspection",
+          "package_tree_substituted",
+        );
+      }
+      if (stat.isSymbolicLink()
+          || (Number.isInteger(sourceUid) && Number.isInteger(stat.uid) && stat.uid !== sourceUid)) {
+        throw runtimeDependencyError(
+          "Runtime dependency tree contains a linked or unowned entry",
+          "package_tree_unowned_or_nonregular",
+        );
+      }
+      if (stat.isDirectory()) {
+        if (name !== "node_modules") visit(source, relative, depth + 1);
+        continue;
+      }
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_RUNTIME_DEPENDENCY_FILE_BYTES) {
+        throw runtimeDependencyError(
+          "Runtime dependency tree contains a non-regular or oversized file",
+          "package_file_rejected",
+        );
+      }
+      budget.files += 1;
+      budget.bytes += stat.size;
+      if (budget.files > MAX_RUNTIME_DEPENDENCY_FILES
+          || budget.bytes > MAX_RUNTIME_DEPENDENCY_BYTES) {
+        throw runtimeDependencyError(
+          "Runtime dependency tree exceeded its copy bound",
+          "package_tree_bound_exceeded",
+        );
+      }
+      if (relative === "package.json"
+          && (!sameRuntimeDependencyFileSnapshot(stat, manifestRecord.record.snapshot)
+            || source !== manifestRecord.record.source)) {
+        throw runtimeDependencyError(
+          "Runtime dependency manifest changed during graph preflight",
+          "package_manifest_substituted",
+        );
+      }
+      // Payload bytes are streamed exactly once during the direct copy. The
+      // source preflight binds their complete filesystem snapshots; package
+      // manifests additionally carry the parsed-byte SHA-256 binding.
+      files.push(Object.freeze({
+        source,
+        relative,
+        snapshot: stat,
+        sha256: relative === "package.json" ? manifestRecord.record.sha256 : null,
+      }));
+    }
+    const after = fs.lstatSync(currentSource);
+    if (!sameRuntimeDependencyDirectorySnapshot(before, after)) {
+      throw runtimeDependencyError(
+        "Runtime dependency tree changed during inspection",
+        "package_tree_substituted",
+      );
+    }
+  };
+  visit(packageRoot, "", 0);
+  return Object.freeze({
+    directories: Object.freeze(directories),
+    files: Object.freeze(files),
+  });
+}
+
+function compareResolutionContexts(left, right, sourceDir, boundary) {
+  for (const searchRoot of runtimeDependencySearchRoots(sourceDir, boundary)) {
+    if (left.get(searchRoot) !== right.get(searchRoot)) return false;
+  }
+  return true;
+}
+
+function resolveRuntimeDependencySource({
+  parent,
+  boundary,
+  packageName,
+  expectedUid,
+  guard,
+}) {
+  if (!RUNTIME_DEPENDENCY_NAME_PATTERN.test(packageName)) {
+    throw runtimeDependencyError(
+      "Runtime dependency package name was rejected",
+      "package_name_invalid",
+    );
+  }
+  for (const searchRoot of runtimeDependencySearchRoots(parent.sourceDir, boundary)) {
+    if (!assertRuntimeDependencyDirectory(searchRoot, expectedUid, guard)) continue;
+    let sourceDir = searchRoot;
+    let complete = true;
+    for (const component of packageName.split("/")) {
+      sourceDir = path.join(sourceDir, component);
+      if (!assertRuntimeDependencyDirectory(sourceDir, expectedUid, guard)) {
+        complete = false;
+        break;
+      }
+    }
+    if (!complete) continue;
+    if (!parent.resolutionContext.has(searchRoot)) {
+      throw runtimeDependencyError(
+        `Runtime dependency ${packageName} cannot preserve its Node resolution context`,
+        "dependency_path_context_unmapped",
+      );
+    }
+    return Object.freeze({
+      sourceDir,
+      searchRoot,
+      destinationRoot: parent.resolutionContext.get(searchRoot),
+    });
+  }
+  return null;
+}
+
+function childResolutionContext(parent, resolved, destination) {
+  const context = new Map(parent.resolutionContext);
+  const ownNodeModules = path.join(resolved.sourceDir, "node_modules");
+  const ownDestination = path.join(destination, "node_modules");
+  const existing = context.get(ownNodeModules);
+  if (existing !== undefined && existing !== ownDestination) {
+    throw runtimeDependencyError(
+      "Runtime dependency graph has an ambiguous nested placement",
+      "dependency_placement_conflict",
+    );
+  }
+  context.set(ownNodeModules, ownDestination);
+  return context;
+}
+
+function buildRuntimeDependencyGraph({ sourceRoot, sourceUid, sourceGuard, boundary }) {
+  const rootManifest = readRuntimeDependencyManifest(
+    sourceRoot,
+    null,
+    sourceUid,
+    sourceGuard,
+  );
+  const rootContext = new Map();
+  for (const searchRoot of runtimeDependencySearchRoots(sourceRoot, boundary)) {
+    rootContext.set(searchRoot, "");
+  }
+  const resolutionRoots = new Set(rootContext.keys());
+  const root = Object.freeze({
+    sourceDir: sourceRoot,
+    destination: "",
+    manifestRecord: rootManifest,
+    resolutionContext: rootContext,
+  });
+  const queue = [{ parent: root, edge: null }];
+  const nodes = [];
+  const nodesByPlacement = new Map();
+  const states = new Map();
+  const budget = { files: 0, bytes: 0, directories: 0 };
+  let edgeCount = 0;
+
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const pending = queue[cursor];
+    let node = pending.parent;
+    if (pending.edge != null) {
+      edgeCount += 1;
+      if (edgeCount > MAX_RUNTIME_DEPENDENCY_EDGES) {
+        throw runtimeDependencyError(
+          "Runtime dependency graph exceeded its edge bound",
+          "dependency_graph_edge_bound_exceeded",
+        );
+      }
+      const resolved = resolveRuntimeDependencySource({
+        parent: pending.parent,
+        boundary,
+        packageName: pending.edge.name,
+        expectedUid: sourceUid,
+        guard: sourceGuard,
+      });
+      if (!resolved) {
+        if (pending.edge.optional) continue;
+        throw runtimeDependencyError(
+          `Runtime dependency ${pending.edge.name} is missing; run npm install before installing Bob into a project`,
+          pending.edge.kind === "peer_dependency"
+            ? "required_peer_dependency_missing"
+            : "required_dependency_missing",
+        );
+      }
+      resolutionRoots.add(resolved.searchRoot);
+      const destination = path.join(
+        resolved.destinationRoot,
+        ...pending.edge.name.split("/"),
+      );
+      const priorSource = nodesByPlacement.get(destination);
+      if (priorSource !== undefined && priorSource !== resolved.sourceDir) {
+        throw runtimeDependencyError(
+          `Runtime dependency ${pending.edge.name} conflicts at its relocated path`,
+          "dependency_placement_conflict",
+        );
+      }
+      const context = childResolutionContext(pending.parent, resolved, destination);
+      const stateKey = `${resolved.sourceDir}\0${destination}`;
+      const priorState = states.get(stateKey);
+      if (priorState) {
+        if (!compareResolutionContexts(
+          priorState.resolutionContext,
+          context,
+          resolved.sourceDir,
+          boundary,
+        )) {
+          throw runtimeDependencyError(
+            `Runtime dependency ${pending.edge.name} has incompatible resolution contexts`,
+            "dependency_path_context_conflict",
+          );
+        }
+        continue;
+      }
+      const manifestRecord = readRuntimeDependencyManifest(
+        resolved.sourceDir,
+        pending.edge.name,
+        sourceUid,
+        sourceGuard,
+      );
+      const tree = inspectRuntimeDependencyTree({
+        packageRoot: resolved.sourceDir,
+        sourceUid,
+        sourceGuard,
+        budget,
+        manifestRecord,
+      });
+      const manifestFile = tree.files.find((file) => file.relative === "package.json");
+      if (!manifestFile
+          || manifestFile.sha256 !== manifestRecord.record.sha256
+          || !sameRuntimeDependencyFileSnapshot(
+            manifestFile.snapshot,
+            manifestRecord.record.snapshot,
+          )) {
+        throw runtimeDependencyError(
+          `Runtime dependency ${pending.edge.name} manifest changed during graph preflight`,
+          "package_manifest_substituted",
+        );
+      }
+      node = Object.freeze({
+        sourceDir: resolved.sourceDir,
+        destination,
+        manifestRecord,
+        resolutionContext: context,
+        tree,
+      });
+      states.set(stateKey, node);
+      nodesByPlacement.set(destination, resolved.sourceDir);
+      nodes.push(node);
+      if (nodes.length > MAX_RUNTIME_DEPENDENCY_PACKAGES) {
+        throw runtimeDependencyError(
+          "Runtime dependency graph exceeded its package bound",
+          "dependency_graph_package_bound_exceeded",
+        );
+      }
+    }
+
+    for (const edge of runtimeDependencyEdges(node.manifestRecord.manifest)) {
+      queue.push({ parent: node, edge });
+    }
+  }
+  return Object.freeze({
+    boundary,
+    rootManifest,
+    nodes: Object.freeze(nodes),
+    resolutionRoots: Object.freeze(Array.from(resolutionRoots).sort()),
+    file_count: budget.files,
+    byte_count: budget.bytes,
+  });
+}
+
+function revalidateRuntimeDependencyGraph(graph, sourceUid, sourceGuard) {
+  const manifests = [graph.rootManifest, ...graph.nodes.map((node) => node.manifestRecord)];
+  for (const manifest of manifests) {
+    let observed;
+    try {
+      observed = snapshotRuntimeDependencyFile({
+        source: manifest.record.source,
+        expectedUid: sourceUid,
+        sourceGuard,
+        maxBytes: MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES,
+      });
+    } catch (error) {
+      if (!error || error.code !== "runtime_dependency_source_rejected") throw error;
+      throw runtimeDependencyError(
+        "Runtime dependency manifest changed after graph preflight",
+        "package_manifest_substituted",
+      );
+    }
+    if (observed.sha256 !== manifest.record.sha256
+        || !sameRuntimeDependencyFileSnapshot(observed.snapshot, manifest.record.snapshot)) {
+      throw runtimeDependencyError(
+        "Runtime dependency manifest changed after graph preflight",
+        "package_manifest_substituted",
+      );
+    }
+  }
+  for (const node of graph.nodes) {
+    for (const directory of node.tree.directories) {
+      let observed;
+      let names;
+      try {
+        observed = fs.lstatSync(directory.source);
+        names = fs.readdirSync(directory.source).sort();
+      } catch {
+        throw runtimeDependencyError(
+          "Runtime dependency tree changed after graph preflight",
+          "package_tree_substituted",
+        );
+      }
+      if (!sameRuntimeDependencyDirectorySnapshot(observed, directory.snapshot)
+          || JSON.stringify(names) !== JSON.stringify(directory.names)) {
+        throw runtimeDependencyError(
+          "Runtime dependency tree changed after graph preflight",
+          "package_tree_substituted",
+        );
+      }
+    }
+    for (const file of node.tree.files) {
+      let observed;
+      try {
+        observed = fs.lstatSync(file.source);
+      } catch {
+        throw runtimeDependencyError(
+          "Runtime dependency file changed after graph preflight",
+          "package_file_substituted",
+        );
+      }
+      if (!sameRuntimeDependencyFileSnapshot(observed, file.snapshot)) {
+        throw runtimeDependencyError(
+          "Runtime dependency file changed after graph preflight",
+          "package_file_substituted",
+        );
+      }
+    }
+  }
+  try {
+    sourceGuard.revalidate();
+  } catch {
+    throw runtimeDependencyError(
+      "Runtime dependency source ancestry changed after graph preflight",
+      "source_ancestry_substituted",
+    );
+  }
+}
+
+function assertRuntimeDependencyTargetPreflight({
+  mcpDir,
+  targetNodeModules,
+  graph,
+  sourceRoot,
+  allowMissingMcpDir = false,
+}) {
+  let targetStat;
+  let targetAnchor = mcpDir;
+  try {
+    targetStat = fs.lstatSync(mcpDir);
+  } catch (error) {
+    if (!error || error.code !== "ENOENT" || allowMissingMcpDir !== true) {
+      throw runtimeDependencyTargetError(
+        "Runtime dependency target root was rejected",
+        "target_root_unreadable",
+      );
+    }
+    let current = path.dirname(mcpDir);
+    for (let count = 0; count <= MAX_RUNTIME_DEPENDENCY_ANCESTORS; count += 1) {
+      try {
+        targetStat = fs.lstatSync(current);
+        targetAnchor = current;
+        break;
+      } catch (anchorError) {
+        if (!anchorError || anchorError.code !== "ENOENT") {
+          throw runtimeDependencyTargetError(
+            "Runtime dependency target ancestry was rejected",
+            "target_ancestry_unreadable",
+          );
+        }
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    if (!targetStat) {
+      throw runtimeDependencyTargetError(
+        "Runtime dependency target ancestry exceeded its bound",
+        "target_ancestor_bound_exceeded",
+      );
+    }
+  }
+  if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+    throw runtimeDependencyTargetError(
+      "Runtime dependency target root was rejected",
+      "target_root_nonregular",
+    );
+  }
+  const targetUid = Number.isInteger(targetStat.uid) ? targetStat.uid : null;
+  if (targetAnchor === mcpDir) {
+    try {
+      const existing = fs.lstatSync(targetNodeModules);
+      if (!existing.isDirectory() || existing.isSymbolicLink()
+          || (Number.isInteger(targetUid) && Number.isInteger(existing.uid)
+            && existing.uid !== targetUid)) {
+        throw runtimeDependencyTargetError(
+          "Runtime dependency target node_modules was rejected",
+          "target_ancestry_unowned_or_nonregular",
+        );
+      }
+    } catch (error) {
+      if (error && error.code === "runtime_dependency_target_rejected") throw error;
+      if (!error || error.code !== "ENOENT") {
+        throw runtimeDependencyTargetError(
+          "Runtime dependency target node_modules was unreadable",
+          "target_ancestry_unreadable",
+        );
+      }
+    }
+    for (const destination of new Set(graph.nodes.map((node) => node.destination))) {
+      assertDirectRuntimeDependencyDestination(
+        targetNodeModules,
+        destination,
+        targetUid,
+      );
+    }
+  }
+
+  const sourcePaths = [
+    sourceRoot,
+    ...graph.nodes.map((node) => node.sourceDir),
+    ...graph.resolutionRoots,
+  ];
+  let realTarget = targetNodeModules;
+  try {
+    const realAnchor = fs.realpathSync.native(targetAnchor);
+    realTarget = path.join(
+      realAnchor,
+      path.relative(targetAnchor, mcpDir),
+      "node_modules",
+    );
+  } catch {
+    // The existing anchor was lstat-validated; lexical overlap checks remain.
+  }
+  for (const sourcePath of sourcePaths) {
+    let realSource = sourcePath;
+    try {
+      realSource = fs.realpathSync.native(sourcePath);
+    } catch {
+      // Source graph validation reports unreadable source paths separately.
+    }
+    if (pathsOverlap(targetNodeModules, sourcePath) || pathsOverlap(realTarget, realSource)) {
+      throw runtimeDependencyTargetError(
+        "Runtime dependency source and target trees overlap",
+        "source_target_overlap",
+      );
+    }
+  }
+  return targetUid;
+}
+
+function runtimeDependencyDestinationDepth(destination) {
+  return destination.split(path.sep).filter(Boolean).length;
+}
+
+function assertDirectRuntimeDependencyDestination(targetNodeModules, destination, targetUid) {
+  const components = destination.split(path.sep).filter(Boolean);
+  let current = targetNodeModules;
+  for (let index = 0; index < components.length; index += 1) {
+    current = path.join(current, components[index]);
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return null;
+      throw runtimeDependencyTargetError(
+        "Runtime dependency destination was unreadable",
+        "target_destination_unreadable",
+      );
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+        || (Number.isInteger(targetUid) && Number.isInteger(stat.uid)
+          && stat.uid !== targetUid)) {
+      throw runtimeDependencyTargetError(
+        "Runtime dependency destination ancestry was rejected",
+        "target_destination_nonregular",
+      );
+    }
+  }
+  return current;
+}
+
+function removeDirectRuntimeDependencyDestination(targetNodeModules, destination, targetUid) {
+  const current = assertDirectRuntimeDependencyDestination(
+    targetNodeModules,
+    destination,
+    targetUid,
+  );
+  if (current == null) return;
+  try {
+    fs.rmSync(current, { recursive: true, force: true });
+  } catch {
+    throw runtimeDependencyTargetError(
+      "Runtime dependency destination replacement failed",
+      "target_destination_remove_failed",
+    );
+  }
+}
+
+function ensureDirectRuntimeDependencyTargetDirectory(directoryPath, targetUid) {
+  try {
+    fs.mkdirSync(directoryPath, { recursive: true, mode: 0o755 });
+    const stat = fs.lstatSync(directoryPath);
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+        || (Number.isInteger(targetUid) && Number.isInteger(stat.uid) && stat.uid !== targetUid)) {
+      throw new Error("nonregular");
+    }
+  } catch {
+    throw runtimeDependencyTargetError(
+      "Runtime dependency target directory was rejected during direct copy",
+      "target_directory_rejected",
+    );
+  }
+}
+
+function copyStableRuntimeDependencyFile({
+  file,
+  destination,
+  expectedUid,
+  sourceGuard,
+}) {
+  const sourceFlags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let sourceDescriptor;
+  let destinationDescriptor;
+  let destinationCreated = false;
+  try {
+    const before = fs.lstatSync(file.source);
+    if (!sameRuntimeDependencyFileSnapshot(before, file.snapshot)) {
+      throw runtimeDependencyError(
+        "Runtime dependency file changed before direct copy",
+        "package_file_substituted",
+      );
+    }
+    sourceDescriptor = fs.openSync(file.source, sourceFlags);
+    const opened = fs.fstatSync(sourceDescriptor);
+    if (!opened.isFile() || !sameRuntimeDependencyFileSnapshot(before, opened)
+        || (Number.isInteger(expectedUid) && Number.isInteger(opened.uid)
+          && opened.uid !== expectedUid)) {
+      throw runtimeDependencyError(
+        "Runtime dependency file changed while opening for direct copy",
+        "package_file_substituted",
+      );
+    }
+    sourceGuard.revalidate();
+    destinationDescriptor = fs.openSync(
+      destination,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+        | (fs.constants.O_NOFOLLOW || 0),
+      opened.mode & 0o777,
+    );
+    destinationCreated = true;
+    const hash = file.sha256 == null ? null : crypto.createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let total = 0;
+    for (;;) {
+      const bytesRead = fs.readSync(sourceDescriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      const nextTotal = total + bytesRead;
+      if (nextTotal > file.snapshot.size
+          || nextTotal > MAX_RUNTIME_DEPENDENCY_FILE_BYTES) {
+        throw runtimeDependencyError(
+          "Runtime dependency file exceeded its preflight size during direct copy",
+          "package_file_bound_exceeded",
+        );
+      }
+      if (hash) hash.update(buffer.subarray(0, bytesRead));
+      let written = 0;
+      while (written < bytesRead) {
+        written += fs.writeSync(
+          destinationDescriptor,
+          buffer,
+          written,
+          bytesRead - written,
+          null,
+        );
+      }
+      total = nextTotal;
+    }
+    const afterDescriptor = fs.fstatSync(sourceDescriptor);
+    const afterPath = fs.lstatSync(file.source);
+    if (total !== opened.size || (hash && hash.digest("hex") !== file.sha256)
+        || !sameRuntimeDependencyFileSnapshot(opened, afterDescriptor)
+        || !sameRuntimeDependencyFileSnapshot(afterDescriptor, afterPath)) {
+      throw runtimeDependencyError(
+        "Runtime dependency file changed during direct copy",
+        "package_file_substituted",
+      );
+    }
+    fs.fchmodSync(destinationDescriptor, opened.mode & 0o777);
+    sourceGuard.revalidate();
+  } catch (error) {
+    if (destinationDescriptor !== undefined) {
+      try {
+        fs.closeSync(destinationDescriptor);
+      } catch {
+        // Direct copy is already failing and is explicitly not crash-atomic.
+      }
+      destinationDescriptor = undefined;
+    }
+    if (destinationCreated) {
+      try {
+        fs.rmSync(destination, { force: true });
+      } catch {
+        // Remove only the incomplete file; never claim rollback of the closure.
+      }
+    }
+    if (error && (error.code === "runtime_dependency_source_rejected"
+        || error.code === "runtime_dependency_target_rejected")) throw error;
+    throw runtimeDependencyTargetError(
+      "Runtime dependency target file copy failed",
+      "target_file_copy_failed",
+    );
+  } finally {
+    if (destinationDescriptor !== undefined) fs.closeSync(destinationDescriptor);
+    if (sourceDescriptor !== undefined) fs.closeSync(sourceDescriptor);
+  }
+}
+
+function closeRuntimeNodeDependencyCopyPlan(plan) {
+  if (!plan || plan.closed === true) return;
+  plan.closed = true;
+  plan.sourceGuard.close();
+}
+
+function prepareRuntimeNodeDependencyCopy(sourceRoot, mcpDir) {
+  const absoluteSourceRoot = path.resolve(sourceRoot);
+  const absoluteMcpDir = path.resolve(mcpDir);
+  let sourceStat;
+  try {
+    sourceStat = fs.lstatSync(absoluteSourceRoot);
+  } catch {
+    throw runtimeDependencyError(
+      "Runtime dependency source root was rejected",
+      "source_root_unreadable",
+    );
+  }
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw runtimeDependencyError(
+      "Runtime dependency source root was rejected",
+      "source_root_nonregular",
+    );
+  }
+  const expectedUid = Number.isInteger(sourceStat.uid) ? sourceStat.uid : null;
+  const boundary = runtimeDependencyResolutionBoundary(absoluteSourceRoot);
+  let sourceGuard;
+  try {
+    sourceGuard = retainDirectoryAncestry(
+      boundary,
+      "runtime_dependency_source_ancestry_rejected",
+    );
+    assertRuntimeDependencyDirectory(boundary, expectedUid, sourceGuard, { retain: true });
+    if (boundary !== absoluteSourceRoot) {
+      let current = absoluteSourceRoot;
+      for (let count = 0; count <= MAX_RUNTIME_DEPENDENCY_ANCESTORS; count += 1) {
+        assertRuntimeDependencyDirectory(current, expectedUid, sourceGuard, { retain: true });
+        if (current === boundary) break;
+        current = path.dirname(current);
+      }
+    }
+
+    // This entire graph, every required peer, each relocation, and all source
+    // file snapshots are established before any caller-authorized mutation.
+    const graph = buildRuntimeDependencyGraph({
+      sourceRoot: absoluteSourceRoot,
+      sourceUid: expectedUid,
+      sourceGuard,
+      boundary,
+    });
+    const targetNodeModules = path.join(absoluteMcpDir, "node_modules");
+    assertRuntimeDependencyTargetPreflight({
+      mcpDir: absoluteMcpDir,
+      targetNodeModules,
+      graph,
+      sourceRoot: absoluteSourceRoot,
+      allowMissingMcpDir: true,
+    });
+    revalidateRuntimeDependencyGraph(graph, expectedUid, sourceGuard);
+    return {
+      closed: false,
+      sourceRoot: absoluteSourceRoot,
+      mcpDir: absoluteMcpDir,
+      targetNodeModules,
+      expectedUid,
+      sourceGuard,
+      graph,
+    };
+  } catch (error) {
+    let rejected = error;
+    if (error && error.code === "optional_provider_package_rejected") {
+      rejected = runtimeDependencyError(
+        "Runtime dependency source ancestry changed during installation",
+        "source_ancestry_substituted",
+      );
+    }
+    if (sourceGuard) sourceGuard.close();
+    throw rejected;
+  }
+}
+
+function applyRuntimeNodeDependencyCopy(plan) {
+  if (!plan || plan.closed === true || !plan.sourceGuard || !plan.graph) {
+    throw runtimeDependencyError(
+      "Runtime dependency copy plan was rejected",
+      "dependency_copy_plan_rejected",
+    );
+  }
+  try {
+    const targetUid = assertRuntimeDependencyTargetPreflight({
+      mcpDir: plan.mcpDir,
+      targetNodeModules: plan.targetNodeModules,
+      graph: plan.graph,
+      sourceRoot: plan.sourceRoot,
+      allowMissingMcpDir: false,
+    });
+    revalidateRuntimeDependencyGraph(plan.graph, plan.expectedUid, plan.sourceGuard);
+
+    // Deliberately direct and non-atomic: this portable JS installer has no
+    // descriptor-relative target authority, rollback guarantee, or same-UID
+    // race qualification. It replaces only dependency destinations in this
+    // graph, preserving foreign packages and .bin; stale entries that no longer
+    // appear in the graph are not pruned. Doctor reports each limitation.
+    ensureDirectRuntimeDependencyTargetDirectory(plan.targetNodeModules, targetUid);
+    const destinations = Array.from(new Set(plan.graph.nodes.map((node) => node.destination)))
+      .sort((left, right) => (
+        runtimeDependencyDestinationDepth(left) - runtimeDependencyDestinationDepth(right)
+        || left.localeCompare(right)
+      ));
+    for (const destination of destinations) {
+      removeDirectRuntimeDependencyDestination(
+        plan.targetNodeModules,
+        destination,
+        targetUid,
+      );
+    }
+
+    const copied = [];
+    const nodes = [...plan.graph.nodes].sort((left, right) => (
+      runtimeDependencyDestinationDepth(left.destination)
+        - runtimeDependencyDestinationDepth(right.destination)
+      || left.destination.localeCompare(right.destination)
+    ));
+    for (const node of nodes) {
+      const destinationDir = path.join(plan.targetNodeModules, node.destination);
+      ensureDirectRuntimeDependencyTargetDirectory(destinationDir, targetUid);
+      for (const directory of node.tree.directories) {
+        if (!directory.relative) continue;
+        ensureDirectRuntimeDependencyTargetDirectory(
+          path.join(destinationDir, directory.relative),
+          targetUid,
+        );
+      }
+      for (const file of node.tree.files) {
+        const destination = path.join(destinationDir, file.relative);
+        ensureDirectRuntimeDependencyTargetDirectory(path.dirname(destination), targetUid);
+        copyStableRuntimeDependencyFile({
+          file,
+          destination,
+          expectedUid: plan.expectedUid,
+          sourceGuard: plan.sourceGuard,
+        });
+        copied.push(path.join(node.destination, file.relative));
+      }
+    }
+    return copied;
+  } finally {
+    closeRuntimeNodeDependencyCopyPlan(plan);
+  }
+}
+
 function copyRuntimeNodeDependencies(sourceRoot, mcpDir) {
-  const manifest = packageManifest(sourceRoot);
+  const plan = prepareRuntimeNodeDependencyCopy(sourceRoot, mcpDir);
+  try {
+    return applyRuntimeNodeDependencyCopy(plan);
+  } finally {
+    closeRuntimeNodeDependencyCopyPlan(plan);
+  }
+}
+
+// Plane-PH runtime modules deliberately live in nested packages beside mcp/;
+// several MCP modules resolve them through relative imports. The npm tarball
+// already admits only each package's package.json, declared root entrypoints,
+// and flat lib/*.js runtime files. Project-local installation must reproduce
+// that exact surface or an installed server fails during eager tool-registry
+// loading. Reuse package-policy as the single file-admission authority instead
+// of maintaining a second, drifting installer allowlist.
+function readCanonicalSourceFile(sourceDir, sourcePath, guard) {
+  const relative = path.relative(sourceDir, sourcePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Canonical runtime source escaped its package root");
+  }
+  let current = sourceDir;
+  for (const component of path.dirname(relative).split(path.sep).filter((entry) => entry !== ".")) {
+    current = path.join(current, component);
+    guard.add(current);
+  }
+  guard.revalidate();
+  const before = fs.lstatSync(sourcePath);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+    throw new Error("Canonical runtime source contains a non-regular or linked file");
+  }
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(sourcePath, flags);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || opened.nlink !== 1
+        || !sameFilesystemIdentity(before, opened)) {
+      throw new Error("Canonical runtime source identity changed while opening");
+    }
+    const contents = fs.readFileSync(descriptor);
+    const afterDescriptor = fs.fstatSync(descriptor);
+    const afterPath = fs.lstatSync(sourcePath);
+    if (!sameFilesystemIdentity(opened, afterDescriptor)
+        || !sameFilesystemIdentity(afterDescriptor, afterPath)
+        || afterDescriptor.size !== opened.size
+        || afterDescriptor.mtimeMs !== opened.mtimeMs
+        || contents.length !== opened.size) {
+      throw new Error("Canonical runtime source identity changed while reading");
+    }
+    guard.revalidate();
+    return contents;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function copyCanonicalRuntimePackagesWithAuthority(sourceRoot, targetAbs, targetAuthority) {
   const copied = [];
-  const queued = [];
-  for (const name of Object.keys(manifest.dependencies || {}).sort()) {
-    queued.push({ name, optional: false });
-  }
-  for (const name of Object.keys(manifest.optionalDependencies || {}).sort()) {
-    queued.push({ name, optional: true });
-  }
-  const visited = new Set();
-  const targetNodeModules = path.join(mcpDir, "node_modules");
-  while (queued.length > 0) {
-    const { name: packageName, optional } = queued.shift();
-    if (!packageName || visited.has(packageName)) continue;
-    const sourceDir = path.join(sourceRoot, "node_modules", ...packageName.split("/"));
-    if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
-      if (optional) continue;
-      throw new Error(`Runtime dependency ${packageName} is missing; run npm install before installing Bob into a project`);
+  for (const relativeRoot of CANONICAL_RUNTIME_PACKAGE_ROOTS) {
+    const sourceDir = path.join(sourceRoot, relativeRoot);
+    const targetDir = path.join(targetAbs, relativeRoot);
+    if (path.resolve(sourceDir) === path.resolve(targetDir)) continue;
+    let sourceGuard;
+    try {
+      sourceGuard = retainDirectoryAncestry(sourceDir,
+        "canonical_source_ancestry_rejected");
+      const admitted = sourceTreeFiles(sourceRoot, relativeRoot)
+        .filter(isCanonicalRuntimePackageFile);
+      sourceGuard.revalidate();
+      if (!admitted.includes(`${relativeRoot}/package.json`)) {
+        throw new Error(`Canonical runtime package has no admitted package.json: ${relativeRoot}`);
+      }
+      const files = admitted.map((file) => {
+        const sourcePath = path.join(sourceRoot, ...file.split("/"));
+        const contents = readCanonicalSourceFile(sourceDir, sourcePath, sourceGuard);
+        return {
+          path: file.slice(relativeRoot.length + 1),
+          contents,
+          mode: 0o644,
+        };
+      });
+      executeLifecycleMutation(targetAuthority, {
+        operation: "replace",
+        selection: `canonical:${relativeRoot}`,
+        files,
+      });
+      copied.push(...admitted);
+    } catch (error) {
+      if (error && error.code === "optional_provider_package_rejected") {
+        throw new Error(`Canonical runtime package ancestry was rejected: ${relativeRoot}`);
+      }
+      throw error;
+    } finally {
+      if (sourceGuard) sourceGuard.close();
     }
-    visited.add(packageName);
-    const dependencyManifest = JSON.parse(fs.readFileSync(path.join(sourceDir, "package.json"), "utf8"));
-    for (const dependencyName of Object.keys(dependencyManifest.dependencies || {}).sort()) {
-      if (!visited.has(dependencyName)) queued.push({ name: dependencyName, optional });
-    }
-    for (const dependencyName of Object.keys(dependencyManifest.optionalDependencies || {}).sort()) {
-      if (!visited.has(dependencyName)) queued.push({ name: dependencyName, optional: true });
-    }
-    const destinationDir = path.join(targetNodeModules, packageName);
-    if (path.resolve(sourceDir) === path.resolve(destinationDir)) continue;
-    fs.rmSync(destinationDir, { recursive: true, force: true });
-    copied.push(...copyDirRecursive(sourceDir, destinationDir).map((file) => path.join(packageName, file)));
   }
   return copied;
+}
+
+function writeFreshCanonicalPackageFile(destination, contents) {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+    | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(destination, flags, 0o600);
+    fs.writeFileSync(descriptor, contents);
+    fs.fsyncSync(descriptor);
+    fs.fchmodSync(descriptor, 0o644);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+// Canonical JS runtime packages are part of the ordinary project installer,
+// not optional native-provider activation. They use a preflighted, staged
+// Node filesystem transaction so a missing native lifecycle custodian cannot
+// make the entire Hacker Bob installer unusable. Optional/native provider
+// roots remain exclusively behind the qualified custodian.
+function copyCanonicalRuntimePackagesDirect(sourceRoot, targetAbs) {
+  const plans = [];
+  for (const relativeRoot of CANONICAL_RUNTIME_PACKAGE_ROOTS) {
+    const sourceDir = path.join(sourceRoot, relativeRoot);
+    const targetDir = path.join(targetAbs, relativeRoot);
+    if (path.resolve(sourceDir) === path.resolve(targetDir)) continue;
+    let sourceGuard;
+    try {
+      sourceGuard = retainDirectoryAncestry(sourceDir, "canonical_source_ancestry_rejected");
+      const admitted = sourceTreeFiles(sourceRoot, relativeRoot)
+        .filter(isCanonicalRuntimePackageFile);
+      sourceGuard.revalidate();
+      if (!admitted.includes(`${relativeRoot}/package.json`)) {
+        throw new Error(`Canonical runtime package has no admitted package.json: ${relativeRoot}`);
+      }
+      const files = admitted.map((file) => {
+        const relative = file.slice(relativeRoot.length + 1);
+        if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+          throw new Error(`Canonical runtime package path escaped its root: ${file}`);
+        }
+        return {
+          relative,
+          contents: readCanonicalSourceFile(
+            sourceDir,
+            path.join(sourceRoot, ...file.split("/")),
+            sourceGuard,
+          ),
+        };
+      });
+      sourceGuard.revalidate();
+      plans.push({ relativeRoot, targetDir, admitted, files });
+    } finally {
+      if (sourceGuard) sourceGuard.close();
+    }
+  }
+  if (plans.length === 0) return [];
+
+  const targetGuard = retainDirectoryAncestry(targetAbs, "canonical_target_ancestry_rejected");
+  const packagesDir = path.join(targetAbs, "packages");
+  try {
+    const packagesStat = (() => {
+      try { return fs.lstatSync(packagesDir); } catch (error) {
+        if (error && error.code === "ENOENT") return null;
+        throw error;
+      }
+    })();
+    if (packagesStat == null) fs.mkdirSync(packagesDir, { mode: 0o755 });
+    else if (!packagesStat.isDirectory() || packagesStat.isSymbolicLink()) {
+      throw new Error(
+        "Canonical runtime package target ancestry was rejected: parent is not a retained directory",
+      );
+    }
+    targetGuard.add(packagesDir);
+
+    const copied = [];
+    for (const plan of plans) {
+      targetGuard.revalidate();
+      const token = crypto.randomBytes(12).toString("hex");
+      const packageName = path.basename(plan.targetDir);
+      const stagingDir = path.join(packagesDir, `.bob-install-${packageName}-${token}`);
+      const backupDir = path.join(packagesDir, `.bob-backup-${packageName}-${token}`);
+      let priorMoved = false;
+      let promoted = false;
+      try {
+        fs.mkdirSync(stagingDir, { mode: 0o700 });
+        for (const file of plan.files) {
+          const destination = path.join(stagingDir, ...file.relative.split("/"));
+          const relative = path.relative(stagingDir, destination);
+          if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+            throw new Error("Canonical runtime package staging path escaped its root");
+          }
+          fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o755 });
+          writeFreshCanonicalPackageFile(destination, file.contents);
+        }
+        const existing = (() => {
+          try { return fs.lstatSync(plan.targetDir); } catch (error) {
+            if (error && error.code === "ENOENT") return null;
+            throw error;
+          }
+        })();
+        if (existing != null) {
+          // The package root is an exclusively Bob-owned leaf. Rename the leaf
+          // itself into the retained-parent backup slot regardless of whether
+          // a prior failed/local install left a directory, file, or symlink.
+          // rename(2) does not follow a leaf symlink. The parent ancestry is
+          // retained and revalidated before promotion; no sibling is touched.
+          fs.renameSync(plan.targetDir, backupDir);
+          priorMoved = true;
+        }
+        targetGuard.revalidate();
+        fs.renameSync(stagingDir, plan.targetDir);
+        promoted = true;
+        targetGuard.sync();
+        if (priorMoved) fs.rmSync(backupDir, { recursive: true, force: true });
+        copied.push(...plan.admitted);
+      } catch (error) {
+        if (!promoted && priorMoved) {
+          try {
+            if (!fs.existsSync(plan.targetDir)) fs.renameSync(backupDir, plan.targetDir);
+          } catch {
+            // Preserve the original failure; a retained backup remains for
+            // explicit operator recovery rather than being deleted blindly.
+          }
+        }
+        throw error;
+      } finally {
+        if (!promoted) fs.rmSync(stagingDir, { recursive: true, force: true });
+      }
+    }
+    return copied;
+  } finally {
+    targetGuard.close();
+  }
+}
+
+function copyCanonicalRuntimePackages(sourceRoot, targetAbs, targetAuthority = null) {
+  const mutations = CANONICAL_RUNTIME_PACKAGE_ROOTS.filter((relativeRoot) =>
+    path.resolve(path.join(sourceRoot, relativeRoot))
+      !== path.resolve(path.join(targetAbs, relativeRoot)));
+  if (mutations.length === 0) return [];
+  if (targetAuthority != null) {
+    return copyCanonicalRuntimePackagesWithAuthority(sourceRoot, targetAbs, targetAuthority);
+  }
+  return copyCanonicalRuntimePackagesDirect(sourceRoot, targetAbs);
 }
 
 function sourceResourceNames(sourceRoot, resourceSet) {
@@ -349,15 +1831,19 @@ function defaultLogResolution(resolution) {
   );
 }
 
-function installProject(projectDir, options = {}) {
+function installProjectWithTargetAuthority(projectDir, options, targetAuthority) {
   const sourceRoot = path.resolve(options.sourceRoot || path.join(__dirname, ".."));
   const targetAbs = path.resolve(projectDir || ".");
   const bobResourceDir = path.join(targetAbs, BOB_RESOURCE_DIR);
   const manifest = packageManifest(sourceRoot);
   const installerSource = options.installerSource || process.env.HACKER_BOB_INSTALLER_SOURCE || "cli";
-
-  if (!fs.existsSync(targetAbs) || !fs.statSync(targetAbs).isDirectory()) {
-    throw new Error(`Install target does not exist or is not a directory: ${targetAbs}`);
+  let previousInstallMetadata = null;
+  try {
+    previousInstallMetadata = readNeutralInstallMetadata(targetAbs, null);
+  } catch {
+    // A malformed/unreadable receipt never authorizes pruning. The existing
+    // metadata write path will still surface malformed JSON before completion.
+    previousInstallMetadata = null;
   }
 
   const adapterResolution = resolveInstallAdapters(targetAbs, options);
@@ -378,43 +1864,52 @@ function installProject(projectDir, options = {}) {
     assertLegacyToolPermissionsMigratable(existingClaudeSettings);
   }
 
-  fs.mkdirSync(bobResourceDir, { recursive: true });
+  const mcpDir = path.join(targetAbs, "mcp");
+  const runtimeDependencyPlan = prepareRuntimeNodeDependencyCopy(sourceRoot, mcpDir);
+  const mcpTopLevelRuntimeOwnership = buildMcpTopLevelRuntimeOwnership(sourceRoot);
+  try {
+    fs.mkdirSync(bobResourceDir, { recursive: true });
 
   const copiedResources = {};
   for (const resourceSet of RESOURCE_SETS) {
     copiedResources[resourceSet.name] = copyResourceSet(sourceRoot, targetAbs, resourceSet);
   }
+  const copiedInstallSupportFiles = copyCanonicalInstallSupportFiles(sourceRoot, targetAbs);
   const legacyResourcesRemoved = removeLegacyResourceCopies(sourceRoot, targetAbs);
 
-  const mcpDir = path.join(targetAbs, "mcp");
-  fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
+  fs.mkdirSync(mcpDir, { recursive: true });
   // Copy Bob's top-level mcp/ runtime files from the explicit MCP_TOP_LEVEL_RUNTIME_FILES manifest.
   // copyFile OVERWRITES, so a reinstall refreshes a stale prior version — that is what fixes the frozen
-  // browser-driver.js this PR is about. We deliberately do NOT delete other top-level mcp/*.js: the
-  // install target is the user's project and may hold files Bob never placed, so deleting by negation
-  // would destroy them (Codex/glm round-4). A Bob runtime file later renamed/removed lingers harmlessly
-  // (server.js never require()s it). The manifest is the single source of truth; install-smoke.test.js
-  // pins it EQUAL to the real top-level mcp/*.js, so a NEW runtime file can't be silently forgotten —
-  // the drift that hid browser-driver.js. lib/ + its subdirs are copied separately below.
+  // browser-driver.js this PR is about. The surrounding mcp/ root is mixed ownership, so Bob never
+  // deletes other top-level files by negation. Instead, a preceding install's bounded ownership receipt
+  // permits deletion of a retired Bob filename only while its bytes and filesystem identity still match;
+  // operator-created or locally modified siblings survive. The manifest is the single source of truth;
+  // install-smoke.test.js pins it EQUAL to the real source top-level mcp/*.js so additions/deletions
+  // cannot silently drift. lib/ + its subdirs are copied separately below.
+  const removedRetiredMcpTopLevelRuntimeFiles = pruneRetiredMcpTopLevelRuntimeFiles(
+    targetAbs,
+    previousInstallMetadata,
+  );
   for (const file of MCP_TOP_LEVEL_RUNTIME_FILES) {
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
-  // Recursively copy the whole mcp/lib tree so EVERY split-module subdir lands --
-  // tools/, waves/, body-resolvers/, belief/, and any future one. server.js requires
-  // these at module-load time, so a dropped subdir crashes startup with a "Cannot
-  // find module" error. Copying the tree (not an enumerated subdir list) makes that
-  // silent-drop class impossible. The managed subdirs are cleared first so a
-  // renamed/removed module does not linger across re-installs.
+  // mcp/lib is a wholly Bob-owned runtime root (unlike the surrounding mcp/
+  // directory, where operators may keep their own top-level files). Replace the
+  // complete owned root before copying so a root module or whole subdirectory
+  // removed by a newer Bob release cannot survive an upgrade and later be loaded
+  // through a fixed-path dynamic require. mcp/node_modules is a sibling and is
+  // intentionally untouched: the dependency copier preserves its foreign/stale
+  // packages and operator-owned .bin entries under its separately disclosed
+  // assurance contract. The enrolled lifecycle-custodian mutation registry has
+  // no mcp/lib selection and its production helper remains deliberately
+  // unavailable, so this canonical root still uses a pathname-based Node replace;
+  // doctor's lifecycle-custodian check remains non-authorizing until that native
+  // contract is expanded and qualified.
   const sourceLibDir = path.join(sourceRoot, "mcp", "lib");
   const targetLibDir = path.join(mcpDir, "lib");
   if (path.resolve(sourceLibDir) !== path.resolve(targetLibDir)) {
-    for (const name of fs.readdirSync(sourceLibDir).sort()) {
-      const source = path.join(sourceLibDir, name);
-      if (name !== "node_modules" && fs.statSync(source).isDirectory()) {
-        fs.rmSync(path.join(targetLibDir, name), { recursive: true, force: true });
-      }
-    }
+    fs.rmSync(targetLibDir, { recursive: true, force: true });
     // Copy .js modules plus any .sh build assets a module reads at load time
     // (e.g. repo-env.js resolves a native-fuzz build script under mcp/lib/fuzz/).
     // Dropping a load-time .sh asset crashes mcp/server.js startup the same way a
@@ -436,7 +1931,12 @@ function installProject(projectDir, options = {}) {
     // resolving a previously-installed (now removed) digest.
     fs.rmSync(targetImageLock, { force: true });
   }
-  const copiedRuntimeDependencies = copyRuntimeNodeDependencies(sourceRoot, mcpDir);
+  const copiedRuntimePackageFiles = copyCanonicalRuntimePackages(
+    sourceRoot,
+    targetAbs,
+    targetAuthority,
+  );
+  const copiedRuntimeDependencies = applyRuntimeNodeDependencyCopy(runtimeDependencyPlan);
 
   // Policy-replay diagnostic harness. Adapter-agnostic tooling under
   // testing/policy-replay/ in the target. Skip node_modules to avoid bloat.
@@ -502,6 +2002,7 @@ function installProject(projectDir, options = {}) {
     installerSource,
     commitSha,
     adapterIds: metadataAdapters,
+    mcpTopLevelRuntimeOwnership,
   });
   try {
     clearUpdateCache(targetAbs);
@@ -533,7 +2034,7 @@ function installProject(projectDir, options = {}) {
     sessionCap = null;
   }
 
-  return {
+    return {
     adapters: adapterIds,
     installedAdapters: metadataAdapters,
     adapterResults,
@@ -550,10 +2051,21 @@ function installProject(projectDir, options = {}) {
     genericPromptDocs: adapterResults["generic-mcp"] ? adapterResults["generic-mcp"].promptDocs : 0,
     bypassTables: copiedResources.bypassTables.length,
     knowledge: copiedResources.knowledge.length,
+    installSupportFiles: copiedInstallSupportFiles.length,
     legacyResourcesRemoved,
+    removedRetiredMcpTopLevelRuntimeFiles,
+    runtimePackageFiles: copiedRuntimePackageFiles.length,
     runtimeDependencyFiles: copiedRuntimeDependencies.length,
     patchrightAvailable: patchrightAvailable(targetAbs, sourceRoot),
-  };
+    };
+  } finally {
+    closeRuntimeNodeDependencyCopyPlan(runtimeDependencyPlan);
+  }
+}
+
+function installProject(projectDir, options = {}) {
+  const targetAbs = path.resolve(projectDir || ".");
+  return installProjectWithTargetAuthority(targetAbs, options, null);
 }
 
 function printInstallSummary(summary) {
@@ -586,7 +2098,7 @@ function printInstallSummary(summary) {
   }
   console.log(`  ${summary.bypassTables} neutral bypass tables`);
   console.log(`  ${summary.knowledge} neutral evaluator knowledge files`);
-  console.log(`  MCP runtime (mcp/{${MCP_TOP_LEVEL_RUNTIME_FILES.join(", ")}}, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
+  console.log(`  MCP runtime (mcp/{${MCP_TOP_LEVEL_RUNTIME_FILES.join(", ")}}, lib/*.js, lib/tools/*.js, nested package files ${summary.runtimePackageFiles}, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
   console.log("  ~/hacker-bob-sessions/  (canonical session root; run with --purge-legacy-session-root to remove a pre-v2.0 ~/bounty-agent-sessions/)");
@@ -761,6 +2273,8 @@ function printPurgeLegacySessionRootReport(report) {
 
 module.exports = {
   BOB_RESOURCE_DIR,
+  copyCanonicalRuntimePackages,
+  copyRuntimeNodeDependencies,
   MCP_TOP_LEVEL_RUNTIME_FILES,
   NEUTRAL_INSTALL_SCHEMA_VERSION,
   RESOURCE_SETS,

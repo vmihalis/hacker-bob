@@ -13,7 +13,11 @@
 // PURE selection. Reads the materialized task-graph (X.2), filters to
 // Transition + Hypothesis nodes whose state is dispatch-eligible per the
 // X.8 prepare-node contract (`contracted` or `ready`), sorts by priority
-// then node_id for determinism, caps at `capacity`. Does not promote
+// then node_id for determinism, caps at `capacity`. PH-S11 nodes carrying a
+// physical resource bundle additionally require the broker's privately
+// branded live eligibility port; without it they remain explicitly skipped
+// and receive no dispatch/coverage credit. Public reservation projections are
+// never accepted. This function does not promote
 // node state and does not append to any ledger; the X.9 tool
 // (bob_schedule_graph_nodes) is the only sanctioned writer and it wraps
 // this selection with a graph-hash-drift check and the dispatch dance
@@ -43,6 +47,10 @@ const {
 const {
   SEVERITY_VALUES,
 } = require("./constants.js");
+const {
+  assertPhysicalResourceReservationEligibilityPort,
+  resolveHeldPhysicalResourceForNode,
+} = require("../../packages/bob-instrument-broker/lib/resource-reservations.js");
 
 // Severity ordering for the deterministic Tier-1 breadth order: SEVERITY_VALUES
 // is critical -> high -> medium -> low -> info, so a lower index sorts first.
@@ -161,8 +169,21 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
     document = result.document;
   }
 
+  const sourceGraphHash = document.hashes && typeof document.hashes.graph_hash === "string"
+    ? document.hashes.graph_hash
+    : null;
+  const physicalEligibilityPort = options.physicalResourceReservationEligibilityPort == null
+    ? null
+    : assertPhysicalResourceReservationEligibilityPort(
+      options.physicalResourceReservationEligibilityPort,
+    );
+  const sessionNucleusHash = typeof options.sessionNucleusHash === "string"
+    ? options.sessionNucleusHash
+    : null;
+
   const candidates = [];
   const skipped = [];
+  let consideredCount = 0;
   if (Array.isArray(document.nodes)) {
     for (const node of document.nodes) {
       if (!node || typeof node !== "object") continue;
@@ -171,7 +192,8 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
       // in the graph-scheduler's skipped list would conflate authority.
       if (!GRAPH_SCHEDULED_KINDS.includes(node.kind)) continue;
       if (!DISPATCH_ELIGIBLE_STATES.includes(node.state)) continue;
-      candidates.push({
+      consideredCount += 1;
+      const candidate = {
         node_id: node.node_id,
         kind: node.kind,
         state: node.state,
@@ -184,7 +206,34 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
         tier: Number.isInteger(node.tier) ? node.tier : 1,
         ts_first: node.ts_first || null,
         ts_last: node.ts_last || null,
-      });
+      };
+      if (node.physical_resource_bundle && typeof node.physical_resource_bundle === "object") {
+        candidate.physical_resource_bundle = { ...node.physical_resource_bundle };
+        candidate.contract_hash = typeof node.contract_hash === "string"
+          ? node.contract_hash
+          : null;
+        let eligibility = null;
+        if (physicalEligibilityPort != null
+            && candidate.contract_hash != null
+            && sourceGraphHash != null
+            && sessionNucleusHash != null) {
+          eligibility = resolveHeldPhysicalResourceForNode(physicalEligibilityPort, {
+            node_id: candidate.node_id,
+            contract_hash: candidate.contract_hash,
+            source_graph_hash: sourceGraphHash,
+            session_nucleus_hash: sessionNucleusHash,
+            resource_bundle_digest: candidate.physical_resource_bundle.resource_bundle_digest,
+          });
+        }
+        if (eligibility == null) {
+          candidate.physical_reservation_state = "not_held";
+          skipped.push(candidate);
+          continue;
+        }
+        candidate.physical_reservation_state = "held";
+        candidate.physical_reservation_eligibility_digest = eligibility.eligibility_digest;
+      }
+      candidates.push(candidate);
     }
   }
 
@@ -253,13 +302,15 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
   // preserved. A null governor (default) leaves selection untouched =>
   // byte-identical default-off.
   let coverageGap = null;
+  let budgetDeferred = [];
   if (Number.isInteger(policy.max_total_spawned_agents)) {
     const reserved = Number.isInteger(options.reservedSpawnTotal) && options.reservedSpawnTotal > 0
       ? options.reservedSpawnTotal
       : 0;
     const remainingBudget = Math.max(0, policy.max_total_spawned_agents - reserved);
     if (selected.length > remainingBudget) {
-      for (const node of selected.slice(remainingBudget)) skipped.push(node);
+      budgetDeferred = selected.slice(remainingBudget);
+      for (const node of budgetDeferred) skipped.push(node);
       selected = selected.slice(0, remainingBudget);
       capacityLimit = Math.min(capacityLimit, remainingBudget);
     }
@@ -270,20 +321,16 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
     // spawn_budget_exhausted decision. The cells remain in `skipped` (RANK != BOUND:
     // they ride the next drain cycle if budget frees, never truncated). A null governor
     // never sets this => byte-identical default-off.
-    if (remainingBudget === 0 && selected.length === 0 && skipped.length > 0) {
+    if (remainingBudget === 0 && selected.length === 0 && budgetDeferred.length > 0) {
       coverageGap = {
         kind: "spawn_budget_exhausted",
         max_total_spawned_agents: policy.max_total_spawned_agents,
         reserved_spawn_total: reserved,
         remaining_budget: remainingBudget,
-        uncovered_node_ids: skipped.map((node) => node.node_id),
+        uncovered_node_ids: budgetDeferred.map((node) => node.node_id),
       };
     }
   }
-
-  const sourceGraphHash = document.hashes && typeof document.hashes.graph_hash === "string"
-    ? document.hashes.graph_hash
-    : null;
 
   const result = {
     target_domain: domain,
@@ -291,7 +338,7 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
     source_graph_hash: sourceGraphHash,
     capacity_used: selected.length,
     capacity_limit: capacityLimit,
-    considered_count: candidates.length,
+    considered_count: consideredCount,
     selected: selected.map((node) => ({ ...node })),
     skipped: skipped.map((node) => ({ ...node })),
     policy,

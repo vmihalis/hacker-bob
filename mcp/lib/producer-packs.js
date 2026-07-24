@@ -60,6 +60,7 @@ const ARTIFACT_KIND_VALUES = Object.freeze([
   "js_secrets",
   "jwt_candidates",
   "repo_inventory",
+  "http_bodies",
   "chain_address_set",
   "sc_surface",
   "web_surface",
@@ -200,6 +201,49 @@ const WEB_ASSEMBLY_PRODUCER_PACK = Object.freeze({
   advisory: false,
 });
 
+// Root producer for already-materialized HTTP body corpora. The floor only
+// schedules it when the MCP-owned body corpus is present, so clean web sessions
+// with no captured bodies remain vacuous.
+const WEB_HTTP_BODIES_PRODUCER_PACK = Object.freeze({
+  producer_id: "web_http_bodies",
+  producer_version: 1,
+  producer_agent: PRODUCER_AGENT,
+  recon_profile: Object.freeze({
+    angle: "http_bodies",
+    steps: Object.freeze([]),
+  }),
+  trigger: Object.freeze({
+    kind: "root",
+    target_class: "web",
+    consumes: Object.freeze([]),
+  }),
+  produces: Object.freeze(["http_bodies"]),
+  emits_surface_types: Object.freeze([]),
+  scratch_namespace: producerScratchNamespace("web_http_bodies"),
+  advisory: false,
+});
+
+// Derived producer that converts routed on-chain references in captured web
+// response bodies into the chain_address_set seed consumed by SC expansion.
+const WEB_ONCHAIN_REF_PRODUCER_PACK = Object.freeze({
+  producer_id: "web_onchain_ref",
+  producer_version: 1,
+  producer_agent: PRODUCER_AGENT,
+  recon_profile: Object.freeze({
+    angle: "onchain_ref",
+    steps: Object.freeze([]),
+  }),
+  trigger: Object.freeze({
+    kind: "derived",
+    target_class: "web",
+    consumes: Object.freeze(["http_bodies"]),
+  }),
+  produces: Object.freeze(["chain_address_set"]),
+  emits_surface_types: Object.freeze(["smart_contract"]),
+  scratch_namespace: producerScratchNamespace("web_onchain_ref"),
+  advisory: false,
+});
+
 // Chain front-door root producer: fires on a non-web (chain) target_class and
 // emits the chain_address_set seed the expander consumes. Mirrors the
 // web_host_family root shape — consumes nothing, emits no surface type itself —
@@ -268,6 +312,8 @@ const PRODUCER_PACKS = Object.freeze({
   web_nuclei: WEB_NUCLEI_PRODUCER_PACK,
   web_js_jwt: WEB_JS_JWT_PRODUCER_PACK,
   web_assembly: WEB_ASSEMBLY_PRODUCER_PACK,
+  web_http_bodies: WEB_HTTP_BODIES_PRODUCER_PACK,
+  web_onchain_ref: WEB_ONCHAIN_REF_PRODUCER_PACK,
   sc_chain_root: SC_CHAIN_ROOT_PRODUCER_PACK,
   sc_address_expander: SC_ADDRESS_EXPANDER_PRODUCER_PACK,
 });

@@ -391,6 +391,7 @@ For local development on Bob itself:
 
 ```bash
 npm test
+npm run test:native-darwin # Darwin arm64 + Node.js 20 qualification
 npm run release:check
 npm run release:check:dependencies
 ```

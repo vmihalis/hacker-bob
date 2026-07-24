@@ -15,6 +15,10 @@ const {
   waveAssignmentsPath,
 } = require("../paths.js");
 const {
+  loadQueuePolicy,
+} = require("../queue-policy.js");
+const { FANOUT_ROLE_REGISTRY } = require("../nested-spawn.js");
+const {
   appendJsonlLine,
   withSessionLock,
   writeFileAtomic,
@@ -28,6 +32,12 @@ const {
   routeSurfacesInternal,
   isUnroutableRoute,
 } = require("../surface-router.js");
+// The id-bearing detector is INJECTED here (as in the route-surfaces handler) so
+// the durable surface-routes.json written at wave start preserves
+// auth_differential_required — routeSurfacesInternal rewrites the file, and
+// without the detector it would clobber the flag route_surfaces set to false.
+const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../offensive-idor-producer.js");
+const { listAuthProfiles } = require("../auth.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
 } = require("../surface-leads.js");
@@ -54,6 +64,7 @@ const {
   normalizeBlockedPrereqs,
   normalizeBypassAttempts,
   normalizeChainNotes,
+  normalizeDiscoveredPivots,
   normalizeHandoffSummary,
   normalizeSpawnedChildren,
   sha256Hex,
@@ -114,7 +125,30 @@ function prepareWaveAssignments({
   }
   // Capturing surface_type AT WAVE START into the immutable assignment file
   // makes the smart_contract completion gate tamper-resistant.
-  const routedSurfaces = routeSurfacesInternal(domain, { attackSurfaceInfo: attackSurface });
+  let authProfileCount = 0;
+  try {
+    const authProfiles = JSON.parse(listAuthProfiles({ target_domain: domain }));
+    // Count DISTINCT AUTHENTICATED principals (non-null MCP-owned fingerprints), not raw
+    // profile names — so the auth-differential obligation fires exactly when >=2 real
+    // tenants exist to run the cross-tenant test (aligning the flag with the completion
+    // gate's clearance predicate; a single authed account + anon never over-flags).
+    authProfileCount = Array.isArray(authProfiles.profiles)
+      ? new Set(authProfiles.profiles.map((p) => p && p.principal_fingerprint).filter(Boolean)).size
+      : 0;
+  } catch {
+    authProfileCount = 0;
+  }
+  // Thread the queue policy so the router can route high-value web surfaces to the
+  // spawn-capable web_fanout variant when nesting is enabled (max_spawn_depth>1).
+  let queuePolicyForRoute = null;
+  try { queuePolicyForRoute = loadQueuePolicy(domain); } catch { queuePolicyForRoute = null; }
+  const routedSurfaces = routeSurfacesInternal(domain, {
+    attackSurfaceInfo: attackSurface,
+    authProfileCount,
+    idBearingDetector: surfaceExposesIdBearingCollection,
+    idBearingEndpoints: surfaceIdBearingEndpoints,
+    queuePolicy: queuePolicyForRoute,
+  });
   const routeBySurfaceId = new Map(
     routedSurfaces.document.routes.map((route) => [route.surface_id, route]),
   );
@@ -165,6 +199,18 @@ function prepareWaveAssignments({
       evaluator_agent: route.evaluator_agent,
       brief_profile: route.brief_profile,
       context_budget: route.context_budget,
+      // Carry the route-derived (MCP-owned) auth-differential obligation onto the
+      // immutable assignment so the per-run AD1 gate can read it; sourced ONLY from
+      // route, never the agent-supplied assignment (no forgeability re-entry).
+      auth_differential_required: route.auth_differential_required === true,
+      // id_bearing (detector result, principal-independent) so the finalize gate catches a
+      // single-account id-bearing 'complete' EARLY with the correct 'mark partial' guidance,
+      // consistent with the grade gate (which also keys on id_bearing).
+      id_bearing: route.id_bearing === true,
+      // The FROZEN (MCP-owned, route-time) id-bearing endpoint set: the AD1 gate binds
+      // sweep coverage to these, so an agent cannot relabel a real flip onto this surface
+      // by editing agent-writable attack_surface.json after the fact.
+      id_bearing_endpoints: Array.isArray(route.id_bearing_endpoints) ? route.id_bearing_endpoints.slice() : [],
       task_lens: assignment.task_lens,
       budget: assignment.budget,
       handoff_token_required: true,
@@ -205,9 +251,9 @@ function removeWaveAssignmentsDocument(assignmentsPath) {
   }
 }
 
-// The single brain-pinned spawn role a nesting child is dispatched as. A
-// reported child of any other type is rejected by the allowlist leg below.
-const SPAWN_CHILD_SUBAGENT_TYPE = "evaluator-fanout";
+// NS-7 — the single brain-pinned LEAF role a nesting root may report. It is
+// deliberately not the spawn-capable root role; a different type is rejected.
+const SPAWN_CHILD_SUBAGENT_TYPE = FANOUT_ROLE_REGISTRY.child.subagent_type;
 
 // The live detective backstop on actuated fan-out. The brain owns the per-surface
 // fan-out budget (buildChildFanoutPlanForSurface); a worker self-reports the children
@@ -215,26 +261,25 @@ const SPAWN_CHILD_SUBAGENT_TYPE = "evaluator-fanout";
 // the reported children against the budget the brain handed this surface so the
 // "a leaf worker must not fan out" rule is mechanical, not prose.
 //
-// The budget is RE-DERIVED from the same brain function the dispatch used, so it
-// matches what the agent was handed. The discriminator is remaining_depth, which is
-// host/policy-derived (effectiveSpawnDepth minus one) and therefore stable between
-// dispatch and handoff write — unlike max_children/children[], which the cell-floor
-// dedup can only SHRINK as coverage advances. So:
+// The budget is RE-DERIVED from the same brain function the dispatch used. Child
+// coverage is written under the root's shared (wave, agent, surface) coordinates,
+// so those rows MUST be excluded before rebuilding the dispatch-time plan; using
+// all current coverage would prune the children after they completed and reject a
+// truthful root handoff as depth-0/out-of-budget. So:
 //   - No plan, or remaining_depth <= 0  => a leaf worker (the default-off path, every
 //     normal evaluator, and the new flat fan-outs: recon angles, per-finding
 //     verifiers). Budget depth 0 / max_children 0 — ANY reported child is rejected.
 //   - remaining_depth > 0               => the surface was handed a real fan-out plan
 //     (the opt-in nested evaluator-fanout). Children up to the plan's count, of the
-//     pinned spawn type, pass. The count leg uses the live plan's max_children; a
-//     legitimate parent's reported count never exceeds the dispatch-time width
-//     because the live recompute only shrinks, so an honest parent stays within
-//     budget. The allowlist leg pins the child type.
+//     pinned spawn type and exact issued cell_key, pass. The count leg uses the
+//     reconstructed emitted width, not merely the policy ceiling; duplicate or
+//     invented cells are rejected.
 //
-// Best-effort recompute: if the plan cannot be derived (missing surface, transient
-// read error), fall back to a depth-0 leaf budget so an unbudgeted child is still
-// caught and a budgeted parent is never falsely rejected by a recompute failure —
-// instead its width leg is skipped while the leaf leg stays on.
-function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
+// Fail-closed recompute: if the plan cannot be derived (missing surface or read
+// error), fall back to a depth-0 leaf budget. The root keeps its durable child
+// evidence, but no unverified spawn report is signed into a wave handoff.
+// NS-4 — reconstruct the bounded dispatch-time root+descendant envelope.
+function spawnFanoutBudgetForSurface(domain, surfaceId, wave, agent) {
   let plan = null;
   try {
     const { buildChildFanoutPlanForSurface } = require("../assignment-brief.js");
@@ -242,7 +287,11 @@ function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
     const surfaces = readAttackSurfaceStrict(domain).document.surfaces || [];
     const surfaceObj = surfaces.find((s) => s && s.id === surfaceId);
     if (surfaceObj) {
-      const coverageRecords = readCoverageRecordsFromJsonl(domain);
+      const coverageRecords = readCoverageRecordsFromJsonl(domain).filter((record) => !(
+        record.wave === wave
+        && record.agent === agent
+        && record.surface_id === surfaceId
+      ));
       plan = buildChildFanoutPlanForSurface({
         domain,
         surfaceObj,
@@ -255,20 +304,42 @@ function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
     plan = null;
   }
   if (plan && Number.isInteger(plan.remaining_depth) && plan.remaining_depth > 0) {
+    const children = Array.isArray(plan.children) ? plan.children : [];
     return {
       remaining_depth: plan.remaining_depth,
-      max_children: Number.isInteger(plan.max_children) ? plan.max_children : 0,
+      max_children: children.length,
       child_type_allowlist: [SPAWN_CHILD_SUBAGENT_TYPE],
+      child_cell_allowlist: children
+        .map((child) => child && child.cell_key)
+        .filter((cellKey) => typeof cellKey === "string" && cellKey.length > 0),
     };
   }
   return { remaining_depth: 0, max_children: 0 };
 }
 
+// NS-7 — only the root may sign the exact direct cells the brain issued; child
+// coverage cannot erase that issuance before the single root handoff is written.
 function assertSpawnFanoutWithinBudget(domain, wave, agent, surfaceId, spawnedChildren) {
   if (!Array.isArray(spawnedChildren) || spawnedChildren.length === 0) return;
   const { validateSpawnFanout } = require("../nested-spawn.js");
-  const budget = spawnFanoutBudgetForSurface(domain, surfaceId, wave);
+  const budget = spawnFanoutBudgetForSurface(domain, surfaceId, wave, agent);
   const result = validateSpawnFanout(spawnedChildren, budget);
+  const issuedCells = new Set(budget.child_cell_allowlist || []);
+  const seenCells = new Set();
+  for (const child of spawnedChildren) {
+    const cellKey = child && child.cell_key;
+    if (typeof cellKey !== "string" || !issuedCells.has(cellKey)) {
+      result.violations.push(
+        `child cell_key "${typeof cellKey === "string" ? cellKey : "(missing)"}" was not emitted in the child_fanout_plan`,
+      );
+      continue;
+    }
+    if (seenCells.has(cellKey)) {
+      result.violations.push(`child cell_key "${cellKey}" was reported more than once`);
+    }
+    seenCells.add(cellKey);
+  }
+  result.ok = result.violations.length === 0;
   if (!result.ok) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -347,6 +418,10 @@ function writeWaveHandoff(args) {
       dead_ends: normalizeStringArray(args.dead_ends, "dead_ends"),
       waf_blocked_endpoints: normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints"),
       lead_surface_ids: normalizeStringArray(args.lead_surface_ids, "lead_surface_ids"),
+      // PERSIST discovered_pivots (previously dropped): the transition-blind evaluator-fanout
+      // role's cross-surface pivot uplink IS this field — the merge collect + pivot-durability
+      // salvage read it, so it must be signed onto the handoff, not silently discarded.
+      discovered_pivots: normalizeDiscoveredPivots(args.discovered_pivots),
     };
     if (surfaceLeadResult.lead_ids.length > 0) {
       handoff.surface_lead_ids = surfaceLeadResult.lead_ids;

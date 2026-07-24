@@ -38,6 +38,8 @@ const {
 } = require("../mcp/lib/waves.js");
 const {
   attackSurfacePath,
+  httpAuditJsonlPath,
+  statePath,
 } = require("../mcp/lib/paths.js");
 const {
   writeFileAtomic,
@@ -45,6 +47,18 @@ const {
 const {
   recordProducerRun,
 } = require("../mcp/lib/producer-run-ledger.js");
+const {
+  authStore,
+} = require("../mcp/lib/auth.js");
+const {
+  BLOCKED_PREREQ_KIND_CAPABILITY,
+  computeCapabilityClearedPremiseSurfaceIds,
+  computeRequeueSurfaceIds,
+  detectTerminalPromotions,
+} = require("../mcp/lib/waves/wave-promotion-detector.js");
+const {
+  capabilityToolMapFromRegistry,
+} = require("../mcp/lib/tool-registry.js");
 const producerFloorTool = require("../mcp/lib/tools/materialize-producer-floor.js");
 const initContractSessionTool = require("../mcp/lib/tools/init-contract-session.js");
 const {
@@ -135,6 +149,12 @@ function recordTerminalChainAttempt(domain) {
   }));
 }
 
+function patchSessionState(domain, patch) {
+  const filePath = statePath(domain);
+  const doc = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  fs.writeFileSync(filePath, `${JSON.stringify({ ...doc, ...patch }, null, 2)}\n`);
+}
+
 test("SCHEDULER_PRECONDITION_VALUES is frozen and includes partial_surfaces_drained", () => {
   assert.equal(Object.isFrozen(SCHEDULER_PRECONDITION_VALUES), true);
   assert.ok(SCHEDULER_PRECONDITION_VALUES.length >= 1);
@@ -146,6 +166,11 @@ test("PRECONDITION_CHECKS is frozen and covers every value in SCHEDULER_PRECONDI
   for (const name of SCHEDULER_PRECONDITION_VALUES) {
     assert.equal(typeof PRECONDITION_CHECKS[name], "function", `${name} has no check function`);
   }
+});
+
+test("SCHEDULER_PRECONDITION_VALUES includes unscanned_bodies_drained with a paired check", () => {
+  assert.ok(SCHEDULER_PRECONDITION_VALUES.includes("unscanned_bodies_drained"));
+  assert.equal(typeof PRECONDITION_CHECKS.unscanned_bodies_drained, "function");
 });
 
 test("evaluateSchedulerPrecondition rejects unknown precondition names", () => {
@@ -201,6 +226,199 @@ test("partial_surfaces_drained requires target_domain", () => {
     () => evaluateSchedulerPrecondition("partial_surfaces_drained", {}),
     /target_domain/,
   );
+});
+
+test("blocked_prereq capability table covers every kind with registered capability ids", () => {
+  const capabilityMap = capabilityToolMapFromRegistry();
+  assert.deepEqual(Object.keys(BLOCKED_PREREQ_KIND_CAPABILITY).sort(), [
+    "auth_missing",
+    "egress_unreachable",
+    "external_credential_missing",
+    "funded_wallet_missing",
+    "key_material_missing",
+  ].sort());
+  for (const config of Object.values(BLOCKED_PREREQ_KIND_CAPABILITY)) {
+    assert.ok(Object.prototype.hasOwnProperty.call(capabilityMap, config.required_capability_id));
+  }
+});
+
+test("computeCapabilityClearedPremiseSurfaceIds reads live auth profiles for auth blockers", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-auth.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const blockers = new Map([
+      ["surface-auth", [{ kind: "auth_missing", identifier_hint: "attacker" }]],
+    ]);
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      [],
+    );
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      ["surface-auth"],
+    );
+  });
+});
+
+test("computeCapabilityClearedPremiseSurfaceIds does NOT clear an auth blocker for an unobtainable principal while a different profile exists", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-auth-mismatch.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    // Store a regular-user profile, but the surface is blocked on an admin principal it
+    // cannot obtain. The premise must NOT be cleared (was a livelock: any profile existing
+    // cleared it forever, so the surface never promoted to terminal / operator escalation).
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer regular-user" },
+    }));
+    const blockers = new Map([
+      ["surface-admin", [{ kind: "auth_missing", identifier_hint: "admin" }]],
+    ]);
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      [],
+    );
+  });
+});
+
+test("computeCapabilityClearedPremiseSurfaceIds reads producer terminal set for artifact blockers", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-producer.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const blockers = new Map([
+      ["surface-key", [{ kind: "key_material_missing", identifier_hint: "signer" }]],
+    ]);
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      [],
+    );
+    recordProducerRun(domain, { producer_key: "I7_chain_state_tree", status: "produced" });
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      ["surface-key"],
+    );
+  });
+});
+
+test("computeRequeueSurfaceIds unions capability-cleared surfaces through the existing path", () => {
+  const requeue = computeRequeueSurfaceIds(
+    {
+      wave: 1,
+      assignments: [{ agent: "bad-agent", surface_id: "surface-invalid" }],
+      assignmentByAgent: new Map([["bad-agent", { surface_id: "surface-invalid" }]]),
+    },
+    {
+      partial_surface_ids: ["surface-partial"],
+      missing_surface_ids: ["surface-cap"],
+      invalid_agents: ["bad-agent"],
+    },
+    [],
+    new Set(["surface-cap", "surface-auth"]),
+  );
+  assert.deepEqual(requeue, ["surface-partial", "surface-cap", "surface-invalid", "surface-auth"]);
+});
+
+test("detectTerminalPromotions leaves unrelated recurring blockers on a capability-cleared surface", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-mixed.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    const historyBySurface = new Map([
+      ["surface-mixed", [
+        { wave: 1, surface_id: "surface-mixed", kind: "auth_missing", identifier_hint: "attacker" },
+        { wave: 1, surface_id: "surface-mixed", kind: "funded_wallet_missing", identifier_hint: "sepolia" },
+        { wave: 2, surface_id: "surface-mixed", kind: "auth_missing", identifier_hint: "attacker" },
+        { wave: 2, surface_id: "surface-mixed", kind: "funded_wallet_missing", identifier_hint: "sepolia" },
+      ]],
+    ]);
+    const currentWaveBlockersBySurface = new Map([
+      ["surface-mixed", [
+        { kind: "auth_missing", identifier_hint: "attacker" },
+        { kind: "funded_wallet_missing", identifier_hint: "sepolia" },
+      ]],
+    ]);
+    const capabilityClearedSurfaceIds = computeCapabilityClearedPremiseSurfaceIds({
+      historyBySurface,
+      currentWaveBlockersBySurface,
+      currentWave: 2,
+      target_domain: domain,
+    });
+    const promotions = detectTerminalPromotions({
+      currentWaveBlockersBySurface,
+      historyBySurface,
+      prereqRegistrySnapshots: [],
+      clearHistoryBySurface: new Map(),
+      currentWave: 2,
+      capabilityClearedSurfaceIds,
+    });
+    assert.equal(promotions.length, 1);
+    assert.deepEqual(promotions[0].blockers.map((b) => b.kind), ["funded_wallet_missing"]);
+  });
+});
+
+test("blocked_prereqs_capability_clear is vacuous without current-wave blockers and blocks when auth clears one", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-gate.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    assert.ok(SCHEDULER_PRECONDITION_VALUES.includes("blocked_prereqs_capability_clear"));
+    assert.equal(typeof PRECONDITION_CHECKS.blocked_prereqs_capability_clear, "function");
+    let result = evaluateSchedulerPrecondition("blocked_prereqs_capability_clear", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.capability_clear_active, false);
+
+    patchSessionState(domain, {
+      lifecycle_state: "OPEN_FRONTIER",
+      phase: "EVALUATE",
+      evaluation_wave: 1,
+      blocked_prereq_history: [
+        { wave: 1, surface_id: "surface-auth", kind: "auth_missing", identifier_hint: "attacker" },
+      ],
+    });
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    result = evaluateSchedulerPrecondition("blocked_prereqs_capability_clear", { target_domain: domain });
+    assert.equal(result.satisfied, false);
+    assert.equal(result.capability_clear_active, true);
+    assert.deepEqual(result.blocked_surface_ids, ["surface-auth"]);
+
+    patchSessionState(domain, {
+      evaluation_wave: 2,
+      blocked_prereq_history: [
+        { wave: 1, surface_id: "surface-auth", kind: "auth_missing", identifier_hint: "attacker" },
+      ],
+    });
+    result = evaluateSchedulerPrecondition("blocked_prereqs_capability_clear", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.capability_clear_active, false);
+  });
 });
 
 test("SCHEDULER_PRECONDITION_VALUES includes chain_work_terminal with a paired check (covered by paired-safety iteration)", () => {
@@ -394,4 +612,77 @@ test("seed_producers_drained matches the dispatch handler at a non-default linke
     assert.equal(result.satisfied, true,
       "the depth-capped floor is genuinely drained ⇒ OPEN_FRONTIER can advance");
   });
+});
+
+test("unscanned_bodies_drained is vacuous before a producer floor is materialized", () => {
+  withTempHome(() => {
+    const domain = "unscanned-vacuous.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+    const result = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.obligation_active, false);
+    assert.equal(result.unscanned_body_present, false);
+  });
+});
+
+test("unscanned_bodies_drained blocks when a materialized http body corpus leaves web_onchain_ref ready", () => {
+  withTempHome(() => {
+    const domain = "unscanned-blocking.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+    JSON.parse(producerFloorTool.handler({ target_domain: domain }));
+    const auditPath = httpAuditJsonlPath(domain);
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    fs.writeFileSync(
+      auditPath,
+      `${JSON.stringify({ body: "see contract 0x0000000000000000000000000000000000000abc on chain" })}\n`,
+    );
+
+    const result = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(result.satisfied, false);
+    assert.equal(result.unscanned_body_present, true);
+    assert.equal(result.obligation_active, true);
+    assert.ok(result.ready_web_onchain_ref_count >= 1);
+
+    const lifecycleGates = require("../mcp/lib/lifecycle-gates.js");
+    const gate = lifecycleGates.gateOpenFrontierToClaimFreeze
+      || lifecycleGates.TRANSITION_GATES["OPEN_FRONTIER->CLAIM_FREEZE"];
+    if (typeof gate === "function") {
+      const blockers = gate({ target_domain: domain });
+      const blocker = blockers.find((b) => b.code === "unscanned_bodies_undrained");
+      assert.ok(blocker);
+      assert.ok(blocker.remediation);
+    }
+  });
+});
+
+test("unscanned_bodies_drained is satisfied once web_onchain_ref has a terminal producer_run", () => {
+  withTempHome(() => {
+    const domain = "unscanned-drained.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+    JSON.parse(producerFloorTool.handler({ target_domain: domain }));
+    const auditPath = httpAuditJsonlPath(domain);
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    fs.writeFileSync(
+      auditPath,
+      `${JSON.stringify({ body: "see contract 0x0000000000000000000000000000000000000abc on chain" })}\n`,
+    );
+
+    const blocked = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(blocked.satisfied, false);
+
+    recordProducerRun(domain, { producer_key: "web_onchain_ref", status: "produced" });
+    const result = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.unscanned_body_present, false);
+  });
+});
+
+test("unscanned_bodies_drained requires target_domain", () => {
+  assert.throws(
+    () => evaluateSchedulerPrecondition("unscanned_bodies_drained", {}),
+    /target_domain/,
+  );
 });

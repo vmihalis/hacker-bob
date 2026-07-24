@@ -18,27 +18,59 @@ const {
 } = require("../scheduler-decisions.js");
 const { appendFrontierEvent } = require("../frontier-events.js");
 
-const BLOCKED_PREREQ_KINDS_WITH_REGISTRY_DELTA = Object.freeze({
-  auth_missing: "auth_handles",
-  egress_unreachable: "egress_handles",
+// Max times a (kind, hint) tuple may be capability-cleared+requeued before it must promote
+// to an operator-clearable terminal — bounds the reprieve so a present-but-broken handle
+// cannot livelock the run (matches detectTerminalPromotions' 2-wave recurrence ceiling).
+const CAPABILITY_CLEAR_REPRIEVE_CAP = 2;
+
+const BLOCKED_PREREQ_KIND_CAPABILITY = Object.freeze({
+  auth_missing: Object.freeze({
+    required_capability_id: "S3_stepup_registration",
+    clearance_source: "auth_profile",
+  }),
+  egress_unreachable: Object.freeze({
+    required_capability_id: "S3_oob_callback",
+    // Materialization-gated (a real OOB callback terminal run proves egress reached
+    // back), NEVER tool-existence: bob_oob_mint is statically registered, so a
+    // tool-registry clearance would be unconditionally true and a firewalled surface
+    // would livelock (requeued every wave, never promoted to operator escalation).
+    clearance_source: "producer_terminal",
+  }),
+  funded_wallet_missing: Object.freeze({
+    required_capability_id: "I7_chain_state_tree",
+    clearance_source: "producer_terminal",
+  }),
+  key_material_missing: Object.freeze({
+    required_capability_id: "I7_chain_state_tree",
+    clearance_source: "producer_terminal",
+  }),
+  external_credential_missing: Object.freeze({
+    required_capability_id: "S3_stepup_registration",
+    clearance_source: "producer_terminal",
+  }),
 });
 
 // Loop detector. For each surface with current-wave blockers, look at validated
 // history (state.blocked_prereq_history) for prior occurrences of the same
-// (kind, identifier_hint) tuple. Registry-delta kinds (auth_missing,
-// egress_unreachable) skip promotion when the named handle is newly registered
-// since the latest prior occurrence; null identifier_hint skips when the handle
-// set grew at all. Other kinds promote on any 2-wave recurrence and require an
-// operator clear via bob_clear_terminal_block.
+// (kind, identifier_hint) tuple. A blocker whose required capability is now
+// materialized is left for the merge requeue path; remaining blockers promote
+// on any 2-wave recurrence and require an operator clear via
+// bob_clear_terminal_block.
 function detectTerminalPromotions({
   currentWaveBlockersBySurface,
   historyBySurface,
   prereqRegistrySnapshots,
   clearHistoryBySurface,
   currentWave,
+  capabilityClearedSurfaceIds,
 }) {
-  const snapshotByWave = new Map(prereqRegistrySnapshots.map((s) => [s.wave, s]));
-  const currentSnapshot = snapshotByWave.get(currentWave);
+  void prereqRegistrySnapshots;
+  const capabilityCleared = capabilityClearedSurfaceIds instanceof Set
+    ? capabilityClearedSurfaceIds
+    : new Set(Array.isArray(capabilityClearedSurfaceIds) ? capabilityClearedSurfaceIds : []);
+  const clearedPremiseKeysBySurface = capabilityCleared.cleared_premise_keys_by_surface instanceof Map
+    ? capabilityCleared.cleared_premise_keys_by_surface
+    : null;
   const promotions = [];
   for (const [surfaceId, currentEntries] of currentWaveBlockersBySurface) {
     const surfaceHistory = historyBySurface.get(surfaceId) || [];
@@ -63,27 +95,11 @@ function detectTerminalPromotions({
         (h.identifier_hint || null) === hint,
       );
       if (priorMatches.length === 0) continue;
-      const registryField = BLOCKED_PREREQ_KINDS_WITH_REGISTRY_DELTA[entry.kind];
-      if (registryField && currentSnapshot) {
-        // If the handle was registered since the latest prior occurrence, the
-        // loop is potentially broken.
-        const latestPriorWave = Math.max(...priorMatches.map((p) => p.wave));
-        const priorSnapshot = snapshotByWave.get(latestPriorWave);
-        const priorHandles = priorSnapshot && Array.isArray(priorSnapshot[registryField])
-          ? new Set(priorSnapshot[registryField])
-          : new Set();
-        const currentHandles = new Set(currentSnapshot[registryField] || []);
-        if (hint != null) {
-          // Skip only if the exact named handle is newly registered.
-          if (currentHandles.has(hint) && !priorHandles.has(hint)) continue;
-        } else {
-          // Skip if the handle set grew at all.
-          let grew = false;
-          for (const h of currentHandles) {
-            if (!priorHandles.has(h)) { grew = true; break; }
-          }
-          if (grew) continue;
-        }
+      if (clearedPremiseKeysBySurface) {
+        const clearedKeys = clearedPremiseKeysBySurface.get(surfaceId);
+        if (clearedKeys && clearedKeys.has(tupleKey)) continue;
+      } else if (capabilityCleared.has(surfaceId)) {
+        continue;
       }
       seenTuples.add(tupleKey);
       const blocker = { kind: entry.kind };
@@ -100,6 +116,157 @@ function detectTerminalPromotions({
     }
   }
   return promotions;
+}
+
+function currentWaveBlockersFromMerge(merge) {
+  const currentWaveBlockersBySurface = new Map();
+  for (const entry of merge && Array.isArray(merge.blocked_prereqs) ? merge.blocked_prereqs : []) {
+    if (!entry || typeof entry.surface_id !== "string" || !entry.surface_id) continue;
+    if (!currentWaveBlockersBySurface.has(entry.surface_id)) {
+      currentWaveBlockersBySurface.set(entry.surface_id, []);
+    }
+    currentWaveBlockersBySurface.get(entry.surface_id).push({
+      kind: entry.kind,
+      identifier_hint: entry.identifier_hint || null,
+      reason: entry.reason,
+    });
+  }
+  return currentWaveBlockersBySurface;
+}
+
+function currentWaveBlockersFromHistory(historyBySurface, currentWave) {
+  const currentWaveBlockersBySurface = new Map();
+  if (!(historyBySurface instanceof Map) || !Number.isInteger(currentWave)) {
+    return currentWaveBlockersBySurface;
+  }
+  for (const [surfaceId, entries] of historyBySurface) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || entry.wave !== currentWave) continue;
+      if (!currentWaveBlockersBySurface.has(surfaceId)) {
+        currentWaveBlockersBySurface.set(surfaceId, []);
+      }
+      currentWaveBlockersBySurface.get(surfaceId).push({
+        kind: entry.kind,
+        identifier_hint: entry.identifier_hint || null,
+        reason: entry.reason,
+      });
+    }
+  }
+  return currentWaveBlockersBySurface;
+}
+
+function readAuthProfileHandles(targetDomain) {
+  const { listAuthProfiles } = require("../auth.js");
+  const parsed = JSON.parse(listAuthProfiles({ target_domain: targetDomain }));
+  const handles = new Set();
+  for (const p of (Array.isArray(parsed.profiles) ? parsed.profiles : [])) {
+    if (p && typeof p.profile_name === "string" && p.profile_name) handles.add(p.profile_name);
+    if (p && typeof p.principal_fingerprint === "string" && p.principal_fingerprint) handles.add(p.principal_fingerprint);
+  }
+  return handles;
+}
+
+function validateBlockedPrereqCapabilityMap(capabilityToolMap) {
+  for (const [kind, config] of Object.entries(BLOCKED_PREREQ_KIND_CAPABILITY)) {
+    if (!config || typeof config.required_capability_id !== "string") {
+      throw new Error(`blocked prereq kind ${kind} has no required capability id`);
+    }
+    if (!Object.prototype.hasOwnProperty.call(capabilityToolMap, config.required_capability_id)) {
+      throw new Error(`blocked prereq kind ${kind} maps to unregistered capability ${config.required_capability_id}`);
+    }
+  }
+}
+
+function capabilityClearedForBlockedPrereq(entry, sources) {
+  if (!entry || typeof entry.kind !== "string") return false;
+  const config = BLOCKED_PREREQ_KIND_CAPABILITY[entry.kind];
+  if (!config) return false;
+  const capabilityId = config.required_capability_id;
+  if (config.clearance_source === "auth_profile") {
+    // Require the SPECIFIC needed principal named by the premise's identifier_hint to
+    // be present, NOT merely "any profile exists". A surface blocked on an unobtainable
+    // admin/2nd-tenant principal must NOT be cleared just because a regular-user or anon
+    // profile is stored — otherwise it requeues forever and never escalates to terminal.
+    const hint = entry && typeof entry.identifier_hint === "string" ? entry.identifier_hint : "";
+    return hint.length > 0 && sources.authProfileHandles.has(hint);
+  }
+  if (config.clearance_source === "producer_terminal") {
+    return sources.terminalRunSet.has(capabilityId);
+  }
+  // Fail closed: an unrecognized/unmaterialized clearance source never auto-clears a
+  // premise (which would suppress its terminal promotion + operator escalation). Tool
+  // EXISTENCE is not a clearance signal — a statically-registered tool is always present.
+  return false;
+}
+
+function blockedPrereqTupleKey(entry) {
+  const hint = entry && entry.identifier_hint ? entry.identifier_hint : null;
+  return `${entry && entry.kind ? entry.kind : ""}\t${hint || ""}`;
+}
+
+function computeCapabilityClearedPremiseSurfaceIds({
+  merge = null,
+  historyBySurface = null,
+  currentWaveBlockersBySurface = null,
+  currentWave = null,
+  target_domain,
+} = {}) {
+  if (typeof target_domain !== "string" || target_domain.length === 0) {
+    throw new Error("computeCapabilityClearedPremiseSurfaceIds: target_domain is required");
+  }
+  let blockersBySurface = currentWaveBlockersBySurface;
+  if (!(blockersBySurface instanceof Map)) {
+    blockersBySurface = merge
+      ? currentWaveBlockersFromMerge(merge)
+      : currentWaveBlockersFromHistory(historyBySurface, currentWave);
+  }
+  if (!(blockersBySurface instanceof Map) || blockersBySurface.size === 0) {
+    return new Set();
+  }
+
+  const { capabilityToolMapFromRegistry } = require("../tool-registry.js");
+  const { buildProducerRunLedgerCache } = require("../producer-run-ledger.js");
+  const capabilityToolMap = capabilityToolMapFromRegistry();
+  validateBlockedPrereqCapabilityMap(capabilityToolMap);
+  const sources = {
+    capabilityToolMap,
+    authProfileHandles: readAuthProfileHandles(target_domain),
+    terminalRunSet: buildProducerRunLedgerCache(target_domain).terminalKeys,
+  };
+  const surfaceIds = new Set();
+  const premiseKeysBySurface = new Map();
+  // Y-D23 capability-clear: a materialized blocked prerequisite keeps the
+  // surface open for a fresh run until the current blocker is resolved.
+  for (const [surfaceId, entries] of blockersBySurface) {
+    if (!Array.isArray(entries)) continue;
+    const surfaceHistory = (historyBySurface instanceof Map ? historyBySurface.get(surfaceId) : null) || [];
+    for (const entry of entries) {
+      if (!capabilityClearedForBlockedPrereq(entry, sources)) continue;
+      // BOUNDED REPRIEVE (loop-breaker): a present handle grants a clear+requeue, but only
+      // a bounded number of times. Once this (kind, hint) tuple has already recurred
+      // CAPABILITY_CLEAR_REPRIEVE_CAP times, stop clearing it so detectTerminalPromotions
+      // promotes it to an operator-clearable terminal instead of requeuing forever on a
+      // present-but-broken handle (e.g. a stored-but-expired profile matching the hint).
+      const tupleKey = blockedPrereqTupleKey(entry);
+      // Count occurrences STRICTLY PRIOR to the current wave (exclude this wave's own
+      // re-record), so a handle that just became live earns its reprieve, but a tuple that
+      // has already recurred CAP times promotes instead of clearing again.
+      const priorOccurrences = surfaceHistory.filter((h) => (
+        blockedPrereqTupleKey(h) === tupleKey
+        && (typeof h.wave !== "number" || typeof currentWave !== "number" || h.wave < currentWave)
+      )).length;
+      if (priorOccurrences >= CAPABILITY_CLEAR_REPRIEVE_CAP) continue;
+      surfaceIds.add(surfaceId);
+      if (!premiseKeysBySurface.has(surfaceId)) premiseKeysBySurface.set(surfaceId, new Set());
+      premiseKeysBySurface.get(surfaceId).add(tupleKey);
+    }
+  }
+  Object.defineProperty(surfaceIds, "cleared_premise_keys_by_surface", {
+    value: premiseKeysBySurface,
+    enumerable: false,
+  });
+  return surfaceIds;
 }
 
 function basePromotionPreviewForState(domain, state) {
@@ -286,7 +453,7 @@ function inspectSchedulerDecisionIntegrity({ domain, assignmentBatchId, schedule
   return summary;
 }
 
-function computeRequeueSurfaceIds(artifacts, merge, coverageRecords = []) {
+function computeRequeueSurfaceIds(artifacts, merge, coverageRecords = [], capabilityClearedSurfaceIds = []) {
   const requeueSurfaceIds = [];
   const seen = new Set();
   pushUnique(requeueSurfaceIds, seen, merge.partial_surface_ids);
@@ -297,6 +464,7 @@ function computeRequeueSurfaceIds(artifacts, merge, coverageRecords = []) {
     pushUnique(requeueSurfaceIds, seen, [assignment.surface_id]);
   }
   pushUnique(requeueSurfaceIds, seen, computeCoverageRequeueSurfaceIds(artifacts, coverageRecords));
+  pushUnique(requeueSurfaceIds, seen, capabilityClearedSurfaceIds);
   return requeueSurfaceIds;
 }
 
@@ -398,7 +566,7 @@ function appendHandoffLeadSurfaceFrontierEvents(domain, leadSurfaceIds, waveNumb
 }
 
 module.exports = {
-  BLOCKED_PREREQ_KINDS_WITH_REGISTRY_DELTA,
+  BLOCKED_PREREQ_KIND_CAPABILITY,
   appendBlockerPromotionFrontierEvents,
   appendClosureFrontierEvents,
   appendHandoffLeadSurfaceFrontierEvents,
@@ -406,6 +574,7 @@ module.exports = {
   buildCurrentWaveBlockerMaps,
   buildNextActionForPlan,
   buildStartNextWaveResponse,
+  computeCapabilityClearedPremiseSurfaceIds,
   computeRequeueSurfaceIds,
   detectTerminalPromotions,
   inspectSchedulerDecisionIntegrity,

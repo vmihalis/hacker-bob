@@ -1,0 +1,37 @@
+{
+  "name": "@hacker-bob/instrument-native-darwin",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Optional Darwin kernel boundary for Hacker Bob instrument workers",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "gypfile": false,
+  "main": "lib/peer-credentials.js",
+  "files": [
+    "binding.gyp",
+    "lib/**/*.js",
+    "native/**/*.cc",
+    "native/**/*.h",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/peer-credentials.js",
+    "./native-acceptor": "./lib/native-acceptor.js",
+    "./peer-credentials": "./lib/peer-credentials.js",
+    "./self-identity": "./lib/self-identity.js"
+  },
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "check:syntax": "node --check lib/canonical-snapshot.js && node --check lib/native-acceptor.js && node --check lib/native-binding-loader.js && node --check lib/peer-credentials.js && node --check lib/self-identity.js && node --check test/boundary-hardening.test.js && node --check test/fixtures/native-pool-saturation.js && node --check test/native-acceptor.test.js && node --check test/peer-credentials.test.js && node --check test/self-identity.test.js",
+    "test": "node --test test/*.test.js"
+  }
+}

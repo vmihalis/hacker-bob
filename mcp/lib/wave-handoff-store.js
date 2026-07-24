@@ -144,6 +144,9 @@ function isRecoverableBlockCode(blockCode, surfaceId) {
   if (blockCode === "missing_technique_attempt_log") {
     return typeof surfaceId === "string" && surfaceId.startsWith("lead-");
   }
+  if (blockCode === "missing_auth_differential") {
+    return typeof surfaceId === "string" && surfaceId.startsWith("lead-");
+  }
   return blockCode === "missing_handoff" || blockCode === "invalid_handoff";
 }
 
@@ -172,7 +175,7 @@ function isRecoverableBlockCode(blockCode, surfaceId) {
 // handoff surface_id + the on-disk technique-attempts.jsonl + attempt_log_required,
 // all independent of the lifecycle ledger, so a lost AgentRun row does not
 // over-gate beyond what attempt_log_required already dictates.
-function handoffMissingRequiredTechniqueAttempt(domain, assignment, wave) {
+function handoffMissingRequiredTechniqueAttempt(domain, assignment, wave, handoff = null) {
   const block = evaluateTechniqueAttemptRequirement(
     {
       target_domain: domain,
@@ -182,8 +185,25 @@ function handoffMissingRequiredTechniqueAttempt(domain, assignment, wave) {
     },
     assignment,
   );
-  if (!block) return false;
-  return !isRecoverableBlockCode(block.block_code, assignment.surface_id);
+  if (block && !isRecoverableBlockCode(block.block_code, assignment.surface_id)) return true;
+  if (!handoff) return false;
+
+  const {
+    evaluateAuthDifferentialCompletionCoverage,
+  } = require("./agent-run-completion.js");
+  const authDiffBlock = evaluateAuthDifferentialCompletionCoverage(
+    {
+      target_domain: domain,
+      wave,
+      agent: assignment.agent,
+      surface_id: assignment.surface_id,
+    },
+    assignment,
+    handoff,
+  );
+  // AD1
+  if (!authDiffBlock) return false;
+  return !isRecoverableBlockCode(authDiffBlock.block_code, assignment.surface_id);
 }
 
 // Step 2b: a `failed`/`abandoned` AgentRun row drives the gate to
@@ -272,7 +292,8 @@ function buildWaveHandoffFileIndex(dir, wave, assignmentByAgent) {
 }
 
 function loadWaveArtifacts(domain, waveNumber) {
-  const assignmentsInfo = loadWaveAssignments(domain, waveNumber);
+  let assignmentsInfo = loadWaveAssignments(domain, waveNumber);
+  assignmentsInfo = attachAuthDifferentialFlags(assignmentsInfo);
   const handoffInfo = buildWaveHandoffFileIndex(
     assignmentsInfo.dir,
     assignmentsInfo.wave,
@@ -282,6 +303,31 @@ function loadWaveArtifacts(domain, waveNumber) {
   return {
     ...assignmentsInfo,
     ...handoffInfo,
+  };
+}
+
+function attachAuthDifferentialFlags(assignmentsInfo) {
+  let rawAssignments = [];
+  try {
+    const raw = readJsonFile(assignmentsInfo.assignmentsPath, { label: "wave assignments" });
+    rawAssignments = raw && Array.isArray(raw.assignments) ? raw.assignments : [];
+  } catch {
+    return assignmentsInfo;
+  }
+  const required = new Set(rawAssignments
+    .filter((entry) => entry && entry.auth_differential_required === true)
+    .map((entry) => `${entry.agent}\u0000${entry.surface_id}`));
+  if (required.size === 0) return assignmentsInfo;
+  const assignments = assignmentsInfo.assignments.map((assignment) => (
+    required.has(`${assignment.agent}\u0000${assignment.surface_id}`)
+      ? { ...assignment, auth_differential_required: true }
+      : assignment
+  ));
+  const assignmentByAgent = new Map(assignments.map((assignment) => [assignment.agent, assignment]));
+  return {
+    ...assignmentsInfo,
+    assignments,
+    assignmentByAgent,
   };
 }
 
@@ -349,7 +395,12 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
         // branch below uses so a recovered web/OSS handoff with no attempt is
         // refused (lead-* relaxed, SC unaffected). Depth + provenance already
         // ran inside verifiedHandoffOnDiskForAssignment.
-        if (handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave)) {
+        let recoveredHandoff = null;
+        try {
+          recoveredHandoff = readJsonFile(artifacts.handoffPathByAgent.get(assignment.agent));
+        } catch {}
+        if (!recoveredHandoff
+          || handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave, recoveredHandoff)) {
           missingAgents.push(assignment.agent);
           continue;
         }
@@ -401,7 +452,7 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
       // inline above). A settled run already cleared the finalize technique
       // gate, so it is not re-checked.
       if (gate.gate !== "settled"
-        && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave)) {
+        && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave, payload)) {
         missingAgents.push(assignment.agent);
       } else {
         receivedAgents.push(assignment.agent);
@@ -514,6 +565,20 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       // merge bucketing below. A non-recoverable blocker (e.g.
       // missing_oss_coverage) stays closed regardless. (A `running` row never
       // reaches here — it routes through the "started" gate.)
+      // Best-effort pivot durability on the terminal-non-settled path too: an abandoned fanout
+      // agent that wrote a handoff still has its cross-surface discovered_pivots on disk — surface
+      // them to the orchestrator's requeue path rather than dropping them with the surface.
+      if (filePath) {
+        try {
+          const rawHandoff = readJsonFile(filePath);
+          if (rawHandoff && Array.isArray(rawHandoff.discovered_pivots) && rawHandoff.discovered_pivots.length > 0) {
+            discoveredPivots.push(...attachHandoffOrigin(rawHandoff.discovered_pivots, {
+              agent: assignment.agent,
+              surfaceId: assignment.surface_id,
+            }));
+          }
+        } catch { /* raw unreadable -> nothing to salvage */ }
+      }
       missingSurfaceIds.push(assignment.surface_id);
       continue;
     }
@@ -551,7 +616,16 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       // this try-block, gate "closed_terminal_non_settled" !== "settled"); a
       // settled run already cleared the finalize technique gate, so it is skipped.
       if (gate.gate !== "settled"
-        && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave)) {
+        && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave, payload)) {
+        // Pivot durability: this handoff is VALID (payload validated) but gated on a missing
+        // technique attempt — still surface its cross-surface discovered_pivots (advisory,
+        // independent of the surface's completion gate) rather than dropping them with the surface.
+        if (Array.isArray(payload.discovered_pivots) && payload.discovered_pivots.length > 0) {
+          discoveredPivots.push(...attachHandoffOrigin(payload.discovered_pivots, {
+            agent: assignment.agent,
+            surfaceId: assignment.surface_id,
+          }));
+        }
         missingSurfaceIds.push(assignment.surface_id);
         continue;
       }
@@ -599,6 +673,21 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
         surface_id: assignment.surface_id,
         error: error.message || String(error),
       });
+      // Pivot durability: even for an INVALID handoff, best-effort preserve discovered_pivots[]
+      // so a transition-blind evaluator-fanout's cross-surface pivots are not lost on a handoff
+      // validation failure (e.g. a secret-scanner trip on Set-Cookie/UUID evidence) — a flat
+      // evaluator's inline bob_propose_transition persists independent of handoff outcome. Pivots
+      // are ADVISORY/non-gating (orchestrator hints), so salvaging from an unvalidated handoff
+      // adds a lead to investigate, never a security gate.
+      try {
+        const rawHandoff = readJsonFile(filePath);
+        if (rawHandoff && Array.isArray(rawHandoff.discovered_pivots) && rawHandoff.discovered_pivots.length > 0) {
+          discoveredPivots.push(...attachHandoffOrigin(rawHandoff.discovered_pivots, {
+            agent: assignment.agent,
+            surfaceId: assignment.surface_id,
+          }));
+        }
+      } catch { /* raw unreadable -> nothing to salvage */ }
       // Surface the invalid handoff's surface_id via missing_surface_ids so it
       // reaches the orchestrator's requeue path. Without this, R1-HIGH-#2:
       // the surface is silently dropped from completed/partial/missing buckets

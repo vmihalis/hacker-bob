@@ -48,6 +48,7 @@ const { evaluateSchedulerPrecondition } = require("../mcp/lib/scheduler-precondi
 const {
   reconcileOrphanExecutedProducers,
   reconcileStaleDispatchProducers,
+  buildProducerFloorPlan,
   planOrphanReconcile,
   planProducerFloor,
   handler: materializeProducerFloor,
@@ -55,7 +56,8 @@ const {
   STALE_DISPATCH_GRACE_MS,
 } = require("../mcp/lib/tools/materialize-producer-floor.js");
 const { PRODUCER_PACKS } = require("../mcp/lib/producer-packs.js");
-const { statePath } = require("../mcp/lib/paths.js");
+const { statePath, trafficJsonlPath } = require("../mcp/lib/paths.js");
+const { currentSurfaces } = require("../mcp/lib/frontier-projections.js");
 const { checkLegH } = require("../scripts/check-producer-coherence.js");
 
 // Drive a producer node to `dispatched` with a known prep_token — the same path
@@ -784,6 +786,23 @@ function seedWebSession(domain) {
   fs.writeFileSync(p, JSON.stringify({ target_url: `https://${domain}` }));
 }
 
+function appendTrafficBody(domain, body) {
+  const filePath = trafficJsonlPath(domain);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, `${JSON.stringify({
+    version: 1,
+    ts: "2026-06-01T00:00:00.000Z",
+    target_domain: domain,
+    source: "test",
+    method: "GET",
+    url: `https://${domain}/config`,
+    host: domain,
+    path: "/config",
+    status: 200,
+    body,
+  })}\n`);
+}
+
 test("floor emission is idempotent: N passes with a pending producer append the proposed event ONCE", () => {
   withTempHome(() => {
     // plan.ready excludes only TERMINAL producers, so a proposed-but-unfinished
@@ -809,6 +828,107 @@ test("floor emission is idempotent: N passes with a pending producer append the 
     ));
     assert.equal(proposedRows.length, 1,
       `exactly one producer_proposed event for ${key} after ${PASSES} floor passes — not ${PASSES}`);
+  });
+});
+
+test("http body producers are vacuous until a body corpus is materialized", () => {
+  withTempHome(() => {
+    const domain = "http-bodies-vacuous.example.com";
+    seedWebSession(domain);
+
+    const built = buildProducerFloorPlan(domain);
+    assert.equal(built.availableArtifactKinds.has("http_bodies"), false,
+      "a clean web session with no captured response bodies must not seed http_bodies");
+    assert.equal(built.plan.ready.some((pack) => pack.producer_id === "web_http_bodies"), false,
+      "the http-body root is not ready without a materialized body corpus");
+    assert.equal(built.plan.ready.some((pack) => pack.producer_id === "web_onchain_ref"), false,
+      "the on-chain reference scanner is not ready without http_bodies");
+  });
+});
+
+test("web_onchain_ref consumes a zero-reference body corpus and terminalizes without waking SC expansion", () => {
+  withTempHome(() => {
+    const domain = "http-bodies-zero-ref.example.com";
+    seedWebSession(domain);
+    appendTrafficBody(domain, JSON.stringify({ message: "no contracts here", chain: "base-mainnet" }));
+
+    const out = JSON.parse(materializeProducerFloor({ target_domain: domain }));
+    const inlineIds = out.inline_producer_runs.map((run) => run.producer_id).sort();
+    assert.deepEqual(inlineIds, ["web_http_bodies", "web_onchain_ref"]);
+    assert.equal(out.inline_producer_runs.find((run) => run.producer_id === "web_onchain_ref").input_item_count, 1);
+
+    const runs = producerRunSet(domain);
+    assert.equal(runs.has("web_http_bodies"), true);
+    assert.equal(runs.has("web_onchain_ref"), true);
+    const runRows = readFrontierEvents(domain).filter((event) => (
+      event.kind === "observation.recorded"
+      && event.payload
+      && event.payload.observation_kind === "producer_run"
+      && event.payload.producer_key === "web_onchain_ref"
+    ));
+    assert.equal(runRows.length, 1);
+    assert.deepEqual(runRows[0].payload.input_consumed, { input_item_count: 1 });
+
+    const after = buildProducerFloorPlan(domain);
+    assert.equal(after.availableArtifactKinds.has("chain_address_set"), false,
+      "an empty address set must not unlock the SC expander");
+    assert.equal(after.plan.ready.some((pack) => pack.producer_id === "sc_address_expander"), false,
+      "zero-reference body scans must not wedge on an empty smart-contract expansion");
+  });
+});
+
+test("web_onchain_ref records resolved EVM body references as scope-confirmation leads, never auto-binding them", () => {
+  withTempHome(() => {
+    const domain = "http-bodies-contract-ref.example.com";
+    seedWebSession(domain);
+    const address = "0xABCDEF0000000000000000000000000000000001";
+    appendTrafficBody(domain, JSON.stringify({
+      chain: "base-mainnet",
+      contractAddress: address,
+      token_standard: "ERC-20",
+    }));
+
+    const out = JSON.parse(materializeProducerFloor({ target_domain: domain }));
+    const refRun = out.inline_producer_runs.find((run) => run.producer_id === "web_onchain_ref");
+    assert.ok(refRun);
+    // A body-extracted (attacker-influenceable) address is an UNTRUSTED lead: it is recorded
+    // for operator scope confirmation, never auto-bound as an in-scope smart_contract surface.
+    assert.equal(refRun.resolved, 0);
+    assert.equal(refRun.scope_unconfirmed, 1);
+    assert.equal(refRun.unresolved, 0);
+
+    const surfaces = currentSurfaces(domain).surfaces
+      .filter((surface) => surface.surface_type === "smart_contract");
+    assert.equal(surfaces.length, 0,
+      "an untrusted body address is not auto-bound as an in-scope smart_contract surface");
+  });
+});
+
+test("web_onchain_ref records unresolved chain references as blocked prerequisites", () => {
+  withTempHome(() => {
+    const domain = "http-bodies-unresolved-ref.example.com";
+    seedWebSession(domain);
+    const address = "0xABCDEF0000000000000000000000000000000002";
+    appendTrafficBody(domain, JSON.stringify({ contractAddress: address }));
+
+    const out = JSON.parse(materializeProducerFloor({ target_domain: domain }));
+    const refRun = out.inline_producer_runs.find((run) => run.producer_id === "web_onchain_ref");
+    assert.ok(refRun);
+    assert.equal(refRun.resolved, 0);
+    assert.equal(refRun.unresolved, 1);
+
+    const blockedLead = readFrontierEvents(domain).find((event) => (
+      event.kind === "frontier.enqueued"
+      && event.payload
+      && Array.isArray(event.payload.blocked_prereqs)
+      && event.payload.blocked_prereqs[0]
+      && event.payload.blocked_prereqs[0].identifier_hint === address
+    ));
+    assert.ok(blockedLead, "unresolved chain_family must be recorded as a blocked prerequisite lead");
+    assert.equal(blockedLead.payload.blocked_prereqs[0].kind, "chain_family_unresolved");
+    assert.match(blockedLead.payload.blocked_prereqs[0].next_step, /chain context/);
+    assert.equal(currentSurfaces(domain).surfaces.some((surface) => surface.surface_type === "smart_contract"), false,
+      "an unresolved chain reference must not seed a smart_contract surface");
   });
 });
 

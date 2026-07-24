@@ -22,7 +22,7 @@ module.exports = Object.freeze({
     required: ["pack_id"],
   },
   handler: readTechniquePackTool,
-  role_bundles: ["evaluator-web", "orchestrator"],
+  role_bundles: ["evaluator-web", "evaluator-physical", "orchestrator"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

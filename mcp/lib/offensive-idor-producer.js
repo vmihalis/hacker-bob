@@ -214,6 +214,321 @@ function fieldIsOwnerSelector(name) {
   if (tokens.includes("by")) return true;
   return tokens.some((t) => inSet(OWNER_BASE_NOUNS, t));
 }
+
+function isRouteParamMarker(seg) {
+  return /^:[^/]+$/.test(seg)
+    || /^\{[^/]+\}$/.test(seg)
+    || /^%7b[^/]+%7d$/i.test(seg);
+}
+
+function candidateEndpointPathname(value) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    return new URL(value, "https://bob.invalid").pathname;
+  } catch {
+    return null;
+  }
+}
+
+// S1 id-bearing collection detector — DEFINED as the templatizer's total: a value is
+// id-bearing iff templatizeIdBearingEndpoint can freeze a canonical {id}-template for it.
+// Single-sourcing the detector THROUGH the templatizer (never a parallel segment scan that
+// could drift) makes route.id_bearing <=> route.id_bearing_endpoints non-empty by construction,
+// and matches the runner (auth-differential-runner.js:402) and grade gate (claims.js:2001), which
+// both bind coverage by templatizing the swept endpoint. An id-bearing value is one whose path
+// carries a per-object id segment (:id / {id} / %7b..%7d / numeric / uuid / hex-0x) OR whose query
+// carries an object-scoping key (?teamId=/?userId=/?id=) — the query-param BOLA shape. A benign
+// sibling (/me, /api/users, ?page=2) templatizes to null, so it never launders coverage.
+function endpointValueIsIdBearing(value) {
+  return templatizeIdBearingEndpoint(value) !== null;
+}
+
+// One path segment is id-bearing iff it is a route-param marker (:id / {id} / %7b..%7d) or a
+// concrete id-signalling segment (a real identifier, not a bare-punctuation fixed-route word).
+function segmentIsIdBearing(seg) {
+  // A route-param marker (:id / {id} / %7b..%7d) is always id-bearing. For a CONCRETE segment,
+  // reuse the file's existing resource-instance classifier (segmentLooksLikeResourceInstance:
+  // pure-numeric / uuid / separated slug like proj-123) and EXCLUDE API-structural words
+  // (isStaticApiAncestor: v1/v2/oauth2/graphql/... via VERSION_SEGMENT_RE + STATIC_API_ANCESTOR_WORDS).
+  // A digit-anywhere rule falsely flagged ubiquitous versioned routes (/api/v1/users), freezing
+  // an unsatisfiable cross-tenant obligation onto a fixed collection route. The extra classifiers
+  // (isUlid / isPrefixedOpaqueSlug / isHighEntropyOpaqueKey) close common object-identifier shapes
+  // segmentLooksLikeResourceInstance misses — a gated crown carrying an ord_KxPq9Z / ULID / base58
+  // key would otherwise route id_bearing:false and never earn a cross-tenant test. All new terms sit
+  // INSIDE the !isStaticApiAncestor && capturedIdSegmentIsSafe guard, so a version tag / structural
+  // word / traversal segment is still never id-bearing.
+  return isRouteParamMarker(seg)
+    || (!isStaticApiAncestor(seg) && capturedIdSegmentIsSafe(seg)
+      && (segmentLooksLikeResourceInstance(seg)
+        || isHexIdToken(seg)
+        || isUlid(seg)
+        || isPrefixedOpaqueSlug(seg)
+        || isHighEntropyOpaqueKey(seg)));
+}
+
+// A long hex/hash token or 0x address (>=16 hex chars) — a per-object identifier (content
+// hash, tx hash, on-chain address) that segmentLooksLikeResourceInstance does not cover. The
+// >=16 length keeps short version/acronym segments (v1, s3, api2) excluded.
+function isHexIdToken(seg) {
+  return /^(0x)?[0-9a-f]{16,}$/i.test(String(seg));
+}
+
+// A ULID (26 Crockford-base32 chars: 0-9 A-Z minus I/L/O/U, leading timestamp char 0-7). A common
+// per-object id (Stripe-adjacent stacks, event stores) that carries base32 letters beyond hex, so
+// isHexIdToken never catches it. The exact 26-length + Crockford alphabet make a collision with a
+// path WORD implausible (no 26-char English word, and I/L/O/U are excluded).
+const ULID_RE = /^[0-7][0-9ABCDEFGHJKMNPQRSTVWXYZ]{25}$/i;
+function isUlid(seg) {
+  return ULID_RE.test(String(seg));
+}
+
+// A PREFIXED opaque slug: a short lowercase word + "_" + a mixed high-entropy token (ord_KxPq9Z,
+// user_abc123, sub_9fKQ2p). The token must be >=6 chars AND genuinely mixed — a digit-with-letter
+// or a mixed-case run — so a plain two-word segment (reset_password, access_token, user_profile)
+// carries no id signal and is NOT tagged. This is the ubiquitous Stripe/Twilio-style object-id shape
+// that segmentLooksLikeResourceInstance (which needs a SEPARATED trailing/leading digit run) misses.
+function isPrefixedOpaqueSlug(seg) {
+  const m = /^([a-z]{2,10})_([A-Za-z0-9]{6,})$/.exec(String(seg));
+  if (!m) return false;
+  const token = m[2];
+  const hasDigit = /[0-9]/.test(token);
+  const hasLower = /[a-z]/.test(token);
+  const hasUpper = /[A-Z]/.test(token);
+  return (hasDigit && (hasLower || hasUpper)) || (hasUpper && hasLower);
+}
+
+// A single high-entropy opaque object key (base58 / base64url): a >=16-char run over the base58 /
+// base64url charset that is a genuine ALNUM token (has BOTH a letter and a digit) — the per-object
+// key discovery captured verbatim (Bitcoin-style base58, nanoid, base64url handles). Requiring a
+// digit AND a letter keeps a readable long word (internationalization) or a camelCase RPC method
+// (getAccountBalanceById) out; a `-`/`_`-delimited multi-word slug that merely happens to carry a
+// stray digit (q3-2024-financial-report) is dropped by the readable-slug guard, so precision holds.
+function isHighEntropyOpaqueKey(seg) {
+  const s = String(seg);
+  if (s.length < 16) return false;
+  if (!/^[A-Za-z0-9_-]+$/.test(s)) return false;
+  if (!/[0-9]/.test(s) || !/[A-Za-z]/.test(s)) return false;
+  const parts = s.split(/[-_]/).filter(Boolean);
+  if (parts.length >= 2) {
+    const wordParts = parts.filter((p) => /^[A-Za-z]{4,}$/.test(p));
+    if (wordParts.length >= 2) return false; // readable multi-word slug, not an opaque key
+  }
+  return true;
+}
+
+// Plural collection nouns that precede a per-object INSTANCE segment (/users/<handle>, /orgs/<slug>,
+// /teams/<slug>). Deliberately PLURAL-only: a singular namespace (/account/reset-password,
+// /user/settings) is a singleton route, not a collection of objects, so it must NOT make the next
+// segment an id — keeping ubiquitous singular action routes out of the id-bearing set.
+const COLLECTION_NOUN_SEGMENTS = new Set([
+  "users", "orgs", "organizations", "teams", "accounts", "projects", "groups",
+  "members", "customers", "companies", "workspaces", "tenants", "clients",
+  "repos", "repositories", "posts", "articles", "comments", "orders", "invoices",
+  "documents", "events", "products", "subscriptions", "tickets", "issues", "tasks",
+  "folders", "channels", "rooms", "messages", "devices", "apps", "applications", "services",
+]);
+function segmentIsCollectionNoun(seg) {
+  return COLLECTION_NOUN_SEGMENTS.has(normalizeFieldName(seg));
+}
+
+// Reserved SUB-ROUTE words: a segment right after a collection noun that names an action / view /
+// singleton, not an object instance (/users/settings, /orgs/new, /teams/search). Excluded from the
+// handle-after-collection rule so /users/settings stays id_bearing:false (the named precision case).
+const RESERVED_SUBROUTE_WORDS = new Set([
+  "settings", "setting", "profile", "profiles", "me", "self", "current", "all",
+  "new", "edit", "create", "update", "delete", "remove", "add", "search",
+  "login", "logout", "signin", "signout", "signup", "register", "password",
+  "admin", "dashboard", "home", "about", "help", "config", "configuration",
+  "preferences", "notifications", "billing", "security", "privacy",
+  "export", "import", "invite", "invites", "list", "count", "summary",
+  "activity", "feed", "avatar", "photo", "photos", "image", "images",
+  "verify", "confirm", "reset", "activate", "status", "health", "info",
+  "details", "overview", "history", "logs", "stats", "metrics", "report",
+  "reports", "recent", "latest", "popular", "featured", "trending", "public",
+  "private", "shared", "archive", "archived", "trash", "drafts", "draft",
+]);
+function segmentIsReservedSubroute(seg) {
+  return RESERVED_SUBROUTE_WORDS.has(normalizeFieldName(seg));
+}
+
+// Handle/username/slug shape: begins alnum, then alnum plus - _ . — a plausible per-object handle a
+// path carries in the instance position (johndoe, acme-corp, team.alpha). Not by itself id-bearing;
+// it only qualifies in the handle-AFTER-collection context below.
+function segmentIsHandleShaped(seg) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(String(seg));
+}
+
+// A camelCase / verb_snake RPC-method segment led by a data-access verb (getBalanceDetails, list_all,
+// createOrder). Unlike an ambiguous handle (johndoe), a verb-led method is UNambiguously an action,
+// not an object, so it is excluded from the handle-after-collection rule (/accounts/getBalanceDetails
+// stays id_bearing:false). Only a camelCase (verb + uppercase) / snake (verb + "_") / bare-verb form
+// trips; a hyphenated or all-lowercase slug (set-designer, deleter) is left as a handle.
+const HANDLE_VERB_PREFIXES = new Set([
+  "get", "set", "list", "create", "update", "delete", "fetch", "find", "search", "query",
+  "add", "remove", "save", "load", "send", "post", "put", "patch", "exec", "run", "do",
+  "validate", "verify", "generate", "refresh", "toggle", "enable", "disable",
+  "upload", "download", "export", "import", "sync", "count", "check",
+]);
+function segmentLooksLikeVerbMethod(seg) {
+  const m = /^([a-z]+)(?=[A-Z_]|$)/.exec(String(seg));
+  return m !== null && HANDLE_VERB_PREFIXES.has(m[1]);
+}
+
+// True when `seg` sits immediately after a plural collection noun AND is a plausible handle/slug
+// instance (not a reserved sub-route, not a nested collection, not a structural word). This is the
+// context-sensitive BOLA shape (/users/johndoe, /orgs/acme-corp) that a context-free per-segment
+// scan cannot see. Applied ONLY within templatizeIdBearingEndpoint (which has the predecessor); the
+// same function drives the runner + grade binding, so the swept /users/johndoe and the frozen
+// /users/{id} stay byte-identical.
+function segmentIsHandleAfterCollection(prevSeg, seg) {
+  if (!segmentIsCollectionNoun(prevSeg)) return false;
+  if (isRouteParamMarker(seg)) return false;          // already handled as a marker
+  if (isStaticApiAncestor(seg)) return false;
+  if (!capturedIdSegmentIsSafe(seg)) return false;
+  if (segmentIsReservedSubroute(seg)) return false;   // /users/settings, /orgs/new
+  if (segmentIsCollectionNoun(seg)) return false;     // /users/orders is a nested collection, not an instance
+  if (segmentLooksLikeVerbMethod(seg)) return false;  // /accounts/getBalanceDetails is a method, not an object
+  return segmentIsHandleShaped(seg);
+}
+
+// An object-scoping SEARCH-param KEY: a query parameter that keys a PER-OBJECT resource
+// (?teamId=/?userId=/?tenantId=/?id=/?uuid=) rather than paginating/sorting/searching a
+// collection (?page=/?limit=/?offset=/?sort=/?q=/?filter=). Classified by KEY, REUSING the
+// SAME create-body id/owner/scope predicates the id_field guards already use — so "an
+// object-identifying field" stays single-sourced: an id alias (ID_ALIAS_KEYS /
+// keyHasIdAliasSegment: id, uuid, guid, object_id, ...), an owner selector
+// (fieldIsOwnerSelector: userId, teamId, projectId, account_id, ...), or a scope selector
+// (fieldIsScopeSelector: tenantId, org_id, workspace_id, ...). Fails SAFE toward object-scoping
+// on a genuine object key; pagination/sort/search keys match NONE of these, so a collection
+// listing is never mistaken for a per-object BOLA surface (which would freeze an unsatisfiable
+// cross-tenant obligation onto a non-BOLA route — the inverted 'bound-not-rank' harm).
+// A query SORT/ORDER directive (sortBy, order_by, groupBy, ...) carries a "by" token that
+// fieldIsOwnerSelector matches for create-BODY actor fields (created_by) — but as a query KEY it
+// selects a sort COLUMN, not an object, so it must not scope a per-object BOLA obligation onto a
+// collection listing (the inverted bound-not-rank harm). Owner FILTERS (created_by=<userId>) stay
+// object-scoping; only the bare sort/order/group directives are excluded.
+const SORT_DIRECTIVE_KEYS = new Set(["sort", "order", "group", "sortby", "orderby", "groupby"]);
+function isQuerySortDirectiveKey(norm) {
+  if (SORT_DIRECTIVE_KEYS.has(norm)) return true;
+  const toks = fieldNameTokens(norm);
+  return toks.length === 2 && toks[1] === "by"
+    && (toks[0] === "sort" || toks[0] === "order" || toks[0] === "group");
+}
+function paramKeyIsObjectScoping(key) {
+  if (typeof key !== "string" || key === "") return false;
+  const norm = normalizeFieldName(key);
+  if (ID_ALIAS_KEYS.has(norm)) return true;
+  if (keyHasIdAliasSegment(key, "")) return true;
+  if (fieldIsScopeSelector(key)) return true;
+  if (!isQuerySortDirectiveKey(norm) && fieldIsOwnerSelector(key)) return true;
+  return false;
+}
+
+// The object-scoping search-param keys (sorted, deduped) of a candidate endpoint VALUE. Parsed
+// with the SAME WHATWG base (https://bob.invalid) candidateEndpointPathname uses, so a relative
+// or an absolute value both resolve. Sorting makes the frozen suffix order-independent
+// (?userId=&teamId= and ?teamId=&userId= collapse to ONE canonical form).
+function objectScopingParamKeys(value) {
+  if (typeof value !== "string" || value.trim() === "") return [];
+  let url;
+  try {
+    url = new URL(value, "https://bob.invalid");
+  } catch {
+    return [];
+  }
+  const keys = new Set();
+  for (const key of url.searchParams.keys()) {
+    if (paramKeyIsObjectScoping(key)) keys.add(key);
+  }
+  return Array.from(keys).sort();
+}
+
+// Canonical id-bearing template with EVERY id PATH segment collapsed to {id} AND every
+// object-scoping SEARCH param collapsed to key={id}, so a concrete sweep (/api/orders/123,
+// /api/teams?teamId=<uuid>) matches the surface's stored TEMPLATE (/api/orders/{id},
+// /api/teams?teamId={id}). Inspects ALL path segments — the most common BOLA shape carries the
+// owner id in a NON-final segment (/users/{id}/orders), which a final-segment-only check would
+// miss — AND the query keys (the query-param BOLA shape, /api/teams?teamId=<uuid>). Object-scoping
+// params are sorted then collapsed to key={id}, so two concrete values differing only in the
+// object-key VALUE (?teamId=<uuidA> vs <uuidB>) freeze to the SAME string the runner/grade gate
+// re-derive from the swept endpoint. The `?...` suffix is appended ONLY when >=1 object-scoping
+// param exists, so every path-only endpoint stays BYTE-IDENTICAL to before. Returns null when
+// neither a path id nor an object-scoping query key is present (a benign collection/pagination
+// route), so the detector above is exactly this function's total — they cannot disagree.
+function templatizeIdBearingEndpoint(value) {
+  const pathname = candidateEndpointPathname(value);
+  if (!pathname) return null;
+  const segments = pathname.split("/").filter(Boolean);
+  let sawId = false;
+  const templated = segments.map((seg, i) => {
+    if (segmentIsIdBearing(seg)) {
+      sawId = true;
+      return "{id}";
+    }
+    // Context-sensitive: a handle/slug immediately after a plural collection noun (/users/johndoe,
+    // /orgs/acme-corp) is a per-object instance even with no context-free id signal.
+    if (i > 0 && segmentIsHandleAfterCollection(segments[i - 1], seg)) {
+      sawId = true;
+      return "{id}";
+    }
+    return seg;
+  });
+  const objectScopeKeys = objectScopingParamKeys(value);
+  if (objectScopeKeys.length > 0) sawId = true;
+  if (!sawId) return null;
+  const templatedPath = `/${templated.join("/")}`;
+  if (objectScopeKeys.length === 0) return templatedPath;
+  return `${templatedPath}?${objectScopeKeys.map((k) => `${k}={id}`).join("&")}`;
+}
+
+// True when discovery's interesting_params[] names an object-identifying param (id / uuid / *_id /
+// objectId / userId / tenantId ...). Reuses the SAME paramKeyIsObjectScoping predicate the query-param
+// BOLA detector uses, so a sort/order/group directive key (sortBy, order_by) — which names a column,
+// not an object — never trips the flag. Positive evidence the surface serves per-object reads even
+// when discovery captured no concrete id-bearing endpoint URL.
+function surfaceInterestingParamsIdBearing(surface) {
+  const params = surface && Array.isArray(surface.interesting_params) ? surface.interesting_params : [];
+  return params.some((p) => typeof p === "string" && p.trim() !== "" && paramKeyIsObjectScoping(p));
+}
+
+function surfaceExposesIdBearingCollection(surface) {
+  try {
+    for (const { value } of candidateSurfaceEndpoints(surface)) {
+      if (endpointValueIsIdBearing(value)) return true;
+    }
+  } catch {
+    return false;
+  }
+  // An id-like interesting_param raises the id_bearing FLAG even with no bindable endpoint. This is a
+  // ONE-WAY, safe-direction relaxation of the flag<=>frozen-endpoints equality: surfaceIdBearingEndpoints
+  // stays endpoint-derived (possibly empty), so the completion gate has nothing to bind and HOLDS toward
+  // an honest partial (reason complete_idbearing_surface_no_differential) — it can NEVER false-clear a
+  // surface purely because a param says "objects here". The crown gets a real cross-tenant test forced;
+  // it just is not auto-satisfiable until the concrete id-bearing endpoint is discovered/recorded.
+  try {
+    if (surfaceInterestingParamsIdBearing(surface)) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+// The surface's id-bearing endpoints in canonical {id}-template form, sorted+deduped. The
+// router FREEZES this onto the MCP-owned route at route time (when attack_surface.json is
+// fresh from discovery), so the completion gates bind coverage to endpoints the agent cannot
+// later tamper — never re-reading agent-writable attack_surface.json at grade time.
+function surfaceIdBearingEndpoints(surface) {
+  const out = new Set();
+  try {
+    for (const { value } of candidateSurfaceEndpoints(surface)) {
+      const t = templatizeIdBearingEndpoint(value);
+      if (t) out.add(t);
+    }
+  } catch {
+    return [];
+  }
+  return Array.from(out).sort();
+}
 // Privilege / authorization-assignment SELECTOR tokens: a create API honoring one would let the
 // operator-armed write mint an ELEVATED synthetic object (an admin/role/permission-bearing account)
 // instead of a plain canary-bearing resource — a confined agent using the operator's write-authorization
@@ -893,12 +1208,6 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const templatePath = String(pathTemplate).split("?")[0];
   const templateSegments = templatePath.split("/").filter(Boolean);
   const collectionSegments = templateSegments.slice(0, -1);
-  // A ":id"/"{id}" route-pattern marker — a recorded template form, not a smuggling id (capturedIdSegmentIsSafe
-  // rejects the ":" so markers need their own clause). new URL() percent-encodes "{"/"}", so accept the
-  // %7B…%7D form too.
-  const isRouteParamMarker = (seg) => /^:[^/]+$/.test(seg)
-    || /^\{[^/]+\}$/.test(seg)
-    || /^%7b[^/]+%7d$/i.test(seg);
   const isItemForm = (segs) => {
     if (segs.length !== templateSegments.length) return false;
     if (!collectionSegments.every((seg, index) => segs[index] === seg)) return false;
@@ -2384,6 +2693,10 @@ module.exports = {
   createObject,
   idorProvisionAuthorizedFor,
   mintCanary,
+  surfaceExposesIdBearingCollection,
+  surfaceIdBearingEndpoints,
+  endpointValueIsIdBearing,
+  templatizeIdBearingEndpoint,
   pathHasConcreteParentInstance,
   createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,

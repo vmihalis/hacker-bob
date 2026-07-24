@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  PROOF_BUNDLE_KINDS,
+  CALLER_PROOF_BUNDLE_KINDS,
   writeProofBundles,
 } = require("../proof-bundle.js");
 const {
@@ -14,7 +14,7 @@ module.exports = wrapWriteTool({
   name: "bob_write_proof_bundle",
   writes_audit_graded: true,
   description:
-    "Write machine-checkable proof bundles for final reportable findings to authoritative JSON plus a markdown mirror. Stores replay, invariant, or C10 differential run handles; never executes proof commands.",
+    "Write machine-checkable proof bundles for final reportable findings to authoritative JSON plus a markdown mirror. Stores caller replay, invariant, or C10 differential handles; capability-pack proof is generated server-side and must be omitted from packs[].",
   inputSchema: {
     type: "object",
     properties: {
@@ -25,7 +25,7 @@ module.exports = wrapWriteTool({
           type: "object",
           properties: {
             finding_id: { type: "string", pattern: "^F-[1-9][0-9]*$" },
-            bundle_kind: { type: "string", enum: PROOF_BUNDLE_KINDS },
+            bundle_kind: { type: "string", enum: CALLER_PROOF_BUNDLE_KINDS },
             bundle_hash: { type: "string", pattern: "^[0-9a-fA-F]{64}$" },
             artifacts: {
               type: "array",

@@ -18,6 +18,20 @@ const SAFE_ORACLE_KINDS = [
   "blind_boolean_timing",
   "benign_command_marker",
 ];
+// The oracle_kind values a producer may STAMP into a MAC-covered offensive-runs row.
+// A stamped oracle_kind marks a row whose evidence is NOT a self-contained executed
+// binding — an out-of-band external callback (bob_oob_poll) or a second-order stored-
+// effect re-read (bob_secondorder_reread), both observed through a channel DISTINCT
+// from the injection point. The read-time exploit-run skip (claims.js
+// exploitRunSkipReverifies) keys on membership here to REFUSE self-skip, so such a row
+// must earn a finding-differential verified_pass against a decoy-silent control rather
+// than self-close on a single positive. Self-contained producers (IDOR / reflected-XSS)
+// stamp NO oracle_kind (null). Single source consumed by offensive-capture-writer's
+// stampable-set validator AND the claims read-time skip, so the two can never drift.
+const OFFENSIVE_ROW_ORACLE_KIND_VALUES = [
+  "out_of_band_interaction",
+  "second_order_reread",
+];
 const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
@@ -148,6 +162,13 @@ const DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP = 16;
 
 const SESSION_LOCK_NAME = ".session.lock";
 const SESSION_LOCK_STALE_MS = 300_000;
+// fx-gate-bypass defense 1 — the process-lifetime, whole-engine singleton lock
+// (mcp/lib/engine-lock.js). Root-level (sessionsRoot(), not per-domain): the
+// engine's target_domain is unknown at process boot, so this cannot key on a
+// single session dir. A live owner is never displaced by a timeout;
+// engine-lock.js may reclaim only an exact same-host lock whose PID the kernel
+// proves absent. Ambiguous and foreign-host ownership still fails closed.
+const ENGINE_LOCK_NAME = ".engine.lock";
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
   "target_url",
@@ -196,6 +217,10 @@ const SESSION_PUBLIC_STATE_FIELDS = [
   // normalization treats [] as absent).
   "target_contracts",
   "chain_authority_hash",
+  // Compact digest/epoch binding for an authenticated physical-scope import.
+  // Omitted entirely for legacy url/repo/contracts sessions so their public
+  // state projection and canonical hashes remain byte-stable.
+  "physical_scope",
 ];
 
 const VERIFICATION_ROUND_FILE_MAP = {
@@ -222,6 +247,7 @@ module.exports = {
   DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
   DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
   DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  ENGINE_LOCK_NAME,
   FINDING_ID_RE,
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
@@ -229,6 +255,7 @@ module.exports = {
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
   OFFENSIVE_OUTCOME_VALUES,
+  OFFENSIVE_ROW_ORACLE_KIND_VALUES,
   PRODUCER_NODE_KIND,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,

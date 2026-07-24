@@ -103,5 +103,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: true,
+  required_session_axes: ["repo"],
   session_artifacts_written: ["repro-verified.jsonl", "repo-command-runs.jsonl", "repo-runs/", "repo-checkouts/"],
 });

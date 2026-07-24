@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const { StringDecoder } = require("string_decoder");
 const {
@@ -104,6 +105,45 @@ const SECRET_DETECTION_BYPASS_FIELDS = Object.freeze(new Set([
 ]));
 const SECRET_DETECTION_BYPASS_RATIONALE_MAX = 512;
 const SECRET_DETECTION_BYPASS_MAX_ENTRIES = SECRET_DETECTION_BYPASS_FIELDS.size;
+const LEAKED_IDENTIFIER_FIELDS = Object.freeze([
+  "title",
+  "description",
+  "impact",
+  "endpoint",
+  "proof_of_concept",
+  "response_evidence",
+]);
+const LEAKED_IDENTIFIER_PATTERNS = Object.freeze([
+  /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g,
+  /\b[0-9a-fA-F]{24}\b/g,
+]);
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+
+function extractLeakedIdentifiers(finding) {
+  if (!finding || typeof finding !== "object") return [];
+  const byFingerprint = new Map();
+  for (const field of LEAKED_IDENTIFIER_FIELDS) {
+    if (typeof finding[field] !== "string") continue;
+    for (const pattern of LEAKED_IDENTIFIER_PATTERNS) {
+      pattern.lastIndex = 0;
+      for (const match of finding[field].matchAll(pattern)) {
+        const raw = match && typeof match[0] === "string" ? match[0] : "";
+        if (!raw) continue;
+        const identifierFingerprint = sha256Hex(raw);
+        if (!byFingerprint.has(identifierFingerprint)) {
+          byFingerprint.set(identifierFingerprint, {
+            identifier_class: "object_id",
+            identifier_fingerprint: identifierFingerprint,
+          });
+        }
+      }
+    }
+  }
+  return Array.from(byFingerprint.values());
+}
 
 function normalizeSecretDetectionBypass(raw) {
   if (raw == null) return new Map();
@@ -763,6 +803,26 @@ function recordCandidateClaimHandler(args) {
       claim_id: claim.claim_id,
       source: { artifact: "claims.jsonl", tool: "bob_record_candidate_claim" },
     });
+    const leakedIdentifierSurfaceId = typeof finding.surface_id === "string" ? finding.surface_id.trim() : "";
+    if (leakedIdentifierSurfaceId) {
+      for (const identifier of extractLeakedIdentifiers(finding)) {
+        appendFrontierEvent({
+          target_domain: domain,
+          kind: "observation.recorded",
+          payload: {
+            observation_kind: "leaked_identifier",
+            identifier_class: identifier.identifier_class,
+            identifier_fingerprint: identifier.identifier_fingerprint,
+            surface_id: leakedIdentifierSurfaceId,
+            claim_id: claim.claim_id,
+          },
+          surface_id: leakedIdentifierSurfaceId,
+          claim_id: claim.claim_id,
+          source: { artifact: "claims.jsonl", tool: "bob_record_candidate_claim" },
+          actor: "orchestrator",
+        });
+      }
+    }
     scheduleMaterialization(domain);
 
     const response = {
@@ -1191,6 +1251,7 @@ module.exports = Object.freeze({
   findingPayloadsFromClaims,
   degradedReportableFindingIds,
   computeFindingDedupeKey,
+  scanExistingFindingFootprint,
   CLAIM_TEXT_LIMITS,
   SECRET_DETECTION_BYPASS_FIELDS,
 });

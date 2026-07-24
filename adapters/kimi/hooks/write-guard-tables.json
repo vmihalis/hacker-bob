@@ -2,6 +2,7 @@
   "audit_graded_basenames": [
     "lab-authorization.json",
     "sandbox-isolation.json",
+    "physical-session-bootstrap.json",
     "report.md",
     "chains.md",
     "evidence-packs.md",
@@ -21,9 +22,11 @@
     "repro-verified.jsonl",
     "invariant-verified.jsonl",
     "invariant-runs.jsonl",
+    "auth-differential-results.json",
     "finding-differential-verified.jsonl",
     "offensive-runs.jsonl",
     "oob-tokens.jsonl",
+    "secondorder-tokens.jsonl",
     "diff-impact.json",
     "brutalist.json",
     "brutalist.md",
@@ -41,7 +44,8 @@
     "verification-replay-leases",
     "wave-handoffs",
     "claim-freeze",
-    "offensive-runs"
+    "offensive-runs",
+    "physical-campaign"
   ],
   "mcp_owned_basenames": [
     "state.json",
@@ -93,9 +97,9 @@
     "mechanism-candidates.jsonl",
     "schema-contracts.jsonl",
     "doc-delta-results.json",
-    "auth-differential-results.json",
     "evm-role-table-results.json",
-    "spawn-ledger.jsonl"
+    "spawn-ledger.jsonl",
+    "aws-security-hub-export.jsonl"
   ],
   "mcp_owned_filename_patterns": [
     "^wave-[0-9]+-assignments\\.json$",

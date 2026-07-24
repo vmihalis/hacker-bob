@@ -1,0 +1,23 @@
+{
+  "name": "@hacker-bob/instrument-deterministic",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Broker-independent deterministic instrument provider and ABI conformance kit for Hacker Bob",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "lib/**/*.js"
+  ],
+  "main": "lib/provider.js",
+  "exports": {
+    ".": "./lib/provider.js",
+    "./fixtures": "./lib/fixtures.js",
+    "./orthogonal-fixture": "./lib/orthogonal-fixture.js"
+  },
+  "scripts": {
+    "test": "node --test test/provider.test.js"
+  }
+}

@@ -30,6 +30,25 @@ const BASE_PERMISSIONS = Object.freeze([
 ]);
 
 const PROJECT_DIR_EXPR = "${CLAUDE_PROJECT_DIR:-$PWD}";
+const FANOUT_CHILD_SCOPE_GUARD_MATCHER = [
+  "mcp__hacker-bob__bob_write_wave_handoff",
+  "mcp__hacker-bob__bob_finalize_agent_run",
+  "Agent",
+  "Task",
+].join("|");
+
+function fanoutChildScopeGuardHookEntry() {
+  return {
+    matcher: FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+    hooks: [
+      {
+        type: "command",
+        command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/agent-run-stop.js"`,
+        timeout: 5,
+      },
+    ],
+  };
+}
 
 function mcpPermissionForTool(toolName) {
   return `mcp__hacker-bob__${toolName}`;
@@ -155,6 +174,12 @@ function defaultPreToolUseHooks() {
         },
       ],
     },
+    // NS-7 defense in depth: the distinct child role already omits Agent/Task,
+    // handoff, and finalize from generated frontmatter. The tracked hook also
+    // attests the host-owned initial prompt and denies those calls if ambient
+    // host permission inheritance ever presents one anyway. Root scope remains
+    // usable only with its injected handoff-token prompt.
+    fanoutChildScopeGuardHookEntry(),
   ];
 }
 
@@ -172,8 +197,19 @@ function subagentLifecycleAgentNames() {
   ]);
 }
 
+// NS-7 — child completion is transcript-attested by SubagentStop, but the
+// child must never receive SubagentStart: that hook writes the shared root's
+// AgentRun identity. Keep the start set root-only and extend only the stop set.
+function subagentStopAttestedAgentNames() {
+  const { fanoutChildAgentNames } = require("../../scripts/lib/claude-role-renderer.js");
+  return uniqueStrings([
+    ...subagentLifecycleAgentNames(),
+    ...fanoutChildAgentNames(),
+  ]);
+}
+
 function defaultSubagentStopHooks() {
-  return subagentLifecycleAgentNames().map((evaluatorAgent) => (
+  return subagentStopAttestedAgentNames().map((evaluatorAgent) => (
     {
       matcher: evaluatorAgent,
       hooks: [
@@ -252,6 +288,8 @@ function defaultClaudeSettings() {
 
 module.exports = {
   BASE_PERMISSIONS,
+  FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+  fanoutChildScopeGuardHookEntry,
   hackerBobSkillAllowedTools,
   defaultClaudeSettings,
   defaultGlobalMcpPermissions,

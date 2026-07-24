@@ -150,17 +150,17 @@ function agentCellToolOffenders(cellToolNames) {
     const m = text.match(/^tools:\s*(.*)$/m);
     if (!m) continue;
     const tokens = m[1].split(/\s*,\s*/).map((s) => s.trim());
-    if (!tokens.includes("Task")) continue;
+    if (!tokens.some((token) => /^(?:Agent|Task)(?:\([^)]*\))?$/.test(token))) continue;
     const cellTools = tokens.filter((tok) => cellToolNames.has(stripMcpPrefix(tok)));
     if (cellTools.length > 0) offenders.push({ agent: f, cell_tools: cellTools });
   }
   return offenders;
 }
 
-test("G2 (i): no agent frontmatter pairs a cell tool with the Task primitive", () => {
+test("G2 (i): no agent frontmatter pairs a cell tool with an Agent/Task spawn grant", () => {
   // Cross-check the agent surface: an agent that carries BOTH a coverage-cell
-  // tool AND Task could spawn from within a cell-finalizing context. The only
-  // Task holders are renderer-registry spawn_capable roles, which do NOT carry
+  // tool AND Agent/Task could spawn from within a cell-finalizing context. The
+  // only holder is the renderer-registry spawn_capable root, which does NOT carry
   // the orchestrator-only cell tools. Assert the two are disjoint per agent.
   const cellToolNames = new Set(coverageCellTools().map((t) => t.name));
   const offenders = agentCellToolOffenders(cellToolNames);
@@ -171,14 +171,14 @@ test("G2 (i): no agent frontmatter pairs a cell tool with the Task primitive", (
   );
 });
 
-test("G2 (i) positive control: the leg BITES a Task + prefixed-cell-tool pairing", () => {
+test("G2 (i) positive control: the leg BITES an Agent(child) + prefixed-cell-tool pairing", () => {
   // Prove the disjointness leg is not vacuous: a synthetic frontmatter carrying
-  // Task AND a prefixed coverage-cell tool MUST be flagged. This is the regression
+  // Agent(child) AND a prefixed coverage-cell tool MUST be flagged. This is the regression
   // that would have caught the bare-vs-prefixed comparison bug.
   const cellToolNames = new Set(coverageCellTools().map((t) => t.name));
   assert.ok(cellToolNames.has("bob_propose_transition"), "bob_propose_transition is a cell tool");
-  const tokens = ["Task", "Read", `${MCP_TOOL_PREFIX}bob_propose_transition`];
-  const flagged = tokens.includes("Task")
+  const tokens = ["Agent(evaluator-fanout-child)", "Read", `${MCP_TOOL_PREFIX}bob_propose_transition`];
+  const flagged = tokens.some((token) => /^(?:Agent|Task)(?:\([^)]*\))?$/.test(token))
     ? tokens.filter((tok) => cellToolNames.has(stripMcpPrefix(tok)))
     : [];
   assert.deepEqual(

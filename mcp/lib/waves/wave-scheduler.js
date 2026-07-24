@@ -190,11 +190,18 @@ function startWaveLocked(domain, {
             });
           } catch { plan = null; }
           if (plan && Array.isArray(plan.children) && plan.children.length > 0 && plan.remaining_depth > 0) {
-            const worstCase = worstCaseTreeSize(plan.max_children, plan.remaining_depth);
+            // Reserve the tree the brain actually emitted. plan.max_children is
+            // the policy/budget ceiling and can exceed children.length when the
+            // surface has fewer candidate cells; charging the ceiling would make
+            // later roots reproduce a smaller plan and can overrun the lifetime
+            // cap once their mandatory root slots are appended.
+            // NS-4 — charge the exact emitted descendant width plus the root slot.
+            const issuedBranching = plan.children.length;
+            const worstCase = worstCaseTreeSize(issuedBranching, plan.remaining_depth);
             if (worstCase > 0) {
               descendants = worstCase;
               planDepth = plan.remaining_depth;
-              planBranching = plan.max_children;
+              planBranching = issuedBranching;
             }
           }
         }

@@ -67,7 +67,8 @@ const {
 } = require("./handoff-signing-key.js");
 
 const PROOF_BUNDLES_VERSION = 1;
-const PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
+const CALLER_PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
+const PROOF_BUNDLE_KINDS = Object.freeze([...CALLER_PROOF_BUNDLE_KINDS, "capability_pack"]);
 const MAX_REPLAY_COMMAND_TOKENS = 64;
 const MAX_REPLAY_COMMAND_TOKEN_CHARS = 2048;
 const MAX_REPLAY_SUMMARY_CHARS = 2000;
@@ -597,6 +598,15 @@ function normalizeDifferentialArtifact(artifact, { domain, index, findingId }) {
   return normalized;
 }
 
+function normalizeCapabilityPackArtifact(artifact, { index }) {
+  if (!isPlainObject(artifact)) {
+    throw new Error(`artifacts[${index}] must be an object`);
+  }
+  const normalized = cloneJsonValue(artifact, `artifacts[${index}]`);
+  validateNoSensitiveMaterial(normalized, `artifacts[${index}]`);
+  return normalized;
+}
+
 function normalizeArtifacts(pack, bundleKind, {
   domain,
   findingId,
@@ -622,6 +632,9 @@ function normalizeArtifacts(pack, bundleKind, {
         index,
         findingId,
       });
+    }
+    if (bundleKind === "capability_pack") {
+      return normalizeCapabilityPackArtifact(artifact, { index });
     }
     return normalizeDifferentialArtifact(artifact, { domain, index, findingId });
   });
@@ -766,6 +779,13 @@ function normalizeProofBundlesDocument(document, {
     normalized.packs.push(normalizedPack);
   }
   normalized.packs.sort((a, b) => a.finding_id.localeCompare(b.finding_id));
+  require("./capability-pack-proof-adapters.js")
+    .assertCapabilityPackProofBundlesCurrent(
+      domain,
+      document.packs,
+      normalized.packs,
+      reportableIds,
+    );
   return normalized;
 }
 
@@ -870,6 +890,14 @@ function renderProofBundlesMarkdown(document) {
         lines.push(`  - Differential: ${artifact.differential.control_kind} / ${artifact.differential.verdict}`);
         lines.push(`  - Vulnerable Run: ${artifact.differential.vuln_run_id}`);
         lines.push(`  - Control Run: ${artifact.differential.control_run_id}`);
+      } else if (artifact.artifact_kind === "capability_pack") {
+        lines.push(`  - Adapter: ${escapeMarkdownText(artifact.proof_adapter)}`);
+        lines.push(`  - Proof Kind: ${escapeMarkdownText(artifact.proof_kind)}`);
+        lines.push(`  - Verified Verdict: ${escapeMarkdownText(artifact.verified_verdict_ref)}`);
+        lines.push(`  - Campaign: ${escapeMarkdownText(artifact.campaign_ref)}`);
+        lines.push(`  - Terminal Cells: ${artifact.terminal_cell_count}`);
+        lines.push(`  - Active Effects: ${artifact.active_effect_count}`);
+        lines.push(`  - Unexplained Residue: ${artifact.residue_cell_count}`);
       }
     }
     lines.push("");
@@ -890,11 +918,33 @@ function writeProofBundles(args) {
       : null;
     const reportableIds = finalReportableIds(finalRound);
     const finalReportableIdSet = new Set(reportableIds);
+    const capabilityPackProjection = require("./capability-pack-proof-adapters.js")
+      .buildCapabilityPackProofBundles(domain, finalReportableIdSet);
+    const packOwnedFindingIds = new Set(capabilityPackProjection.handled_finding_ids);
+    const callerPackOverrides = args.packs
+      .filter((pack) => pack && packOwnedFindingIds.has(pack.finding_id))
+      .map((pack) => pack.finding_id)
+      .sort();
+    if (callerPackOverrides.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `Caller-supplied proof bundles cannot override capability-pack findings: ${callerPackOverrides.join(", ")}`,
+        {
+          code: "capability_pack_proof_override",
+          finding_ids: callerPackOverrides,
+        },
+        {
+          remediation:
+            "Remove the named bundles; Bob generates them from live capability-pack proof projections.",
+        },
+      );
+    }
+    const combinedPacks = [...args.packs, ...capabilityPackProjection.packs];
     const document = normalizeProofBundlesDocument({
       version: PROOF_BUNDLES_VERSION,
       target_domain: domain,
       ...(verificationBinding || {}),
-      packs: args.packs,
+      packs: combinedPacks,
     }, {
       expectedDomain: domain,
       findingIdSet,
@@ -912,6 +962,7 @@ function writeProofBundles(args) {
       bundles_count: document.packs.length,
       reportable_findings: reportableIds.length,
       missing_finding_ids: missingFindingIds,
+      capability_pack_generated_count: capabilityPackProjection.packs.length,
       written_json: paths.json,
     };
     if (verificationBinding) {
@@ -931,6 +982,7 @@ function writeProofBundles(args) {
         bundles: document.packs.length,
         reportable_findings: reportableIds.length,
         missing_findings: missingFindingIds.length,
+        capability_pack_generated: capabilityPackProjection.packs.length,
       },
     }, safeGovernanceContextForDomain(domain));
     if (verificationBinding) verificationLib().refreshVerificationManifest(domain, { throw_on_error: true });
@@ -939,6 +991,7 @@ function writeProofBundles(args) {
 }
 
 module.exports = {
+  CALLER_PROOF_BUNDLE_KINDS,
   PROOF_BUNDLE_KINDS,
   PROOF_BUNDLES_VERSION,
   computeProofBundleHash,

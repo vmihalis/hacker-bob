@@ -43,13 +43,26 @@ const {
 } = require("./handoff-signing-key.js");
 const {
   verifyRowWithMac,
+  assertRowMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
+  AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT,
 } = require("./offensive-row-mac.js");
 const {
   SEVERITY_VALUES,
   OFFENSIVE_OUTCOME_VALUES,
   SAFE_ORACLE_KINDS,
+  OFFENSIVE_ROW_ORACLE_KIND_VALUES,
 } = require("./constants.js");
+
+// A stamped oracle_kind marks an offensive-runs row whose evidence is NOT a self-
+// contained executed binding — an out-of-band callback (out_of_band_interaction) or a
+// second-order stored-effect re-read (second_order_reread), both observed through a
+// channel distinct from the injection point. The read-time exploit-run skip below keys
+// on membership here to REFUSE self-skip: such a row must earn a finding-differential
+// verified_pass against a decoy-silent control rather than self-close on one positive.
+// Single-sourced from constants (same list offensive-capture-writer validates the stamp
+// against), so the stampable set and this recognition can never drift.
+const NON_SELF_CONTAINED_ORACLE_KINDS = new Set(OFFENSIVE_ROW_ORACLE_KIND_VALUES);
 const {
   readFrontierEvents,
 } = require("./frontier-events.js");
@@ -824,6 +837,15 @@ const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
     bob_http_xss_reflect: "medium",
     bob_http_xss_confirm: "high",
     bob_oob_poll: "medium",
+    // bob_secondorder_reread: the second-order / stored-effect re-read producer. A
+    // server-minted canary injected at one in-scope endpoint that surfaces (exact parsed
+    // leaf) on a DISTINCT in-scope re-read endpoint, with a decoy-silent control proving
+    // non-ambience, demonstrates a stored/second-order effect — a MEDIUM-at-most lead
+    // unless the effect itself is the impact, so it caps at MEDIUM by construction. The
+    // re-read channel is Bob-controlled (safeFetch), so it carries no OOB self-hit
+    // attribution weakness; its single positive still must earn a finding-differential
+    // flip (oracle_kind second_order_reread is non-self-contained above).
+    bob_secondorder_reread: "medium",
     bob_http_cors_confirm: "medium",
     // HIGH is the CEILING (the max a row may demonstrate), NOT what every run stamps. The producer
     // ALWAYS passes an explicit demonstratedSeverityOverride: "medium" for the v1 authn-vs-ANON
@@ -1175,15 +1197,16 @@ function exploitRunSkipReverifies(domain, findingId, liveClaim) {
       // record-time strict equality so a row produced for surface B cannot back surface A).
       const rowSurfaceId = row && typeof row.surface_id === "string" ? row.surface_id.trim() : "";
       const matchesSurface = !!row && rowSurfaceId !== "" && rowSurfaceId === frozenSurfaceId;
-      if (matchesSurface && row.oracle_kind === "out_of_band_interaction") {
-        // An out-of-band-interaction row (a received external callback) is NOT a
-        // self-contained executed binding: the callback's causation by THIS injection is
-        // not proven by the single positive row (no pre-injection control, intermediary
-        // attribution open — the OOB collector stamps no "no pre-injection hit" control).
-        // It must earn a finding-differential verified_pass binding the positive callback
-        // AND a blocked_by_defense control on the same surface that stayed silent, rather
-        // than self-skip. oracle_kind is a MAC-covered sibling, so this read is
-        // non-forgeable.
+      if (matchesSurface && NON_SELF_CONTAINED_ORACLE_KINDS.has(row.oracle_kind)) {
+        // A row carrying a stamped oracle_kind (an out-of-band external callback, or a
+        // second-order stored-effect re-read observed at a distinct endpoint) is NOT a
+        // self-contained executed binding: a single positive row does not, alone, prove
+        // the observed effect is injection-caused rather than ambient (no in-row negative
+        // control). It must earn a finding-differential verified_pass binding the positive
+        // AND a blocked_by_defense decoy control on the same surface that stayed silent,
+        // rather than self-skip. oracle_kind is a MAC-covered sibling, so this read is
+        // non-forgeable. (The oobOnly flag below carries this "non-self-contained oracle"
+        // disposition through to the caller unchanged for every such kind.)
         sawValidOobRow = true;
         continue;
       }
@@ -1803,7 +1826,28 @@ function readCandidateClaims(targetDomain) {
 // without a coverage row. Returns
 // { missing: [{ surface_id, finding_id, reason }] }; the grade door fails closed on a
 // non-empty missing[].
-function completionDepthGapForCompleteSurfaces(domain) {
+//
+// ACCESS-CONTROL CWE SET (id-bearing independence): an id-bearing crown surface's obligation
+// is a CROSS-TENANT object-authorization test, so its clearing EXECUTED finding must be an
+// access-control class. An executed SSRF/XSS/injection on the same surface proves impact but
+// NOT that the object-level authorization was ever probed, so it does not discharge the crown
+// obligation (the auth-differential FLIP or a re-verified cross-stack composition still does).
+// bug_class is not persisted on the finding record; the CANONICAL CWE is (catalog-canonical on
+// read-back), so the class is resolved from the CWE alone. Only catalog CWEs reach here — a
+// novel/non-catalog CWE degrades to null on read-back — so an unrecognized class holds the
+// surface as an honest partial, the SAFE (fail-toward-HOLD) direction.
+const ID_BEARING_ACCESS_CONTROL_CWES = new Set([
+  "CWE-639", // Authorization Bypass Through User-Controlled Key (IDOR)
+  "CWE-284", // Improper Access Control
+  "CWE-285", // Improper Authorization
+  "CWE-862", // Missing Authorization
+  "CWE-863", // Incorrect Authorization
+]);
+
+function completionDepthGapForCompleteSurfaces(domain, options = {}) {
+  const packExecutedFindingIds = options.packExecutedFindingIds instanceof Set
+    ? options.packExecutedFindingIds
+    : new Set();
   const { buildWaveHandoffsDocument, listWaveAssignmentNumbers } = require("./wave-handoff-store.js");
   // The handoff doc is the SOLE enumerator of which surfaces are 'complete'. Both reads that can
   // throw fail CLOSED (a single fail-open catch over both was the brutalist's HIGH finding — it
@@ -1849,20 +1893,33 @@ function completionDepthGapForCompleteSurfaces(domain) {
     }
   } catch { /* no coverage ledger — surfaces fall to the executed/bypass arms */ }
 
-  // finding_ids per surface (from the recorded claims)
+  // finding_ids per surface (from the recorded claims), plus the subset whose CANONICAL CWE is
+  // an access-control class. An id-bearing crown clears on an EXECUTED finding only when that
+  // finding is access-control (the cross-tenant obligation); a same-surface executed SSRF/XSS
+  // is impact without the object-authorization test, so it never clears the crown.
   const findingsBySurface = new Map();
+  const accessControlFindingIds = new Set();
   try {
     const { findingPayloadsFromClaims } = require("./tools/record-candidate-claim.js");
     for (const finding of findingPayloadsFromClaims(domain)) {
       if (!finding || !finding.surface_id || !finding.id) continue;
       if (!findingsBySurface.has(finding.surface_id)) findingsBySurface.set(finding.surface_id, []);
       findingsBySurface.get(finding.surface_id).push(finding.id);
+      if (typeof finding.cwe === "string" && ID_BEARING_ACCESS_CONTROL_CWES.has(finding.cwe)) {
+        accessControlFindingIds.add(finding.id);
+      }
     }
   } catch { /* unreadable claims — surfaces fall to the coverage/bypass arms */ }
 
   // (a-executed) union of re-derived verified_pass by finding across the executed ledgers.
   // composition-verified is path-keyed (verified_by_finding absent → contributes {}).
   const executedFindings = new Set();
+  // Capability-pack grade adapters can contribute execution only through this
+  // explicit server-derived set.  For Plane-PH the adapter reaches this point
+  // only after re-resolving the production verdict and durable campaign
+  // closure, so a physical surface does not need a fake web differential row
+  // merely to satisfy the shared completion-depth gate.
+  for (const findingId of packExecutedFindingIds) executedFindings.add(findingId);
   const verifiedSummaryReaders = [
     () => require("./finding-differential-verifier.js").readFindingDifferentialVerifiedSummary(domain),
     () => require("./repro-replay-verifier.js").readReproVerifiedSummary(domain),
@@ -1913,12 +1970,189 @@ function completionDepthGapForCompleteSurfaces(domain) {
     else if (!surfaceBypass.has(handoff.surface_id)) surfaceBypass.set(handoff.surface_id, false);
   }
 
+  // Both the id-bearing FLAG and the id-bearing ENDPOINT set come from the MCP-owned route
+  // (surface-routes.json), FROZEN at route time by the injected detector/extractor — never
+  // re-read from agent-writable attack_surface.json at grade time. Otherwise an agent could
+  // relabel a real cross-tenant flip on an easy resource onto a hard surface by adding that
+  // endpoint under the target surface in agent scratch.
+  const idBearingSurfaces = new Set();
+  const surfaceEndpointValues = new Map();
+  // The id-bearing predicate is read from surface-routes.json. Any way that read can FAIL to
+  // establish a surface's id-bearing status must fail CLOSED, not silently drop the surface into
+  // the non-id-bearing bypass branch (which would launder an untested crown to complete on a
+  // bypass_attempt narrative). Three read outcomes, three handlings:
+  //   1. MISSING routes file (no routing ran / no id-bearing surfaces) -> benign: the id-bearing
+  //      set is empty and non-id-bearing surfaces clear on their own evidence (fail OPEN).
+  //   2. PRESENT-but-unreadable whole file (unparseable, version mismatch, partial write, on-disk
+  //      tampering of the write-guard-only file) -> readSurfaceRoutesStrict throws; the predicate
+  //      cannot be established for ANY surface, so fail closed globally (routesUnverifiable).
+  //   3. PRESENT + valid envelope but a per-route QUARANTINE (a stale/malformed/duplicate route
+  //      silently dropped by the resilient reader into malformed_routes[] — e.g. cross-version
+  //      route-field drift on a resumed session, no attacker needed): the dropped surface is absent
+  //      from document.routes, so fail closed for exactly that surface (quarantinedSurfaceIds); a
+  //      quarantined entry that lost its surface_id is unattributable, so fail closed globally.
+  let routesUnverifiable = false;
+  // Whether the routes envelope was PRESENT + parseable on this call (the strict read did not
+  // throw). Distinct from routesUnverifiable: a MISSING file leaves both false (benign
+  // fail-open), a present-but-CORRUPT file sets routesUnverifiable true + this false, a valid
+  // envelope sets this true. The routed-surface totality check below fires ONLY when this is
+  // true, so it never false-blocks a session that legitimately never routed.
+  let routesDocumentReadable = false;
+  const quarantinedSurfaceIds = new Set();
+  // Every surface_id carrying a route entry in the readable document (routable OR unroutable,
+  // id-bearing OR not). A complete surface is always an ASSIGNED surface, and every assignment
+  // requires a route (wave-assignment-store's "Missing route" guard rejects an assignment with
+  // no route), so a complete surface ABSENT from this set — when routes were readable — is an
+  // integrity anomaly (a route lost/dropped after being written), NOT a legitimate routeless
+  // surface. Its id-bearing status cannot be established, so it is held as routes-unverifiable
+  // rather than laundered onto the non-id-bearing bypass branch.
+  const routedSurfaceIds = new Set();
+  try {
+    const { readSurfaceRoutesStrict } = require("./surface-router.js");
+    const routesRead = readSurfaceRoutesStrict(domain);
+    for (const route of (routesRead.document.routes || [])) {
+      if (route && typeof route.surface_id === "string" && route.surface_id) routedSurfaceIds.add(route.surface_id);
+      // id_bearing (detector result, principal-independent) drives the strong no-bypass grade
+      // branch, so a single-account run cannot launder an id-bearing surface to complete via a
+      // bypass_attempt narrative. The frozen endpoints are used only by the >=2-principal flip
+      // path (authDifferentialCovered); a <2-principal id-bearing surface clears only via a real
+      // finding (hasExecuted) / composition, else it stays an honest partial.
+      if (route && route.id_bearing === true && route.surface_id) {
+        idBearingSurfaces.add(route.surface_id);
+        const eps = Array.isArray(route.id_bearing_endpoints) ? route.id_bearing_endpoints : [];
+        surfaceEndpointValues.set(route.surface_id, new Set(eps.filter((e) => typeof e === "string" && e)));
+      }
+    }
+    for (const bad of (routesRead.malformed_routes || [])) {
+      if (bad && typeof bad.surface_id === "string" && bad.surface_id) quarantinedSurfaceIds.add(bad.surface_id);
+      else routesUnverifiable = true;
+    }
+    // The envelope parsed and every route/malformed row was accounted for: routedSurfaceIds is
+    // now the authoritative set of surfaces that carry a route, so the totality check may run.
+    routesDocumentReadable = true;
+  } catch {
+    // We only reach here with complete surfaces to grade (early return at the completeHandoffs===0
+    // check otherwise), and every complete surface required a route at assignment time
+    // (wave-assignment-store throws for a routeless assignment). So an UNREADABLE routes file here —
+    // whether ABSENT (deleted / torn write / partial resume), a dangling symlink, or corrupt — is an
+    // INTEGRITY ANOMALY, never the benign no-routing case. Fail CLOSED for every complete surface:
+    // its id-bearing status cannot be established, so it must not masquerade as non-id-bearing and
+    // clear on a coverage/bypass row (a whole-file rm needs no signing key; the write-guard gates the
+    // Write tool, not rm — so absent-with-complete-handoffs is the easiest crown-launder to fail open).
+    routesUnverifiable = true;
+  }
+
+  const authDifferentialCovered = new Set();
+  try {
+    const { readResults } = require("./auth-differential-runner.js");
+    const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
+    const results = readResults(domain);
+    // Resolve the row verifier ONCE (a disk key read) before the loop, never per row. A
+    // pre-keypair session yields null -> a present row_mac fails to verify (fail closed).
+    const rowVerifier = resolveRowVerifierSafely(domain);
+    for (const row of ((results && Array.isArray(results.per_endpoint)) ? results.per_endpoint : [])) {
+      if (!row || typeof row.endpoint !== "string") continue;
+      // Coverage requires a per-endpoint cross-tenant FLIP (MCP-computed): one VALIDATED
+      // principal ACCESSED the object (2xx) while a DISTINCT VALIDATED principal was DENIED
+      // it (4xx) — the negative control flipped. Same-account-twice (both 2xx, no denial)
+      // and [real, junk] (junk never validated) both fail to flip, so neither clears; a
+      // genuinely-secure surface (owner-in/attacker-out) does flip and correctly clears.
+      if (row.cross_tenant_flip !== true) continue;
+      // Cycle B keyed layer: a flipped row credits completion coverage ONLY when its row_mac
+      // VERIFIES under the auth-differential context (STRICT — an unsigned, tampered, forged, or
+      // cross-context row throws and is skipped, fail closed). This closes the Bash-forged-flip
+      // launder past the best-effort write hook now that the ledger is audit-graded: the row must
+      // carry a REAL signature over its substantive fields, not just the right shape.
+      try {
+        assertRowMac(AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT, row, rowVerifier);
+      } catch {
+        continue;
+      }
+      // Bind by surface_id: the sweep must have been RUN FOR this surface (stamped at call
+      // time) AND hit one of its id-bearing endpoints. A row not stamped with a surface_id
+      // (legacy / un-bound sweep) earns no coverage — fail closed, no endpoint-string bleed.
+      if (typeof row.surface_id !== "string" || !row.surface_id) continue;
+      const rowTemplate = templatizeIdBearingEndpoint(row.endpoint);
+      if (!rowTemplate) continue;
+      // base_url-relabel defense: the runner stamps effective_url = joinUrl(base_url, endpoint)
+      // — the URL actually fetched — and it enters the row_mac preimage, so a MAC-verified row's
+      // effective_url is the real tested URL. The signed `endpoint` alone templatizes to a frozen
+      // crown path even when the arm was fetched under a relabeled base_url: an OFF-SCOPE host, or
+      // a benign PATH PREFIX (e.g. /safe-prefix) that hid an easy same-host target. When
+      // effective_url is present, additionally require it to resolve to an in-scope host AND to
+      // templatize to one of THIS surface's frozen id-bearing endpoints; a mismatch is not
+      // credited (fail closed). An ABSENT field is a legacy/pre-urlbind row: skip only this extra
+      // check (back-compat) — the MAC, flip, surface_id-bind, and endpoint-template checks stand.
+      let effectiveTemplate = null;
+      if (typeof row.effective_url === "string" && row.effective_url) {
+        if (!exploitTargetHostInScope(row.effective_url, domain)) continue;
+        effectiveTemplate = templatizeIdBearingEndpoint(row.effective_url);
+        if (!effectiveTemplate) continue;
+      }
+      for (const [surfaceId, endpoints] of surfaceEndpointValues) {
+        if (row.surface_id !== surfaceId) continue;
+        if (!endpoints.has(rowTemplate)) continue;
+        if (effectiveTemplate !== null && !endpoints.has(effectiveTemplate)) continue;
+        authDifferentialCovered.add(surfaceId);
+      }
+    }
+  } catch { /* malformed auth-differential results contribute no coverage */ }
+
   const missing = [];
   for (const [surfaceId, hasBypass] of surfaceBypass) {
     const hasCoverage = (coverageBySurface.get(surfaceId) || 0) > 0;
     const findings = findingsBySurface.get(surfaceId) || [];
     const hasExecuted = findings.some((findingId) => executedFindings.has(findingId));
+    // An id-bearing crown clears on an EXECUTED finding ONLY when that finding is an
+    // access-control class (the cross-tenant obligation). A same-surface executed SSRF/XSS
+    // proves impact but never the object-authorization test, so it does not clear the crown.
+    const hasAccessControlExecuted = findings.some(
+      (findingId) => executedFindings.has(findingId) && accessControlFindingIds.has(findingId),
+    );
     const hasCompositionExecuted = compositionExecutedSurfaces.has(surfaceId);
+    const isIdBearing = idBearingSurfaces.has(surfaceId);
+    if (isIdBearing) {
+      // X-DONE1 an id-bearing complete surface clears ONLY on an executed ACCESS-CONTROL finding, a
+      // re-verified cross-stack composition, or MCP-owned auth-differential coverage — never on a
+      // non-access-control executed finding, a coverage row, or a bypass narrative.
+      if (hasAccessControlExecuted || hasCompositionExecuted || authDifferentialCovered.has(surfaceId)) continue;
+      missing.push({
+        surface_id: surfaceId,
+        finding_id: findings.length > 0 ? findings[0] : null,
+        reason: "complete_idbearing_surface_no_differential",
+      });
+      continue;
+    }
+    if (routesUnverifiable || quarantinedSurfaceIds.has(surfaceId)) {
+      // Routes unreadable (whole file) or this surface's own route was quarantined: its id-bearing
+      // status cannot be established, so it must not be treated as non-id-bearing and cleared on a
+      // bypass narrative or a coverage row. Because the surface COULD be an id-bearing crown, apply
+      // the SAME access-control bar the intact id-bearing branch requires (X-DONE1): clear only on an
+      // executed ACCESS-CONTROL finding or composition — a non-access-control executed finding (an
+      // XSS/SSRF) does NOT discharge a possibly-crown's cross-tenant obligation. Otherwise hold.
+      if (hasAccessControlExecuted || hasCompositionExecuted) continue;
+      missing.push({
+        surface_id: surfaceId,
+        finding_id: findings.length > 0 ? findings[0] : null,
+        reason: "complete_surface_routes_unverifiable",
+      });
+      continue;
+    }
+    // TOTALITY: routes were readable but this complete surface carries NO route entry at all (not
+    // id-bearing, not quarantined, not global-unverifiable). Every complete surface is assigned
+    // and every assignment requires a route, so an absent route is an integrity anomaly and the
+    // id-bearing status cannot be established. Hold it as routes-unverifiable rather than clearing
+    // it on a coverage/bypass narrative; because it could be a crown, require the access-control bar
+    // (never a non-access-control executed finding); genuine access-control/composition evidence clears.
+    if (routesDocumentReadable && !routedSurfaceIds.has(surfaceId)) {
+      if (hasAccessControlExecuted || hasCompositionExecuted) continue;
+      missing.push({
+        surface_id: surfaceId,
+        finding_id: findings.length > 0 ? findings[0] : null,
+        reason: "complete_surface_routes_unverifiable",
+      });
+      continue;
+    }
     if (hasBypass || hasCoverage || hasExecuted || hasCompositionExecuted) continue;
     missing.push({
       surface_id: surfaceId,

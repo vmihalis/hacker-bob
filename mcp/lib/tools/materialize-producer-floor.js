@@ -1,5 +1,8 @@
 "use strict";
 
+const crypto = require("crypto");
+const fs = require("fs");
+
 // bob_materialize_producer_floor — the producer-floor producer. Sweeps the recon
 // producer DAG (PRODUCER_PACKS) and emits one producer_proposed
 // observation.recorded event per producer that is READY (its input clause holds)
@@ -16,7 +19,7 @@ const { assertNonEmptyString } = require("../validation.js");
 const { currentSurfaces } = require("../frontier-projections.js");
 const { appendFrontierEvent, readFrontierEvents } = require("../frontier-events.js");
 const { PRODUCER_PACKS, isProducerReady } = require("../producer-packs.js");
-const { CASE_FOLD_SAFE_CHAIN_FAMILIES } = require("../chain-authority.js");
+const { CASE_FOLD_SAFE_CHAIN_FAMILIES, contractIdentityKey } = require("../chain-authority.js");
 const {
   producerRunSet,
   recordProducerRun,
@@ -25,8 +28,8 @@ const {
 } = require("../producer-run-ledger.js");
 const { materializeTaskGraph, producerNodeId } = require("../task-graph-materializer.js");
 const { loadQueuePolicy, CLAMP_CEILING } = require("../queue-policy.js");
-const { statePath } = require("../paths.js");
-const { readJsonFile, withSessionLock } = require("../storage.js");
+const { httpAuditJsonlPath, statePath, trafficJsonlPath } = require("../paths.js");
+const { readFileUtf8, readJsonFile, withSessionLock } = require("../storage.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
 const {
   PRODUCER_NODE_KIND,
@@ -78,6 +81,26 @@ const STALE_DISPATCH_NODE_STATES = Object.freeze(["proposed", "dispatched"]);
 // dirs, so it is suppressed whenever address-keyed instances exist; the per-pass
 // instance keys embed the on-chain identity after this prefix.
 const SC_ADDRESS_EXPANDER_PRODUCER_ID = "sc_address_expander";
+const WEB_HTTP_BODIES_PRODUCER_ID = "web_http_bodies";
+const WEB_ONCHAIN_REF_PRODUCER_ID = "web_onchain_ref";
+const COMPOSITION_TRANSITION_KIND = "identity_propagation";
+
+function compositionTransitionSurfaceId(payload, eventId) {
+  const proposalId = typeof payload.proposal_id === "string" ? payload.proposal_id.trim() : "";
+  if (proposalId) return `transition:${proposalId}`;
+  const from = typeof payload.from_surface === "string" ? payload.from_surface.trim() : "";
+  const to = typeof payload.to_surface === "string" ? payload.to_surface.trim() : "";
+  const kind = typeof payload.transition_kind === "string" ? payload.transition_kind.trim() : "";
+  if (from && to && kind) return `transition:${from}::${to}::${kind}`;
+  return `transition:event:${eventId}`;
+}
+
+function loadTransitionSurfaceId() {
+  const { transitionSurfaceId } = require("../frontier-materializer.js");
+  return typeof transitionSurfaceId === "function"
+    ? transitionSurfaceId
+    : compositionTransitionSurfaceId;
+}
 
 // Case-folding an on-chain address is only safe where the address encoding is
 // case-INSENSITIVE: EVM hex and the hex Move families (aptos, sui). Solana (svm)
@@ -99,6 +122,107 @@ function clampCap(value, { lo, hi, fallback }) {
   if (value < lo) return lo;
   if (value > hi) return hi;
   return value;
+}
+
+function planCompositionFloor({
+  leakedIdentifierFacts,
+  surfaceIds,
+  existingTransitionKeys,
+  transitionKeyOf,
+  transitionKindValues,
+}) {
+  const kindValues = transitionKindValues || require("../task-graph-events.js").TRANSITION_KIND_VALUES;
+  if (!Array.isArray(kindValues)
+    || !kindValues.includes(COMPOSITION_TRANSITION_KIND)) {
+    return {
+      propose: [],
+      blocked_prereqs: [{
+        kind: "missing_transition_kind",
+        transition_kind: COMPOSITION_TRANSITION_KIND,
+      }],
+    };
+  }
+  if (typeof transitionKeyOf !== "function") {
+    throw new Error("transitionKeyOf must be a function");
+  }
+
+  const eligibleSurfaceIds = surfaceIds instanceof Set ? surfaceIds : null;
+  const shouldFilterSurfaces = !!(eligibleSurfaceIds && eligibleSurfaceIds.size > 0);
+  const existingKeys = existingTransitionKeys instanceof Set
+    ? existingTransitionKeys
+    : new Set(existingTransitionKeys || []);
+  const groups = new Map();
+  const facts = Array.isArray(leakedIdentifierFacts) ? leakedIdentifierFacts : [];
+
+  for (const fact of facts) {
+    const payload = fact && fact.payload && typeof fact.payload === "object" ? fact.payload : fact;
+    if (!payload || typeof payload !== "object") continue;
+    const identifierClass = typeof payload.identifier_class === "string"
+      ? payload.identifier_class.trim()
+      : "";
+    const identifierFingerprint = typeof payload.identifier_fingerprint === "string"
+      ? payload.identifier_fingerprint.trim()
+      : "";
+    const surfaceId = typeof payload.surface_id === "string" ? payload.surface_id.trim() : "";
+    if (!identifierClass || !identifierFingerprint || !surfaceId) continue;
+    if (shouldFilterSurfaces && !eligibleSurfaceIds.has(surfaceId)) continue;
+
+    const groupKey = `${identifierClass}${identifierFingerprint}`;
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        identifier_class: identifierClass,
+        surfaces: new Map(),
+      });
+    }
+    const group = groups.get(groupKey);
+    if (!group.surfaces.has(surfaceId)) group.surfaces.set(surfaceId, []);
+    if (payload.claim_id != null) {
+      const claimId = String(payload.claim_id).trim();
+      if (claimId && !group.surfaces.get(surfaceId).includes(claimId)) {
+        group.surfaces.get(surfaceId).push(claimId);
+      }
+    }
+  }
+
+  const propose = [];
+  // Within-pass dedup: M distinct shared identifiers across the SAME surface pair {A,B}
+  // must emit ONE (A,B) transition, not M identical ones (write-amplification on an
+  // identifier-rich, attacker-influenceable body). existingKeys dedups vs prior passes;
+  // this set dedups vs THIS pass.
+  const proposedKeys = new Set();
+  for (const key of Array.from(groups.keys()).sort()) {
+    const group = groups.get(key);
+    const surfaces = Array.from(group.surfaces.keys()).sort();
+    if (surfaces.length < 2) continue;
+    for (let i = 0; i < surfaces.length; i += 1) {
+      for (let j = i + 1; j < surfaces.length; j += 1) {
+        const from = surfaces[i];
+        const to = surfaces[j];
+        const forwardKey = transitionKeyOf({ from, to });
+        const reverseKey = transitionKeyOf({ from: to, to: from });
+        if (existingKeys.has(forwardKey) || existingKeys.has(reverseKey)) continue;
+        if (proposedKeys.has(forwardKey) || proposedKeys.has(reverseKey)) continue;
+        proposedKeys.add(forwardKey);
+
+        const evidenceRefs = [];
+        const fromClaim = group.surfaces.get(from)[0];
+        const toClaim = group.surfaces.get(to)[0];
+        if (fromClaim) evidenceRefs.push(String(fromClaim));
+        if (toClaim && toClaim !== fromClaim) evidenceRefs.push(String(toClaim));
+        propose.push({
+          from_surface: from,
+          to_surface: to,
+          kind: COMPOSITION_TRANSITION_KIND,
+          trust_assumption:
+            `identity_propagation: an ${group.identifier_class} leaked on surface ${from} `
+            + `also indexes surface ${to}; untested cross-collection identity handoff`,
+          evidence_refs: evidenceRefs,
+        });
+      }
+    }
+  }
+
+  return { propose, blocked_prereqs: [] };
 }
 
 // Pure planner: given the producer packs, the terminal producer_run set, and the
@@ -148,6 +272,7 @@ function planProducerFloor({
       // (e.g. a web root in a contracts session) — not ready, but not a gap to
       // fill, so it is simply omitted.
       const rootSeed = trigger.target_class === "web" ? "target" : "chain_address_set";
+      if (producerId === WEB_HTTP_BODIES_PRODUCER_ID && !available.has("http_bodies")) continue;
       if (available.has(rootSeed)) ready.push(pack);
       continue;
     }
@@ -702,6 +827,358 @@ function readScExpanderSurfaces(domain) {
   return scSurfaces;
 }
 
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readJsonlObjectsFailSoft(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  let content;
+  try {
+    content = readFileUtf8(filePath, { label: filePath });
+  } catch {
+    return [];
+  }
+  if (!content.trim()) return [];
+  const rows = [];
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (isPlainObject(parsed)) rows.push(parsed);
+    } catch {
+      continue;
+    }
+  }
+  return rows;
+}
+
+function stringifyBodyValue(value) {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (isPlainObject(value) || Array.isArray(value)) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function bodyTextFromRecord(record) {
+  if (!isPlainObject(record)) return "";
+  const directFields = [
+    "body",
+    "response_body",
+    "responseBody",
+    "text",
+    "html",
+    "content",
+    "_content",
+  ];
+  for (const field of directFields) {
+    const text = stringifyBodyValue(record[field]);
+    if (text.trim()) return text;
+  }
+  if (isPlainObject(record.response)) {
+    const responseFields = ["body", "response_body", "text", "html", "_content"];
+    for (const field of responseFields) {
+      const text = stringifyBodyValue(record.response[field]);
+      if (text.trim()) return text;
+    }
+    if (isPlainObject(record.response.content)) {
+      const text = stringifyBodyValue(record.response.content.text || record.response.content.body);
+      if (text.trim()) return text;
+    }
+  }
+  return "";
+}
+
+function readHttpBodyCorpus(domain) {
+  const rows = [];
+  for (const source of [
+    { artifact: "http-audit.jsonl", filePath: httpAuditJsonlPath(domain) },
+    { artifact: "traffic.jsonl", filePath: trafficJsonlPath(domain) },
+  ]) {
+    const records = readJsonlObjectsFailSoft(source.filePath);
+    for (let i = 0; i < records.length; i += 1) {
+      const body = bodyTextFromRecord(records[i]);
+      if (!body.trim()) continue;
+      rows.push({
+        artifact: source.artifact,
+        line: i + 1,
+        record: records[i],
+        body,
+      });
+    }
+  }
+  return rows;
+}
+
+function hasMaterializedHttpBodyCorpus(domain) {
+  return readHttpBodyCorpus(domain).length > 0;
+}
+
+function scanStringFields(value, out = []) {
+  if (typeof value === "string") {
+    out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) scanStringFields(item, out);
+    return out;
+  }
+  if (isPlainObject(value)) {
+    for (const item of Object.values(value)) scanStringFields(item, out);
+  }
+  return out;
+}
+
+function parseBodyJson(body) {
+  try {
+    const parsed = JSON.parse(body);
+    return isPlainObject(parsed) || Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function chainIdFromHintText(text) {
+  const normalized = typeof text === "string" ? text.trim().toLowerCase() : "";
+  if (!normalized) return null;
+  const eip155 = normalized.match(/\beip155[:_-](\d{1,10})\b/);
+  if (eip155) return eip155[1];
+  const chainId = normalized.match(/\bchain[_-]?id["'\s:=]+(\d{1,10})\b/);
+  if (chainId) return chainId[1];
+  // Fail closed on ambiguous common words in UNTRUSTED response bodies: require a
+  // chain-SPECIFIC disambiguator, never a bare 'base' ("base fee"/"base url") or bare
+  // 'mainnet' (matches "avalanche mainnet" etc.). Mirrors lead-intake resolveChainContext.
+  if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli)\b/.test(normalized)) return "8453";
+  // Bare \bethereum\b matches "Ethereum-compatible"/"EVM"/"Ethereum-based" for essentially
+  // every EVM L2 — require a mainnet-SPECIFIC disambiguator so a non-mainnet L2 contract is
+  // never silently stamped chain 1 (Y-D22 fail-closed).
+  if (/\bethereum[-_\s]?mainnet\b|\beip155[:_-]?1\b/.test(normalized)) return "1";
+  if (/\barbitrum[-_\s]?one\b|\barbitrum[-_\s]?mainnet\b/.test(normalized)) return "42161";
+  if (/\boptimism[-_\s]?mainnet\b|\bop[-_\s]?mainnet\b/.test(normalized)) return "10";
+  if (/\bpolygon[-_\s]?mainnet\b/.test(normalized)) return "137";
+  return null;
+}
+
+function collectChainHintTexts(record, parsedBody, body) {
+  const texts = [];
+  scanStringFields(record, texts);
+  if (parsedBody) scanStringFields(parsedBody, texts);
+  const compact = typeof body === "string" ? body.slice(0, 200000) : "";
+  if (compact) texts.push(compact);
+  return texts;
+}
+
+function resolveChainFamilyForHit(hit) {
+  // depends: S4-resolver
+  if (!hit || typeof hit.address !== "string") return null;
+  const address = hit.address.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
+  const chainId = hit.chain_id == null ? "" : String(hit.chain_id).trim();
+  if (!chainId) return null;
+  return { chain_family: "evm", chain_id: chainId, address };
+}
+
+function extractOnchainReferenceHits(row) {
+  const parsedBody = parseBodyJson(row.body);
+  const hintTexts = collectChainHintTexts(row.record, parsedBody, row.body);
+  let chainId = null;
+  for (const text of hintTexts) {
+    chainId = chainIdFromHintText(text);
+    if (chainId) break;
+  }
+
+  const addressSet = new Set();
+  // Boundary-anchored so a 64-hex tx/keccak/slot value (0x + 64 hex) is NOT truncated to
+  // its first 40 hex and mis-read as a contract address (which would mint a bogus surface).
+  const addressRe = /(?<![0-9a-fA-F])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g;
+  const bodyMatches = row.body.match(addressRe) || [];
+  for (const address of bodyMatches) addressSet.add(address);
+  if (parsedBody) {
+    const jsonText = JSON.stringify(parsedBody);
+    for (const address of jsonText.match(addressRe) || []) addressSet.add(address);
+  }
+
+  return Array.from(addressSet).map((address) => ({
+    address,
+    chain_id: chainId,
+    artifact: row.artifact,
+    line: row.line,
+  }));
+}
+
+function blockedPrereqId(hit) {
+  return "web-onchain-ref-" + crypto.createHash("sha256")
+    .update(JSON.stringify([hit.artifact, hit.line, hit.address]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function recordUnresolvedOnchainReference(domain, hit) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "frontier.enqueued",
+    payload: {
+      lead_id: blockedPrereqId(hit),
+      surface_ref: null,
+      score: 0,
+      priority: "medium",
+      confidence: "low",
+      blocked_prereqs: [{
+        kind: "chain_family_unresolved",
+        identifier_hint: hit.address,
+        reason: "on-chain address reference was found in a captured response body without resolvable chain context",
+        next_step: "Record the chain context for this response or add a resolver hint that maps the address to a chain_family and chain_id.",
+      }],
+      provenance: {
+        source: WEB_ONCHAIN_REF_PRODUCER_ID,
+        artifact: hit.artifact,
+        line: hit.line,
+      },
+    },
+    source: { artifact: hit.artifact, tool: WEB_ONCHAIN_REF_PRODUCER_ID },
+    actor: "orchestrator",
+  });
+}
+
+function recordInlineProducerProduced(domain, producerKey, inputItemCount) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "observation.recorded",
+    payload: {
+      observation_kind: "producer_run",
+      producer_key: producerKey,
+      status: "produced",
+      reason: "input_consumed",
+      input_consumed: { input_item_count: inputItemCount },
+    },
+    source: { tool: "bob_materialize_producer_floor" },
+    actor: "orchestrator",
+  });
+}
+
+function executeWebHttpBodiesProducer(domain, { runSet = null } = {}) {
+  const runs = runSet instanceof Set ? runSet : producerRunSet(domain);
+  if (runs.has(WEB_HTTP_BODIES_PRODUCER_ID)) return { executed: false, input_item_count: 0 };
+  const rows = readHttpBodyCorpus(domain);
+  if (rows.length === 0) return { executed: false, input_item_count: 0 };
+  recordInlineProducerProduced(domain, WEB_HTTP_BODIES_PRODUCER_ID, rows.length);
+  return { executed: true, input_item_count: rows.length };
+}
+
+// A 0x-address extracted from a captured (attacker-influenceable) response body is an
+// UNTRUSTED LEAD, never an authorized target: record it as a scope-confirmation blocked
+// prerequisite so an operator confirms program scope before it becomes an analyzable
+// smart_contract surface — never auto-bind it (bindAndSeedContracts performs NO scope
+// authorization, and a web session has no contract scope to authorize against).
+function recordOnchainReferenceScopeUnconfirmed(domain, tuple) {
+  const hint = tuple && tuple.address ? tuple.address : contractIdentityKey(tuple);
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "frontier.enqueued",
+    payload: {
+      lead_id: blockedPrereqId({ address: hint }),
+      surface_ref: null,
+      score: 0,
+      priority: "low",
+      confidence: "low",
+      blocked_prereqs: [{
+        kind: "onchain_ref_scope_unconfirmed",
+        identifier_hint: hint,
+        reason: "on-chain address reference found in a captured (untrusted) response body — not auto-bound as an in-scope smart_contract surface",
+        next_step: "Confirm this address is in program scope and record it as an authorized contract target before it is analyzed.",
+      }],
+      provenance: { source: WEB_ONCHAIN_REF_PRODUCER_ID, artifact: "http_body_corpus", line: null },
+    },
+    source: { artifact: "http_body_corpus", tool: WEB_ONCHAIN_REF_PRODUCER_ID },
+    actor: "orchestrator",
+  });
+}
+
+function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
+  const runs = runSet instanceof Set ? runSet : producerRunSet(domain);
+  if (runs.has(WEB_ONCHAIN_REF_PRODUCER_ID)) {
+    return { executed: false, input_item_count: 0, resolved: 0, unresolved: 0 };
+  }
+  const rows = readHttpBodyCorpus(domain);
+  if (rows.length === 0) return { executed: false, input_item_count: 0, resolved: 0, unresolved: 0 };
+
+  const tuples = [];
+  const tupleKeys = new Set();
+  // Collect UNRESOLVED hits deduped by blocked-prereq identity (address/artifact/line), so a
+  // single attacker-reflected body cannot append one frontier event per repeated address.
+  const unresolvedHits = [];
+  const unresolvedKeys = new Set();
+  for (const row of rows) {
+    for (const hit of extractOnchainReferenceHits(row)) {
+      const resolved = resolveChainFamilyForHit(hit);
+      if (!resolved) {
+        const uKey = blockedPrereqId(hit);
+        if (!unresolvedKeys.has(uKey)) {
+          unresolvedKeys.add(uKey);
+          unresolvedHits.push(hit);
+        }
+        continue;
+      }
+      const key = contractIdentityKey(resolved);
+      if (tupleKeys.has(key)) continue;
+      tupleKeys.add(key);
+      tuples.push(resolved);
+    }
+  }
+
+  // PRD-4: the materialized HTTP body corpus is consumed by this producer-run ledger row.
+  // A body-extracted address is UNTRUSTED (an attacker can reflect content into a captured
+  // body), so it is NEVER auto-bound as an in-scope smart_contract surface — it is recorded
+  // as a scope-confirmation blocked prerequisite for the operator to authorize. The per-pass
+  // cap bounds how many leads a single (attacker-influenceable) body can enqueue so it cannot
+  // mint an unbounded set of obligations (a DoS on frontier convergence) — applied to BOTH the
+  // resolved (scope-unconfirmed) and unresolved (chain-context-missing) branches, since both
+  // append frontier events into an evictable ring buffer. This producer is one-shot (the
+  // runs.has short-circuit above), so the per-pass cap is also the lifetime bound. Over-cap
+  // refs are reported as a count, never silently dropped.
+  const policy = loadQueuePolicy(domain);
+  const perPassCap = clampCap(policy && policy.seed_producer_per_pass_cap, {
+    lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  });
+  const recordedTuples = tuples.slice(0, perPassCap);
+  for (const tuple of recordedTuples) recordOnchainReferenceScopeUnconfirmed(domain, tuple);
+  const recordedUnresolved = unresolvedHits.slice(0, perPassCap);
+  for (const hit of recordedUnresolved) recordUnresolvedOnchainReference(domain, hit);
+  const overCap = (tuples.length - recordedTuples.length) + (unresolvedHits.length - recordedUnresolved.length);
+  recordInlineProducerProduced(domain, WEB_ONCHAIN_REF_PRODUCER_ID, rows.length);
+  return {
+    executed: true,
+    input_item_count: rows.length,
+    resolved: 0,
+    unresolved: recordedUnresolved.length,
+    scope_unconfirmed: recordedTuples.length,
+    over_cap: overCap,
+  };
+}
+
+function executeInlineProducerWorkers(domain, plan, state, runSet) {
+  const readyIds = new Set((Array.isArray(plan && plan.ready) ? plan.ready : [])
+    .map((pack) => pack && pack.producer_id)
+    .filter(Boolean));
+  const executed = [];
+  if (readyIds.has(WEB_HTTP_BODIES_PRODUCER_ID)) {
+    const result = executeWebHttpBodiesProducer(domain, { runSet });
+    if (result.executed) executed.push({ producer_id: WEB_HTTP_BODIES_PRODUCER_ID, ...result });
+  }
+  if (readyIds.has(WEB_ONCHAIN_REF_PRODUCER_ID)) {
+    const stateForContracts = { ...(state || {}), target_domain: domain, target: domain };
+    const result = executeWebOnchainRefProducer(domain, stateForContracts, { runSet });
+    if (result.executed) executed.push({ producer_id: WEB_ONCHAIN_REF_PRODUCER_ID, ...result });
+  }
+  return executed;
+}
+
 // Single-sourced producer-floor PLAN builder. Assembles the EXACT inputs the
 // dispatch handler feeds planProducerFloor — the policy-derived caps
 // (linked_contract_depth + the OD1 seed governors), the live smart_contract
@@ -744,15 +1221,20 @@ function buildProducerFloorPlan(domain) {
   // session seeds 'chain_address_set'; each produced upstream producer unlocks its
   // produces[] kinds for the derived producers downstream.
   const availableArtifactKinds = new Set();
-  if (typeof state.target_url === "string" && state.target_url) {
+  const hasWebTarget = typeof state.target_url === "string" && state.target_url;
+  if (hasWebTarget) {
     availableArtifactKinds.add("target");
   }
   if (Array.isArray(state.target_contracts) && state.target_contracts.length > 0) {
     availableArtifactKinds.add("chain_address_set");
   }
+  if (hasWebTarget && hasMaterializedHttpBodyCorpus(domain)) {
+    availableArtifactKinds.add("http_bodies");
+  }
   for (const producerKey of runSet) {
     const pack = PRODUCER_PACKS[producerKey];
     if (pack && Array.isArray(pack.produces)) {
+      if (producerKey === WEB_ONCHAIN_REF_PRODUCER_ID && scSurfaces.length === 0) continue;
       for (const kind of pack.produces) availableArtifactKinds.add(kind);
     }
   }
@@ -763,7 +1245,7 @@ function buildProducerFloorPlan(domain) {
     scSurfaces,
     caps,
   });
-  return { plan, policy, caps, runSet, scSurfaces, availableArtifactKinds };
+  return { plan, policy, caps, runSet, scSurfaces, availableArtifactKinds, state };
 }
 
 function isLedgerPressureRefusal(err) {
@@ -819,7 +1301,13 @@ function handler(args) {
   // the emergent sc-expander recursion. The drain gate calls the SAME builder, so the
   // caps that govern the sc-expander recursion depth cannot drift between dispatch and
   // the freeze precondition.
-  const { plan } = buildProducerFloorPlan(domain);
+  let built = buildProducerFloorPlan(domain);
+  let { plan } = built;
+  const inlineProducerRuns = executeInlineProducerWorkers(domain, plan, built.state, built.runSet);
+  if (inlineProducerRuns.length > 0) {
+    built = buildProducerFloorPlan(domain);
+    plan = built.plan;
+  }
 
   // Read the live producer graph ONCE up front (fail SOFT on ledger pressure). It
   // serves the idempotent-emission dedupe below AND, when nothing new is emitted,
@@ -887,6 +1375,58 @@ function handler(args) {
         contract_address: instance.address,
         depth: instance.depth,
       },
+      actor: "orchestrator",
+    });
+    emittedAny = true;
+  }
+
+  // PRD-6: leaked-identifier composition floor. Turn cross-surface shared
+  // identifiers into deduped identity_propagation transition proposals; the
+  // existing transition-cell floor (enumerateTransitionCellFloor + emitOrAutoBlock)
+  // fans and converges them. Strictly monotone: each edge proposed at most once
+  // (dedup on transitionSurfaceId), so the reachable edge set stays finite and a
+  // repeat pass with no new leaked-identifier facts proposes zero new edges,
+  // preserving the transition-floor convergence proof's finiteness precondition.
+  const {
+    appendTransitionProposal,
+    readTransitionProposals,
+    TRANSITION_KIND_VALUES,
+  } = require("../task-graph-events.js");
+  const transitionSurfaceId = loadTransitionSurfaceId();
+  const leakedIdentifierFacts = readFrontierEvents(domain).filter((event) => (
+    event
+    && event.kind === "observation.recorded"
+    && event.payload
+    && event.payload.observation_kind === "leaked_identifier"
+  ));
+  const existingTransitionKeys = new Set(
+    readTransitionProposals(domain).map((event) => transitionSurfaceId(event.payload, event.event_id)),
+  );
+  const surfaceIds = new Set(
+    ((currentSurfaces(domain).surfaces || []))
+      .map((surface) => surface && surface.id)
+      .filter(Boolean),
+  );
+  const transitionKeyOf = ({ from, to }) => transitionSurfaceId({
+    from_surface: from,
+    to_surface: to,
+    transition_kind: COMPOSITION_TRANSITION_KIND,
+  }, null);
+  const composition = planCompositionFloor({
+    leakedIdentifierFacts,
+    surfaceIds,
+    existingTransitionKeys,
+    transitionKeyOf,
+    transitionKindValues: TRANSITION_KIND_VALUES,
+  });
+  for (const proposal of composition.propose) {
+    appendTransitionProposal({
+      target_domain: domain,
+      from_surface: proposal.from_surface,
+      to_surface: proposal.to_surface,
+      kind: COMPOSITION_TRANSITION_KIND,
+      trust_assumption: proposal.trust_assumption,
+      evidence_refs: proposal.evidence_refs,
       actor: "orchestrator",
     });
     emittedAny = true;
@@ -973,6 +1513,7 @@ function handler(args) {
     // RANK != BOUND: stale-dispatch producers stuck pre-executed are reported the
     // same way, never silently abandoned. Empty when no stale-dispatch node exists.
     stale_dispatch_reconciled: staleDispatchReconciled,
+    inline_producer_runs: inlineProducerRuns,
   });
   });
 }
@@ -1012,12 +1553,17 @@ module.exports = Object.freeze({
   // helpers and the shared surface reader ride the same inert-key precedent for
   // the termination tests and the precondition's suppression parity.
   planProducerFloor,
+  planCompositionFloor,
   buildProducerFloorPlan,
   isProducerFloorAtFixpoint,
   planOrphanReconcile,
   planStaleDispatchReconcile,
   reconcileOrphanExecutedProducers,
   reconcileStaleDispatchProducers,
+  executeWebHttpBodiesProducer,
+  executeWebOnchainRefProducer,
+  hasMaterializedHttpBodyCorpus,
+  readHttpBodyCorpus,
   readScExpanderSurfaces,
   ORPHAN_EXECUTED_RECONCILE_PASS_THRESHOLD,
   STALE_DISPATCH_GRACE_MS,

@@ -107,6 +107,36 @@ function gateVerifyToGrade(context) {
     });
   }
   if (blockers.length > 0) return blockers;
+  // S3c self-capped-severity vs owned capability. Fail-closed: refuse to grade
+  // a reportable finding self-capped with a "cannot do X" rationale when the
+  // registry owns a tool for X and no substantive blocked_harness_runs escape
+  // exists. Self-activating: no capability-blocker rationale => no violations.
+  try {
+    const { capabilityBlockerCeilingViolations } = require("./reachability-ceiling.js");
+    for (const v of capabilityBlockerCeilingViolations(context.target_domain).violations) {
+      blockers.push({
+        code: "self_capped_owned_capability",
+        blocked_by: "self_capped_owned_capability",
+        finding_id: v.finding_id,
+        capability_id: v.capability_id,
+        owning_tools: v.owning_tools,
+        message:
+          `VERIFY -> GRADE blocked: finding ${v.finding_id} was severity-capped citing `
+          + `"cannot do ${v.capability_id}" but Bob owns a tool for it (${v.owning_tools.join(", ")})`,
+        remediation:
+          `run ${v.owning_tools.join(" / ")} to attempt the "cannot do X" step and re-grade on the `
+          + "demonstrated outcome, OR record a substantive blocked_harness_runs[] entry for this "
+          + "finding's surface citing why the available tool is genuinely inadequate",
+      });
+    }
+  } catch (error) {
+    blockers.push({
+      code: "self_capped_owned_capability",
+      blocked_by: "self_capped_owned_capability",
+      message: `VERIFY -> GRADE blocked: capability-ceiling check failed (failing closed): ${compactError(error)}`,
+      error: compactError(error),
+    });
+  }
   try {
     const { state } = readSessionStateStrict(context.target_domain);
     if (!state || state.target_repo == null) return blockers;
@@ -232,7 +262,64 @@ function gateGradeToReport(context) {
       error: message,
     });
   }
+  for (const entry of gradeToReportApprovalBlocker(context)) {
+    blockers.push(entry);
+  }
   return blockers;
+}
+
+// AgentCore rail-b: additive GRADE -> REPORT human-approval blocker. Inert off the AWS
+// branch (BOB_AGENTCORE unset/falsy) so every local/interactive/CI session is completely
+// unaffected -- mirrors .claude/hooks/bob-approval-gate-impl.py's own AWS-branch gate.
+// When active, verifies the un-forgeable S3-backed, HMAC-bound approval artifact via
+// mcp/lib/approval-store.js: the model's own execution role can only s3:GetObject the
+// approvals/ prefix (never PutObject -- see template.yaml HackerBobAgentRuntimeExecutionRole),
+// and the artifact's HMAC is recomputed and compared, not merely its existence checked
+// (fx-gate-hardening: the old raw-existence-of-a-model-writable-file check was forgeable
+// by a headless --dangerously-skip-permissions model running as that same role). A single
+// ApprovalWriter Lambda write (triggered by a named human's approval action, itself calling
+// states:SendTaskSuccess) satisfies both this and the sibling PreToolUse hook's
+// belt-and-suspenders check. Fails CLOSED: BOB_AGENTCORE=1 with no valid, HMAC-verified
+// artifact for this target_domain blocks.
+function gradeToReportApprovalBlocker(context) {
+  if (process.env.BOB_AGENTCORE !== "1") return [];
+  const { verifyApprovalArtifact } = require("./approval-store.js");
+  const { assertSafeDomain } = require("./paths.js");
+  let approved = false;
+  try {
+    // This gate's trust assumption: every other gate in
+    // this engine reaches context.target_domain only through an
+    // assertSafeDomain-backed accessor (readSessionStateStrict et al. thread it
+    // through paths.js), so a path-traversal-shaped target_domain never
+    // survives to a raw filesystem/object-key join. verifyApprovalArtifact ->
+    // approval-store.js's readLocalArtifact/readS3Artifact interpolate
+    // targetDomain directly into a local path / S3 key with no such guard, so
+    // sanitize it here before it crosses that boundary. A rejected domain
+    // fails CLOSED into the same catch below (never treated as approved).
+    const safeDomain = assertSafeDomain(context.target_domain);
+    // fx-hmac-content: bind the approval to the EXACT grade the human reviewed.
+    // loadGradeVerdictHash throws (STATE_CONFLICT) when grade.json is absent/unreadable —
+    // that throw is caught by this same try/catch below, so "no grade.json yet" (a session
+    // that somehow reached GRADE -> REPORT without a persisted grade verdict, or a bug) fails
+    // CLOSED into the identical external_approval_pending blocker, with no new error shape.
+    const currentGradeVerdictHash = require("./report-finalize.js").loadGradeVerdictHash(safeDomain);
+    approved = verifyApprovalArtifact(safeDomain, currentGradeVerdictHash);
+  } catch {
+    approved = false;
+  }
+  if (approved) return [];
+  return [{
+    code: "external_approval_pending",
+    blocked_by: "external_approval_pending",
+    message:
+      "GRADE -> REPORT blocked: awaiting named-human external approval (Step Functions "
+      + `SendTaskSuccess) for ${context.target_domain}`,
+    remediation:
+      "a named human approves via the Step Functions task token (SendTaskSuccess through "
+      + "the ApprovalWriter Lambda), which writes and HMAC-signs the S3 "
+      + "approvals/<target_domain>.approved artifact this gate verifies; the report step "
+      + "is withheld until that artifact exists and its HMAC checks out",
+  }];
 }
 
 function gateClaimFreezeToVerify(context) {
@@ -345,6 +432,27 @@ function gateClaimFreezeToVerify(context) {
 // precondition throw AND a materialization error both block.
 function gateSetupToOpenFrontier(context) {
   const blockers = [];
+  const nucleus = context && context.nucleus;
+  const scopePolicy = nucleus && nucleus.scope_policy;
+  const physicalOnly = !!(
+    nucleus && nucleus.physical_scope
+    && scopePolicy && scopePolicy.target_url == null
+    && scopePolicy.target_repo == null
+    && (!Array.isArray(scopePolicy.target_contracts) || scopePolicy.target_contracts.length === 0)
+  );
+  if (physicalOnly) {
+    blockers.push({
+      code: "physical_inventory_required",
+      blocked_by: "physical_inventory_required",
+      physical_scope_axis_digest: nucleus.physical_scope.axis_digest || null,
+      message:
+        "SETUP -> OPEN_FRONTIER blocked: physical-only sessions require a current signed physical inventory checkpoint",
+      remediation:
+        "ingest a future server-verified physical inventory checkpoint bound by reference and digest to this "
+        + "physical scope axis; generic/manual seed surfaces do not satisfy this authority prerequisite",
+    });
+    return blockers;
+  }
   let evaluation;
   try {
     evaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
@@ -487,6 +595,40 @@ function gateOpenFrontierToClaimFreeze(context) {
     });
   }
 
+  // PH-S12 campaign closure is self-activating. A physical campaign that was
+  // preflighted into bounded Frontier ledgers must reconstruct one branded,
+  // signed aggregate closure before CLAIM_FREEZE. Ordinary sessions have no
+  // campaign authority and remain unaffected.
+  let physicalCampaign;
+  try {
+    physicalCampaign = require("./physical-campaign-coordinator.js")
+      .physicalCampaignClosureReadiness(context.target_domain);
+  } catch (error) {
+    blockers.push({
+      code: "physical_campaign_closure_invalid",
+      blocked_by: "physical_campaign_closure_invalid",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE physical campaign verification failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (physicalCampaign.active === true && physicalCampaign.satisfied !== true) {
+    blockers.push({
+      code: "physical_campaign_closure_required",
+      blocked_by: "physical_campaign_closure_required",
+      physical_campaign: physicalCampaign,
+      message: physicalCampaign.reason === "terminal_residue"
+        ? "OPEN_FRONTIER -> CLAIM_FREEZE blocked: physical campaign retains terminal residue"
+        : physicalCampaign.reason === "campaign_anchor_not_production_attested"
+          ? "OPEN_FRONTIER -> CLAIM_FREEZE blocked: physical campaign closure is integrity-only and lacks production authority"
+          : "OPEN_FRONTIER -> CLAIM_FREEZE blocked: physical campaign segments remain unreconciled",
+      remediation: physicalCampaign.reason === "campaign_anchor_not_production_attested"
+        ? "bind the campaign to a server-issued physical obligation, production-enrolled signer, independently attested external anchor, terminal witnesses, and durable zero-active-effects proof"
+        : "resume the exact PH-S12 campaign, reconcile every signed bounded segment, "
+          + "and resolve inconclusive/blocked residue before retrying the transition",
+    });
+  }
+
   // Recon-producer floor teeth: a materialized producer floor must reach its
   // fixpoint (no READY non-advisory producer) before CLAIM_FREEZE. Self-
   // activating — vacuously satisfied when no producer node was materialized, so
@@ -524,6 +666,43 @@ function gateOpenFrontierToClaimFreeze(context) {
       remediation:
         "dispatch the recon-producer floor to fixpoint via bob_materialize_producer_floor "
         + "then the bob_schedule_seed_producers loop, then retry the transition",
+    });
+  }
+
+  // Unscanned body obligations self-activate on a materialized producer floor.
+  // RANK != BOUND: absent-input gaps report without blocking; blockers
+  // accumulate like the sibling producer-drain gates.
+  let unscannedBodies;
+  try {
+    unscannedBodies = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
+      "unscanned_bodies_drained",
+      { target_domain: context.target_domain },
+    );
+  } catch (error) {
+    blockers.push({
+      code: "scheduler_precondition_error",
+      blocked_by: "scheduler_precondition_error",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE precondition evaluation failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (!unscannedBodies.satisfied) {
+    blockers.push({
+      code: "unscanned_bodies_undrained",
+      blocked_by: "unscanned_bodies_undrained",
+      ready_count: unscannedBodies.ready_web_onchain_ref_count,
+      ready_producer_ids: Array.isArray(unscannedBodies.ready_web_onchain_ref_ids)
+        ? unscannedBodies.ready_web_onchain_ref_ids
+        : [],
+      message: "OPEN_FRONTIER -> CLAIM_FREEZE blocked: "
+        + `${unscannedBodies.ready_web_onchain_ref_count} unscanned response-body`
+        + " artifact(s) remain — the on-chain-ref scan (web_onchain_ref) has not"
+        + " reached a terminal producer_run",
+      remediation: "dispatch the recon-producer floor to fixpoint via"
+        + " bob_materialize_producer_floor then the bob_schedule_seed_producers"
+        + " loop so every http_bodies artifact is scanned for on-chain refs, then"
+        + " retry the transition",
     });
   }
 
@@ -736,4 +915,6 @@ module.exports = {
   // (the upstream verification/reachability checks short-circuit gateVerifyToGrade
   // before this block, so a focused test exercises the production producer directly).
   sandboxIsolationBlockersForReportableVerdictClaims,
+  // Exported so the GRADE -> REPORT human-approval blocker is testable in isolation.
+  gradeToReportApprovalBlocker,
 };

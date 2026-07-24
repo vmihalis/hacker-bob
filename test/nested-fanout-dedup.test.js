@@ -20,16 +20,21 @@ const { cellFloorPlanningKeysForSurface, buildChildFanoutPlanForSurface } = requ
 function withTempHome(fn, host = "claude") {
   const prev = process.env.HOME;
   const prevClient = process.env.BOB_CLIENT;
+  const prevAgentTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-d6-"));
   process.env.HOME = home;
   // Nesting is claude-only (B3 host gate); pin the host so the plan emits deterministically.
   process.env.BOB_CLIENT = host;
+  if (host === "claude") process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
+  else delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
   try {
     return fn(home);
   } finally {
     process.env.HOME = prev;
     if (prevClient === undefined) delete process.env.BOB_CLIENT;
     else process.env.BOB_CLIENT = prevClient;
+    if (prevAgentTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prevAgentTeams;
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   }
 }
@@ -68,7 +73,8 @@ test("B3: nesting is claude-only and depth is clamped by the host ceiling", () =
     assert.equal(plan, null, "non-claude host => no nested plan (host gate)");
   }, "unknown");
 
-  // claude => plan emitted, but depth clamped by the host ceiling (5), not the raw 6.
+  // Explicitly-enabled Claude => plan emitted, but depth is clamped to the one
+  // supported teammate-to-subagent edge, not the raw policy depth 6.
   withTempHome((home) => {
     void home;
     const domain = "b3-claude.example.com";
@@ -76,7 +82,7 @@ test("B3: nesting is claude-only and depth is clamped by the host ceiling", () =
     const surfaceObj = { id: "surface:api", bug_class_hints: ["idor"] };
     const plan = buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId: "surface:api", coverageSummary: {} });
     assert.ok(plan, "claude => plan emitted");
-    assert.equal(plan.remaining_depth, 4, "remaining_depth = min(6,5)-1 = 4 (clamped by the claude host ceiling)");
+    assert.equal(plan.remaining_depth, 1, "remaining_depth = min(6,2)-1 = 1 (clamped by the Claude host ceiling)");
   }, "claude");
 });
 

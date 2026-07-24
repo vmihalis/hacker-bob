@@ -41,6 +41,10 @@ const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+const {
+  mintSensitiveShapeSafeToken,
+  sensitiveShapesPresent,
+} = require("../mcp/lib/offensive-http-common.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -161,6 +165,23 @@ async function run(domain, { fetch_fn, args } = {}) {
 }
 
 // ───────────────────────── pure-helper unit tests ──────────────────────────
+
+test("canary mint rejects a random hex value that accidentally looks like card PII", () => {
+  const accidentalCard = "a4111111111111111aaaaaaaaaaaaaaa";
+  const safeHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  assert.equal(accidentalCard.length, 32);
+  assert.equal(sensitiveShapesPresent(`bxr${accidentalCard}`), true);
+  let calls = 0;
+  const token = mintSensitiveShapeSafeToken("bxr", {
+    randomBytes() {
+      calls += 1;
+      return Buffer.from(calls === 1 ? accidentalCard : safeHex, "hex");
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(token, `bxr${safeHex}`);
+  assert.equal(sensitiveShapesPresent(token), false);
+});
 
 test("htmlContextAt classifies executable vs safe reflection contexts (fail-closed)", () => {
   const cases = [

@@ -21,6 +21,9 @@ const { writeFileAtomic } = require("../mcp/lib/storage.js");
 const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
 const { startWave } = require("../mcp/lib/waves.js");
 const { writeWaveHandoff } = require("../mcp/lib/waves/wave-assignment-store.js");
+const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
+const { logCoverage } = require("../mcp/lib/coverage.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
 const {
   DEFAULT_QUEUE_POLICY,
   LEAN_PROFILE,
@@ -29,20 +32,24 @@ const {
 } = require("../mcp/lib/queue-policy.js");
 
 const HINTS = ["idor", "ssrf", "xss", "ssti", "auth_bypass"];
-const SPAWN_CHILD_TYPE = "evaluator-fanout";
+const SPAWN_CHILD_TYPE = FANOUT_ROLE_REGISTRY.child.subagent_type;
 
 function withClaudeHome(fn) {
   const prevHome = process.env.HOME;
   const prevClient = process.env.BOB_CLIENT;
+  const prevAgentTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-spawn-backstop-"));
   process.env.HOME = home;
-  process.env.BOB_CLIENT = "claude"; // nesting is claude-only
+  process.env.BOB_CLIENT = "claude"; // nesting is explicitly-enabled Claude-only
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
   try {
     return fn(home);
   } finally {
     process.env.HOME = prevHome;
     if (prevClient === undefined) delete process.env.BOB_CLIENT;
     else process.env.BOB_CLIENT = prevClient;
+    if (prevAgentTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prevAgentTeams;
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   }
 }
@@ -78,6 +85,35 @@ function baseHandoffArgs(domain, surfaceId, token, agent = "a1") {
     summary: "surface fully covered",
     content: "# Handoff\n\nFinal handoff body",
   };
+}
+
+function firstIssuedChild(domain, surface) {
+  const plan = buildChildFanoutPlanForSurface({
+    domain,
+    surfaceObj: surface,
+    surfaceId: surface.id,
+    coverageSummary: {},
+    wave: "w1",
+  });
+  assert.ok(plan && plan.children.length > 0, "the root receives an issued child plan");
+  return plan.children[0];
+}
+
+function recordChildCoverage(domain, child) {
+  JSON.parse(logCoverage({
+    target_domain: domain,
+    wave: "w1",
+    agent: "a1",
+    surface_id: child.surface_id,
+    entries: [{
+      endpoint: "/api/resource/123",
+      method: "GET",
+      bug_class: child.bug_class,
+      auth_profile: child.auth_profile || undefined,
+      status: "tested",
+      evidence_summary: "The issued child completed its terminal differential coverage before root handoff.",
+    }],
+  }));
 }
 
 test("a leaf worker that reports a spawned child is mechanically rejected at the write site", () => {
@@ -139,17 +175,22 @@ test("an opt-in nested spawn-capable worker may report a child of the pinned typ
   withClaudeHome(() => {
     const domain = "nested-parent.example.com";
     const surfaceId = "surface:api";
+    const surface = { id: surfaceId, hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS };
     // Opt into nesting (depth>1) on the claude host so the surface gets a real
     // fan-out plan with remaining_depth>0 and a positive child width.
-    bootstrap(domain, [{ id: surfaceId, hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS }], {
+    bootstrap(domain, [surface], {
       max_spawn_depth: 3,
       max_spawn_children: 8,
     });
     const token = startAndToken(domain, surfaceId);
+    const child = firstIssuedChild(domain, surface);
+    // This is the live close-edge regression: child completion prunes the live
+    // coverage view, but root validation must reconstruct the pre-child plan.
+    recordChildCoverage(domain, child);
 
     const result = JSON.parse(writeWaveHandoff({
       ...baseHandoffArgs(domain, surfaceId, token),
-      spawned_children: [{ subagent_type: SPAWN_CHILD_TYPE }],
+      spawned_children: [{ subagent_type: SPAWN_CHILD_TYPE, cell_key: child.cell_key }],
     }));
     assert.ok(result.written_json, "a budgeted nested parent's reported child is accepted");
     const handoff = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
@@ -162,19 +203,53 @@ test("a nested worker that reports a child of a foreign subagent type is rejecte
   withClaudeHome(() => {
     const domain = "nested-foreign-type.example.com";
     const surfaceId = "surface:api";
-    bootstrap(domain, [{ id: surfaceId, hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS }], {
+    const surface = { id: surfaceId, hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS };
+    bootstrap(domain, [surface], {
       max_spawn_depth: 3,
       max_spawn_children: 8,
     });
     const token = startAndToken(domain, surfaceId);
+    const child = firstIssuedChild(domain, surface);
 
     assert.throws(
       () => writeWaveHandoff({
         ...baseHandoffArgs(domain, surfaceId, token),
-        spawned_children: [{ subagent_type: "chain" }],
+        spawned_children: [{ subagent_type: "chain", cell_key: child.cell_key }],
       }),
       /allowlist|spawn budget/i,
       "a child outside the pinned spawn-type allowlist must be rejected even when nesting is on",
+    );
+  });
+});
+
+test("a nested root cannot report an invented or duplicate child cell", () => {
+  withClaudeHome(() => {
+    const domain = "nested-cell-allowlist.example.com";
+    const surfaceId = "surface:api";
+    const surface = { id: surfaceId, hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS };
+    bootstrap(domain, [surface], {
+      max_spawn_depth: 3,
+      max_spawn_children: 8,
+    });
+    const token = startAndToken(domain, surfaceId);
+    const child = firstIssuedChild(domain, surface);
+
+    assert.throws(
+      () => writeWaveHandoff({
+        ...baseHandoffArgs(domain, surfaceId, token),
+        spawned_children: [{ subagent_type: SPAWN_CHILD_TYPE, cell_key: '["invented",""]' }],
+      }),
+      /cell_key .* was not emitted/i,
+    );
+    assert.throws(
+      () => writeWaveHandoff({
+        ...baseHandoffArgs(domain, surfaceId, token),
+        spawned_children: [
+          { subagent_type: SPAWN_CHILD_TYPE, cell_key: child.cell_key },
+          { subagent_type: SPAWN_CHILD_TYPE, cell_key: child.cell_key },
+        ],
+      }),
+      /reported more than once/i,
     );
   });
 });

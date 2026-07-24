@@ -31,9 +31,13 @@ const {
 const {
   classifySurfaceCapability,
   getCapabilityPack,
+  isCapabilityPackDispatchable,
+  isPhysicalSurfaceMetadata,
   normalizeContextBudget,
+  techniqueCompatibilityPackId,
 } = require("./capability-packs.js");
 const {
+  quarantinedRouteMetadata,
   readSurfaceRoutesStrict,
   isUnroutableRoute,
 } = require("./surface-router.js");
@@ -643,8 +647,18 @@ function normalizeRegistryEntry(entry, registryVersion) {
   const title = assertNonEmptyString(entry.title || entry.id || "Evaluator guidance", "technique_pack.title");
   const capabilityPacks = normalizeCapabilityPacks(entry);
   for (const capabilityPack of capabilityPacks) {
-    if (!getCapabilityPack(capabilityPack)) {
+    const registeredPack = getCapabilityPack(capabilityPack);
+    if (!registeredPack) {
       throw new Error(`Unknown capability_pack in technique pack ${id}: ${capabilityPack}`);
+    }
+    if (!isCapabilityPackDispatchable(registeredPack)) {
+      throw new Error(`Unavailable capability_pack in technique pack ${id}: ${capabilityPack}`);
+    }
+    const compatibilityTarget = techniqueCompatibilityPackId(capabilityPack);
+    if (compatibilityTarget !== capabilityPack) {
+      throw new Error(
+        `Non-canonical capability_pack in technique pack ${id}: ${capabilityPack}; use ${compatibilityTarget}`,
+      );
     }
   }
   // Plane T cycle T.4 — optional `lens_affinity` field. When set, the brief
@@ -817,7 +831,7 @@ function selectTechniquePacksForSurface(surface, {
   const attemptsByPack = latestAttemptByPack(attempts);
   const scoredPacks = [];
   for (const pack of registry.packs) {
-    if (!pack.capability_packs.includes(capabilityPack)) continue;
+    if (!techniquePackSupportsCapability(pack, capabilityPack)) continue;
     const scored = scoreTechniqueEntry(pack, surface || {});
     if (scored.score > 0) {
       scoredPacks.push({ pack, score: scored.score, matches: scored.matches });
@@ -826,7 +840,8 @@ function selectTechniquePacksForSurface(surface, {
 
   if (scoredPacks.length === 0) {
     const fallback = registry.packs.find(
-      (pack) => pack.id === EVALUATOR_KNOWLEDGE_DEFAULT_ID && pack.capability_packs.includes(capabilityPack),
+      (pack) => pack.id === EVALUATOR_KNOWLEDGE_DEFAULT_ID
+        && techniquePackSupportsCapability(pack, capabilityPack),
     );
     if (fallback) {
       scoredPacks.push({ pack: fallback, score: 0, matches: ["fallback:generic-rest-api"] });
@@ -937,8 +952,12 @@ function addOptionalTechniqueVersionMetadata(normalized, record) {
   if (packVersion != null) normalized.pack_version = packVersion;
   if (registryVersion != null) normalized.registry_version = registryVersion;
   if (capabilityPack) {
-    if (!getCapabilityPack(capabilityPack)) {
+    const registeredPack = getCapabilityPack(capabilityPack);
+    if (!registeredPack) {
       throw new Error(`Unknown capability_pack: ${capabilityPack}`);
+    }
+    if (!isCapabilityPackDispatchable(registeredPack)) {
+      throw new Error(`Unavailable capability_pack: ${capabilityPack}`);
     }
     normalized.capability_pack = capabilityPack;
   }
@@ -1050,15 +1069,28 @@ function assertFullReadContext(args) {
 }
 
 function assertTechniquePackMatchesCapability(techniquePack, capabilityPack) {
-  const capabilityPacks = techniquePack && Array.isArray(techniquePack.capability_packs)
-    ? techniquePack.capability_packs
-    : [];
-  if (!capabilityPacks.includes(capabilityPack)) {
+  if (!techniquePackSupportsCapability(techniquePack, capabilityPack)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `technique pack ${techniquePack && techniquePack.id ? techniquePack.id : "(unknown)"} is not compatible with capability_pack ${capabilityPack}`,
     );
   }
+}
+
+// NS-6 — every technique consumer resolves routing variants through the
+// capability-pack registry before deciding compatibility.
+function techniquePackSupportsCapability(techniquePack, capabilityPack) {
+  // Directed consumer relation: an assigned capability pack resolves to the
+  // canonical technique target it may consume. Technique registry entries must
+  // name that target literally (normalizeRegistryEntry rejects routing variants).
+  // We intentionally do NOT canonicalize the entry side: a future technique
+  // tagged only `web_fanout` must not become usable by flat `web` accidentally.
+  const requestedTarget = techniqueCompatibilityPackId(capabilityPack);
+  if (!requestedTarget) return false;
+  const capabilityPacks = techniquePack && Array.isArray(techniquePack.capability_packs)
+    ? techniquePack.capability_packs
+    : [];
+  return capabilityPacks.includes(requestedTarget);
 }
 
 function assertPackMatchesAssignment(packResult, assignment) {
@@ -1150,11 +1182,16 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
       if (Array.isArray(routesInfo.malformed_routes)) {
         const quarantined = routesInfo.malformed_routes.find((m) => m && m.surface_id === surface.id);
         if (quarantined) {
-          const action = route ? "using the valid route but the file is corrupt" : "re-deriving its capability pack";
           process.stderr.write(
             `WARNING: surface_id ${surface.id} has a quarantined route (${quarantined.reason}); `
-            + `bob_select_technique_packs is ${action} — re-run bob_route_surfaces to regenerate.\n`,
+            + "bob_select_technique_packs is denying selection until routes are regenerated.\n",
           );
+          route = quarantinedRouteMetadata({
+            surfaceId: surface.id,
+            reason: quarantined.reason,
+            rawMetadata: quarantined.route_metadata,
+            fallbackMetadata: surface,
+          });
         }
       }
     } catch {}
@@ -1163,18 +1200,29 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
     route = classifySurfaceCapability(surface);
   }
 
-  // Per Y-D21 an ambiguous smart_contract surface is unroutable, not web: the
-  // classifier returns `{ routable:false, capability_pack:null, unroutable_reason }`
-  // and the router persists it as `{ disposition:"unroutable", reason }`. On the
-  // auto-routed path (no explicit pack request) technique selection records the
-  // unroutable disposition and returns empty rather than calling
-  // getCapabilityPack(null) and hard-halting. An explicit requestedCapabilityPack
-  // still flows through the validation below so an operator's request is not
-  // silently swallowed.
+  // An ambiguous smart_contract or registered-but-unavailable physical surface
+  // is unroutable, not web. On the auto-routed path technique selection records
+  // the disposition and returns empty rather than calling getCapabilityPack(null)
+  // and hard-halting. An explicit requestedCapabilityPack still flows through
+  // validation below, where unavailable packs fail closed.
   // Canonical unroutable predicate (disposition marker OR null pack) via the
   // shared surface-router helper, plus the legacy in-memory `routable === false`
   // flag some callers still pass on a classification-shaped object.
   const isUnroutable = route.routable === false || isUnroutableRoute(route);
+  if (isUnroutable && (
+    route.surface_class === "physical"
+    || route.required_capability_pack === "physical"
+    || isPhysicalSurfaceMetadata(surface)
+  )) {
+    throw new Error("Unavailable capability_pack physical: physical technique consumers are not connected");
+  }
+  if (requestedCapabilityPack && (
+    route.surface_class === "physical"
+    || route.required_capability_pack === "physical"
+    || isPhysicalSurfaceMetadata(surface)
+  )) {
+    throw new Error(`Unavailable capability_pack physical: physical surfaces cannot be overridden with ${requestedCapabilityPack}`);
+  }
   if (isUnroutable && !requestedCapabilityPack) {
     return {
       capability_pack: null,
@@ -1183,8 +1231,15 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
       evaluator_agent: null,
       context_budget: normalizeContextBudget(null, { context_budget: null }),
       unroutable: true,
+      ...(route.surface_class != null ? { surface_class: route.surface_class } : {}),
+      ...((route.required_capability_pack || route.required_pack_id) != null
+        ? {
+          required_capability_pack: route.required_capability_pack || route.required_pack_id,
+          required_capability_pack_version: route.required_capability_pack_version || null,
+        }
+        : {}),
       unroutable_reason:
-        route.unroutable_reason || route.reason || "unroutable smart_contract surface",
+        route.unroutable_reason || route.reason || "unroutable surface",
     };
   }
 
@@ -1192,6 +1247,9 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
     throw new Error(`Unknown capability_pack: ${capabilityPack}`);
+  }
+  if (!isCapabilityPackDispatchable(pack)) {
+    throw new Error(`Unavailable capability_pack ${capabilityPack}: ${pack.dispatch_block_reason}`);
   }
   if (requestedCapabilityPack && route.capability_pack && requestedCapabilityPack !== route.capability_pack) {
     throw new Error(`surface_id ${surface.id} is routed to capability_pack ${route.capability_pack}`);
@@ -1552,6 +1610,7 @@ module.exports = {
   assertTechniquePackMatchesCapability,
   summarizeTechniqueAttempt,
   techniquePackSummary,
+  techniquePackSupportsCapability,
   // Cycle O.6 — OSS technique-pack content + id alias map.
   OSS_TECHNIQUE_PACKS,
   OSS_TECHNIQUE_PACK_ID_ALIASES,

@@ -1,0 +1,41 @@
+{
+  "name": "@hacker-bob/instrument-trusted-clock-native-darwin",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Darwin trusted-clock source, fixed native client loader, and non-authorizing local build contract",
+  "license": "Apache-2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "type": "commonjs",
+  "gypfile": false,
+  "main": "lib/source-contract.js",
+  "files": [
+    "README.md",
+    "binding.gyp",
+    "lib/**/*.js",
+    "native/**/*.cc",
+    "native/**/*.h",
+    "scripts/*.js",
+    "test/*.test.js"
+  ],
+  "exports": {
+    ".": "./lib/source-contract.js",
+    "./native-client": "./lib/native-client.js",
+    "./source-contract": "./lib/source-contract.js"
+  },
+  "scripts": {
+    "build": "node-gyp rebuild && node scripts/write-build-receipt.js",
+    "check:syntax": "node --check lib/native-binding-loader.js && node --check lib/native-build-contract.js && node --check lib/native-client.js && node --check lib/source-contract.js && node --check scripts/check-source.js && node --check scripts/write-build-receipt.js && node --check test/native-client.test.js && node --check test/source-contract.test.js",
+    "check:source": "node scripts/check-source.js",
+    "test:portable": "npm run check:syntax && node --test test/source-contract.test.js",
+    "test:native": "npm run build && node --test test/native-client.test.js",
+    "test": "npm run test:portable && npm run check:source && npm run test:native"
+  }
+}

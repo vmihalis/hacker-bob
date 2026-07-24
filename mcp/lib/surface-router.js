@@ -13,9 +13,24 @@ const {
   assertNonEmptyString,
 } = require("./validation.js");
 const {
+  listAuthProfiles,
+} = require("./auth.js");
+const {
+  loadQueuePolicy,
+} = require("./queue-policy.js");
+const {
+  effectiveSpawnDepth,
+} = require("./nested-spawn.js");
+const {
+  runtimeClient,
+} = require("./runtime-resources.js");
+const {
   classifySurfaceCapability,
+  selectWebEvaluatorPack,
   deriveConfidenceAdjustment,
   getCapabilityPack,
+  isCapabilityPackDispatchable,
+  isPhysicalSurfaceMetadata,
   normalizeContextBudget,
 } = require("./capability-packs.js");
 const {
@@ -28,7 +43,10 @@ const {
 const SURFACE_ROUTES_VERSION = 1;
 const SURFACE_ROUTE_VERSION = 1;
 
-function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null } = {}) {
+// S1 id-bearing detection is INJECTED by the tool handler (route-surfaces.js),
+// never required here: surface-router.js is inside the lead-closure that must
+// not reach an alias-require file, and the detector's module transitively does.
+function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null, queuePolicy = null } = {}) {
   // Surface input read from currentSurfaces (Cycle F.5): surface-index.json
   // is authoritative when present; legacy attack_surface.json is only used
   // when the materialized view is absent (transitional fallback removed in D.3).
@@ -48,9 +66,10 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
     seenSurfaceIds.add(surfaceId);
 
     const classification = classifySurfaceCapability(surface);
-    // An unroutable smart-contract surface (unknown/unresolved chain_family)
-    // carries no capability pack: it is recorded as a disposition-only route
-    // with an evidenced reason, never laundered into the web pack.
+    // An unroutable typed surface carries no active capability pack: it is
+    // recorded as a disposition-only route with an evidenced reason, never
+    // laundered into the web pack. A registered-but-unavailable family also
+    // persists the exact pack/version it requires without granting that pack.
     if (classification.routable === false) {
       const route = {
         surface_id: surfaceId,
@@ -60,6 +79,13 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
         confidence: classification.confidence,
         reasons: classification.reasons,
       };
+      if (classification.surface_class != null) {
+        route.surface_class = classification.surface_class;
+      }
+      if (classification.required_capability_pack != null) {
+        route.required_capability_pack = classification.required_capability_pack;
+        route.required_capability_pack_version = classification.required_capability_pack_version;
+      }
       if (classification.chain_family != null) {
         route.chain_family = classification.chain_family;
       }
@@ -99,6 +125,49 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
     if (classification.chain_family != null) {
       route.chain_family = classification.chain_family;
     }
+    // S1 auth-differential routing obligation is computed from MCP-owned ledgers only.
+    // id_bearing is the DETECTOR result, INDEPENDENT of principal count: a single-account run
+    // still marks the surface id-bearing so the grade gate keeps the strong no-bypass branch
+    // (an id-bearing surface never launders to complete via an agent-authored bypass_attempt
+    // narrative). auth_differential_required is the stronger FLIP obligation, which additionally
+    // needs >=2 distinct principals to be satisfiable.
+    const isIdBearing = !!(idBearingDetector && idBearingDetector(surface));
+    route.id_bearing = isIdBearing;
+    route.auth_differential_required = isIdBearing && authProfileCount >= 2;
+    // Freeze the surface's id-bearing endpoints (template form) onto the MCP-owned route so
+    // the completion gates bind coverage to endpoints the agent cannot tamper post-route.
+    if (isIdBearing && typeof idBearingEndpoints === "function") {
+      const eps = idBearingEndpoints(surface);
+      route.id_bearing_endpoints = Array.isArray(eps) ? eps.filter((e) => typeof e === "string" && e) : [];
+    }
+    // Route a HIGH-VALUE web surface to the spawn-capable web_fanout variant (evaluator-fanout)
+    // when nesting can fire, so the (bug_class x auth) child fan-out actuates — the ns.com gap.
+    // Overwrite the pack fields from the SELECTED pack so route.evaluator_agent===pack.evaluator_agent
+    // stays green (idBearing is the frozen route.id_bearing, never re-derived here).
+    // Gate the reroute on the EXACT actuation predicate (assignment-brief:
+    // remainingDepth = hostId==="claude" ? effectiveSpawnDepth(...)-1 : 0).
+    // effectiveSpawnDepth consumes the registry-declared Claude runtime flag, so
+    // default Claude (agent teams off), non-Claude hosts, and depth-1 policies all
+    // keep flat web routing and never get a transition-blind evaluator-fanout whose
+    // child plan cannot fire.
+    const routeHostId = runtimeClient();
+    const routeSpawnDepth = routeHostId === "claude"
+      ? effectiveSpawnDepth(queuePolicy && queuePolicy.max_spawn_depth, routeHostId)
+      : 1;
+    const selectedPack = selectWebEvaluatorPack(classification, {
+      idBearing: isIdBearing,
+      highPriority: String((surface && surface.priority) || "").toUpperCase() === "HIGH",
+      spawnDepth: routeSpawnDepth,
+      hasBugClassHints: Array.isArray(surface && surface.bug_class_hints) && surface.bug_class_hints.length > 0,
+      queuePolicy,
+    });
+    if (selectedPack && selectedPack.id !== route.capability_pack) {
+      route.capability_pack = selectedPack.id;
+      route.capability_pack_version = selectedPack.capability_pack_version;
+      route.evaluator_agent = selectedPack.evaluator_agent;
+      route.brief_profile = selectedPack.brief_profile;
+      route.context_budget = selectedPack.context_budget;
+    }
     routes.push(route);
   }
 
@@ -136,14 +205,66 @@ function validateSurfaceRoute(route, index, filePath) {
   if (route == null || typeof route !== "object" || Array.isArray(route)) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] must be an object)`);
   }
-  // An unroutable smart-contract route carries a disposition + reason and no
-  // pack; validate it as a disposition-only record so it reads back cleanly
-  // (a plain Error on bad data keeps a malformed row quarantinable, not a
-  // re-thrown code bug).
+  // An unroutable route carries a disposition + reason and no active pack.
+  // Registered-but-unavailable families may name the exact required pack and
+  // version, but that marker is descriptive only and must never carry active
+  // evaluator/brief/budget authority.
   if (isUnroutableRoute(route)) {
     const unroutableId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
     assertNonEmptyString(route.reason, `routes[${index}].reason`);
-    return { ...route, surface_id: unroutableId };
+    const hasRequiredPack = route.required_capability_pack != null;
+    const hasRequiredPackVersion = route.required_capability_pack_version != null;
+    if (hasRequiredPack !== hasRequiredPackVersion) {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack and required_capability_pack_version must be provided together)`);
+    }
+    const routeSurfaceClass = route.surface_class == null
+      ? null
+      : assertNonEmptyString(route.surface_class, `routes[${index}].surface_class`);
+    const carriesPhysicalSignal = isPhysicalSurfaceMetadata(route);
+    if (carriesPhysicalSignal && routeSurfaceClass !== "physical") {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] with physical surface metadata requires surface_class physical)`);
+    }
+    if (carriesPhysicalSignal && !hasRequiredPack) {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] with surface_class physical requires required_capability_pack physical and its version)`);
+    }
+    let requiredPackId = null;
+    if (hasRequiredPack) {
+      requiredPackId = assertNonEmptyString(
+        route.required_capability_pack,
+        `routes[${index}].required_capability_pack`,
+      );
+      const requiredPack = getCapabilityPack(requiredPackId);
+      if (!requiredPack) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references unknown required_capability_pack: ${requiredPackId})`);
+      }
+      if (isCapabilityPackDispatchable(requiredPack)) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack ${requiredPackId} is dispatchable and cannot describe an unroutable route)`);
+      }
+      if (requiredPack.surface_class != null && routeSurfaceClass !== requiredPack.surface_class) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].surface_class ${routeSurfaceClass || "(missing)"} does not match required_capability_pack ${requiredPackId} surface_class ${requiredPack.surface_class})`);
+      }
+      if (routeSurfaceClass === "physical" && requiredPackId !== "physical") {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] with surface_class physical requires required_capability_pack physical)`);
+      }
+      if (!Number.isInteger(route.required_capability_pack_version)
+          || route.required_capability_pack_version <= 0) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack_version must be a positive integer)`);
+      }
+      if (route.required_capability_pack_version !== requiredPack.capability_pack_version) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack_version ${route.required_capability_pack_version} does not match pack ${requiredPackId})`);
+      }
+      for (const field of ["capability_pack", "evaluator_agent", "brief_profile", "context_budget"]) {
+        if (route[field] != null) {
+          throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].${field} must be absent for required_capability_pack ${requiredPackId})`);
+        }
+      }
+    }
+    return {
+      ...route,
+      surface_id: unroutableId,
+      ...(routeSurfaceClass != null ? { surface_class: routeSurfaceClass } : {}),
+      ...(requiredPackId != null ? { required_capability_pack: requiredPackId } : {}),
+    };
   }
   const surfaceId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
   const capabilityPack = assertNonEmptyString(route.capability_pack, `routes[${index}].capability_pack`);
@@ -152,6 +273,12 @@ function validateSurfaceRoute(route, index, filePath) {
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references unknown capability_pack: ${capabilityPack})`);
+  }
+  if (!isCapabilityPackDispatchable(pack)) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references non-dispatchable capability_pack: ${capabilityPack})`);
+  }
+  if (isPhysicalSurfaceMetadata(route)) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] carries physical surface metadata and cannot bind active capability_pack: ${capabilityPack})`);
   }
   if (evaluatorAgent !== pack.evaluator_agent) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].evaluator_agent ${evaluatorAgent} does not match pack ${capabilityPack})`);
@@ -165,6 +292,10 @@ function validateSurfaceRoute(route, index, filePath) {
   if (!Number.isInteger(capabilityPackVersion) || capabilityPackVersion <= 0) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].capability_pack_version must be a positive integer)`);
   }
+  const hasAuthDifferentialRequired = Object.prototype.hasOwnProperty.call(route, "auth_differential_required");
+  if (hasAuthDifferentialRequired && typeof route.auth_differential_required !== "boolean") {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].auth_differential_required must be a boolean)`);
+  }
   return {
     ...route,
     surface_id: surfaceId,
@@ -173,13 +304,67 @@ function validateSurfaceRoute(route, index, filePath) {
     evaluator_agent: evaluatorAgent,
     brief_profile: briefProfile,
     context_budget: normalizeContextBudget(route.context_budget, pack),
+    id_bearing: route.id_bearing === true,
+    auth_differential_required: route.auth_differential_required === true,
   };
 }
 
-function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null } = {}) {
+function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null, queuePolicy = null } = {}) {
   const targetDomain = assertNonEmptyString(domain, "target_domain");
-  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents });
+  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints, queuePolicy });
   const filePath = surfaceRoutesPath(targetDomain);
+  // Monotonic id-bearing guard: a surface a PRIOR sanctioned route recorded as
+  // id_bearing:true can never be silently DOWNGRADED to id_bearing:false by a
+  // re-derive. The downgrade needs no signing key: an agent edits the
+  // agent-writable attack_surface.json to strip the id markers the detector keys
+  // on, then triggers a sanctioned bob_route_surfaces re-route which mints a fresh
+  // route (and a fresh MAC) with id_bearing:false — silently un-crowning the
+  // surface so the earned-done gate stops requiring a real cross-tenant isolation
+  // test. MAC-binding surface-routes.json does not close this: the re-derive
+  // re-signs. So bind to the PRIOR route's assertion directly — a surface that was
+  // EVER id-bearing stays id_bearing:true and keeps its frozen id_bearing_endpoints.
+  // Fail-open on the prior read: first run (no prior file) or an unrecoverable prior
+  // simply means no monotonic floor to enforce; routing proceeds byte-identical. The
+  // guard is purely ADDITIVE — it only re-asserts id_bearing (over-tag toward the
+  // safe HOLD direction), and a genuine first-time false / legit true->true /
+  // false->true is never touched.
+  let priorIdBearing = null;
+  try {
+    const prior = readSurfaceRoutesStrict(targetDomain);
+    const priorRoutes = prior && prior.document && Array.isArray(prior.document.routes)
+      ? prior.document.routes
+      : [];
+    for (const priorRoute of priorRoutes) {
+      if (priorRoute && priorRoute.id_bearing === true
+        && typeof priorRoute.surface_id === "string" && priorRoute.surface_id) {
+        if (priorIdBearing === null) priorIdBearing = new Map();
+        priorIdBearing.set(
+          priorRoute.surface_id,
+          Array.isArray(priorRoute.id_bearing_endpoints) ? priorRoute.id_bearing_endpoints : [],
+        );
+      }
+    }
+  } catch {
+    priorIdBearing = null;
+  }
+  if (priorIdBearing !== null && priorIdBearing.size > 0) {
+    for (const route of document.routes) {
+      // Only a freshly-derived routable route carries id_bearing:false (an
+      // unroutable route has no id_bearing field, so `=== false` skips it — the
+      // guard never forces an id-bearing marker onto an unroutable disposition).
+      if (route && route.id_bearing === false && priorIdBearing.has(route.surface_id)) {
+        route.id_bearing = true;
+        // Preserve the frozen prior endpoints; a false-derived route never wrote its
+        // own set, so the prior template list is the authoritative coverage binding.
+        const priorEps = priorIdBearing.get(route.surface_id);
+        route.id_bearing_endpoints = Array.isArray(priorEps) ? priorEps.slice() : [];
+        // The stronger FLIP obligation is a LIVE derivation of the now-true id_bearing
+        // and the current distinct-principal count (a 2nd principal added/removed
+        // between runs legitimately changes it), never a frozen field.
+        route.auth_differential_required = authProfileCount >= 2;
+      }
+    }
+  }
   // Validate every generated route BEFORE persisting. classifySurfaceCapability cannot emit an
   // empty/pack-mismatched evaluator_agent today, but a future pack/derivation regression that did
   // would otherwise be silently written and only blow up later on read (bricking unrelated
@@ -202,6 +387,66 @@ function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvent
 function sanitizeRouteReason(message, filePath) {
   const text = typeof message === "string" ? message : String(message);
   return filePath ? text.split(filePath).join("surface-routes.json") : text;
+}
+
+const QUARANTINED_ROUTE_METADATA_STATUS = "quarantined";
+
+// Preserve only routing-relevant, non-sensitive fields from a quarantined raw
+// row.  The full row may contain stale context or future fields and must never
+// become an alternate authority surface.
+function compactQuarantinedRouteMetadata(route) {
+  if (route == null || typeof route !== "object" || Array.isArray(route)) return null;
+  const out = {};
+  for (const field of [
+    "surface_type",
+    "surface_class",
+    "capability_pack",
+    "required_capability_pack",
+    "disposition",
+  ]) {
+    if (typeof route[field] === "string" && route[field].trim()) {
+      out[field] = route[field].trim();
+    }
+  }
+  for (const field of ["capability_pack_version", "required_capability_pack_version"]) {
+    if (Number.isInteger(route[field])) out[field] = route[field];
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// A quarantined route is represented in memory as an explicit deny tombstone,
+// never as missing metadata.  Consumers can therefore distinguish a legacy
+// surface with no routing artifact from a surface whose routing authority was
+// present but failed validation.  Physical provenance wins over every other
+// field, including a stale active web pack in the malformed row.
+function quarantinedRouteMetadata({ surfaceId, reason, rawMetadata = null, fallbackMetadata = null }) {
+  const id = assertNonEmptyString(surfaceId, "quarantined route surface_id");
+  const raw = rawMetadata && typeof rawMetadata === "object" ? rawMetadata : {};
+  const fallback = fallbackMetadata && typeof fallbackMetadata === "object"
+    ? fallbackMetadata
+    : {};
+  const physical = isPhysicalSurfaceMetadata(raw) || isPhysicalSurfaceMetadata(fallback);
+  const surfaceType = [raw.surface_type, fallback.surface_type]
+    .find((value) => typeof value === "string" && value.trim()) || "unknown";
+  const tombstone = {
+    id,
+    surface_id: id,
+    surface_type: surfaceType.trim(),
+    capability_pack: null,
+    disposition: "unroutable",
+    reason: typeof reason === "string" && reason.trim()
+      ? reason.trim()
+      : "route metadata was quarantined",
+    route_metadata_status: QUARANTINED_ROUTE_METADATA_STATUS,
+    dispatch_blocked: true,
+  };
+  if (physical) {
+    const physicalPack = getCapabilityPack("physical");
+    tombstone.surface_class = "physical";
+    tombstone.required_capability_pack = "physical";
+    tombstone.required_capability_pack_version = physicalPack.capability_pack_version;
+  }
+  return tombstone;
 }
 
 function readSurfaceRoutesStrict(domain) {
@@ -260,11 +505,17 @@ function readSurfaceRoutesStrict(domain) {
         // whitespace-padded id (e.g. " surface:api ") would otherwise EVADE that rejection.
         surface_id: (typeof rawSurfaceId === "string" ? rawSurfaceId.trim() : rawSurfaceId) || null,
         reason: sanitizeRouteReason(error.message || String(error), filePath),
+        route_metadata: compactQuarantinedRouteMetadata(route),
       });
       return;
     }
     if (seenSurfaceIds.has(normalized.surface_id)) {
-      malformedRoutes.push({ index, surface_id: normalized.surface_id, reason: `duplicate surface_id: ${normalized.surface_id}` });
+      malformedRoutes.push({
+        index,
+        surface_id: normalized.surface_id,
+        reason: `duplicate surface_id: ${normalized.surface_id}`,
+        route_metadata: compactQuarantinedRouteMetadata(route),
+      });
       return;
     }
     seenSurfaceIds.add(normalized.surface_id);
@@ -322,6 +573,13 @@ function deriveUnroutableSurfacesFromRoutes(domain) {
       surfaces.push({
         surface_id: route.surface_id,
         surface_type: route.surface_type,
+        ...(route.surface_class != null ? { surface_class: route.surface_class } : {}),
+        ...(route.required_capability_pack != null
+          ? {
+            required_capability_pack: route.required_capability_pack,
+            required_capability_pack_version: route.required_capability_pack_version,
+          }
+          : {}),
         unroutable_reason: route.reason,
       });
     }
@@ -338,7 +596,7 @@ function deriveUnroutableSurfacesFromRoutes(domain) {
   return result;
 }
 
-function routeSurfaces(args) {
+function routeSurfaces(args, { idBearingDetector = null, idBearingEndpoints = null } = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   return withSessionLock(domain, () => {
     // Thread friction into the live route so demotion fires on (re-)route.
@@ -353,7 +611,21 @@ function routeSurfaces(args) {
     } catch {
       frictionEvents = null;
     }
-    const routed = routeSurfacesInternal(domain, { frictionEvents });
+    let authProfileCount = 0;
+    try {
+      const authProfiles = JSON.parse(listAuthProfiles({ target_domain: domain }));
+      // DISTINCT AUTHENTICATED principals (non-null MCP-owned fingerprints), not raw
+      // names — flag the auth-differential obligation only when >=2 real tenants exist
+      // (aligns the flag with the completion gate's distinct-principal clearance).
+      authProfileCount = Array.isArray(authProfiles.profiles)
+        ? new Set(authProfiles.profiles.map((p) => p && p.principal_fingerprint).filter(Boolean)).size
+        : 0;
+    } catch {
+      authProfileCount = 0;
+    }
+    let queuePolicy = null;
+    try { queuePolicy = loadQueuePolicy(domain); } catch { queuePolicy = null; }
+    const routed = routeSurfacesInternal(domain, { frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints, queuePolicy });
     return JSON.stringify({
       version: SURFACE_ROUTES_VERSION,
       routed: true,
@@ -369,10 +641,12 @@ function routeSurfaces(args) {
 module.exports = {
   SURFACE_ROUTE_VERSION,
   SURFACE_ROUTES_VERSION,
+  QUARANTINED_ROUTE_METADATA_STATUS,
   buildSurfaceRoutesDocument,
   countRoutesByCapabilityPack,
   deriveUnroutableSurfacesFromRoutes,
   isUnroutableRoute,
+  quarantinedRouteMetadata,
   readSurfaceRoutesStrict,
   routeSurfaces,
   routeSurfacesInternal,

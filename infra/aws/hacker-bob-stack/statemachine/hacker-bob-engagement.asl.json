@@ -1,0 +1,487 @@
+{
+  "Comment": "hacker-bob-engagement: preserves the legacy owned-target smoke while routing an explicit, immutable public historical-replay profile through the same grade-freeze, verifier/export, and report boundaries.",
+  "StartAt": "SelectEngagementProfile",
+  "States": {
+    "SelectEngagementProfile": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "IsPresent": true,
+          "Next": "RouteNamedProfile"
+        }
+      ],
+      "Default": "PrepareLegacySmoke"
+    },
+    "RouteNamedProfile": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "StringEquals": "smoke",
+          "Next": "PrepareNamedSmoke"
+        },
+        {
+          "Variable": "$.profile",
+          "StringEquals": "libheif-cve-2026-49271",
+          "Next": "PrepareLibheifReplay"
+        }
+      ],
+      "Default": "RejectUnknownProfile"
+    },
+    "RejectUnknownProfile": {
+      "Type": "Fail",
+      "Error": "UnsupportedEngagementProfile",
+      "Cause": "profile must be smoke or libheif-cve-2026-49271"
+    },
+    "PrepareLegacySmoke": {
+      "Type": "Pass",
+      "Comment": "Backward-compatible target-only input shape used by the deployed low-cost plumbing smoke.",
+      "Parameters": {
+        "profile": "smoke",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "States.UUID()"
+      },
+      "Next": "BuildSmokeGradePayload"
+    },
+    "PrepareNamedSmoke": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile": "smoke",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "States.UUID()"
+      },
+      "Next": "BuildSmokeGradePayload"
+    },
+    "PrepareLibheifReplay": {
+      "Type": "Pass",
+      "Comment": "No commit, path, or expected marker is accepted from execution input; those values are image-owned and independently lock-validated.",
+      "Parameters": {
+        "profile": "libheif-cve-2026-49271",
+        "target": "libheif-cve-2026-49271",
+        "fixtureId": "libheif-cve-2026-49271",
+        "runtimeSessionId.$": "States.UUID()"
+      },
+      "Next": "BuildLibheifGradePayload"
+    },
+    "BuildSmokeGradePayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradePayload": {
+          "target.$": "$.target",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "GRADE",
+          "demo_smoke": true,
+          "no_auth": true,
+          "private_targets": true,
+          "mode": "normal"
+        }
+      },
+      "Next": "InvokeAgentRuntimeThroughGrade"
+    },
+    "BuildLibheifGradePayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradePayload": {
+          "target.$": "$.target",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "GRADE",
+          "fixture_id.$": "$.fixtureId"
+        }
+      },
+      "Next": "InvokeAgentRuntimeThroughGrade"
+    },
+    "InvokeAgentRuntimeThroughGrade": {
+      "Type": "Task",
+      "Comment": "Invoke the AgentCore data plane. Smoke is a health path; libheif is a bounded historical differential, explicitly not fresh discovery.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+      "Parameters": {
+        "AgentRuntimeArn": "${AgentRuntimeArn}",
+        "RuntimeSessionId.$": "$.runtimeSessionId",
+        "ContentType": "application/json",
+        "Accept": "application/json",
+        "Payload.$": "States.JsonToString($.gradePayload)"
+      },
+      "TimeoutSeconds": 840,
+      "ResultPath": "$.gradeInvoke",
+      "Next": "DecodeGradeResult"
+    },
+    "DecodeGradeResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "States.StringToJson($.gradeInvoke.Response)"
+      },
+      "Next": "RunVerifierGate"
+    },
+    "RunVerifierGate": {
+      "Type": "Task",
+      "Comment": "Automated integrity gate: reads the exact GRADE-returned WORM VersionId, recomputes the exact body SHA-256 and canonical grade hash, and fails closed on any mismatch.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${VerifierGateFunctionArn}",
+        "Payload": {
+          "executionName.$": "$$.Execution.Name",
+          "profile.$": "$.profile",
+          "target.$": "$.gradeResult.target_domain",
+          "gradeResult.$": "$.gradeResult"
+        }
+      },
+      "ResultPath": "$.verifierGate",
+      "Next": "WriteVerifierApproval"
+    },
+    "WriteVerifierApproval": {
+      "Type": "Task",
+      "Comment": "Human-on-the-loop transition: a Bob-unreachable verifier role writes the same content-bound approval artifact the REPORT gate consumes. No task token is minted and no human callback is required.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${VerifierApprovalFunctionArn}",
+        "Payload": {
+          "executionName.$": "$$.Execution.Name",
+          "profile.$": "$.profile",
+          "target.$": "$.gradeResult.target_domain",
+          "gradeResult.$": "$.gradeResult",
+          "verifiedFreeze.$": "$.verifierGate.Payload"
+        }
+      },
+      "ResultPath": "$.verifierApproval",
+      "Next": "RecordVerifierApproval"
+    },
+    "RecordVerifierApproval": {
+      "Type": "Pass",
+      "Parameters": {
+        "decision.$": "$.verifierApproval.Payload.decision",
+        "approval_mode.$": "$.verifierApproval.Payload.approval_mode",
+        "profile.$": "$.verifierApproval.Payload.profile",
+        "target.$": "$.verifierApproval.Payload.target",
+        "grade_verdict_hash.$": "$.verifierApproval.Payload.grade_verdict_hash",
+        "grade_freeze_bundle_sha256.$": "$.verifierApproval.Payload.grade_freeze_bundle_sha256",
+        "grade_freeze_version_id.$": "$.verifierApproval.Payload.grade_freeze_version_id",
+        "approval_artifact_key.$": "$.verifierApproval.Payload.approval_artifact_key",
+        "approved_at.$": "$.verifierApproval.Payload.approved_at",
+        "verifier_quorum.$": "$.verifierApproval.Payload.verifier_quorum"
+      },
+      "ResultPath": "$.approval",
+      "Next": "NotifyHumanOnLoop"
+    },
+    "NotifyHumanOnLoop": {
+      "Type": "Task",
+      "Comment": "Notification-only human-on-the-loop surface. Operators can observe or stop the execution from Step Functions; the state transition is owned by verifier success.",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${ApprovalNotificationTopicArn}",
+        "Subject": "Hacker Bob verifier advanced",
+        "Message.$": "States.JsonToString($.approval)"
+      },
+      "ResultPath": "$.humanOnLoopNotification",
+      "Next": "ExportToSecurityHub"
+    },
+    "ExportToSecurityHub": {
+      "Type": "Task",
+      "Comment": "Runs only after verifier approval resolves and reads only the exact verifier-approved GRADE-time WORM version under a Bob-unreachable role.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ExportSecurityHubFunctionArn}",
+        "Payload": {
+          "target.$": "$.approval.target",
+          "gradeVerdictHash.$": "$.approval.grade_verdict_hash",
+          "gradeFreezeVersionId.$": "$.approval.grade_freeze_version_id",
+          "gradeFreezeBundleSha256.$": "$.approval.grade_freeze_bundle_sha256"
+        }
+      },
+      "ResultPath": "$.exportResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "SelectReportProfile"
+    },
+    "SelectReportProfile": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "StringEquals": "libheif-cve-2026-49271",
+          "Next": "BuildLibheifReportPayload"
+        }
+      ],
+      "Default": "BuildSmokeReportPayload"
+    },
+    "BuildSmokeReportPayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "$.gradeResult",
+        "approval.$": "$.approval",
+        "exportResult.$": "$.exportResult",
+        "reportPayload": {
+          "target.$": "$.target",
+          "target_domain.$": "$.gradeResult.target_domain",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "REPORT",
+          "resume": true,
+          "demo_smoke": true,
+          "no_auth": true,
+          "private_targets": true,
+          "mode": "normal"
+        }
+      },
+      "Next": "ResumeAgentRuntimeThroughReport"
+    },
+    "BuildLibheifReportPayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "$.gradeResult",
+        "approval.$": "$.approval",
+        "exportResult.$": "$.exportResult",
+        "reportPayload": {
+          "target.$": "$.target",
+          "target_domain.$": "$.gradeResult.target_domain",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "REPORT",
+          "resume": true,
+          "fixture_id": "libheif-cve-2026-49271"
+        }
+      },
+      "Next": "ResumeAgentRuntimeThroughReport"
+    },
+    "ResumeAgentRuntimeThroughReport": {
+      "Type": "Task",
+      "Comment": "Resumes from the EFS-mounted HOME scoped by the same runtime session id used during GRADE.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+      "Parameters": {
+        "AgentRuntimeArn": "${AgentRuntimeArn}",
+        "RuntimeSessionId.$": "$.runtimeSessionId",
+        "ContentType": "application/json",
+        "Accept": "application/json",
+        "Payload.$": "States.JsonToString($.reportPayload)"
+      },
+      "TimeoutSeconds": 840,
+      "ResultPath": "$.reportInvoke",
+      "Next": "DecodeReportResult"
+    },
+    "DecodeReportResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "$.gradeResult",
+        "approval.$": "$.approval",
+        "exportResult.$": "$.exportResult",
+        "reportResult.$": "States.StringToJson($.reportInvoke.Response)"
+      },
+      "Next": "SelectReportResolutionProfile"
+    },
+    "SelectReportResolutionProfile": {
+      "Type": "Choice",
+      "Comment": "Only the pinned libheif replay receives a model-resolved stakeholder/action ordering. The legacy smoke remains a plumbing check and bypasses this decision path explicitly.",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "StringEquals": "libheif-cve-2026-49271",
+          "Next": "BuildLibheifResolutionInput"
+        }
+      ],
+      "Default": "BypassReportResolution"
+    },
+    "BuildLibheifResolutionInput": {
+      "Type": "Pass",
+      "Comment": "Builds a closed, report-only feature registry. No finding prose, severity, exploit claim, or remediation text is delegated to the model.",
+      "Parameters": {
+        "featureRegistry": "libheif-impact-v1",
+        "featureHash": "ecb43ae1205d57aa76dd6c17e046530eb2e892e67a90c93818cc840ccf83da66",
+        "features": {
+          "target_kind": "oss_library",
+          "impact_axis": "availability",
+          "fix_state": "upstream_fixed",
+          "distribution_scope": "downstream_consumers",
+          "reachability": "crafted_file_with_user_interaction",
+          "evidence_confidence": "high_bounded"
+        }
+      },
+      "ResultPath": "$.reportResolutionInput",
+      "Next": "ResolveImpactWithBedrock"
+    },
+    "ResolveImpactWithBedrock": {
+      "Type": "Task",
+      "Comment": "Bedrock may select one reader and order three fixed action ids. Forced tool use plus the downstream deterministic validator prevents it from authoring or changing report facts.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockruntime:converse",
+      "Parameters": {
+        "ModelId": "${ReportDecisionModelId}",
+        "Messages": [
+          {
+            "Role": "user",
+            "Content": [
+              {
+                "Text": "Resolve this verified OSS availability report for the stakeholder who should act first. The closed feature vector is: target_kind=oss_library; impact_axis=availability; fix_state=upstream_fixed; distribution_scope=downstream_consumers; reachability=crafted_file_with_user_interaction; evidence_confidence=high_bounded. Call select_report_framing exactly once and return no prose. Compatibility: release_manager starts with upgrade_or_backport; product_security_owner starts with map_downstream_exposure; downstream_maintainer starts with either of those."
+              }
+            ]
+          }
+        ],
+        "InferenceConfig": {
+          "MaxTokens": 256,
+          "Temperature": 0
+        },
+        "ToolConfig": {
+          "Tools": [
+            {
+              "ToolSpec": {
+                "Name": "select_report_framing",
+                "Description": "Select the primary report reader and prioritize the complete fixed action registry without changing any verified security fact.",
+                "InputSchema": {
+                  "Json": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "schema_version",
+                      "primary_reader",
+                      "action_order"
+                    ],
+                    "properties": {
+                      "schema_version": {
+                        "type": "integer",
+                        "enum": [
+                          1
+                        ]
+                      },
+                      "primary_reader": {
+                        "type": "string",
+                        "enum": [
+                          "downstream_maintainer",
+                          "release_manager",
+                          "product_security_owner"
+                        ]
+                      },
+                      "action_order": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "upgrade_or_backport",
+                            "map_downstream_exposure",
+                            "retain_regression_coverage"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "ToolChoice": {
+            "Tool": {
+              "Name": "select_report_framing"
+            }
+          }
+        }
+      },
+      "TimeoutSeconds": 15,
+      "ResultSelector": {
+        "StopReason.$": "$.StopReason",
+        "Output": {
+          "Message": {
+            "Content.$": "$.Output.Message.Content"
+          }
+        }
+      },
+      "ResultPath": "$.reportResolutionModel",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout",
+            "BedrockRuntime.ThrottlingException",
+            "BedrockRuntime.ServiceUnavailableException",
+            "BedrockRuntime.InternalServerException",
+            "BedrockRuntime.ModelNotReadyException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "ValidateImpactResolution"
+    },
+    "ValidateImpactResolution": {
+      "Type": "Task",
+      "Comment": "Fail-closed deterministic boundary: validates the forced tool envelope, approved evidence binding, closed features, reader, and exact action permutation before publication.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ReportDecisionValidatorFunctionArn}",
+        "Payload": {
+          "profile.$": "$.profile",
+          "target.$": "$.target",
+          "gradeResult.$": "$.gradeResult",
+          "approval.$": "$.approval",
+          "reportResult.$": "$.reportResult",
+          "features.$": "$.reportResolutionInput.features",
+          "modelId": "${ReportDecisionModelId}",
+          "modelResult.$": "$.reportResolutionModel"
+        }
+      },
+      "ResultPath": "$.reportResolutionValidation",
+      "Next": "PublishBobSiteReport"
+    },
+    "BypassReportResolution": {
+      "Type": "Pass",
+      "Comment": "The owned-target smoke is not an AI report demo and is explicitly marked not applicable rather than receiving fabricated model output.",
+      "Result": {
+        "Payload": {
+          "status": "not_applicable",
+          "resolution_type": "not_applicable"
+        }
+      },
+      "ResultPath": "$.reportResolutionValidation",
+      "Next": "PublishBobSiteReport"
+    },
+    "PublishBobSiteReport": {
+      "Type": "Task",
+      "Comment": "Publishes the already-approved REPORT output to Bob-site's sealed /api/reports ingest. The AgentCore runtime/model never receives the Bob-site ingest token or access password.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PublishBobSiteReportFunctionArn}",
+        "Payload": {
+          "profile.$": "$.profile",
+          "target.$": "$.target",
+          "runtimeSessionId.$": "$.runtimeSessionId",
+          "executionArn.$": "$$.Execution.Id",
+          "executionName.$": "$$.Execution.Name",
+          "executionStartedAt.$": "$$.Execution.StartTime",
+          "gradeResult.$": "$.gradeResult",
+          "approval.$": "$.approval",
+          "exportResult.$": "$.exportResult",
+          "reportResult.$": "$.reportResult",
+          "resolution.$": "$.reportResolutionValidation.Payload"
+        }
+      },
+      "ResultPath": "$.bobSiteReport",
+      "End": true
+    }
+  }
+}

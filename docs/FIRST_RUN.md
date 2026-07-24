@@ -57,7 +57,7 @@ OK: claude_settings_hooks - .claude/settings.json contains Bob hooks
 OK: claude_settings_permissions - .claude/settings.json contains Bob MCP permissions
 OK: claude_settings_statusline - .claude/settings.json contains Bob statusline
 OK: mcp_server_file - mcp/server.js is installed
-OK: mcp_server_loadable - mcp/server.js loads successfully
+OK: mcp_server_loadable - mcp/server.js matches the runtime manifest and passes static CommonJS syntax validation
 WARN: optional_tool_subfinder - subfinder is missing; related surface-discovery steps will be skipped
 WARN: optional_tool_nuclei - nuclei is missing; related surface-discovery steps will be skipped
 WARN: optional_tool_httpx - httpx is missing; related surface-discovery steps will be skipped

@@ -53,12 +53,14 @@ module.exports = Object.freeze({
   },
   handler: autoSignup,
   role_bundles: ["auth"],
+  capability_id: "S3_stepup_registration", // S3-cap: registry-typed step-up capability so capabilityToolMapFromRegistry can answer "does Bob own a tool for the email-OTP / account-registration step" (M6b ceiling)
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: true,
   scope_required: true,
   scope_url_fields: ["signup_url"],
   sensitive_output: true,
   session_artifacts_written: ["auth.json"],
+  required_session_axes: ["url"],
 });

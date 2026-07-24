@@ -53,10 +53,11 @@ module.exports = Object.freeze({
   handler,
   role_bundles: ["evaluator-evm", "verifier", "evidence", "sc-recon"],
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: ["contracts/<chain_id>/<address>/source-manifest.json", "contracts/<chain_id>/<address>/sources/"],
+  required_session_axes: ["contracts"],
 });

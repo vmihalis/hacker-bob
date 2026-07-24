@@ -3,6 +3,7 @@
 const os = require("os");
 const path = require("path");
 const {
+  ENGINE_LOCK_NAME,
   HARNESS_ID_RE,
   SEED_CORPUS_ID_RE,
   SESSION_LOCK_NAME,
@@ -80,6 +81,14 @@ function sessionLockPath(domain) {
   return path.join(sessionDir(domain), SESSION_LOCK_NAME);
 }
 
+// fx-gate-bypass defense 1 — root-level (NOT per-domain): a second `node
+// mcp/server.js` engine instance must be refused before it ever learns a
+// target_domain, so this cannot key on sessionDir(domain) the way
+// sessionLockPath does. Lives directly under sessionsRoot() instead.
+function engineLockPath() {
+  return path.join(sessionsRoot(), ENGINE_LOCK_NAME);
+}
+
 function waveAssignmentsPath(domain, waveNumber) {
   return path.join(sessionDir(domain), `wave-${waveNumber}-assignments.json`);
 }
@@ -115,6 +124,10 @@ function scopeWarningsPath(domain) {
 
 function coverageJsonlPath(domain) {
   return path.join(sessionDir(domain), "coverage.jsonl");
+}
+
+function securityHubExportJsonlPath(domain) {
+  return path.join(sessionDir(domain), "aws-security-hub-export.jsonl");
 }
 
 function techniqueAttemptsJsonlPath(domain) {
@@ -179,6 +192,20 @@ function findingDifferentialVerifiedJsonlPath(domain) {
 
 function sessionNucleusPath(domain) {
   return path.join(sessionDir(domain), "session-nucleus.json");
+}
+
+// PH-IP1 physical-only session creation journal. Pending is fail-closed;
+// complete is the authority kernel's durable proof that state + nucleus
+// bootstrap finished. Audit-graded so an agent cannot forge completion.
+function physicalSessionBootstrapPath(domain) {
+  return path.join(sessionDir(domain), "physical-session-bootstrap.json");
+}
+
+// PH-S12 segmented Frontier/TaskGraph campaign authority.  The directory is
+// audit-graded as a unit: immutable segment ledgers, signed checkpoints, the
+// monotonic anchor, and the aggregate manifest all remain MCP-write-only.
+function physicalCampaignDir(domain) {
+  return path.join(sessionDir(domain), "physical-campaign");
 }
 
 function sessionEventsJsonlPath(domain) {
@@ -543,6 +570,17 @@ function oobTokensJsonlPath(domain) {
   return path.join(sessionDir(domain), "oob-tokens.jsonl");
 }
 
+// Second-order / stored-effect re-read collector — the canary->surface binding ledger.
+// AUDIT-GRADED (see AUDIT_GRADED_BASENAMES): each row binds a pair of server-minted
+// canaries (canary + silent decoy) to the routed surface_id + the injection/observation
+// endpoint loci resolved at mint time, and bob_secondorder_reread re-reads it to stamp the
+// signed row. The bound proof target is RE-DERIVED live from the audit-graded routed
+// surface at re-read (never a stored target), so a Bash-planted binding cannot launder an
+// attacker-chosen target; audit-grading additionally blocks an agent Write to the ledger.
+function secondorderTokensJsonlPath(domain) {
+  return path.join(sessionDir(domain), "secondorder-tokens.jsonl");
+}
+
 // Cycle O.4: repo-runs/<run_id>.{stdout,stderr} are the bounded (16 MB
 // each) capture files for each docker run. Lives under sessionDir so
 // session-read-guard.sh can extend BLOCKED_DIRS to it in cycle O.7.
@@ -617,6 +655,7 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // runs under a separate uid" fact via the Write tool. Forensic only — no
   // verdict path gates on it.
   "sandbox-isolation.json",
+  "physical-session-bootstrap.json",
   "report.md",
   "chains.md",
   "evidence-packs.md",
@@ -652,6 +691,16 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // the bind is the primary non-forgeability guarantee; the audit-grade move makes
   // isAuditGradedPath true so the negative-grep / composer whitelist also cover it.
   "invariant-runs.jsonl",
+  // The auth-differential sweep ledger (per-endpoint cross-tenant-flip rows). Audit-graded for
+  // the SAME rationale as invariant-runs.jsonl: a same-uid agent could otherwise Write an
+  // UNSIGNED flipped row past the best-effort hook to launder an id-bearing surface's completion
+  // coverage. Both consumers (claims.js authDifferentialCovered, agent-run-completion.js
+  // hasAuthDifferentialSweepForSurface) STRICTLY MAC-assert every flipped row before crediting;
+  // the row MAC is the primary non-forgeability layer and audit-grading closes the residual
+  // negative-grep / composer-whitelist coverage. Written ONLY by bob_run_auth_differential (not a
+  // wrapWriteTool composer), so it is NOT in AUDIT_GRADED_WRITER_TOOLS — parity with
+  // bob_run_invariant_for_finding.
+  "auth-differential-results.json",
   // Web-standalone finding-differential verified_pass ledger. MCP-write-only so a
   // standalone-class verdict cannot be hand-forged; the grade-time gate for
   // residual reportable findings (auth-bypass/IDOR/SSRF/business-logic/info-
@@ -668,6 +717,12 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // ledger READ is additionally O_NOFOLLOW/realpath-hardened in oob-collector.js so
   // a Bash-planted symlink cannot smuggle a binding either.
   "oob-tokens.jsonl",
+  // Second-order re-read collector: the canary->surface binding ledger. Audit-graded
+  // because bob_secondorder_reread re-reads it to bind the signed row to the routed
+  // surface + server-minted canary/decoy; an agent Write would forge that binding (the
+  // second-order analogue of the OOB #111 surface gate). The signed row's target is
+  // re-derived live from the routed surface at re-read, not from this ledger.
+  "secondorder-tokens.jsonl",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -684,6 +739,7 @@ const AUDIT_GRADED_RELATIVE_DIRS = Object.freeze([
   "wave-handoffs",
   "claim-freeze",
   "offensive-runs",
+  "physical-campaign",
 ]);
 
 // Wave-handoff per-agent files live at the session root and follow the
@@ -786,14 +842,19 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   // is blocked) but NOT audit-graded — it carries leads that re-verify on reuse,
   // never a hash-bound verdict the grader reads.
   "mechanism-candidates.jsonl",
-  // invariant-runs.jsonl is NOW in AUDIT_GRADED_BASENAMES (see above): a same-uid agent
-  // appending an unsigned invariant row could otherwise launder a cross-stack
-  // verified_pass. The two sets are asserted DISJOINT, so it lives in exactly one.
+  // invariant-runs.jsonl and auth-differential-results.json are NOW in AUDIT_GRADED_BASENAMES
+  // (see above): a same-uid agent appending an unsigned invariant row could otherwise launder a
+  // cross-stack verified_pass, and an unsigned cross-tenant-flip row could otherwise launder an
+  // id-bearing surface's completion coverage. The two sets are asserted DISJOINT, so each lives
+  // in exactly one.
   "schema-contracts.jsonl",
   "doc-delta-results.json",
-  "auth-differential-results.json",
   "evm-role-table-results.json",
   "spawn-ledger.jsonl",
+  // T8 inventory closure — securityHubExportJsonlPath() ledger of exported AWS
+  // Security Hub findings (bob_export_security_hub_finding). MCP-write-only,
+  // not audit-graded: it is an export ledger, not a hash-bound verdict.
+  "aws-security-hub-export.jsonl",
 ]);
 // NB: brutalist/balanced/verified-final/evidence-packs/grade/chain-attempts/
 // diff-impact are intentionally NOT repeated here — they are already in
@@ -1044,6 +1105,12 @@ const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
   "telemetryToolInvocationsJsonlPath",
   "isAuditGradedPath",
   "resolveEvidencePath",
+  // fx-gate-bypass defense 1 — engineLockPath() is a SIBLING of every session
+  // dir (sessionsRoot()/.engine.lock), not a file WITHIN sessionDir(domain).
+  // It is out of scope for the per-domain write-guard/audit-graded inventory
+  // this registry drives (it is never agent-writable or MCP-tool-writable at
+  // all; only mcp/lib/engine-lock.js touches it, at process boot/shutdown).
+  "engineLockPath",
 ]);
 
 // Resolvers with arity > 1: the extra args needed to produce a concrete path.
@@ -1119,16 +1186,20 @@ module.exports = {
   chainAttemptsJsonlPath,
   chainsMarkdownPath,
   coverageJsonlPath,
+  securityHubExportJsonlPath,
   evidencePackPaths,
   gradeArtifactPaths,
   httpAuditJsonlPath,
   liveDeadEndsJsonlPath,
   pipelineEventsJsonlPath,
   proofBundlePaths,
+  physicalSessionBootstrapPath,
+  physicalCampaignDir,
   publicIntelPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,
   oobTokensJsonlPath,
+  secondorderTokensJsonlPath,
   queuePolicyPath,
   reportMarkdownPath,
   resolveEvidencePath,
@@ -1171,6 +1242,7 @@ module.exports = {
   compositionVerifiedJsonlPath,
   reproVerifiedJsonlPath,
   docDeltaResultsPath,
+  engineLockPath,
   frontierEventsJsonlPath,
   invariantRunsJsonlPath,
   invariantVerifiedJsonlPath,

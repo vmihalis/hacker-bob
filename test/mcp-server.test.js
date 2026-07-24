@@ -412,6 +412,8 @@ const EXPECTED_TOOL_NAMES = [
   "bob_http_xss_confirm",
   "bob_oob_mint",
   "bob_oob_poll",
+  "bob_secondorder_mint",
+  "bob_secondorder_reread",
   "bob_nuclei_scan",
   "bob_read_http_audit",
   "bob_start_next_wave",
@@ -431,6 +433,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_ingest_sarif",
   "bob_read_static_analysis_index",
   "bob_record_candidate_claim",
+  "bob_record_physical_candidate_claim",
   "bob_read_candidate_claims",
   "bob_list_candidate_claims",
   "bob_write_chain_attempt",
@@ -453,6 +456,8 @@ const EXPECTED_TOOL_NAMES = [
   "bob_init_session",
   "bob_init_repo_session",
   "bob_init_contract_session",
+  "bob_init_physical_session",
+  "bob_query_instrument_capabilities",
   "bob_repo_inventory",
   "bob_repo_prepare_env",
   "bob_repo_docker_run",
@@ -555,6 +560,15 @@ const EXPECTED_TOOL_NAMES = [
   "bob_verify_oracle_differential",
   "bob_verify_invariant_differential",
   "bob_verify_finding_differential",
+  "bob_verify_physical_verdict",
+  "bob_verify_physical_candidate_claim",
+  "bob_physical_observe",
+  "bob_credential_acquire",
+  "bob_credential_recover",
+  "bob_credential_emulate",
+  "bob_credential_write",
+  "bob_protocol_transceive",
+  "bob_rf_trace",
   "bob_attach_contract",
   "bob_resolve_body",
   "bob_prepare_node",
@@ -625,6 +639,23 @@ function withTempHome(fn) {
     cleanup();
     throw error;
   }
+}
+
+async function withBoundEvmSession(address, fn) {
+  return withTempHome(async () => {
+    const boot = await executeTool("bob_init_contract_session", {
+      contracts: [{ chain_family: "evm", chain_id: "1", address }],
+    });
+    assert.equal(boot.ok, true, JSON.stringify(boot));
+    return fn(boot.data.target_domain);
+  });
+}
+
+async function withUrlSession(targetDomain, fn) {
+  return withTempHome(async () => {
+    seedSessionState(targetDomain);
+    return fn(targetDomain);
+  });
 }
 
 function withEnv(overrides, fn) {
@@ -2010,6 +2041,9 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.equal(typeof metadata.global_preapproval, "boolean");
     assert.equal(typeof metadata.network_access, "boolean");
     assert.equal(typeof metadata.browser_access, "boolean");
+    if (metadata.network_access || metadata.browser_access) {
+      assert.equal(metadata.global_preapproval, false, `${tool.name} cannot globally preapprove external access`);
+    }
     assert.equal(typeof metadata.scope_required, "boolean");
     assert.equal(typeof metadata.sensitive_output, "boolean");
     assert.ok(Array.isArray(metadata.session_artifacts_written));
@@ -2022,7 +2056,85 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.ok(metadata.capability_id === null || typeof metadata.capability_id === "string");
     assert.ok(Array.isArray(metadata.scope_url_fields));
     assert.equal(Object.isFrozen(metadata.scope_url_fields), true, `${tool.name} scope_url_fields should be frozen`);
+    assert.ok(Array.isArray(metadata.required_session_axes));
+    assert.equal(
+      Object.isFrozen(metadata.required_session_axes),
+      true,
+      `${tool.name} required_session_axes should be frozen`,
+    );
     assert.equal(Object.isFrozen(tool.inputSchema), true, `${tool.name} inputSchema should be frozen`);
+  }
+  for (const name of [
+    "bob_repo_inventory",
+    "bob_repo_prepare_env",
+    "bob_repo_docker_run",
+    "bob_repo_check",
+    "bob_verify_repro_reproduction",
+    "bob_verify_oracle_differential",
+  ]) {
+    assert.deepEqual(TOOL_MANIFEST[name].required_session_axes, ["repo"]);
+  }
+  for (const name of [
+    "bob_http_scan",
+    "bob_http_confirm",
+    "bob_temp_email",
+    "bob_signup_detect",
+    "bob_auto_signup",
+    "bob_ws_probe",
+    "bob_http_cors_confirm",
+    "bob_http_massread_confirm",
+    "bob_http_idor_confirm",
+    "bob_http_xss_reflect",
+    "bob_http_xss_confirm",
+    "bob_oob_poll",
+    "bob_secondorder_reread",
+    "bob_nuclei_scan",
+    "bob_public_intel",
+    "bob_run_doc_delta",
+    "bob_run_auth_differential",
+    "bob_verify_composition_path",
+    "bob_browser_session_start",
+    "bob_browser_navigate",
+    "bob_browser_snapshot",
+    "bob_browser_click",
+    "bob_browser_type",
+    "bob_browser_evaluate",
+    "bob_browser_network_requests",
+    "bob_browser_console_messages",
+    "bob_browser_wait_for",
+    "bob_browser_press_key",
+    "bob_browser_take_screenshot",
+    "bob_browser_fill_form",
+    "bob_browser_session_close",
+    "bob_browser_session_start_recording",
+    "bob_browser_flush_recorded_requests",
+  ]) {
+    assert.deepEqual(TOOL_MANIFEST[name].required_session_axes, ["url"]);
+  }
+  for (const name of [
+    "bob_evm_call",
+    "bob_evm_storage_read",
+    "bob_evm_fetch_source",
+    "bob_evm_role_table",
+    "bob_svm_fetch_account",
+    "bob_svm_fetch_program",
+    "bob_aptos_fetch_resource",
+    "bob_aptos_fetch_module",
+    "bob_sui_fetch_object",
+    "bob_sui_fetch_package",
+    "bob_substrate_fetch_storage",
+    "bob_substrate_fetch_runtime",
+    "bob_cosmwasm_fetch_contract",
+    "bob_cosmwasm_smart_query",
+    "bob_run_invariant_for_finding",
+    "bob_foundry_run",
+    "bob_anchor_run",
+    "bob_aptos_run",
+    "bob_sui_run",
+    "bob_substrate_run",
+    "bob_cosmwasm_run",
+  ]) {
+    assert.deepEqual(TOOL_MANIFEST[name].required_session_axes, ["contracts"]);
   }
   const httpScanSchema = TOOLS.find((tool) => tool.name === "bob_http_scan").inputSchema;
   assert.equal(Object.isFrozen(httpScanSchema.properties), true);
@@ -2047,6 +2159,14 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
     C4_multi_account_differential: [
       "bob_run_auth_differential",
       "bob_read_auth_differential_results",
+    ],
+    S3_stepup_registration: [
+      "bob_temp_email",
+      "bob_signup_detect",
+      "bob_auto_signup",
+    ],
+    S3_oob_callback: [
+      "bob_oob_mint",
     ],
     I7_chain_state_tree: [
       "bob_append_chain_node",
@@ -2086,6 +2206,27 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
     ],
     "CB-B7_belief_elicitation": [
       "bob_elicit_belief",
+    ],
+    "physical.observe": [
+      "bob_physical_observe",
+    ],
+    "physical.credential.acquire": [
+      "bob_credential_acquire",
+    ],
+    "physical.credential.recover": [
+      "bob_credential_recover",
+    ],
+    "physical.credential.emulate": [
+      "bob_credential_emulate",
+    ],
+    "physical.credential.write": [
+      "bob_credential_write",
+    ],
+    "physical.protocol.transceive": [
+      "bob_protocol_transceive",
+    ],
+    "physical.rf.trace": [
+      "bob_rf_trace",
     ],
     // Plane Y Cycle Y.2 — capability friction + protocol drift voluntary
     // emission tools plus the orchestrator-facing runtime drift telemetry
@@ -2155,6 +2296,12 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "session-nucleus.json",
     "session-events.jsonl",
   ]);
+  const advanceSessionSchema = byName.get("bob_advance_session").inputSchema;
+  assert.deepEqual(advanceSessionSchema.dependentRequired, {
+    override: ["override_reason"],
+  });
+  assert.equal(advanceSessionSchema.properties.override_reason.minLength, 1);
+  assert.equal(advanceSessionSchema.properties.override_reason.pattern, "\\S");
   assert.deepEqual(TOOL_MANIFEST.bob_write_verification_round.session_artifacts_written, ["brutalist.json", "balanced.json", "verified-final.json", "verification-manifest.json"]);
   assert.deepEqual(TOOL_MANIFEST.bob_build_verification_adjudication.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_build_verification_adjudication.mutating, true);
@@ -2180,7 +2327,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "state.json",
   ]);
   assert.equal(TOOL_MANIFEST.bob_http_scan.network_access, true);
-  assert.equal(TOOL_MANIFEST.bob_http_scan.global_preapproval, true);
+  assert.equal(TOOL_MANIFEST.bob_http_scan.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bob_http_scan.scope_required, true);
   assert.deepEqual(TOOL_MANIFEST.bob_http_scan.scope_url_fields, []);
   assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.role_bundles, ["verifier", "evaluator-web", "evidence"]);
@@ -2238,19 +2385,35 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "task-graph.json",
     "pipeline-events.jsonl",
   ]);
-  assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.role_bundles, ["evaluator-shared", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.role_bundles, [
+    "evaluator-shared",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.mutating, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.network_access, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.browser_access, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.scope_required, false);
   assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.session_artifacts_written, []);
-  assert.deepEqual(TOOL_MANIFEST.bob_select_technique_packs.role_bundles, ["evaluator-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_select_technique_packs.role_bundles, [
+    "evaluator-web",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_select_technique_packs.mutating, false);
-  assert.deepEqual(TOOL_MANIFEST.bob_read_technique_pack.role_bundles, ["evaluator-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_read_technique_pack.role_bundles, [
+    "evaluator-web",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_read_technique_pack.mutating, true);
   assert.equal(byName.get("bob_read_technique_pack").inputSchema.properties.mode.enum.includes("full"), true);
   assert.deepEqual(TOOL_MANIFEST.bob_read_technique_pack.session_artifacts_written, ["technique-pack-reads.jsonl"]);
-  assert.deepEqual(TOOL_MANIFEST.bob_log_technique_attempt.role_bundles, ["evaluator-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_log_technique_attempt.role_bundles, [
+    "evaluator-web",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_log_technique_attempt.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_log_technique_attempt.network_access, false);
   assert.equal(TOOL_MANIFEST.bob_log_technique_attempt.browser_access, false);
@@ -2336,6 +2499,49 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
       toolModules: [{ ...completeModule, global_preapproval: "yes" }],
     }),
     /invalid global_preapproval/,
+  );
+
+  for (const externalAccessField of ["network_access", "browser_access"]) {
+    assert.throws(
+      () => buildToolRegistry({
+        toolModules: [{
+          ...completeModule,
+          [externalAccessField]: true,
+        }],
+      }),
+      /cannot globally preapprove network or browser access/,
+    );
+  }
+
+  const sessionBoundExternalModule = {
+    ...completeModule,
+    global_preapproval: false,
+    network_access: true,
+    inputSchema: {
+      type: "object",
+      properties: { target_domain: { type: "string" } },
+      required: ["target_domain"],
+    },
+  };
+  assert.throws(
+    () => buildToolRegistry({ toolModules: [sessionBoundExternalModule] }),
+    /must bind network or browser access to a session axis/,
+  );
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [{
+        ...sessionBoundExternalModule,
+        inputSchema: { type: "object", properties: {} },
+        required_session_axes: ["url"],
+      }],
+    }),
+    /must require target_domain for network or browser access/,
+  );
+  assert.deepEqual(
+    buildToolRegistry({
+      toolModules: [{ ...sessionBoundExternalModule, required_session_axes: ["url"] }],
+    })[0].required_session_axes,
+    ["url"],
   );
 
   assert.throws(
@@ -2447,6 +2653,29 @@ test("executeTool rejects unknown top-level arguments while allowing nested map-
     });
     assert.equal(auth.ok, true);
     assert.equal(auth.data.success, true);
+  });
+});
+
+test("executeTool enforces bob_advance_session's operator_force override_reason dependency", async () => {
+  await withTempHome(async () => {
+    const missing = await executeTool("bob_advance_session", {
+      target_domain: "override-schema.example.com",
+      to_state: "VERIFY",
+      override: "operator_force",
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "INVALID_ARGUMENTS");
+    assert.match(missing.error.message, /override_reason is required when override is provided/);
+
+    const blank = await executeTool("bob_advance_session", {
+      target_domain: "override-schema.example.com",
+      to_state: "VERIFY",
+      override: "operator_force",
+      override_reason: "   ",
+    });
+    assert.equal(blank.ok, false);
+    assert.equal(blank.error.code, "INVALID_ARGUMENTS");
+    assert.match(blank.error.message, /override_reason must match pattern/);
   });
 });
 
@@ -2594,6 +2823,7 @@ test("executeTool enforces target URL scope for direct and composite HTTP tools"
 
       const authDifferentialBlocked = await executeTool("bob_run_auth_differential", {
         target_domain: "example.com",
+        surface_id: "surface-x",
         base_url: "https://auth.other.test",
         endpoints: ["/api/me"],
         auth_profiles: ["attacker", "victim"],
@@ -5232,12 +5462,14 @@ test("bob_route_surfaces writes bounded current routes and removes stale routes"
     let routeText = fs.readFileSync(surfaceRoutesPath(domain), "utf8");
     assert.doesNotMatch(routeText, /private\/export|large surface-discovery details/);
     assert.deepEqual(JSON.parse(routeText).routes.map((route) => Object.keys(route).sort()), [[
+      "auth_differential_required",
       "brief_profile",
       "capability_pack",
       "capability_pack_version",
       "confidence",
       "context_budget",
       "evaluator_agent",
+      "id_bearing",
       "reasons",
       "surface_id",
       "surface_type",
@@ -5795,6 +6027,56 @@ test("computeOpenRequeueSurfaceIds excludes terminally_blocked surfaces (options
     terminallyBlockedSurfaceIds: ["surface-c"],
   });
   assert.deepEqual(result, ["surface-b"]);
+});
+
+test("attack-surface readiness defaults missing priorities to HIGH", () => {
+  const { computeAttackSurfaceCoverage } = require("../mcp/lib/frontier-readiness.js");
+  const coverage = computeAttackSurfaceCoverage(
+    [
+      { id: "missing-open" },
+      { id: "missing-explored" },
+      { id: "missing-blocked" },
+      { id: "explicit-low", priority: "LOW" },
+    ],
+    ["missing-explored"],
+    ["missing-blocked"],
+    [],
+  );
+
+  assert.equal(coverage.total_surfaces, 4);
+  assert.equal(coverage.non_low_total, 3);
+  assert.equal(coverage.non_low_explored, 1);
+  assert.equal(coverage.non_low_terminally_blocked, 1);
+  assert.equal(coverage.non_low_closed, 2);
+  assert.equal(coverage.coverage_pct, 33);
+  assert.equal(coverage.closed_pct, 67);
+  assert.equal(coverage.unexplored_high, 1);
+  assert.deepEqual(coverage.unexplored_high_surface_ids, ["missing-open"]);
+  assert.equal(coverage.blocked_high, 1);
+  assert.deepEqual(coverage.blocked_high_surface_ids, ["missing-blocked"]);
+});
+
+test("wave status and pipeline analytics agree on a surface with no priority", () => {
+  withTempHome(() => {
+    const domain = "missing-priority.example.com";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    fs.writeFileSync(
+      attackSurfacePath(domain),
+      `${JSON.stringify({ surfaces: [{ id: "missing-priority" }] })}\n`,
+      "utf8",
+    );
+
+    const statusCoverage = JSON.parse(waveStatus({ target_domain: domain })).coverage;
+    const analyticsCoverage = readSessionArtifactSummary(domain).attack_surface_coverage;
+
+    assert.equal(statusCoverage.non_low_total, 1);
+    assert.equal(statusCoverage.coverage_pct, 0);
+    assert.equal(statusCoverage.unexplored_high, 1);
+    assert.deepEqual(statusCoverage.unexplored_high_surface_ids, ["missing-priority"]);
+    assert.equal(analyticsCoverage.non_low_total, statusCoverage.non_low_total);
+    assert.equal(analyticsCoverage.coverage_pct, statusCoverage.coverage_pct);
+    assert.equal(analyticsCoverage.unexplored_high, statusCoverage.unexplored_high);
+  });
 });
 
 test("EVALUATE -> CHAIN gate exposes blocked_high_surface_ids and blocks transition on it", () => {
@@ -6636,7 +6918,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
   });
 });
 
-test("bob_apply_wave_merge does NOT promote auth_missing when the named handle was added between waves", () => {
+test("bob_apply_wave_merge promotes recurring auth_missing even when the prereq snapshot contains the named handle", () => {
   withTempHome(() => {
     const domain = "registry-grew.example.com";
     seedAttackSurfaces(domain, [
@@ -6678,7 +6960,63 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
     });
     seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
+    assert.equal(result.merge.terminally_blocked_promoted.length, 1);
+    assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
+    assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "auth_missing");
+    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    assert.equal(currentBlockers(domain).length, 1);
+    assert.ok(!result.merge.requeue_surface_ids.includes("surface-auth"));
+  });
+});
+
+test("bob_apply_wave_merge requeues a blocked_prereq surface when its auth capability is live", () => {
+  withTempHome(() => {
+    const domain = "capability-clear-auth.example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-auth", hosts: [`https://${domain}/auth`], priority: "HIGH" },
+    ]);
+    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1, evaluation_wave: 0 });
+    seedPrereqSnapshot(domain, 1, { auth_handles: [], egress_handles: [] });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-auth" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-auth",
+      surface_status: "partial",
+      summary: "auth profile not registered; cannot test org-scoped IDOR",
+      content: "# A1",
+      blocked_prereqs: [
+        { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
+      ],
+    });
+    seedWaveTechniqueAttempts(domain, 1);
+    JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
+
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    setStatePendingWave(domain, 2);
+    seedPrereqSnapshot(domain, 2, { auth_handles: ["attacker"], egress_handles: [] });
+    seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-auth" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w2",
+      agent: "a1",
+      surface_id: "surface-auth",
+      surface_status: "partial",
+      summary: "same surface needs a fresh run with the live auth profile",
+      content: "# A1 wave 2",
+      blocked_prereqs: [
+        { kind: "auth_missing", identifier_hint: "attacker", reason: "profile is now available" },
+      ],
+    });
+    seedWaveTechniqueAttempts(domain, 2);
+    const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
+    assert.ok(result.merge.requeue_surface_ids.includes("surface-auth"));
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
     assert.equal(currentBlockers(domain).length, 0);
   });
@@ -11502,26 +11840,29 @@ test("smart-contract egress policy blocks DNS-private RPC endpoints before fetch
   assert.equal(isPublicHttpsUrl("https://[5f00::1]/rpc"), false);
   assert.equal(isBlockedInternalHost("fe80::1%eth0"), true);
 
-  let called = false;
-  await withMockSmartContractHttpRequest(async () => {
-    called = true;
-    return { ok: true, status: 200, text: JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1" }) };
-  }, async () => {
-    const secret = "rpc-secret-token";
-    const result = await withMockSmartContractRpcLookup({
-      "rpc.example.test": [{ address: "198.18.0.9", family: 4 }],
-    }, () => executeTool("bob_evm_call", {
-      chain_id: 1,
-      to: "0x" + "11".repeat(20),
-      data: "0x",
-      endpoints: [`https://rpc.example.test/rpc?api_key=${secret}`],
-    }));
-    assert.equal(result.ok, false);
-    assert.equal(called, false, "HTTP request must not run after DNS-private policy rejection");
-    assert.match(result.error.message, /no public HTTPS RPC endpoints/);
-    assert.equal(result.error.details.rpc_policy_rejections[0].reason, "blocked_internal_dns_address");
-    assert.match(result.error.details.rpc_policy_rejections[0].endpoint, /api_key=REDACTED/);
-    assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  await withBoundEvmSession("0x" + "11".repeat(20), async (targetDomain) => {
+    let called = false;
+    await withMockSmartContractHttpRequest(async () => {
+      called = true;
+      return { ok: true, status: 200, text: JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1" }) };
+    }, async () => {
+      const secret = "rpc-secret-token";
+      const result = await withMockSmartContractRpcLookup({
+        "rpc.example.test": [{ address: "198.18.0.9", family: 4 }],
+      }, () => executeTool("bob_evm_call", {
+        target_domain: targetDomain,
+        chain_id: 1,
+        to: "0x" + "11".repeat(20),
+        data: "0x",
+        endpoints: [`https://rpc.example.test/rpc?api_key=${secret}`],
+      }));
+      assert.equal(result.ok, false);
+      assert.equal(called, false, "HTTP request must not run after DNS-private policy rejection");
+      assert.match(result.error.message, /no public HTTPS RPC endpoints/);
+      assert.equal(result.error.details.rpc_policy_rejections[0].reason, "blocked_internal_dns_address");
+      assert.match(result.error.details.rpc_policy_rejections[0].endpoint, /api_key=REDACTED/);
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+    });
   });
 });
 
@@ -14412,6 +14753,7 @@ test("bob_write_evidence_packs writes JSON and markdown mirror", () => {
       packs: 1,
       representative_samples: 1,
       reportable_findings_covered: 1,
+      capability_pack_generated: 0,
     });
   });
 });
@@ -15305,8 +15647,9 @@ test("bob_http_scan resolves auth by explicit target_domain and first-party subd
 });
 
 test("bob_evm_call resolves the latest block via eth_blockNumber and returns block_used", async () => {
-  let callCount = 0;
-  await withMockSmartContractHttpRequest(async (_url, request) => {
+  await withBoundEvmSession("0x" + "11".repeat(20), async (targetDomain) => {
+    let callCount = 0;
+    await withMockSmartContractHttpRequest(async (_url, request) => {
     callCount += 1;
     const body = JSON.parse(request.body);
     if (body.method === "eth_call") {
@@ -15327,26 +15670,58 @@ test("bob_evm_call resolves the latest block via eth_blockNumber and returns blo
       };
     }
     return { ok: false, status: 500, text: "" };
-  }, async () => {
-    const result = await withMockSmartContractRpcLookup({
-      "eth.llamarpc.com": [{ address: "93.184.216.34", family: 4 }],
-    }, () => executeTool("bob_evm_call", {
-      chain_id: 1,
-      to: "0x" + "11".repeat(20),
-      data: "0x70a08231" + "00".repeat(32),
-      endpoints: ["https://eth.llamarpc.com"],
-    }));
-    assert.equal(result.ok, true);
-    assert.equal(result.data.block, "latest");
-    // Hex 0x129a8c0 = 19_507_392
-    assert.equal(result.data.block_used, 19_507_392);
-    assert.ok(callCount >= 2, "expected at least one eth_call and one eth_blockNumber");
+    }, async () => {
+      const result = await withMockSmartContractRpcLookup({
+        "eth.llamarpc.com": [{ address: "93.184.216.34", family: 4 }],
+      }, () => executeTool("bob_evm_call", {
+        target_domain: targetDomain,
+        chain_id: 1,
+        to: "0x" + "11".repeat(20),
+        data: "0x70a08231" + "00".repeat(32),
+        endpoints: ["https://eth.llamarpc.com"],
+      }));
+      assert.equal(result.ok, true);
+      assert.equal(result.data.block, "latest");
+      // Hex 0x129a8c0 = 19_507_392
+      assert.equal(result.data.block_used, 19_507_392);
+      assert.ok(callCount >= 2, "expected at least one eth_call and one eth_blockNumber");
+    });
   });
 });
 
 // ── bob_temp_email tests ──
 
-test("bob_temp_email create returns email with mocked mail.tm", async () => {
+test("bob_temp_email requires an initialized URL session before any provider request", async () => {
+  await withTempHome(async () => {
+    const originalFetch = global.fetch;
+    let providerRequestCalled = false;
+    try {
+      global.fetch = async () => {
+        providerRequestCalled = true;
+        throw new Error("provider request must not run before authority");
+      };
+
+      const missingHandle = await executeTool("bob_temp_email", { operation: "create" });
+      assert.equal(missingHandle.ok, false);
+      assert.equal(missingHandle.error.code, "INVALID_ARGUMENTS");
+
+      const missingSession = await executeTool("bob_temp_email", {
+        target_domain: "temp-email.example.com",
+        operation: "create",
+      });
+      assert.equal(missingSession.ok, false);
+      assert.equal(missingSession.error.code, "STATE_CONFLICT");
+      assert.equal(missingSession.error.details.authority.authority_class, "scoped_http_network");
+      assert.equal(providerRequestCalled, false);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+test("bob_temp_email create returns email with mocked mail.tm", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     global.fetch = async (url, opts) => {
@@ -15362,7 +15737,7 @@ test("bob_temp_email create returns email with mocked mail.tm", async () => {
       return { ok: false, status: 500 };
     };
 
-    const result = await executeTool("bob_temp_email", { operation: "create" });
+    const result = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(result.ok, true);
     assert.equal(result.data.success, true);
     assert.ok(result.data.email_address.endsWith("@test.tm"));
@@ -15371,9 +15746,12 @@ test("bob_temp_email create returns email with mocked mail.tm", async () => {
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email create falls back to guerrillamail on mail.tm failure", async () => {
+test("bob_temp_email create falls back to guerrillamail on mail.tm failure", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     global.fetch = async (url) => {
@@ -15386,7 +15764,7 @@ test("bob_temp_email create falls back to guerrillamail on mail.tm failure", asy
       return { ok: false, status: 500, text: async () => "" };
     };
 
-    const result = await executeTool("bob_temp_email", { operation: "create" });
+    const result = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(result.ok, true);
     assert.equal(result.data.success, true);
     assert.equal(result.data.email_address, "test_user@guerrillamail.com");
@@ -15394,14 +15772,17 @@ test("bob_temp_email create falls back to guerrillamail on mail.tm failure", asy
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email create returns error when all providers fail", async () => {
+test("bob_temp_email create returns error when all providers fail", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     global.fetch = async () => ({ ok: false, status: 500, text: async () => "Internal Server Error" });
 
-    const result = await executeTool("bob_temp_email", { operation: "create" });
+    const result = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "INTERNAL_ERROR");
     assert.equal(result.error.details.success, false);
@@ -15409,9 +15790,12 @@ test("bob_temp_email create returns error when all providers fail", async () => 
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email poll returns messages with mocked mail.tm", async () => {
+test("bob_temp_email poll returns messages with mocked mail.tm", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     // First create a mailbox to populate tempMailboxes
@@ -15438,9 +15822,10 @@ test("bob_temp_email poll returns messages with mocked mail.tm", async () => {
       return { ok: false, status: 500 };
     };
 
-    const createResult = await executeTool("bob_temp_email", { operation: "create" });
+    const createResult = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(createResult.ok, true);
     const pollResult = await executeTool("bob_temp_email", {
+      target_domain: targetDomain,
       operation: "poll",
       email_address: createResult.data.email_address,
     });
@@ -15452,9 +15837,12 @@ test("bob_temp_email poll returns messages with mocked mail.tm", async () => {
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email extract finds codes and links", async () => {
+test("bob_temp_email extract finds codes and links", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     // Create mailbox first
@@ -15479,9 +15867,10 @@ test("bob_temp_email extract finds codes and links", async () => {
       return { ok: false, status: 500 };
     };
 
-    const createResult = await executeTool("bob_temp_email", { operation: "create" });
+    const createResult = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(createResult.ok, true);
     const extractResult = await executeTool("bob_temp_email", {
+      target_domain: targetDomain,
       operation: "extract",
       email_address: createResult.data.email_address,
       message_id: "msg1",
@@ -15494,17 +15883,22 @@ test("bob_temp_email extract finds codes and links", async () => {
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email poll for unknown email returns error", async () => {
+test("bob_temp_email poll for unknown email returns error", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const result = await executeTool("bob_temp_email", {
+    target_domain: targetDomain,
     operation: "poll",
     email_address: "nonexistent@nowhere.com",
   });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "INTERNAL_ERROR");
   assert.ok(result.error.message.includes("Unknown email"));
-});
+  },
+));
 
 test("auto-signup result normalization fails ambiguous states and preserves diagnostics", () => {
   const signupUrl = "https://example.com/signup/";
@@ -19687,8 +20081,12 @@ test("validateScanUrl rejects malformed URLs", () => {
   assert.throws(() => validateScanUrl("not-a-url"), /Invalid URL/);
 });
 
-test("Claude settings register only artifact guards; scoped HTTP policy is enforced by MCP runtime", () => {
-  const { defaultClaudeSettings } = require("../adapters/claude/config.js");
+test("Claude settings register canonical artifact and fanout-ownership guards; scoped HTTP policy stays in MCP", () => {
+  const {
+    defaultClaudeSettings,
+    FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+    fanoutChildScopeGuardHookEntry,
+  } = require("../adapters/claude/config.js");
   const { mergeSettings } = require("../scripts/merge-claude-config.js");
   const generated = defaultClaudeSettings();
   const installed = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude", "settings.json"), "utf8"));
@@ -19706,18 +20104,28 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     assert.ok(bash, "Bash hook entry should remain for session artifact guards");
     assert.ok(bash.hooks.some((hook) => /session-write-guard\.sh/.test(hook.command)));
     assert.ok(bash.hooks.some((hook) => /session-read-guard\.sh/.test(hook.command)));
-    // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS
-    // the operator before a target-mutating bob_http_scan (and is inert unless BOB_HTTP_WRITE_CONFIRM
-    // is set). It does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where it can't be
-    // bypassed by editing a hook. So an MCP matcher is allowed ONLY when it is exactly that gate; a
-    // scope/enforcement guard on an MCP tool remains forbidden.
+    // Exactly two canonical MCP matchers are permitted: the opt-in HTTP write-confirm HITL gate and
+    // the host-context guard that prevents a nested evaluator-fanout child from invoking root-owned
+    // handoff/finalize tools. Target scope and HTTP policy remain MCP-runtime responsibilities.
     const mcpEntries = settings.hooks.PreToolUse.filter((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || ""));
+    assert.deepEqual(
+      mcpEntries.map((entry) => entry.matcher).sort(),
+      ["mcp__hacker-bob__bob_http_scan", FANOUT_CHILD_SCOPE_GUARD_MATCHER].sort(),
+      "only the canonical HTTP confirmation and fanout ownership guards may hook MCP tools",
+    );
     for (const entry of mcpEntries) {
-      assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
-      assert.ok(
-        entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
-        "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
-      );
+      if (entry.matcher === "mcp__hacker-bob__bob_http_scan") {
+        assert.ok(
+          entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+          "the HTTP-scan matcher must contain only the write-confirm HITL gate",
+        );
+      } else {
+        assert.deepEqual(
+          entry,
+          fanoutChildScopeGuardHookEntry(),
+          "the fanout ownership matcher and command must stay exact",
+        );
+      }
     }
   }
 
@@ -19761,6 +20169,14 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   assert.ok(
     mergedScan.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
     "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
+  );
+  const mergedFanoutGuard = merged.hooks.PreToolUse.find((entry) => (
+    entry.matcher === FANOUT_CHILD_SCOPE_GUARD_MATCHER
+  ));
+  assert.deepEqual(
+    mergedFanoutGuard,
+    fanoutChildScopeGuardHookEntry(),
+    "the canonical fanout child/root ownership guard survives merge unchanged",
   );
 });
 
@@ -20030,7 +20446,10 @@ test("bob_wave_status returns open requeue coverage surface ids and transition b
       explored: [],
     });
     seedAttackSurfaces(domain, [
-      { id: "surface-a", hosts: [`https://${domain}`], priority: "MEDIUM" },
+      // bob_log_coverage materializes this legacy row into the authoritative
+      // surface index without a priority. Readiness conservatively treats that
+      // missing priority as HIGH, matching pipeline analytics.
+      { id: "surface-a", hosts: [`https://${domain}`] },
     ]);
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
     logCoverage({
@@ -20049,8 +20468,9 @@ test("bob_wave_status returns open requeue coverage surface ids and transition b
 
     const result = JSON.parse(waveStatus({ target_domain: domain }));
     assert.deepEqual(result.coverage.open_requeue_surface_ids, ["surface-a"]);
-    assert.deepEqual(result.coverage.unexplored_high_surface_ids, []);
+    assert.deepEqual(result.coverage.unexplored_high_surface_ids, ["surface-a"]);
     assert.equal(result.transition_blockers.some((item) => item.code === "open_requeue_coverage"), true);
+    assert.equal(result.transition_blockers.some((item) => item.code === "unexplored_high_surfaces"), true);
   });
 });
 

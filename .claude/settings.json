@@ -1,8 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "mcp__hacker-bob__bob_http_scan",
-      "mcp__hacker-bob__bob_http_confirm",
       "mcp__hacker-bob__bob_read_http_audit",
       "mcp__hacker-bob__bob_read_surface_routes",
       "mcp__hacker-bob__bob_import_static_artifact",
@@ -10,6 +8,7 @@
       "mcp__hacker-bob__bob_ingest_sarif",
       "mcp__hacker-bob__bob_read_static_analysis_index",
       "mcp__hacker-bob__bob_record_candidate_claim",
+      "mcp__hacker-bob__bob_record_physical_candidate_claim",
       "mcp__hacker-bob__bob_read_candidate_claims",
       "mcp__hacker-bob__bob_list_candidate_claims",
       "mcp__hacker-bob__bob_write_chain_attempt",
@@ -22,6 +21,7 @@
       "mcp__hacker-bob__bob_read_evidence_packs",
       "mcp__hacker-bob__bob_write_grade_verdict",
       "mcp__hacker-bob__bob_read_grade_verdict",
+      "mcp__hacker-bob__bob_query_instrument_capabilities",
       "mcp__hacker-bob__bob_read_session_state",
       "mcp__hacker-bob__bob_read_session_nucleus",
       "mcp__hacker-bob__bob_write_wave_handoff",
@@ -31,11 +31,8 @@
       "mcp__hacker-bob__bob_log_dead_ends",
       "mcp__hacker-bob__bob_log_coverage",
       "mcp__hacker-bob__bob_wave_status",
-      "mcp__hacker-bob__bob_temp_email",
-      "mcp__hacker-bob__bob_signup_detect",
       "mcp__hacker-bob__bob_auth_store",
       "mcp__hacker-bob__bob_list_auth_profiles",
-      "mcp__hacker-bob__bob_auto_signup",
       "mcp__hacker-bob__bob_read_state_summary",
       "mcp__hacker-bob__bob_read_session_summary",
       "mcp__hacker-bob__bob_read_assignment_brief",
@@ -44,25 +41,12 @@
       "mcp__hacker-bob__bob_select_technique_packs",
       "mcp__hacker-bob__bob_read_technique_pack",
       "mcp__hacker-bob__bob_log_technique_attempt",
-      "mcp__hacker-bob__bob_evm_call",
-      "mcp__hacker-bob__bob_evm_storage_read",
-      "mcp__hacker-bob__bob_evm_fetch_source",
-      "mcp__hacker-bob__bob_evm_role_table",
-      "mcp__hacker-bob__bob_svm_fetch_account",
-      "mcp__hacker-bob__bob_svm_fetch_program",
-      "mcp__hacker-bob__bob_aptos_fetch_resource",
-      "mcp__hacker-bob__bob_aptos_fetch_module",
-      "mcp__hacker-bob__bob_sui_fetch_object",
-      "mcp__hacker-bob__bob_sui_fetch_package",
-      "mcp__hacker-bob__bob_substrate_fetch_storage",
-      "mcp__hacker-bob__bob_substrate_fetch_runtime",
-      "mcp__hacker-bob__bob_cosmwasm_fetch_contract",
-      "mcp__hacker-bob__bob_cosmwasm_smart_query",
       "mcp__hacker-bob__bob_record_surface_leads",
       "mcp__hacker-bob__bob_read_surface_leads",
+      "mcp__hacker-bob__bob_verify_physical_verdict",
+      "mcp__hacker-bob__bob_verify_physical_candidate_claim",
       "mcp__hacker-bob__bob_log_capability_friction",
       "mcp__hacker-bob__bob_log_protocol_drift",
-      "mcp__hacker-bob__bob_ws_probe",
       "Bash(mkdir *)",
       "Bash(test *)",
       "Bash(cat *)",
@@ -77,6 +61,8 @@
       "Read",
       "Glob",
       "Grep",
+      "mcp__hacker-bob__bob_http_scan",
+      "mcp__hacker-bob__bob_http_confirm",
       "mcp__hacker-bob__bob_http_cors_confirm",
       "mcp__hacker-bob__bob_http_massread_confirm",
       "mcp__hacker-bob__bob_http_idor_confirm",
@@ -84,6 +70,8 @@
       "mcp__hacker-bob__bob_http_xss_confirm",
       "mcp__hacker-bob__bob_oob_mint",
       "mcp__hacker-bob__bob_oob_poll",
+      "mcp__hacker-bob__bob_secondorder_mint",
+      "mcp__hacker-bob__bob_secondorder_reread",
       "mcp__hacker-bob__bob_nuclei_scan",
       "mcp__hacker-bob__bob_start_next_wave",
       "mcp__hacker-bob__bob_start_wave",
@@ -106,6 +94,7 @@
       "mcp__hacker-bob__bob_init_session",
       "mcp__hacker-bob__bob_init_repo_session",
       "mcp__hacker-bob__bob_init_contract_session",
+      "mcp__hacker-bob__bob_init_physical_session",
       "mcp__hacker-bob__bob_repo_inventory",
       "mcp__hacker-bob__bob_repo_prepare_env",
       "mcp__hacker-bob__bob_repo_docker_run",
@@ -115,6 +104,9 @@
       "mcp__hacker-bob__bob_advance_session",
       "mcp__hacker-bob__bob_apply_wave_merge",
       "mcp__hacker-bob__bob_write_handoff",
+      "mcp__hacker-bob__bob_temp_email",
+      "mcp__hacker-bob__bob_signup_detect",
+      "mcp__hacker-bob__bob_auto_signup",
       "mcp__hacker-bob__bob_set_operator_note",
       "mcp__hacker-bob__bob_clear_operator_note",
       "mcp__hacker-bob__bob_clear_terminal_block",
@@ -136,13 +128,27 @@
       "mcp__hacker-bob__bob_extract_routes",
       "mcp__hacker-bob__bob_build_symbol_surface_index",
       "mcp__hacker-bob__bob_summarize_diff_impact",
+      "mcp__hacker-bob__bob_evm_call",
+      "mcp__hacker-bob__bob_evm_storage_read",
+      "mcp__hacker-bob__bob_evm_fetch_source",
+      "mcp__hacker-bob__bob_evm_role_table",
       "mcp__hacker-bob__bob_foundry_run",
       "mcp__hacker-bob__bob_halmos_run",
+      "mcp__hacker-bob__bob_svm_fetch_account",
+      "mcp__hacker-bob__bob_svm_fetch_program",
       "mcp__hacker-bob__bob_anchor_run",
+      "mcp__hacker-bob__bob_aptos_fetch_resource",
+      "mcp__hacker-bob__bob_aptos_fetch_module",
       "mcp__hacker-bob__bob_aptos_run",
+      "mcp__hacker-bob__bob_sui_fetch_object",
+      "mcp__hacker-bob__bob_sui_fetch_package",
       "mcp__hacker-bob__bob_sui_run",
       "mcp__hacker-bob__bob_substrate_run",
+      "mcp__hacker-bob__bob_substrate_fetch_storage",
+      "mcp__hacker-bob__bob_substrate_fetch_runtime",
       "mcp__hacker-bob__bob_cosmwasm_run",
+      "mcp__hacker-bob__bob_cosmwasm_fetch_contract",
+      "mcp__hacker-bob__bob_cosmwasm_smart_query",
       "mcp__hacker-bob__bob_promote_surface_leads",
       "mcp__hacker-bob__bob_build_surface_graph",
       "mcp__hacker-bob__bob_query_surface_graph",
@@ -169,6 +175,13 @@
       "mcp__hacker-bob__bob_verify_oracle_differential",
       "mcp__hacker-bob__bob_verify_invariant_differential",
       "mcp__hacker-bob__bob_verify_finding_differential",
+      "mcp__hacker-bob__bob_physical_observe",
+      "mcp__hacker-bob__bob_credential_acquire",
+      "mcp__hacker-bob__bob_credential_recover",
+      "mcp__hacker-bob__bob_credential_emulate",
+      "mcp__hacker-bob__bob_credential_write",
+      "mcp__hacker-bob__bob_protocol_transceive",
+      "mcp__hacker-bob__bob_rf_trace",
       "mcp__hacker-bob__bob_attach_contract",
       "mcp__hacker-bob__bob_resolve_body",
       "mcp__hacker-bob__bob_prepare_node",
@@ -199,6 +212,7 @@
       "mcp__hacker-bob__bob_emit_runtime_drift",
       "mcp__hacker-bob__bob_propose_friction_promotion",
       "mcp__hacker-bob__bob_scan_transcript_for_friction",
+      "mcp__hacker-bob__bob_ws_probe",
       "mcp__hacker-bob__bob_plan_recon_angles"
     ]
   },
@@ -268,6 +282,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__hacker-bob__bob_write_wave_handoff|mcp__hacker-bob__bob_finalize_agent_run|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-stop.js\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -294,6 +318,16 @@
         ]
       },
       {
+        "matcher": "evaluator-fanout",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-start.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "evaluator-evm-agent",
         "hooks": [
           {
@@ -335,16 +369,6 @@
       },
       {
         "matcher": "evaluator-cosmwasm-agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-start.js\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "evaluator-fanout",
         "hooks": [
           {
             "type": "command",
@@ -366,6 +390,16 @@
         ]
       },
       {
+        "matcher": "evaluator-fanout",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "evaluator-evm-agent",
         "hooks": [
           {
@@ -416,7 +450,7 @@
         ]
       },
       {
-        "matcher": "evaluator-fanout",
+        "matcher": "evaluator-fanout-child",
         "hooks": [
           {
             "type": "command",

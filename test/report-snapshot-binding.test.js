@@ -27,6 +27,10 @@ const path = require("path");
 const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
+  _setApprovalBackendForTest,
+  _setApprovalHmacKeyForTest,
+} = require("../mcp/lib/approval-store.js");
+const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
@@ -36,6 +40,9 @@ const {
 const {
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
+const {
+  loadGradeVerdictHash,
+} = require("../mcp/lib/report-finalize.js");
 const {
   normalizeProofBundlesDocument,
 } = require("../mcp/lib/proof-bundle.js");
@@ -451,6 +458,100 @@ test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pi
     assert.equal(events.length, 1, "exactly one claim.report_snapshot.appended event must be emitted per finalize");
     assert.equal(events[0].payload.snapshot_id, row.snapshot_id);
     assert.equal(events[0].payload.report_content_hash, row.report_content_hash);
+  });
+});
+
+// fx-gate-hardening (P1-3): bob_finalize_report must apply the SAME GRADE -> REPORT
+// human-approval blocker gateGradeToReport enforces at the bob_advance_session transition --
+// a defense-in-depth re-check for the append-only/re-finalizable nature of this tool (its own
+// description: "subsequent calls produce a new row ... re-finalize after a report.md edit").
+// Both branches (blocked when BOB_AGENTCORE=1 with no valid artifact; a complete no-op when
+// BOB_AGENTCORE is unset) are asserted here against the exact same drivePipelineToReportWritten
+// pipeline the unguarded test above already proved succeeds.
+test("bob_finalize_report is blocked by the GRADE -> REPORT approval gate under BOB_AGENTCORE=1 with no valid artifact", async () => {
+  await withTempHome(async () => {
+    const domain = "finalize-approval-blocked.example.com";
+    drivePipelineToReportWritten(domain);
+
+    const previousAgentcore = process.env.BOB_AGENTCORE;
+    process.env.BOB_AGENTCORE = "1";
+    try {
+      let captured = null;
+      try {
+        finalizeReportTool.handler({ target_domain: domain });
+      } catch (error) {
+        captured = error;
+      }
+      assert.ok(captured, "bob_finalize_report must throw when BOB_AGENTCORE=1 and no approval artifact exists");
+      assert.equal(captured.code, "STATE_CONFLICT");
+      assert.equal(captured.details.blocked_by, "external_approval_pending");
+      assert.equal(captured.details.target_domain, domain);
+      // Nothing must have been written -- a blocked finalize is not a partial finalize.
+      assert.equal(readReportSnapshots(domain).length, 0);
+    } finally {
+      if (previousAgentcore === undefined) delete process.env.BOB_AGENTCORE;
+      else process.env.BOB_AGENTCORE = previousAgentcore;
+    }
+  });
+});
+
+test("bob_finalize_report succeeds under BOB_AGENTCORE=1 once a valid, content-bound HMAC-verified artifact exists", async () => {
+  await withTempHome(async () => {
+    const domain = "finalize-approval-admitted.example.com";
+    drivePipelineToReportWritten(domain);
+
+    const previousAgentcore = process.env.BOB_AGENTCORE;
+    process.env.BOB_AGENTCORE = "1";
+    _setApprovalHmacKeyForTest("finalize-approval-test-key");
+    // fx-hmac-content: the artifact must be bound to the CURRENT grade_verdict_hash
+    // (drivePipelineToReportWritten already wrote a real grade.json via writeGradeVerdict), not
+    // just target_domain -- mirrors the production VerifierGateFunction's signing scheme.
+    _setApprovalBackendForTest((targetDomain) => {
+      const gradeVerdictHash = loadGradeVerdictHash(targetDomain);
+      const profile = targetDomain === "libheif-cve-2026-49271" ? targetDomain : "smoke";
+      const bodySha256 = "b".repeat(64);
+      const versionId = "report-snapshot-test-freeze-version-1";
+      const hmac = crypto.createHmac("sha256", "finalize-approval-test-key")
+        .update(JSON.stringify([profile, targetDomain, gradeVerdictHash, bodySha256, versionId]), "utf8")
+        .digest("hex");
+      return JSON.stringify({
+        schema_version: 2,
+        binding_version: "grade-freeze-v2",
+        profile,
+        target_domain: targetDomain,
+        grade_verdict_hash: gradeVerdictHash,
+        grade_freeze_bundle_sha256: bodySha256,
+        grade_freeze_version_id: versionId,
+        hmac,
+      });
+    });
+    try {
+      const response = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
+      assert.equal(response.finalized, true);
+      assert.equal(readReportSnapshots(domain).length, 1);
+    } finally {
+      if (previousAgentcore === undefined) delete process.env.BOB_AGENTCORE;
+      else process.env.BOB_AGENTCORE = previousAgentcore;
+      _setApprovalBackendForTest(null);
+      _setApprovalHmacKeyForTest(null);
+    }
+  });
+});
+
+test("bob_finalize_report approval gate is a complete no-op when BOB_AGENTCORE is unset", async () => {
+  await withTempHome(async () => {
+    const domain = "finalize-approval-inert.example.com";
+    drivePipelineToReportWritten(domain);
+
+    const previousAgentcore = process.env.BOB_AGENTCORE;
+    delete process.env.BOB_AGENTCORE;
+    try {
+      const response = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
+      assert.equal(response.finalized, true);
+    } finally {
+      if (previousAgentcore === undefined) delete process.env.BOB_AGENTCORE;
+      else process.env.BOB_AGENTCORE = previousAgentcore;
+    }
   });
 });
 

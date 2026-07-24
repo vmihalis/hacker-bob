@@ -11,6 +11,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  ARTIFACT_KIND_VALUES,
   PRODUCER_PACKS,
   classifyScProducer,
 } = require("../mcp/lib/producer-packs.js");
@@ -143,4 +144,33 @@ test("the chain_address_set consume is non-orphan and the producer graph stays a
     [],
     "leg c: the only cycle is the single whitelisted sc_surface identity self-edge",
   );
+});
+
+test("web_onchain_ref consumes the http_bodies artifact and emits smart_contract chain seeds", () => {
+  assert.equal(ARTIFACT_KIND_VALUES.includes("http_bodies"), true,
+    "http_bodies must be in the closed artifact vocabulary");
+
+  const bodyRoot = PRODUCER_PACKS.web_http_bodies;
+  assert.equal(bodyRoot.producer_id, "web_http_bodies");
+  assert.equal(bodyRoot.producer_agent, "surface-discovery-agent");
+  assert.deepEqual(bodyRoot.trigger, {
+    kind: "root",
+    target_class: "web",
+    consumes: [],
+  });
+  assert.deepEqual(bodyRoot.produces, ["http_bodies"]);
+  assert.deepEqual(bodyRoot.emits_surface_types, []);
+
+  const refProducer = PRODUCER_PACKS.web_onchain_ref;
+  assert.equal(refProducer.producer_id, "web_onchain_ref");
+  assert.equal(refProducer.producer_agent, "surface-discovery-agent");
+  assert.deepEqual(refProducer.trigger, {
+    kind: "derived",
+    target_class: "web",
+    consumes: ["http_bodies"],
+  });
+  assert.deepEqual(refProducer.produces, ["chain_address_set"]);
+  assert.deepEqual(refProducer.emits_surface_types, ["smart_contract"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(refProducer.trigger, "input_mode"), false,
+    "web_onchain_ref uses the default all-of input mode");
 });

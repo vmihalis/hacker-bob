@@ -178,7 +178,7 @@ function loadFinalVerificationHash(domain) {
   return loadFinalVerificationDocument(domain).final_verification_hash;
 }
 
-function loadEvidencePackHash(domain) {
+function loadEvidencePackHash(domain, finalRound = null) {
   const paths = evidencePackPaths(domain);
   if (!fs.existsSync(paths.json)) {
     // Y.10 (Y-D12 / D15) — STATE_CONFLICT remediation backfill #5 of 6:
@@ -209,12 +209,48 @@ function loadEvidencePackHash(domain) {
       { missing_field: "packs" },
     );
   }
+  let normalized;
+  try {
+    const currentFinal = finalRound || loadFinalVerificationDocument(domain);
+    const bindingFields = [
+      "verification_attempt_id",
+      "verification_snapshot_hash",
+      "final_verification_hash",
+    ];
+    const documentHasBinding = bindingFields.some((field) => document[field] != null);
+    normalized = require("./evidence.js").normalizeEvidencePacksDocument(document, {
+      expectedDomain: domain,
+      ...findingSetsFromFinalRound(currentFinal),
+      // Preserve the historical V1-evidence/V2-final upgrade path for legacy
+      // packs.  Capability-pack evidence independently refuses an unbound
+      // document in normalizeEvidencePacksDocument.
+      verificationBinding: documentHasBinding
+        ? proofBundleBindingFromFinalRound(currentFinal)
+        : null,
+    });
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `evidence packs at ${paths.json} do not validate against the current final verification: ${error.message || String(error)}`,
+      { missing_artifact: "evidence-packs.json" },
+      { remediation: "call bob_write_evidence_packs for the current final-reportable findings, then re-invoke bob_finalize_report" },
+    );
+  }
+  if (hashCanonicalJson(document) !== hashCanonicalJson(normalized)) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `evidence packs at ${paths.json} contain fields outside their normalized live projection; rewrite evidence packs before finalization`,
+      { missing_artifact: "evidence-packs.json" },
+      { remediation: "call bob_write_evidence_packs for the current final-reportable findings, then re-invoke bob_finalize_report" },
+    );
+  }
   // The evidence_hash is computed over the canonical JSON of the packs[]
   // manifest. Including only packs[] makes the binding stable across
   // verification-attempt-id renames or schema-version bumps that touch only
   // top-level metadata; what we are binding the report to is the actual
   // evidence content captured for each reportable claim.
-  return hashCanonicalJson(document.packs);
+  return hashCanonicalJson(normalized.packs);
 }
 
 function reportContentCitesProofBundle(contentBuffer) {
@@ -368,7 +404,7 @@ function resolveReportFinalizationHashes(targetDomain) {
   const claimFreeze = loadClaimFreezeHash(domain);
   const finalVerification = loadFinalVerificationDocument(domain);
   const finalVerificationHash = finalVerification.final_verification_hash;
-  const evidenceHash = loadEvidencePackHash(domain);
+  const evidenceHash = loadEvidencePackHash(domain, finalVerification);
   const gradeVerdictHash = loadGradeVerdictHash(domain);
   const reportContentHash = sha256Hex(reportFile.content_buffer);
   const proofBundleHash = reportContentCitesProofBundle(reportFile.content_buffer)

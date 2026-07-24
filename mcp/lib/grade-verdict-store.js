@@ -55,6 +55,12 @@ const {
   computeDefenderDisposition,
   DEFENDER_DISPOSITION_VALUES,
 } = require("./defender-disposition.js");
+const {
+  writeGradeFreezeBundleSync,
+} = require("./grade-freeze-store.js");
+const {
+  canonicalJson,
+} = require("./verification-contracts.js");
 
 function verificationLib() {
   return require("./verification.js");
@@ -236,6 +242,28 @@ function normalizeGradeVerdictDocument(document, { expectedDomain = null, findin
   // the recorded verdict is advisory-trust, not production-trust.
   if (document.sandbox_downgrade != null) {
     normalized.sandbox_downgrade = normalizeSandboxDowngrade(document.sandbox_downgrade);
+  }
+
+  if (document.capability_pack_bindings != null) {
+    if (expectedDomain == null) {
+      throw new Error("capability_pack_bindings require an expected target domain");
+    }
+    if (!Array.isArray(document.capability_pack_bindings)) {
+      throw new Error("capability_pack_bindings must be an array");
+    }
+    const bindingFindingIds = document.capability_pack_bindings.map((binding, index) => {
+      if (binding == null || typeof binding !== "object" || Array.isArray(binding)) {
+        throw new Error(`capability_pack_bindings[${index}] must be an object`);
+      }
+      return parseFindingId(binding.finding_id, `capability_pack_bindings[${index}].finding_id`);
+    });
+    const expected = require("./capability-pack-grade-adapters.js")
+      .buildCapabilityPackGradeBindings(expectedDomain, bindingFindingIds);
+    if (expected.legacy_finding_ids.length > 0
+        || canonicalJson(expected.bindings) !== canonicalJson(document.capability_pack_bindings)) {
+      throw new Error("capability_pack_bindings do not match live pack adapter projections");
+    }
+    normalized.capability_pack_bindings = expected.bindings;
   }
 
   if (!Array.isArray(document.findings)) {
@@ -460,6 +488,41 @@ function writeGradeVerdict(args) {
   });
 
   const finalReportableSeveritySet = requireFinalReportableSeveritySet(domain, findingIdSet);
+  // PH-C10 pack-owned grade gates. The dispatch is manifest-driven: a pack
+  // with a declared grade adapter must produce its live binding now; packs
+  // without one remain on the legacy web/OSS/SC gates below. Include every
+  // graded finding plus every final-reportable finding so omitting a physical
+  // reportable result from args cannot bypass its adapter.
+  const packGradeFindingIds = Array.from(new Set([
+    ...seenIds,
+    ...finalReportableSeveritySet,
+  ])).sort();
+  let capabilityPackGradeProjection;
+  try {
+    capabilityPackGradeProjection = require("./capability-pack-grade-adapters.js")
+      .buildCapabilityPackGradeBindings(domain, packGradeFindingIds);
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Capability-pack grade adapter rejected the finding set: ${error.message || String(error)}`,
+      { code: "capability_pack_grade_adapter_rejected" },
+    );
+  }
+  const packHandledFindingIds = new Set(
+    capabilityPackGradeProjection.handled_finding_ids,
+  );
+  const omittedPackReportable = [...finalReportableSeveritySet]
+    .filter((findingId) => packHandledFindingIds.has(findingId) && !seenIds.has(findingId));
+  if (omittedPackReportable.length > 0) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Pack-owned reportable finding(s) are missing from the grade input: ${omittedPackReportable.join(", ")}`,
+      { code: "capability_pack_reportable_grade_omitted", finding_ids: omittedPackReportable },
+    );
+  }
+  const legacyReportableSeveritySet = new Set(
+    [...finalReportableSeveritySet].filter((findingId) => !packHandledFindingIds.has(findingId)),
+  );
   // Verdict-level sandbox-isolation gate (the ALL-sessions write-level door
   // closing the web/SC uniformity gap the repo-only lifecycle gateVerifyToGrade
   // misses). When a reportable medium+ finding draws on one of the four keyed
@@ -558,7 +621,7 @@ function writeGradeVerdict(args) {
   // reachability-stamp gate above).
   const { reproVerifiedGapForNativeReportableFindings } = require("./claims.js");
   const reproGap = reproVerifiedGapForNativeReportableFindings(domain, {
-    reportableFindingIds: finalReportableSeveritySet,
+    reportableFindingIds: legacyReportableSeveritySet,
     finalSeverities,
   });
   if (reproGap.missing.length > 0) {
@@ -586,7 +649,7 @@ function writeGradeVerdict(args) {
   // outcome — excluded from the reportable set, applied per finding, never a class bound).
   const { findingDifferentialGapForStandaloneReportableFindings } = require("./claims.js");
   const findingDifferentialGap = findingDifferentialGapForStandaloneReportableFindings(domain, {
-    reportableFindingIds: finalReportableSeveritySet,
+    reportableFindingIds: legacyReportableSeveritySet,
     finalSeverities,
   });
   if (findingDifferentialGap.missing.length > 0) {
@@ -613,7 +676,7 @@ function writeGradeVerdict(args) {
   // single-surface finding fails the cross-stack predicate and is untouched here.
   const { crossStackPathGapForReportableFindings } = require("./claims.js");
   const crossStackGap = crossStackPathGapForReportableFindings(domain, {
-    reportableFindingIds: finalReportableSeveritySet,
+    reportableFindingIds: legacyReportableSeveritySet,
     finalSeverities,
   });
   if (crossStackGap.missing.length > 0) {
@@ -639,7 +702,11 @@ function writeGradeVerdict(args) {
   // evaluation-time gate would deadlock (evaluators cannot mint verified rows). Fail
   // closed — applies to ALL complete surfaces, not only the reportable set.
   const { completionDepthGapForCompleteSurfaces } = require("./claims.js");
-  const completionGap = completionDepthGapForCompleteSurfaces(domain);
+  const completionGap = completionDepthGapForCompleteSurfaces(domain, {
+    packExecutedFindingIds: new Set(
+      capabilityPackGradeProjection.completion_depth_finding_ids,
+    ),
+  });
   if (completionGap.missing.length > 0) {
     const detail = completionGap.missing
       .map((entry) => `${entry.surface_id} (${entry.reason})`)
@@ -650,7 +717,7 @@ function writeGradeVerdict(args) {
       { code: "missing_completion_depth", missing: completionGap.missing },
       {
         remediation:
-          "For each named surface: run the relevant bob_verify_* for one of its findings (the executed differential is verifier-owned, minted downstream), OR log concrete coverage rows / a substantive bypass_attempt for it, OR reconcile the surface to surface_status: partial (complete_surface_finding_not_executed = a recorded finding was never executed into a differential; complete_surface_no_evidence = complete with no finding, coverage, or bypass at all).",
+          "For each named surface: run the relevant bob_verify_* for one of its findings (the executed differential is verifier-owned, minted downstream), OR reconcile it to surface_status: partial. IMPORTANT: for a surface whose reason is complete_idbearing_surface_no_differential (an id-bearing / BOLA surface), a coverage row or a bypass_attempt narrative does NOT clear it — it requires an executed cross-tenant flip (needs >=2 distinct principals) or a verified finding; with <2 principals, reconcile to partial (an honest 'needs a 2nd principal to test cross-tenant' block). Only for a NON-id-bearing surface (complete_surface_no_evidence) are concrete coverage rows / a substantive bypass_attempt also accepted; complete_surface_finding_not_executed = a recorded finding was never executed into a differential. complete_surface_routes_unverifiable = the surface-routes.json that establishes which surfaces are id-bearing is present but unreadable, so id-bearing status cannot be verified for this surface — it clears only on an executed / verified finding (never a bypass_attempt narrative); investigate the corrupt routes file or reconcile to partial.",
       },
     );
   }
@@ -707,6 +774,9 @@ function writeGradeVerdict(args) {
     // null is preserved for legacy/pre-claim sessions where no freeze exists.
     claim_freeze_id: claimFreezeId,
   };
+  if (capabilityPackGradeProjection.bindings.length > 0) {
+    document.capability_pack_bindings = capabilityPackGradeProjection.bindings;
+  }
   enforceGradeVerdictConsistency(document, {
     finalReportableSeveritySet,
   });
@@ -733,6 +803,22 @@ function writeGradeVerdict(args) {
 
   const paths = gradeArtifactPaths(domain);
   writeFileAtomic(paths.json, JSON.stringify(document, null, 2) + "\n");
+
+  // ARCHITECTURAL FIX (Eric-approved): additive, best-effort WORM freeze of
+  // the just-written grade verdict, taken HERE (at GRADE time, before any
+  // human approval exists) and keyed by grade_verdict_hash. See
+  // mcp/lib/grade-freeze-store.js's module header for the full rationale.
+  // No-ops when no bucket is configured (every non-AWS-branch session);
+  // never throws; never blocks this write.
+  {
+    const { findingPayloadsFromClaims } = require("./tools/record-candidate-claim.js");
+    writeGradeFreezeBundleSync({
+      domain,
+      document,
+      findingPayloads: findingPayloadsFromClaims(domain),
+      reportableFindingIds: finalReportableSeveritySet,
+    });
+  }
 
   const response = {
     verdict,

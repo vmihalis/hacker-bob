@@ -859,10 +859,10 @@ test("Y.13 Subtest G-6 (Y-P14d brief-discipline coverage) — chain-builder comp
   );
 });
 
-test("Y.13 Subtest G-7 (Y-P14e non-example coverage) — Task only on registry-declared spawn_capable agents; ROLE_TRACE_EXPECTATIONS decision_boundaries are CLOSED enum", () => {
+test("Y.13 Subtest G-7 (Y-P14e non-example coverage) — Agent/Task spawn grants only on registry-declared spawn_capable agents; ROLE_TRACE_EXPECTATIONS decision_boundaries are CLOSED enum", () => {
   // (Y-P8, CN coverage-nesting) — single-spawner-topology.test.js owns the
   // full registry-derived IFF gate. Mirror its NON-allowlisted direction here
-  // (no agent carries Task UNLESS its role spec is spawn_capable) to keep the
+  // (no agent carries a bare or parameterized Agent/Task grant UNLESS its role spec is spawn_capable) to keep the
   // structural anchor visible in the smoke. Sourcing the allowlist from the
   // SAME renderer registry keeps the invariant single-definition.
   const spawnCapable = new Set(spawnCapableAgentNames());
@@ -873,10 +873,10 @@ test("Y.13 Subtest G-7 (Y-P14e non-example coverage) — Task only on registry-d
     const frontMatterEnd = text.indexOf("\n---\n");
     const frontMatter = frontMatterEnd === -1 ? text : text.slice(0, frontMatterEnd);
     const toolsLine = (frontMatter.match(/^tools:\s*(.*)$/m) || [, ""])[1];
-    if (spawnCapable.has(path.basename(file, ".md"))) continue; // declared spawner — Task allowed
+    if (spawnCapable.has(path.basename(file, ".md"))) continue;
     assert.equal(
-      /\bTask\b/.test(toolsLine), false,
-      `${file} MUST NOT carry Task in its tools frontmatter unless its role spec is spawn_capable (Y-P8 / CN)`,
+      /\b(?:Agent|Task)(?:\([^)]*\))?/.test(toolsLine), false,
+      `${file} MUST NOT carry Agent/Task in tools unless registry-declared spawn_capable (Y-P8 / CN)`,
     );
   }
 

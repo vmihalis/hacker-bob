@@ -20,6 +20,13 @@ const {
 const {
   safeGovernanceContextForDomain,
 } = require("../governance-context.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("../envelope.js");
+const {
+  gradeToReportApprovalBlocker,
+} = require("../lifecycle-gates.js");
 const { wrapWriteTool } = require("./_write-base.js");
 
 function artifactRefsForBundle(bundle) {
@@ -37,6 +44,29 @@ function handler(args) {
   // upstream raises a structured ToolError with a precise pointer so the
   // caller can advance the missing stage and re-finalize.
   const bundle = resolveReportFinalizationHashes(args && args.target_domain);
+
+  // AgentCore rail-b (P1-3): the same GRADE -> REPORT human-approval blocker
+  // gateGradeToReport enforces at the bob_advance_session(to_state=REPORT) transition
+  // must also cover bob_finalize_report directly -- a session can reach REPORT and then
+  // have bob_finalize_report re-invoked later (e.g. after a report.md edit; this tool is
+  // explicitly append-only/re-finalizable, see its description below), a point in time the
+  // transition-time gate never re-checks. Inert unless BOB_AGENTCORE==="1"
+  // (gradeToReportApprovalBlocker's own first check); fails CLOSED with the identical
+  // structured blocker shape bob_advance_session surfaces.
+  const approvalBlockers = gradeToReportApprovalBlocker({ target_domain: bundle.target_domain });
+  if (approvalBlockers.length > 0) {
+    const first = approvalBlockers[0];
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `bob_finalize_report blocked: ${first.message || first.code}`,
+      {
+        blocked_by: first.blocked_by || first.code,
+        code: first.code || first.blocked_by,
+        target_domain: bundle.target_domain,
+      },
+      { remediation: typeof first.remediation === "string" ? first.remediation : null },
+    );
+  }
 
   // Append a ReportSnapshot row binding all five hashes. The snapshot is
   // hash-bound (snapshot_hash) and append-only (REPORT_SNAPSHOTS_MAX_RECORDS

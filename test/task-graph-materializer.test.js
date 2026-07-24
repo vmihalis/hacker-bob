@@ -30,6 +30,7 @@ const path = require("path");
 const {
   appendFrontierEvent,
   FRONTIER_EVENTS_MAX_RECORDS,
+  normalizeFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
   appendHypothesisProposal,
@@ -46,6 +47,7 @@ const {
   claimNodeId,
   hypothesisNodeId,
   materializeTaskGraph,
+  materializeTaskGraphEvents,
   readTaskGraph,
   summarizeTaskGraph,
   surfaceNodeId,
@@ -149,6 +151,82 @@ test("materializeTaskGraph on an empty ledger returns 0 nodes / 0 edges / stable
     // Persisted to disk.
     assert.equal(fs.existsSync(taskGraphPath(domain)), true);
   });
+});
+
+test("materializer ignores orphan, jumping, and stale transition rows during hostile replay", () => {
+  const domain = "x2-hostile-transition-replay.example.com";
+  const proposal = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-proposal",
+    kind: "observation.recorded",
+    ts: "2026-05-31T00:00:00.000Z",
+    payload: {
+      kind: "hypothesis_proposed",
+      proposal_id: "replay",
+      hypothesis_statement: "Replay must preserve the authoritative graph head.",
+      surface_refs: ["surface:replay"],
+    },
+  });
+  const forgedJump = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-forged-jump",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:01.000Z",
+    payload: {
+      node_id: "TG-H-replay",
+      from_state: "proposed",
+      to_state: "finalized",
+      contract_hash: "forged",
+    },
+  });
+  const orphan = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-orphan",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:02.000Z",
+    payload: {
+      node_id: "TG-H-orphan",
+      from_state: "proposed",
+      to_state: "contracted",
+    },
+  });
+  const valid = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-valid",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:03.000Z",
+    payload: {
+      node_id: "TG-H-replay",
+      from_state: "proposed",
+      to_state: "contracted",
+      contract_hash: "real",
+    },
+  });
+  const stale = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-stale",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:04.000Z",
+    payload: {
+      node_id: "TG-H-replay",
+      from_state: "proposed",
+      to_state: "abandoned",
+    },
+  });
+
+  const result = materializeTaskGraphEvents(
+    domain,
+    [proposal, forgedJump, orphan, valid, stale],
+    { now: new Date("2026-05-31T00:01:00.000Z") },
+  );
+  assert.equal(result.document.node_count, 1);
+  assert.equal(result.document.nodes[0].node_id, "TG-H-replay");
+  assert.equal(result.document.nodes[0].state, "contracted");
+  assert.equal(result.document.nodes[0].contract_hash, "real");
+  assert.deepEqual(
+    result.document.nodes[0].source_events,
+    ["FE-proposal", "FE-valid"],
+  );
 });
 
 // ─── Folds the 4 node kinds + their edges ────────────────────────────────
@@ -469,10 +547,6 @@ test("readTaskGraph view: raw supports kind/state/node_id filters", () => {
 // file with `count` already-canonical events and let the materializer read it
 // like any real session. This isolates the threshold logic from the appender's
 // throughput and keeps the test in the millisecond range.
-
-const {
-  normalizeFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
 
 function fabricateLargeLedger(domain, count) {
   const sessionRoot = path.dirname(frontierEventsJsonlPath(domain));

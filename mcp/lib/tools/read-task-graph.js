@@ -86,7 +86,7 @@ module.exports = Object.freeze({
   // Read access for orchestrator (which drives bob_schedule_graph_nodes) +
   // evaluator-shared (which renders briefs in X.5/X.8) + verifier (which
   // resolves the graph_context_hash for adjudication grounding).
-  role_bundles: ["orchestrator", "evaluator-shared", "verifier"],
+  role_bundles: ["orchestrator", "evaluator-shared", "evaluator-physical", "verifier"],
   mutating: false,
   global_preapproval: false,
   network_access: false,

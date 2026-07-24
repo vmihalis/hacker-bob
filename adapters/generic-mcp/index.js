@@ -2,8 +2,13 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
 const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
+const {
+  MCP_TOP_LEVEL_RUNTIME_FILES,
+} = require("../../scripts/lib/package-policy.js");
+const {
+  inspectMcpServerStatically,
+} = require("../../scripts/lib/static-runtime-inspection.js");
 const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
 
 const id = "generic-mcp";
@@ -109,18 +114,7 @@ function addCheck(checks, status, checkId, message, detail) {
   return check;
 }
 
-function loadServerCheck(serverPath) {
-  const script = [
-    "const server = require(process.argv[1]);",
-    "if (!Array.isArray(server.TOOLS) || server.TOOLS.length === 0) process.exit(2);",
-  ].join(" ");
-  return spawnSync(process.execPath, ["-e", script, serverPath], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function doctor({ targetAbs }) {
+function doctor({ targetAbs, sourceRoot = path.join(__dirname, "..", "..") }) {
   const checks = [];
   const expected = mergeConfig({ serverPath: path.join(targetAbs, "mcp", "server.js") });
   const mcpPath = path.join(targetAbs, ".mcp.json");
@@ -152,14 +146,27 @@ function doctor({ targetAbs }) {
   if (!fileExists(serverPath)) {
     addCheck(checks, "error", "generic_mcp_server", "mcp/server.js is missing");
   } else {
-    const loaded = loadServerCheck(serverPath);
-    if (loaded.status === 0) {
-      addCheck(checks, "ok", "generic_mcp_server", "mcp/server.js loads and exposes MCP tools");
+    const inspection = inspectMcpServerStatically({
+      sourceRoot,
+      serverPath,
+      runtimeManifest: MCP_TOP_LEVEL_RUNTIME_FILES,
+    });
+    if (inspection.ok) {
+      addCheck(
+        checks,
+        "ok",
+        "generic_mcp_server",
+        "mcp/server.js matches the runtime manifest and passes static CommonJS syntax validation",
+        inspection,
+      );
     } else {
-      addCheck(checks, "error", "generic_mcp_server", "mcp/server.js failed to load", {
-        exit_status: loaded.status,
-        stderr: (loaded.stderr || "").trim(),
-      });
+      addCheck(
+        checks,
+        "error",
+        "generic_mcp_server",
+        "mcp/server.js failed static manifest, digest, or syntax validation",
+        inspection,
+      );
     }
   }
 

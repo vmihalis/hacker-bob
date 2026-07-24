@@ -18,7 +18,7 @@ module.exports = Object.freeze({
     required: ["target_domain", "surface_id"],
   },
   handler: selectTechniquePacks,
-  role_bundles: ["evaluator-web", "orchestrator"],
+  role_bundles: ["evaluator-web", "evaluator-physical", "orchestrator"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

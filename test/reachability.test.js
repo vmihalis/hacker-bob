@@ -12,9 +12,53 @@ const {
   safeReadText,
 } = require("../mcp/lib/reachability.js");
 const {
+  VERIFICATION_ROUND_VALUES,
+} = require("../mcp/lib/constants.js");
+const {
+  capabilityBlockerCeilingViolations,
   computeReachabilityDisposition,
   normalizeReachabilityDispositionStamp,
 } = require("../mcp/lib/reachability-ceiling.js");
+const {
+  appendCandidateClaim,
+} = require("../mcp/lib/claims.js");
+const {
+  buildClaimFreeze,
+} = require("../mcp/lib/claim-freeze.js");
+const {
+  writeVerificationRound,
+} = require("../mcp/lib/verification-round-store.js");
+const {
+  writeEvidencePacks,
+} = require("../mcp/lib/evidence.js");
+const {
+  evaluateLifecycleTransition,
+} = require("../mcp/lib/lifecycle-gates.js");
+const {
+  initSession,
+} = require("../mcp/lib/session-state.js");
+const {
+  sessionDir,
+  techniqueAttemptsJsonlPath,
+  waveAssignmentsPath,
+} = require("../mcp/lib/paths.js");
+const {
+  writeFileAtomic,
+} = require("../mcp/lib/storage.js");
+const {
+  ensureHandoffSigningKey,
+  readHandoffSigningKey,
+} = require("../mcp/lib/handoff-signing-key.js");
+const {
+  loadWaveAssignments,
+} = require("../mcp/lib/assignments.js");
+const {
+  mergeWaveHandoffs,
+} = require("../mcp/lib/wave-handoff-store.js");
+const {
+  sha256Hex,
+  signHandoffProvenance,
+} = require("../mcp/lib/wave-handoff-contracts.js");
 
 function withRepo(files, fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bob-reachability-"));
@@ -41,6 +85,158 @@ function projectionFor(files) {
         nativeBuild: path.basename(rel) === "CMakeLists.txt",
       })),
   };
+}
+
+function withTempHome(fn) {
+  const previousHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-capability-ceiling-"));
+  process.env.HOME = home;
+  try {
+    return fn(home);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+const CAPABILITY_CEILING_SURFACE = "surface:signup-otp";
+
+function capabilityCeilingEvidencePack(findingId = "F-1") {
+  return {
+    finding_id: findingId,
+    sample_type: "authenticated replay",
+    sample_count: 1,
+    aggregate_counts: { affected_objects_sampled: 1 },
+    representative_samples: [{
+      request_ref: "http-audit:capability-ceiling",
+      endpoint: "/signup/verify",
+      auth_profile: "attacker",
+      status: 200,
+      observed_fields: ["signup_state"],
+      redacted_object_id: "signup_...001",
+    }],
+    sensitive_clusters: ["signup state"],
+    replay_summary: "Final replay confirmed the finding and preserved a reportable impact.",
+    redaction_notes: "Personal and authentication values omitted.",
+    report_snippet: "An attacker can preserve access to another user's signup flow state.",
+  };
+}
+
+function writeCapabilityCeilingFinalVerification(domain, severity = "high") {
+  for (const round of VERIFICATION_ROUND_VALUES) {
+    writeVerificationRound({
+      target_domain: domain,
+      round,
+      notes: null,
+      results: [{
+        finding_id: "F-1",
+        disposition: "confirmed",
+        severity,
+        reportable: true,
+        reasoning: "Fresh replay confirmed the reportable finding.",
+      }],
+    });
+  }
+  writeEvidencePacks({ target_domain: domain, packs: [capabilityCeilingEvidencePack("F-1")] });
+}
+
+function seedCapabilityCeilingFinding(domain, capabilityBlocker) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  const finding = {
+    id: "F-1",
+    title: "Signup step-up bypass remains reportable",
+    severity: "high",
+    cwe: "CWE-287",
+    endpoint: `https://${domain}/signup/verify`,
+    description: "The signup verification flow can be driven into a reportable inconsistent state.",
+    proof_of_concept: "Replay the verifier request sequence and observe preserved signup state.",
+    impact: "Attackers can preserve access to another user's signup flow state.",
+    surface_id: CAPABILITY_CEILING_SURFACE,
+  };
+  if (capabilityBlocker !== undefined) {
+    finding.capability_blocker_rationale = capabilityBlocker;
+  }
+  appendCandidateClaim({
+    target_domain: domain,
+    title: finding.title,
+    summary: finding.description,
+    severity: finding.severity,
+    status: "candidate",
+    surface_ids: [CAPABILITY_CEILING_SURFACE],
+    evidence_refs: [{ kind: "finding", finding_id: "F-1", content_hash: "0".repeat(64) }],
+    impact: finding.impact,
+    payload: { finding },
+  });
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-07-06T00:00:00.000Z") });
+  writeCapabilityCeilingFinalVerification(domain);
+}
+
+function capabilityCeilingGateBlockers(domain) {
+  return evaluateLifecycleTransition({
+    target_domain: domain,
+    from_state: "VERIFY",
+    to_state: "GRADE",
+  }).blockers.filter((blocker) => blocker.code === "self_capped_owned_capability");
+}
+
+function seedMergedBlockedHarnessRun(domain) {
+  const waveNumber = 1;
+  const agent = "a1";
+  const token = `capability-ceiling-token:${domain}`;
+  const assignment = {
+    agent,
+    surface_id: CAPABILITY_CEILING_SURFACE,
+    handoff_token_required: true,
+    handoff_token_sha256: sha256Hex(token),
+  };
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  writeFileAtomic(waveAssignmentsPath(domain, waveNumber), `${JSON.stringify({
+    wave_number: waveNumber,
+    handoff_tokens_required: true,
+    assignments: [assignment],
+  }, null, 2)}\n`);
+  ensureHandoffSigningKey(domain);
+  fs.appendFileSync(techniqueAttemptsJsonlPath(domain), `${JSON.stringify({
+    version: 1,
+    ts: "2026-07-06T00:00:01.000Z",
+    target_domain: domain,
+    surface_id: CAPABILITY_CEILING_SURFACE,
+    pack_id: "generic-rest-api",
+    status: "attempted",
+    outcome: "blocked",
+    evidence: "attempted signup step-up harness and recorded the concrete inadequacy",
+  })}\n`);
+  const persistedAssignment = loadWaveAssignments(domain, waveNumber).assignmentByAgent.get(agent);
+  const handoff = signHandoffProvenance({
+    target_domain: domain,
+    wave: "w1",
+    agent,
+    surface_id: CAPABILITY_CEILING_SURFACE,
+    surface_type: null,
+    surface_status: "partial",
+    summary: "Signup step-up harness was attempted and could not model the target's mailbox behavior.",
+    chain_notes: [],
+    blocked_harness_runs: [{
+      kind: "external_api",
+      harness: "temp-email mailbox polling for the signup verifier",
+      reason:
+        "The available temp email harness could not receive the provider-specific verifier message "
+        + "after repeated live attempts against the routed signup surface.",
+      needed_for: "Complete the signup email verification step for this finding surface.",
+    }],
+    blocked_prereqs: [],
+    bypass_attempts: [],
+    dead_ends: [],
+    waf_blocked_endpoints: [],
+    lead_surface_ids: [],
+    provenance: "verified",
+  }, readHandoffSigningKey(domain), { assignment: persistedAssignment });
+  writeFileAtomic(
+    path.join(sessionDir(domain), "handoff-w1-a1.json"),
+    `${JSON.stringify(handoff, null, 2)}\n`,
+  );
+  JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: waveNumber }));
 }
 
 test("classifyRepoReachability keeps local native parsers at AV:L / medium", () => withRepo({
@@ -325,6 +521,56 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
     },
   );
 });
+
+test("capability ceiling blocks WEB verify-to-grade when an owned self-cap has no escape", () => withTempHome(() => {
+  const domain = "capability-ceiling-owned-no-escape.example.com";
+  seedCapabilityCeilingFinding(domain, {
+    capability_id: "S3_stepup_registration",
+    rationale: "cannot read the OTP email for the signup verification step",
+  });
+
+  const blockers = capabilityCeilingGateBlockers(domain);
+
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].code, "self_capped_owned_capability");
+  assert.equal(blockers[0].finding_id, "F-1");
+  assert.equal(blockers[0].capability_id, "S3_stepup_registration");
+  assert.ok(blockers[0].owning_tools.includes("bob_temp_email"));
+}));
+
+test("capability ceiling allows WEB verify-to-grade when a substantive blocked harness escape exists", () => withTempHome(() => {
+  const domain = "capability-ceiling-owned-escaped.example.com";
+  seedCapabilityCeilingFinding(domain, {
+    capability_id: "S3_stepup_registration",
+    rationale: "cannot read the OTP email for the signup verification step",
+  });
+  seedMergedBlockedHarnessRun(domain);
+
+  const blockers = capabilityCeilingGateBlockers(domain);
+
+  assert.deepEqual(blockers, []);
+}));
+
+test("capability ceiling is inert for an unowned capability id", () => withTempHome(() => {
+  const domain = "capability-ceiling-unowned.example.com";
+  seedCapabilityCeilingFinding(domain, {
+    capability_id: "local_operator_only_mailbox_access",
+    rationale: "cannot read the operator-only mailbox for this target",
+  });
+
+  const result = capabilityBlockerCeilingViolations(domain);
+
+  assert.deepEqual(result.violations, []);
+}));
+
+test("capability ceiling is vacuous when the frozen finding has no capability-blocker rationale", () => withTempHome(() => {
+  const domain = "capability-ceiling-clean.example.com";
+  seedCapabilityCeilingFinding(domain, undefined);
+
+  const result = capabilityBlockerCeilingViolations(domain);
+
+  assert.deepEqual(result.violations, []);
+}));
 
 test("normalizeReachabilityDispositionStamp rejects impossible provenance combinations", () => {
   const base = {

@@ -15,13 +15,25 @@ const {
   loadWaveAssignments,
 } = require("./assignments.js");
 const {
+  attackSurfacePath,
   sessionDir,
 } = require("./paths.js");
 const {
   readJsonFile,
 } = require("./storage.js");
+const {
+  readResults: readAuthDifferentialResults,
+} = require("./auth-differential-runner.js");
+const {
+  readFindingDifferentialVerifiedSummary,
+} = require("./finding-differential-verifier.js");
+const {
+  edgesFromAttackSurface,
+} = require("./surface-graph-builder.js");
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
 
 const EVIDENCE_MODE = "evidence";
+const FANOUT_CHILD_MODE = "fanout_child";
 
 function cleanString(value) {
   if (typeof value !== "string") return "";
@@ -167,6 +179,8 @@ function evidenceTelemetryInput({
   };
 }
 const {
+  buildCoverageSummaryForSurface,
+  latestCoverageRecordsByKey,
   readCoverageRecordsFromJsonl,
 } = require("./coverage.js");
 const {
@@ -236,6 +250,404 @@ function summarizeFindingsForRun(marker) {
   return summary;
 }
 
+// NS-7 — evaluate the distinct nested-child stop attestation without touching
+// the wave AgentRun. Claude's supported topology is wave-root teammate -> one
+// anonymous synchronous child level. Every child deliberately reuses the root's
+// (wave, agent, surface) authority for MCP writes, so bob_finalize_agent_run or
+// a wave handoff from the child would race the root. The child instead emits an
+// MCP-cell-bound marker. Reconstruct the ROOT plan from coverage with this
+// run's rows removed (the plan as it existed before its children wrote), require
+// an exact emitted (cell_key, planning_key), then require terminal coverage from
+// the current run for that cell. This is attestation only: no handoff, no
+// finalize, and no AgentRun settlement/terminal mutation.
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function spawnPromptHasLine(prompt, label, value) {
+  if (typeof prompt !== "string" || !prompt) return false;
+  const pattern = new RegExp(
+    `(?:^|\\n)\\s*${escapeRegExp(label)}\\s*:\\s*${escapeRegExp(value)}\\s*(?:\\n|$)`,
+    "i",
+  );
+  return pattern.test(prompt);
+}
+
+function spawnPromptHasExactSingleLine(prompt, label, value) {
+  if (typeof prompt !== "string" || !prompt) return false;
+  const pattern = new RegExp(
+    `(?:^|\\n)\\s*${escapeRegExp(label)}\\s*:\\s*([^\\n]*)`,
+    "gi",
+  );
+  const values = [];
+  let match;
+  while ((match = pattern.exec(prompt)) !== null) values.push(match[1].trim());
+  return values.length === 1 && values[0] === String(value);
+}
+
+// NS-7 — read-only pre-spawn attestation for the host PreToolUse boundary.
+// A proposed leaf must be both (a) in the immutable dispatch-time plan rebuilt
+// without this root run's coverage and (b) still present in the LIVE plan with
+// current coverage. The intersection prevents an originally budget-pruned cell
+// from sliding into a later slot and prevents a completed cell from spawning
+// again. Exact single header lines reject conflicting duplicate fields.
+function evaluateNestedChildSpawn(rootContext, spawnPrompt) {
+  const targetDomain = cleanString(rootContext && rootContext.target_domain);
+  const wave = cleanString(rootContext && rootContext.wave);
+  const agent = cleanString(rootContext && rootContext.agent);
+  if (!targetDomain || !/^w[1-9][0-9]*$/.test(wave) || !/^a[1-9][0-9]*$/.test(agent)) {
+    return {
+      ok: false,
+      block_code: "child_root_context_mismatch",
+      reason: "Fanout root Domain/Wave/Agent context is missing or malformed.",
+    };
+  }
+  if (typeof spawnPrompt !== "string" || !spawnPrompt.trim()) {
+    return {
+      ok: false,
+      block_code: "child_spawn_context_mismatch",
+      reason: "Fanout child spawn prompt is missing.",
+    };
+  }
+  if (/(?:^|\n)\s*Handoff token\s*:/i.test(spawnPrompt)) {
+    return {
+      ok: false,
+      block_code: "child_handoff_token_leak",
+      reason: "Fanout child spawn prompt must not contain the root Handoff token.",
+    };
+  }
+
+  try {
+    const waveNumber = Number(wave.slice(1));
+    const assignments = loadWaveAssignments(targetDomain, waveNumber);
+    const assignment = assignments.assignmentByAgent.get(agent) || null;
+    if (!assignment || assignment.evaluator_agent !== FANOUT_ROLE_REGISTRY.root.subagent_type) {
+      return {
+        ok: false,
+        block_code: "child_assignment_mismatch",
+        reason: `Fanout child does not resolve to an ${FANOUT_ROLE_REGISTRY.root.subagent_type} root assignment.`,
+      };
+    }
+    const { readAttackSurfaceStrict } = require("./attack-surface.js");
+    const surface = (readAttackSurfaceStrict(targetDomain).document.surfaces || [])
+      .find((entry) => entry && entry.id === assignment.surface_id) || null;
+    if (!surface) {
+      return {
+        ok: false,
+        block_code: "child_plan_unavailable",
+        reason: "Fanout root assignment surface is absent from the attack-surface projection.",
+      };
+    }
+
+    const allRecords = readCoverageRecordsFromJsonl(targetDomain);
+    const baselineRecords = allRecords.filter((record) => !(
+      record.wave === wave
+      && record.agent === agent
+      && record.surface_id === assignment.surface_id
+    ));
+    const { buildChildFanoutPlanForSurface } = require("./assignment-brief.js");
+    const planFor = (records) => buildChildFanoutPlanForSurface({
+      domain: targetDomain,
+      surfaceObj: surface,
+      surfaceId: assignment.surface_id,
+      coverageSummary: buildCoverageSummaryForSurface(records, assignment.surface_id),
+      wave,
+    });
+    const baselinePlan = planFor(baselineRecords);
+    const livePlan = planFor(allRecords);
+    const exactPromptFor = (child) => child
+      && child.subagent_type === FANOUT_ROLE_REGISTRY.child.subagent_type
+      && child.remaining_depth === FANOUT_ROLE_REGISTRY.child.remaining_depth
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Nested child", "true")
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Domain", targetDomain)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Wave", wave)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Agent", agent)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "surface_id", child.surface_id)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "cell_key", child.cell_key)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "planning_key", child.planning_key)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "bug_class", child.bug_class)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "auth_profile", child.auth_profile || '""')
+      && spawnPromptHasExactSingleLine(spawnPrompt, "remaining_depth", "0");
+    const baselineChild = baselinePlan && Array.isArray(baselinePlan.children)
+      ? baselinePlan.children.find(exactPromptFor)
+      : null;
+    const liveChild = livePlan && Array.isArray(livePlan.children)
+      ? livePlan.children.find((child) => baselineChild
+        && child.cell_key === baselineChild.cell_key
+        && child.planning_key === baselineChild.planning_key
+        && exactPromptFor(child))
+      : null;
+    if (!baselineChild || !liveChild) {
+      return {
+        ok: false,
+        block_code: "child_cell_not_live_issued",
+        reason: "Fanout child prompt does not exactly match a cell present in both the dispatch and live MCP-issued plans.",
+      };
+    }
+    return {
+      ok: true,
+      block_code: null,
+      reason: `Fanout child ${liveChild.planning_key} is dispatch-issued and still live.`,
+      child: liveChild,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      block_code: "child_plan_unavailable",
+      reason: `Fanout child plan could not be attested: ${error.message || String(error)}`,
+    };
+  }
+}
+
+function evaluateNestedChildCompletion(marker, options = {}) {
+  const requiredStringFields = [
+    "target_domain",
+    "wave",
+    "agent",
+    "surface_id",
+    "cell_key",
+    "planning_key",
+    "bug_class",
+    "auth_profile",
+    "coverage_status",
+  ];
+  const missing = requiredStringFields.filter((field) => typeof marker?.[field] !== "string");
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "malformed_child_marker",
+      reason: `Nested child marker is missing string field(s): ${missing.join(", ")}`,
+      marker,
+    };
+  }
+  if (!cleanString(marker.target_domain) || !cleanString(marker.surface_id)
+      || !cleanString(marker.cell_key) || !cleanString(marker.planning_key)
+      || !cleanString(marker.bug_class)) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "malformed_child_marker",
+      reason: "Nested child marker contains an empty required identity field.",
+      marker,
+    };
+  }
+  if (!/^w[1-9][0-9]*$/.test(marker.wave) || !/^a[1-9][0-9]*$/.test(marker.agent)) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "malformed_child_marker",
+      reason: "Nested child marker wave/agent must look like positive wN/aN.",
+      marker,
+    };
+  }
+  if (!new Set(["tested", "blocked"]).has(marker.coverage_status)) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "nonterminal_child_coverage",
+      reason: "Nested child marker coverage_status must be terminal (tested or blocked).",
+      marker,
+    };
+  }
+
+  // Bind the self-reported marker to THIS subagent's host-owned transcript,
+  // not merely to a valid cell in the wave. SubagentStop supplies
+  // agent_transcript_path; its first user event is the immutable spawn prompt
+  // that the root constructed from the MCP-issued child. Requiring every exact
+  // tuple field plus remaining_depth:0 prevents a root echo, sibling marker, or
+  // stale cell marker from taking the no-settlement child path.
+  const spawnPrompt = typeof options.spawn_prompt === "string" ? options.spawn_prompt : "";
+  const spawnContextFields = [
+    ["Nested child", "true"],
+    ["Domain", marker.target_domain],
+    ["Wave", marker.wave],
+    ["Agent", marker.agent],
+    ["surface_id", marker.surface_id],
+    ["cell_key", marker.cell_key],
+    ["planning_key", marker.planning_key],
+    ["bug_class", marker.bug_class],
+    ["auth_profile", marker.auth_profile || '""'],
+    ["remaining_depth", "0"],
+  ];
+  const missingSpawnFields = spawnContextFields
+    .filter(([label, value]) => !spawnPromptHasLine(spawnPrompt, label, value))
+    .map(([label]) => label);
+  if (missingSpawnFields.length > 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_spawn_context_mismatch",
+      reason: `Nested child marker is not bound to its SubagentStop spawn context: ${missingSpawnFields.join(", ")}`,
+      marker,
+    };
+  }
+
+  let assignment;
+  let surface;
+  let baselineRecords;
+  let currentRecords;
+  let plan;
+  try {
+    const waveNumber = Number(marker.wave.slice(1));
+    const assignments = loadWaveAssignments(marker.target_domain, waveNumber);
+    assignment = assignments.assignmentByAgent.get(marker.agent) || null;
+    if (!assignment || assignment.surface_id !== marker.surface_id
+        || assignment.evaluator_agent !== FANOUT_ROLE_REGISTRY.root.subagent_type) {
+      return {
+        ok: false,
+        status: "blocked",
+        block_code: "child_assignment_mismatch",
+        reason: `Nested child marker does not resolve to an ${FANOUT_ROLE_REGISTRY.root.subagent_type} wave assignment.`,
+        marker,
+      };
+    }
+    const { readAttackSurfaceStrict } = require("./attack-surface.js");
+    const surfaces = readAttackSurfaceStrict(marker.target_domain).document.surfaces || [];
+    surface = surfaces.find((entry) => entry && entry.id === marker.surface_id) || null;
+    if (!surface) {
+      return {
+        ok: false,
+        status: "blocked",
+        block_code: "child_plan_unavailable",
+        reason: "Nested child marker surface is absent from the attack-surface projection.",
+        marker,
+      };
+    }
+    const allRecords = readCoverageRecordsFromJsonl(marker.target_domain);
+    baselineRecords = allRecords.filter((record) => !(
+      record.wave === marker.wave
+      && record.agent === marker.agent
+      && record.surface_id === marker.surface_id
+    ));
+    currentRecords = allRecords.filter((record) => (
+      record.wave === marker.wave
+      && record.agent === marker.agent
+      && record.surface_id === marker.surface_id
+    ));
+    const { buildChildFanoutPlanForSurface } = require("./assignment-brief.js");
+    plan = buildChildFanoutPlanForSurface({
+      domain: marker.target_domain,
+      surfaceObj: surface,
+      surfaceId: marker.surface_id,
+      coverageSummary: buildCoverageSummaryForSurface(baselineRecords, marker.surface_id),
+      wave: marker.wave,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_plan_unavailable",
+      reason: `Nested child plan could not be reconstructed: ${error.message || String(error)}`,
+      marker,
+    };
+  }
+
+  const child = plan && Array.isArray(plan.children)
+    ? plan.children.find((entry) => entry
+      && entry.cell_key === marker.cell_key
+      && entry.planning_key === marker.planning_key)
+    : null;
+  if (!child) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_cell_not_issued",
+      reason: "Nested child marker does not match a cell emitted by the reconstructed root plan.",
+      marker,
+    };
+  }
+  // NS-7 — bind completion to the registry-issued leaf role. A root-role
+  // marker is never accepted as a child even when every cell field matches.
+  if (child.subagent_type !== FANOUT_ROLE_REGISTRY.child.subagent_type
+      || child.surface_id !== marker.surface_id
+      || child.bug_class !== marker.bug_class
+      || (child.auth_profile || "") !== marker.auth_profile
+      || child.remaining_depth !== 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_cell_identity_mismatch",
+      reason: "Nested child marker fields do not match the MCP-issued leaf cell.",
+      marker,
+    };
+  }
+
+  const latest = Array.from(latestCoverageRecordsByKey(currentRecords).values());
+  const matching = latest.filter((record) => (
+    record.bug_class === child.bug_class.toLowerCase()
+    && (record.auth_profile || "") === (child.auth_profile || "")
+  ));
+  const hasBlocked = matching.some((record) => record.status === "blocked");
+  const hasUnfinished = matching.some((record) => ["promising", "needs_auth", "requeue"].includes(record.status));
+  const hasTested = matching.some((record) => record.status === "tested");
+  const terminalStatus = hasBlocked ? "blocked" : (hasTested && !hasUnfinished ? "tested" : null);
+  if (!terminalStatus) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "missing_child_terminal_coverage",
+      reason: "Nested child has no terminal current-run coverage for its issued bug_class/auth_profile cell.",
+      marker,
+      child,
+    };
+  }
+  if (marker.coverage_status !== terminalStatus) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_coverage_status_mismatch",
+      reason: `Nested child marker claims ${marker.coverage_status}, but durable coverage resolves to ${terminalStatus}.`,
+      marker,
+      child,
+    };
+  }
+  return {
+    ok: true,
+    status: "allowed",
+    block_code: null,
+    reason: `Nested child cell ${marker.planning_key} accepted with terminal ${terminalStatus} coverage.`,
+    marker,
+    child,
+    coverage: {
+      total: matching.length,
+      by_status: matching.reduce((counts, record) => {
+        counts[record.status] = (counts[record.status] || 0) + 1;
+        return counts;
+      }, {}),
+    },
+  };
+}
+
+function nestedChildTelemetryInput(evaluation, {
+  transcript_path: transcriptPath = null,
+  now = new Date(),
+} = {}) {
+  const marker = evaluation && evaluation.marker ? evaluation.marker : null;
+  return {
+    runType: FANOUT_CHILD_MODE,
+    status: evaluation && evaluation.ok ? "allowed" : "blocked",
+    block_code: evaluation && evaluation.block_code ? evaluation.block_code : null,
+    target_domain: marker && marker.target_domain,
+    wave: marker && marker.wave,
+    agent: marker && marker.agent,
+    surface_id: marker && marker.surface_id,
+    transcript_path: transcriptPath,
+    handoff: {
+      present: false,
+      valid: true,
+      provenance: "root_owned",
+      surface_status: "child_cell",
+      summary_present: false,
+      chain_notes_count: 0,
+    },
+    coverage: evaluation && evaluation.coverage ? evaluation.coverage : { total: 0, by_status: {} },
+    findings: { count: 0 },
+    telemetry_source: "fanout-child-stop",
+    now,
+  };
+}
+
 function evaluateOssCompletionCoverage(marker, assignment, handoff) {
   if (!assignment || !assignment.capability_pack || !assignment.capability_pack.startsWith("oss_")) {
     return null;
@@ -254,6 +666,205 @@ function evaluateOssCompletionCoverage(marker, assignment, handoff) {
     marker,
     handoff: null,
   };
+}
+
+function assignmentWithAuthDifferentialFlag(assignmentsInfo, marker) {
+  const assignment = assignmentsInfo.assignmentByAgent.get(marker.agent);
+  if (!assignment || assignment.auth_differential_required === true) return assignment;
+  try {
+    const raw = readJsonFile(assignmentsInfo.assignmentsPath, { label: "wave assignments" });
+    const rawAssignments = raw && Array.isArray(raw.assignments) ? raw.assignments : [];
+    const rawAssignment = rawAssignments.find((entry) => (
+      entry
+      && entry.agent === marker.agent
+      && entry.surface_id === marker.surface_id
+      && entry.auth_differential_required === true
+    ));
+    if (rawAssignment) return { ...assignment, auth_differential_required: true };
+  } catch {}
+  return assignment;
+}
+
+function frozenIdBearingEndpoints(assignment) {
+  // The MCP-owned, route-FROZEN id-bearing endpoint set (already in {id}-template form),
+  // carried onto the immutable wave assignment from surface-routes.json. NEVER re-derived
+  // from agent-writable attack_surface.json, so a real cross-tenant flip cannot be
+  // relabelled onto a foreign surface by editing scratch after the sweep.
+  const eps = assignment && Array.isArray(assignment.id_bearing_endpoints) ? assignment.id_bearing_endpoints : [];
+  return new Set(eps.filter((e) => typeof e === "string" && e));
+}
+
+// Mirrors claims.js exploitTargetHostInScope (the grade-time gate's B3 host check): the cited
+// URL's host must be the target domain or a subdomain of it. An unparseable URL is out of scope
+// (false). Kept in lockstep with the gate so finalize and grade agree on which effective_url a
+// flip row was actually fetched under — never re-implement one without the other.
+function finalizeHostInScope(targetUrl, domain) {
+  let host;
+  try {
+    host = new URL(targetUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const scope = String(domain).toLowerCase();
+  return host === scope || host.endsWith(`.${scope}`);
+}
+
+function rowHasTwoProfileSweep(row) {
+  // Executed cross-tenant coverage requires a per-endpoint FLIP (MCP-computed): one VALIDATED
+  // principal ACCESSED the object (2xx) while a DISTINCT VALIDATED principal was DENIED it
+  // (4xx) — the negative control flipped. Same-account-twice (both 2xx, no denial) and
+  // [real, junk] (junk never validated) both fail to flip; a genuinely-secure surface
+  // (owner-in/attacker-out) does flip and correctly earns completion.
+  return !!(row && row.cross_tenant_flip === true);
+}
+
+function hasAuthDifferentialSweepForSurface(marker, assignment) {
+  const endpoints = frozenIdBearingEndpoints(assignment);
+  if (endpoints.size === 0) return false;
+  const results = readAuthDifferentialResults(marker.target_domain);
+  const rows = results && Array.isArray(results.per_endpoint) ? results.per_endpoint : [];
+  const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
+  // Cycle B keyed layer: resolve the row verifier ONCE (a disk key read), then require every
+  // credited flip row to carry a VERIFYING row_mac under the auth-differential context. rowMacVerifies
+  // wraps assertRowMac to a boolean (STRICT — an unsigned/tampered/forged/cross-context row throws
+  // -> false), checked BEFORE rowHasTwoProfileSweep so a Bash-forged flip never clears the id-bearing
+  // surface at finalize. Fail closed: a pre-keypair session's null verifier rejects any present row_mac.
+  const { assertRowMac, AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("./offensive-row-mac.js");
+  const { resolveRowVerifierSafely } = require("./handoff-signing-key.js");
+  const rowVerifier = resolveRowVerifierSafely(marker.target_domain);
+  const rowMacVerifies = (row) => {
+    try {
+      assertRowMac(AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT, row, rowVerifier);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // B3 base_url-relabel defense (mirrors the grade-time gate in claims.js): the runner stamps
+  // effective_url = joinUrl(base_url, endpoint) — the URL actually fetched — into the row_mac
+  // preimage, so a MAC-verified row's effective_url is the real tested URL. The signed `endpoint`
+  // alone templatizes to a frozen crown path even when the arm was fetched under a relabeled
+  // base_url: an OFF-SCOPE host, or a benign PATH PREFIX that hid an easy same-host target. When
+  // effective_url is present, additionally require it to resolve to an in-scope host AND to
+  // templatize to one of THIS surface's frozen id-bearing endpoints; a mismatch is not credited
+  // (fail closed). An ABSENT field is a legacy/pre-urlbind row: skip only this extra check
+  // (back-compat) — the MAC, flip, surface_id-bind, and endpoint-template checks stand.
+  const effectiveUrlResolves = (row) => {
+    if (typeof row.effective_url !== "string" || !row.effective_url) return true;
+    if (!finalizeHostInScope(row.effective_url, marker.target_domain)) return false;
+    const effectiveTemplate = templatizeIdBearingEndpoint(row.effective_url);
+    return effectiveTemplate !== null && endpoints.has(effectiveTemplate);
+  };
+  return rows.some((row) => (
+    row
+    && typeof row.endpoint === "string"
+    // Bind by surface_id: the sweep must be stamped for THIS surface AND hit one of its
+    // id-bearing endpoints (matched in TEMPLATE form) — no bleed from another surface.
+    && row.surface_id === marker.surface_id
+    && endpoints.has(templatizeIdBearingEndpoint(row.endpoint))
+    && rowMacVerifies(row)
+    && effectiveUrlResolves(row)
+    && rowHasTwoProfileSweep(row)
+  ));
+}
+
+// Mirrors claims.js ID_BEARING_ACCESS_CONTROL_CWES (the grade-time gate's B1 access-control set).
+// An id-bearing crown's obligation is a CROSS-TENANT object-authorization test, so its clearing
+// EXECUTED finding must be an access-control class. A same-surface executed SSRF/XSS proves impact
+// but NOT that object-level authorization was ever probed, so it does not discharge the crown
+// obligation (the auth-differential FLIP still does). bug_class is not persisted on the finding
+// record; the CANONICAL CWE is (catalog-canonical on read-back), so class is resolved from the CWE
+// alone. Only catalog CWEs reach here — a novel/non-catalog CWE degrades to null on read-back — so
+// an unrecognized class HOLDS the surface as an honest partial, the SAFE (fail-toward-HOLD)
+// direction. Kept in lockstep with the gate so finalize cannot settle a crown grade would hold.
+const ID_BEARING_ACCESS_CONTROL_CWES = new Set([
+  "CWE-639", // Authorization Bypass Through User-Controlled Key (IDOR)
+  "CWE-284", // Improper Access Control
+  "CWE-285", // Improper Authorization
+  "CWE-862", // Missing Authorization
+  "CWE-863", // Incorrect Authorization
+]);
+
+// The subset of recorded finding ids whose CANONICAL CWE is an access-control class, resolved from
+// the persisted claims. Fails CLOSED: an unreadable claims ledger yields an empty set, so no
+// finding-differential clears an id-bearing surface (the safe HOLD direction) — the auth-diff sweep
+// path remains the independent, authoritative clearing lever.
+function accessControlFindingIdsForDomain(domain) {
+  const ids = new Set();
+  try {
+    for (const finding of findingPayloadsFromClaims(domain)) {
+      if (!finding || !finding.id) continue;
+      if (typeof finding.cwe === "string" && ID_BEARING_ACCESS_CONTROL_CWES.has(finding.cwe)) {
+        ids.add(finding.id);
+      }
+    }
+  } catch { /* unreadable claims — no finding-differential clears (safe HOLD direction) */ }
+  return ids;
+}
+
+function hasVerifiedFindingDifferentialForSurface(marker) {
+  const summary = readFindingDifferentialVerifiedSummary(marker.target_domain);
+  const verified = summary && summary.verified_by_finding;
+  if (verified == null || typeof verified !== "object" || Array.isArray(verified)) return false;
+  // B1 mirror (id-bearing independence): a verified finding-differential clears an id-bearing
+  // crown ONLY when the finding is an access-control class — a same-surface executed SSRF/XSS
+  // never discharges the cross-tenant object-authorization obligation. verified_by_finding is keyed
+  // by finding_id (the same id space as findingPayloadsFromClaims), so the class is looked up by
+  // that key. Consistent with the grade-time gate's hasAccessControlExecuted.
+  const accessControlFindingIds = accessControlFindingIdsForDomain(marker.target_domain);
+  return Object.entries(verified).some(([findingId, entry]) => (
+    entry
+    && entry.surface_id === marker.surface_id
+    && accessControlFindingIds.has(findingId)
+  ));
+}
+
+function authDifferentialCompletionBlock(marker, { needsSecondPrincipal = false } = {}) {
+  const reason = needsSecondPrincipal
+    ? `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete: this run has <2 distinct authenticated principals, so a cross-tenant flip is not runnable. Provision a 2nd account and run bob_run_auth_differential, OR mark the surface partial (an honest "needs a 2nd principal to test cross-tenant IDOR" block) — do NOT mark it complete. A coverage row / bypass_attempt narrative does NOT clear an id-bearing surface.`
+    : `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete without an executed auth-differential sweep (≥1 endpoint across ≥2 profiles) or a signed IDOR/finding-differential confirm bound to the surface. If the cross-tenant test cannot be run, mark the surface partial with a blocked_prereqs/blocked_harness_runs entry naming the un-run test — do NOT mark it complete.`;
+  return {
+    ok: false,
+    status: "blocked",
+    block_code: "missing_auth_differential",
+    reason,
+    marker,
+    handoff: null,
+  };
+}
+
+function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff) {
+  if (!assignment) return null;
+  // Fire on id_bearing (detector result), NOT only auth_differential_required, so a
+  // single-account (<2-principal) id-bearing surface is caught HERE at finalize with the
+  // correct 'mark partial' guidance — consistent with the grade gate (which also keys on
+  // id_bearing). Otherwise finalize permits it and only grade rejects it, late and confusing.
+  const authDiffRequired = assignment.auth_differential_required === true;
+  const isIdBearing = assignment.id_bearing === true || authDiffRequired;
+  if (!isIdBearing) return null;
+  if (!handoff || handoff.surface_status !== "complete") return null;
+
+  let ledgerReadFailed = false;
+  let hasLedgerEvidence = false;
+
+  try {
+    hasLedgerEvidence = hasAuthDifferentialSweepForSurface(marker, assignment) || hasLedgerEvidence;
+  } catch {
+    ledgerReadFailed = true;
+  }
+  try {
+    hasLedgerEvidence = hasVerifiedFindingDifferentialForSurface(marker) || hasLedgerEvidence;
+  } catch {
+    ledgerReadFailed = true;
+  }
+
+  // AD1: an id-bearing surface earns complete ONLY on executed ledger evidence (a
+  // distinct-principal sweep or a signed finding-differential). A genuinely-blocked
+  // surface must be recorded PARTIAL — the grade-time gate rejects a complete surface
+  // backed only by a blocker, so accepting it here would deadlock the run at grade.
+  if (!ledgerReadFailed && hasLedgerEvidence) return null;
+  // With <2 distinct principals a cross-tenant flip is not runnable — guide to partial.
+  return authDifferentialCompletionBlock(marker, { needsSecondPrincipal: isIdBearing && !authDiffRequired });
 }
 
 function normalizeFinalizeArgs(args) {
@@ -347,7 +958,7 @@ function evaluateAgentCompletion(args) {
     };
   }
 
-  const assignment = waveAssignments.assignmentByAgent.get(marker.agent);
+  const assignment = assignmentWithAuthDifferentialFlag(waveAssignments, marker);
   const techniqueAttemptBlock = evaluateTechniqueAttemptRequirement(marker, assignment);
   if (techniqueAttemptBlock) {
     return {
@@ -360,6 +971,14 @@ function evaluateAgentCompletion(args) {
   if (ossCoverageBlock) {
     return {
       ...ossCoverageBlock,
+      handoff: handoffTelemetry(handoff),
+    };
+  }
+
+  const authDiffBlock = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+  if (authDiffBlock) {
+    return {
+      ...authDiffBlock,
       handoff: handoffTelemetry(handoff),
     };
   }
@@ -402,6 +1021,13 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // builds it directly because evidence runs have no wave/agent and skip the
   // structured-handoff evaluation path). Detect that shape by the runType
   // field and pass it through to the recorders unchanged.
+  if (evaluation && evaluation.runType === FANOUT_CHILD_MODE) {
+    // A child completion is recorded as tool-invocation telemetry only. Do not
+    // emit evaluator_stopped: that pipeline event denotes the wave root and
+    // would make an accepted child look like premature root settlement.
+    safeRecordToolInvocationTelemetry(evaluation);
+    return evaluation;
+  }
   if (evaluation && evaluation.runType === "evidence") {
     safeRecordToolInvocationTelemetry(evaluation);
     safeRecordEvaluatorStoppedPipelineEvent(
@@ -454,16 +1080,21 @@ function finalizeAgentRun(args) {
 
 module.exports = {
   EVIDENCE_MODE,
+  FANOUT_CHILD_MODE,
   evaluateEvidenceCompletion,
   evaluateAgentCompletion,
+  evaluateAuthDifferentialCompletionCoverage,
   evaluateTechniqueAttemptRequirement,
   evidenceMarkerValidationError,
   evidenceTelemetryInput,
+  evaluateNestedChildCompletion,
+  evaluateNestedChildSpawn,
   finalizeAgentCompletion,
   finalizeAgentRun,
   handoffTelemetry,
   isEvidenceMarker,
   markerMode,
+  nestedChildTelemetryInput,
   recordAgentCompletionTelemetry,
   summarizeCoverageForRun,
   summarizeFindingsForRun,

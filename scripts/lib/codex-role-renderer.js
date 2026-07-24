@@ -141,7 +141,7 @@ function codexLaunchTemplates() {
     ].join("\n"),
     "{{SPAWN_EVALUATOR_AGENT}}": [
       "```text",
-      `For each assignment, use Codex spawn_agent for the evaluator family chosen by the MCP capability router (\`assignment.evaluator_agent\` from wave-start result.data.assignments[] — one of evaluator-agent or any of the per-pack evaluators listed in the smart-contract pack catalogue: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}).`,
+      `For each assignment, use Codex spawn_agent for the evaluator family chosen by the MCP capability router (\`assignment.evaluator_agent\` from wave-start result.data.assignments[] — one of evaluator-agent or a registered evaluator role: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}). A registered role is not dispatch authority: spawn it only when the assignment came from a dispatchable capability pack.`,
       "- agent_type: \"worker\"",
       "- message: include the compact run header below plus the full contract for `assignment.evaluator_agent` from Codex Worker Role Contracts.",
       "- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Evaluator agent: [assignment.evaluator_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].",

@@ -120,6 +120,9 @@ function validateOneOf(value, schema, pathParts) {
 function validateObject(value, schema, pathParts) {
   const properties = schema.properties || {};
   const required = Array.isArray(schema.required) ? schema.required : [];
+  const dependentRequired = schema.dependentRequired && typeof schema.dependentRequired === "object"
+    ? schema.dependentRequired
+    : {};
   const additionalProperties = hasOwn(schema, "additionalProperties")
     ? schema.additionalProperties
     : false;
@@ -130,6 +133,19 @@ function validateObject(value, schema, pathParts) {
     // per-property type check later enforces non-null when the schema disallows it.
     if (!hasOwn(value, key)) {
       throw new Error(`${formatPath([...pathParts, key])} is required`);
+    }
+  }
+
+  for (const [key, dependencies] of Object.entries(dependentRequired)) {
+    if (!hasOwn(value, key) || !Array.isArray(dependencies)) {
+      continue;
+    }
+    for (const dependency of dependencies) {
+      if (!hasOwn(value, dependency)) {
+        throw new Error(
+          `${formatPath([...pathParts, dependency])} is required when ${formatPath([...pathParts, key])} is provided`,
+        );
+      }
     }
   }
 

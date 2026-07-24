@@ -168,6 +168,48 @@ function loadOobConfig(env = process.env) {
 
 const OOB_CONFIG = loadOobConfig();
 
+// Single-source remediation guidance for each inert (fail-closed) reason code. The
+// machine `reason` code is preserved verbatim by callers (the offensive gates key on
+// it); this is an ADDITIVE human `hint` that names exactly which env vars an operator
+// must set. It never echoes a value — the config values are read from the frozen
+// module-load env, never surfaced here.
+function oobConfigHint(reason) {
+  switch (reason) {
+    case "oob_sink_not_configured":
+      return "Set BOB_OOB_HOST (the constant public OOB sink host) and BOB_OOB_POLL_URL "
+        + "(the HTTPS poll API for that sink) — both are REQUIRED. Also set "
+        + "BOB_OOB_SELF_EGRESS_IP, REQUIRED for sound HTTP self-hit attribution: without "
+        + "it an HTTP callback cannot be proven target-caused (the agent could self-request "
+        + "the token), so the finding is capped to a lead.";
+    case "oob_host_internal":
+      return "BOB_OOB_HOST is an internal/private/link-local/loopback host; point it at a "
+        + "public, registrable OOB sink domain.";
+    case "oob_poll_url_not_https":
+      return "BOB_OOB_POLL_URL must be an https:// URL (the Bob->sink poll channel is HTTPS-only).";
+    case "oob_poll_host_internal":
+      return "BOB_OOB_POLL_URL host is internal/private/link-local/loopback; point it at the "
+        + "public HTTPS poll endpoint of your OOB sink.";
+    case "oob_config_invalid":
+      return "BOB_OOB_HOST / BOB_OOB_POLL_URL failed validation (unparseable poll URL or a "
+        + "non-scope host); verify both values.";
+    default:
+      return "OOB sink configuration is incomplete; set BOB_OOB_HOST and BOB_OOB_POLL_URL "
+        + "(and BOB_OOB_SELF_EGRESS_IP for sound attribution).";
+  }
+}
+
+// Presence-ONLY map (booleans, never the values) of the three OOB env vars — so an
+// operator/inert response can report which knobs are unset without ever echoing a
+// secret or the (non-secret) sink host.
+function oobEnvPresence(env = process.env) {
+  const present = (v) => typeof v === "string" && v.trim() !== "";
+  return {
+    BOB_OOB_HOST: present(env.BOB_OOB_HOST),
+    BOB_OOB_POLL_URL: present(env.BOB_OOB_POLL_URL),
+    BOB_OOB_SELF_EGRESS_IP: present(env.BOB_OOB_SELF_EGRESS_IP),
+  };
+}
+
 // ── small helpers ────────────────────────────────────────────────────────────
 
 function rejectInvalidArguments(message) {
@@ -393,7 +435,12 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
   normalizeOracleKind(args.oracle_kind);
 
   if (!config.configured) {
-    return notConfirmed("blocked_by_infra", config.reason || "oob_sink_not_configured", { minted: false });
+    const reason = config.reason || "oob_sink_not_configured";
+    return notConfirmed("blocked_by_infra", reason, {
+      minted: false,
+      hint: oobConfigHint(reason),
+      env_present: oobEnvPresence(),
+    });
   }
 
   // Resolve the IN-SCOPE injection endpoint server-side from the routed surface.
@@ -497,7 +544,12 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   const expect = normalizeExpect(args.expect);
 
   if (!config.configured) {
-    return notConfirmed("blocked_by_infra", config.reason || "oob_sink_not_configured", { available: false });
+    const reason = config.reason || "oob_sink_not_configured";
+    return notConfirmed("blocked_by_infra", reason, {
+      available: false,
+      hint: oobConfigHint(reason),
+      env_present: oobEnvPresence(),
+    });
   }
 
   const { binding } = resolveBinding(domain, tokenHandle);
@@ -669,6 +721,17 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       return notConfirmed("blocked_by_design", "self_hit_suspected");
     }
     sourceDistinct = !sameEgress;
+    // RESIDUAL (OPEN, deferred — not closed here): distinctness from the SINGLE configured
+    // selfEgressIp does NOT soundly exclude an agent self-hit. A callback from a DIFFERENT
+    // member of Bob's NAT egress pool, or an edge-collapsed tunnel, can read as distinct and
+    // set attributionEstablished=true with no real target-causation. The sound close is the
+    // offensive-sandbox signer-UID/network-isolation prerequisite (physically separate the
+    // signer so a self-hit is impossible); this residual is DEFERRED to it. A name-derived,
+    // single-ipify-probe, or tunnel-header attribution fix is UNSOUND — a single probe cannot
+    // enumerate a NAT pool — and would mint a false verified_pass, so it MUST NOT be attempted
+    // in-repo. Blast radius stays bounded meanwhile: OOB rows carry a fixed-MEDIUM
+    // demonstrated_severity ceiling and the finding-differential gate caps an
+    // attribution-unestablished OOB positive to a LEAD.
     attributionEstablished = true;
   }
 
@@ -792,6 +855,79 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   };
 }
 
+// ── oob smoke / readiness check (operator-owned; NON-signing, NON-provisioning) ─
+//
+// Validate an OPERATOR-configured sink in one call WITHOUT self-provisioning and
+// WITHOUT any audit-graded write. Unconfigured -> names exactly which env vars to
+// set (no session, signs nothing, writes nothing). Configured -> mints a SAMPLE
+// token (NO binding write, NO ledger append, NO cap consumption), asserts the exact
+// payload forms mint would return, and does ONE read-only round-trip probe by
+// REUSING fetchSinkInteractions (inheriting blockInternalHosts:true,
+// followRedirects:false, no session egress proxy, and the frozen module-load config).
+// It NEVER calls buildAndSignOffensiveRow / appendOobTokenRecordHardened /
+// withSessionLock, so it is fenced out of the signing + binding paths entirely.
+async function oobSmoke(args = {}, { config = OOB_CONFIG, interaction_source = null } = {}) {
+  if (!config.configured) {
+    const reason = config.reason || "oob_sink_not_configured";
+    return {
+      ready: false,
+      configured: false,
+      reason,
+      hint: oobConfigHint(reason),
+      env_present: oobEnvPresence(),
+    };
+  }
+
+  // A SAMPLE token — same shape as a real nonce, but never bound and never counted.
+  const token = mintToken("oobsmoke");
+  // Build the payload forms EXACTLY as oobMint does, so the operator can confirm the
+  // shapes the agent would inject before relying on the sink.
+  const payloadDns = `${token}.${config.host}`;
+  const payloadHttp = `http://${config.host}/${token}`;
+  const payloadFormsOk =
+    payloadDns.endsWith(`.${config.host}`) &&
+    payloadHttp.startsWith(`http://${config.host}/`) &&
+    payloadHttp.endsWith(`/${token}`);
+
+  let parsed;
+  try {
+    parsed = await fetchSinkInteractions(config, token, interaction_source);
+  } catch {
+    return {
+      ready: false,
+      configured: true,
+      sink_reachable: false,
+      reason: "sink_unreachable",
+      hint: "poll URL set but the sink did not round-trip; verify BOB_OOB_POLL_URL and that the daemon is reachable over HTTPS",
+    };
+  }
+
+  // Success requires the sink to expose a parseable interactions array (the shape
+  // poll relies on). A reachable-but-malformed response is not ready.
+  if (!parsed || !Array.isArray(parsed.interactions)) {
+    return {
+      ready: false,
+      configured: true,
+      sink_reachable: true,
+      payload_forms_ok: payloadFormsOk,
+      reason: "sink_response_malformed",
+      hint: "the sink round-tripped but its response did not expose an `interactions` array; verify the poll daemon returns the expected JSON shape",
+    };
+  }
+
+  const selfEgressConfigured = !!config.selfEgressIp;
+  return {
+    ready: true,
+    configured: true,
+    sink_reachable: true,
+    payload_forms_ok: payloadFormsOk,
+    self_egress_configured: selfEgressConfigured,
+    note: selfEgressConfigured
+      ? "OOB sink round-trips; BOB_OOB_SELF_EGRESS_IP is set (HTTP self-hit attribution can be established)."
+      : "OOB sink round-trips; recommend setting BOB_OOB_SELF_EGRESS_IP for sound HTTP self-hit attribution — unset, HTTP positives cannot be proven target-caused and are capped to a lead.",
+  };
+}
+
 module.exports = {
   MINT_TOOL_ID,
   POLL_TOOL_ID,
@@ -799,6 +935,11 @@ module.exports = {
   OOB_METHODS,
   oobMint,
   oobPoll,
+  // Operator-owned readiness check + its single-source remediation hint (env/source
+  // injectable, matching the mint/poll test seams). oobSmoke performs NO audit-graded
+  // write and mints NO binding — validate/probe only, never self-provision.
+  oobSmoke,
+  oobConfigHint,
   // Exported for unit tests (env-injectable; no live sink / no live target).
   loadOobConfig,
   readOobTokenRecords,

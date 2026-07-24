@@ -219,9 +219,9 @@ test("DEFAULT_CAPABILITY_PACK_ID is web", () => {
   assert.equal(DEFAULT_CAPABILITY_PACK_ID, "web");
 });
 
-test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is keyed on every shipped capability pack", () => {
-  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
-  for (const packId of Object.keys(CAPABILITY_PACKS)) {
+test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is keyed on every dispatchable capability pack", () => {
+  const { dispatchableCapabilityPacks } = require("../mcp/lib/capability-packs.js");
+  for (const packId of dispatchableCapabilityPacks().map((pack) => pack.id)) {
     assert.ok(
       Object.prototype.hasOwnProperty.call(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK, packId),
       `EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK missing key for ${packId}`,
@@ -237,20 +237,34 @@ function assertBundleListClosed(bundles, label) {
   assert.deepEqual(dead, [], `${label}: dead role bundles: ${dead.join(", ")}`);
 }
 
-test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is a faithful projection of CAPABILITY_PACKS[*].role_bundles", () => {
-  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK faithfully projects dispatchable packs only", () => {
+  const {
+    CAPABILITY_PACKS,
+    PHYSICAL_CAPABILITY_PACK,
+    dispatchableCapabilityPacks,
+  } = require("../mcp/lib/capability-packs.js");
+  const dispatchablePacks = dispatchableCapabilityPacks();
   assert.deepEqual(
     Object.keys(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK).sort(),
-    Object.keys(CAPABILITY_PACKS).sort(),
-    "derived map key set must equal CAPABILITY_PACKS key set",
+    dispatchablePacks.map((pack) => pack.id).sort(),
+    "derived map key set must equal the dispatchable capability-pack key set",
   );
-  for (const [packId, pack] of Object.entries(CAPABILITY_PACKS)) {
+  for (const pack of dispatchablePacks) {
+    const packId = pack.id;
     assert.deepEqual(
       EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK[packId],
       pack.role_bundles,
       `derived bundles for ${packId} must equal CAPABILITY_PACKS.${packId}.role_bundles`,
     );
   }
+  assert.equal(CAPABILITY_PACKS.physical, PHYSICAL_CAPABILITY_PACK);
+  assert.equal(PHYSICAL_CAPABILITY_PACK.dispatchable, false);
+  assert.deepEqual(PHYSICAL_CAPABILITY_PACK.role_bundles, ["evaluator-physical"]);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK, "physical"),
+    false,
+    "a registered inactive pack must not mint evaluator role/tool authority",
+  );
 });
 
 // CR-1 closure: keys existing is not enough — every VALUE (each derived role

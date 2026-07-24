@@ -275,6 +275,10 @@ function normalizeSpawnedChildren(value) {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].subagent_type must be at most 100 characters`);
     }
     const child = { subagent_type: subagentType };
+    // Legacy signed handoffs may predate cell-bound NS-7 reporting, so the
+    // storage normalizer keeps cell_key optional on READ. New MCP writes require
+    // it in the tool schema and assertSpawnFanoutWithinBudget rejects a missing
+    // or unissued key before persistence.
     if (entry.cell_key != null) {
       if (typeof entry.cell_key !== "string" || entry.cell_key.length > 300) {
         throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].cell_key must be a string of at most 300 characters`);

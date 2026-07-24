@@ -231,7 +231,7 @@ function renderEvaluateCommand() {
     "description: Run or resume a Hacker Bob bug bounty evaluate.",
     "allowed-tools:",
     ...allowedTools.map((tool) => `  - ${tool}`),
-    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
+    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
     "---",
     "Run or resume a Hacker Bob bug bounty evaluate.",
     "",
@@ -886,7 +886,12 @@ function removeSettingsConfig(targetAbs, result, helpers) {
 
   if (isPlainObject(next.permissions) && Array.isArray(next.permissions.allow)) {
     const bobPermissions = new Set([
-      ...requiredBobMcpPermissions(bobSettings),
+      // Installation merges every canonical primary tool permission, including
+      // tools that deliberately require per-call approval rather than global
+      // preapproval. Uninstall must derive the same registry-complete surface;
+      // using defaultClaudeSettings() alone leaves non-preapproved network and
+      // browser permissions behind after Bob's runtime is removed.
+      ...config.permissionsForAllTools(),
       ...STALE_GLOBAL_MCP_PERMISSIONS,
     ]);
     const allow = next.permissions.allow.filter((permission) => !bobPermissions.has(permission));

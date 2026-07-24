@@ -65,10 +65,10 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_cosmwasm_smart_query: "smart_contract_contextual",
   bob_diff_verification_attempts: "initialized_session_read",
   bob_evaluate_capabilities: "global_read",
-  bob_evm_call: "global_preapproval",
+  bob_evm_call: "smart_contract_contextual",
   bob_evm_fetch_source: "smart_contract_contextual",
-  bob_evm_role_table: "global_preapproval",
-  bob_evm_storage_read: "global_preapproval",
+  bob_evm_role_table: "smart_contract_contextual",
+  bob_evm_storage_read: "smart_contract_contextual",
   bob_extract_routes: "initialized_session_read",
   bob_finalize_agent_run: "initialized_session_mutation",
   bob_foundry_run: "smart_contract_contextual",
@@ -95,6 +95,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // session-bound mutation path (which would deadlock on a pre-existing
   // state.json + a target_domain argument this tool's schema does not carry).
   bob_init_contract_session: "bootstrap_session",
+  bob_init_physical_session: "bootstrap_session",
   bob_list_auth_profiles: "initialized_session_read",
   bob_list_candidate_claims: "initialized_session_read",
   bob_log_capability_friction: "initialized_session_mutation",
@@ -130,6 +131,9 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // PR6 OOB collector (mirror of session-authority.js).
   bob_oob_mint: "scoped_http_network",
   bob_oob_poll: "scoped_http_network",
+  // O3 second-order / stored-effect re-read producer (mirror of session-authority.js).
+  bob_secondorder_mint: "scoped_http_network",
+  bob_secondorder_reread: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   // Plane Y Cycle Y.6 — friction-to-Hypothesis promotion (Y-P6 + Y-P11).
   // Orchestrator-only at the role-bundle layer; threads friction_history
@@ -162,6 +166,8 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_finalize_report: "initialized_session_mutation",
   // Plane Y Cycle Y.3 — Y-D15b / Y-P13 MCP-rendered audit-graded artifacts.
   bob_compose_report: "initialized_session_mutation",
+  // bob_export_security_hub_finding removed from the model-reachable tool
+  // registry -- see mcp/lib/tools/index.js's comment at the same seam.
   bob_amend_report: "initialized_session_mutation",
   bob_write_chain_rollup: "initialized_session_mutation",
   bob_set_friction_scanners: "initialized_session_mutation",
@@ -192,7 +198,20 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_read_verification_context: "initialized_session_read",
   bob_read_verification_round: "initialized_session_read",
   bob_read_wave_handoffs: "initialized_session_read",
+  // PH-S9/PH-X1: report-safe revalidation reads only an initialized physical
+  // session. Its global_preapproval flag is UI metadata, never global authority.
+  bob_verify_physical_verdict: "initialized_session_read",
+  bob_verify_physical_candidate_claim: "initialized_session_read",
+  bob_query_instrument_capabilities: "initialized_session_read",
+  bob_physical_observe: "initialized_session_mutation",
+  bob_credential_acquire: "initialized_session_mutation",
+  bob_credential_recover: "initialized_session_mutation",
+  bob_credential_emulate: "initialized_session_mutation",
+  bob_credential_write: "initialized_session_mutation",
+  bob_protocol_transceive: "initialized_session_mutation",
+  bob_rf_trace: "initialized_session_mutation",
   bob_record_candidate_claim: "initialized_session_mutation",
+  bob_record_physical_candidate_claim: "initialized_session_mutation",
   bob_record_surface_leads: "initialized_session_mutation",
   bob_register_mechanism_template: "initialized_session_mutation",
   bob_prepare_node: "initialized_session_mutation",
@@ -232,7 +251,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_summarize_diff_impact: "initialized_session_mutation",
   bob_svm_fetch_account: "smart_contract_contextual",
   bob_svm_fetch_program: "smart_contract_contextual",
-  bob_temp_email: "global_preapproval",
+  bob_temp_email: "scoped_http_network",
   bob_wave_handoff_status: "initialized_session_read",
   bob_wave_status: "initialized_session_read",
   bob_write_chain_attempt: "initialized_session_mutation",
@@ -249,16 +268,12 @@ const ABSENT_TARGET_CATEGORY_BY_TOOL = Object.freeze({
   bob_evaluate_capabilities: "registry_capability_introspection",
   bob_read_capability_playbook: "registry_capability_introspection",
   bob_suggest_invariants: "local_static_inspection_no_session_write",
-  bob_temp_email: "explicit_no_session_global_network_side_effect",
-  bob_evm_call: "explicit_no_session_global_network_read_n2_006_evm",
-  bob_evm_storage_read: "explicit_no_session_global_network_read_n2_006_evm",
-  bob_evm_role_table: "explicit_no_session_global_network_read_n2_006_evm",
 });
 
 const CHAIN_TRANSPORT_OWNER_BY_TOOL = Object.freeze({
-  bob_evm_call: "N2-006 EVM no-target RPC transport",
-  bob_evm_storage_read: "N2-006 EVM no-target RPC transport",
-  bob_evm_role_table: "N2-006 EVM no-target RPC transport",
+  bob_evm_call: "N2-006 EVM contextual transport",
+  bob_evm_storage_read: "N2-006 EVM contextual transport",
+  bob_evm_role_table: "N2-006 EVM contextual transport",
   bob_evm_fetch_source: "N2-006 EVM contextual transport",
   bob_foundry_run: "N2-006 EVM subprocess/RPC transport",
   bob_halmos_run: "N2-006 EVM symbolic-runner transport",

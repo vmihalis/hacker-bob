@@ -18,6 +18,10 @@
 const {
   getLatestMergedWavePartialSurfaceIds,
 } = require("./wave-handoff-store.js");
+const {
+  readSessionStateStrict,
+  sessionStateMissing,
+} = require("./session-state-store.js");
 
 // Classifies a throw from the seed_surfaces_present materialize/route pipeline.
 // Returns true ONLY for the expected "surface input is not present yet" signals:
@@ -45,8 +49,82 @@ const SCHEDULER_PRECONDITION_VALUES = Object.freeze([
   "chain_work_terminal",
   "uncovered_reachable_cells",
   "seed_producers_drained",
+  "blocked_prereqs_capability_clear",
   "seed_surfaces_present",
+  "unscanned_bodies_drained",
 ]);
+
+function historyBySurfaceFromBlockedPrereqs(history) {
+  const historyBySurface = new Map();
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (!entry || typeof entry.surface_id !== "string" || !entry.surface_id) continue;
+    if (!historyBySurface.has(entry.surface_id)) historyBySurface.set(entry.surface_id, []);
+    historyBySurface.get(entry.surface_id).push(entry);
+  }
+  return historyBySurface;
+}
+
+function latestBlockedPrereqWave(history) {
+  let latest = 0;
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (entry && Number.isInteger(entry.wave) && entry.wave > latest) latest = entry.wave;
+  }
+  return latest;
+}
+
+function evaluateBlockedPrereqsCapabilityClear(targetDomain) {
+  if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+    throw new Error("blocked_prereqs_capability_clear: target_domain is required");
+  }
+  let state;
+  try {
+    ({ state } = readSessionStateStrict(targetDomain));
+  } catch (error) {
+    if (sessionStateMissing(error)) {
+      return { satisfied: true, capability_clear_active: false, blocked_surface_ids: [] };
+    }
+    throw error;
+  }
+  const history = Array.isArray(state.blocked_prereq_history) ? state.blocked_prereq_history : [];
+  if (history.length === 0) {
+    return { satisfied: true, capability_clear_active: false, blocked_surface_ids: [] };
+  }
+  const currentWave = Number.isInteger(state.evaluation_wave) && state.evaluation_wave > 0
+    ? state.evaluation_wave
+    : latestBlockedPrereqWave(history);
+  if (!currentWave) {
+    return { satisfied: true, capability_clear_active: false, blocked_surface_ids: [] };
+  }
+  const historyBySurface = historyBySurfaceFromBlockedPrereqs(history);
+  const {
+    computeCapabilityClearedPremiseSurfaceIds,
+  } = require("./waves/wave-promotion-detector.js");
+  const blockedSurfaceIds = Array.from(computeCapabilityClearedPremiseSurfaceIds({
+    historyBySurface,
+    currentWave,
+    target_domain: targetDomain,
+  }));
+  return {
+    satisfied: blockedSurfaceIds.length === 0,
+    capability_clear_active: blockedSurfaceIds.length > 0,
+    blocked_surface_ids: blockedSurfaceIds,
+  };
+}
+
+function resolveWebOnchainRefProducerIds() {
+  const { PRODUCER_PACKS } = require("./producer-packs.js");
+  const ids = new Set();
+  for (const pack of Object.values(PRODUCER_PACKS || {})) {
+    const trigger = pack && pack.trigger;
+    if (!pack || pack.advisory === true || !trigger || trigger.kind !== "derived") continue;
+    const consumes = Array.isArray(trigger.consumes) ? trigger.consumes : [];
+    const produces = Array.isArray(pack.produces) ? pack.produces : [];
+    if (consumes.includes("http_bodies") && produces.includes("chain_address_set")) {
+      ids.add(pack.producer_id);
+    }
+  }
+  return ids;
+}
 
 // Each check receives `{target_domain}` and returns an object with at minimum
 // `{satisfied: boolean}`. When unsatisfied, the check MAY return additional
@@ -57,6 +135,14 @@ const PRECONDITION_CHECKS = Object.freeze({
     const targetDomain = context && context.target_domain;
     if (typeof targetDomain !== "string" || targetDomain.length === 0) {
       throw new Error("partial_surfaces_drained: target_domain is required");
+    }
+    const capabilityClear = evaluateBlockedPrereqsCapabilityClear(targetDomain);
+    if (!capabilityClear.satisfied) {
+      return {
+        satisfied: false,
+        blocked_surface_ids: capabilityClear.blocked_surface_ids,
+        blocked_prereqs_capability_clear: capabilityClear,
+      };
     }
     const blockedSurfaceIds = getLatestMergedWavePartialSurfaceIds(targetDomain);
     return {
@@ -240,6 +326,49 @@ const PRECONDITION_CHECKS = Object.freeze({
       sc_expander_instance_keys: scExpanderInstances.map((i) => i.producer_key).slice(0, 50),
       producer_gaps: plan.gaps.slice(0, 50),
     };
+  },
+  // PRD-5
+  // An unscanned http_bodies artifact blocks the OPEN_FRONTIER -> CLAIM_FREEZE
+  // drain when the web_onchain_ref producer remains READY with no terminal
+  // producer_run row, so the unrouted on-chain ref is a recorded MCP-owned
+  // obligation. The verdict is single-sourced with the dispatcher through
+  // buildProducerFloorPlan. RANK != BOUND: absent-input gaps satisfy-and-report.
+  unscanned_bodies_drained(context) {
+    const targetDomain = context && context.target_domain;
+    if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+      throw new Error("unscanned_bodies_drained: target_domain is required");
+    }
+    const { materializeTaskGraph } = require("./task-graph-materializer.js");
+    const { PRODUCER_NODE_KIND } = require("./constants.js");
+    const doc = materializeTaskGraph(targetDomain, { write: false }).document;
+    const hasProducerFloor = doc.nodes.some((node) => node.kind === PRODUCER_NODE_KIND);
+    if (!hasProducerFloor) {
+      return {
+        satisfied: true,
+        obligation_active: false,
+        unscanned_body_present: false,
+        ready_web_onchain_ref_count: 0,
+        ready_web_onchain_ref_ids: [],
+        obligation_gaps: [],
+      };
+    }
+    const { buildProducerFloorPlan } = require("./tools/materialize-producer-floor.js");
+    const { plan } = buildProducerFloorPlan(targetDomain);
+    const refIds = resolveWebOnchainRefProducerIds();
+    const readyRefProducers = plan.ready.filter((p) => p && p.advisory !== true && refIds.has(p.producer_id));
+    const unscanned_body_present = readyRefProducers.length > 0;
+    return {
+      satisfied: unscanned_body_present === false,
+      obligation_active: true,
+      unscanned_body_present,
+      ready_web_onchain_ref_count: readyRefProducers.length,
+      ready_web_onchain_ref_ids: readyRefProducers.map((p) => p.producer_id).slice(0, 50),
+      obligation_gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 50) : [],
+    };
+  },
+  blocked_prereqs_capability_clear(context) {
+    const targetDomain = context && context.target_domain;
+    return evaluateBlockedPrereqsCapabilityClear(targetDomain);
   },
   // Seed teeth: a frontier with zero routed seed surfaces has nothing to
   // schedule. materializeFrontier(domain, {write:true}) FORCES synchronous

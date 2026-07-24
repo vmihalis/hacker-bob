@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("crypto");
+
 // Shared HTTP/surface primitives for the offensive confirmer family
 // (bob_http_confirm and the forthcoming bob_http_idor_confirm producer).
 // Everything here is extracted VERBATIM from offensive-confirmer.js so the
@@ -1069,11 +1071,27 @@ function sensitiveShapesPresent(text) {
   return SECRET_SHAPE_RES.some((re) => re.test(s));
 }
 
+function mintSensitiveShapeSafeToken(prefix, { randomBytes = crypto.randomBytes } = {}) {
+  if (!/^[a-z]{1,16}$/.test(String(prefix || ""))) {
+    throw new TypeError("token prefix must be 1-16 lowercase ASCII letters");
+  }
+  // A uniformly random hex token can very rarely contain a 13-19 digit,
+  // Luhn-valid substring and trip the PII detector. Rejection sampling keeps
+  // the 128-bit wire shape while ensuring Bob's own canary can never make a
+  // clean capture look like operator PII.
+  for (let attempt = 0; attempt < 128; attempt += 1) {
+    const token = `${prefix}${randomBytes(16).toString("hex")}`;
+    if (!sensitiveShapesPresent(token)) return token;
+  }
+  throw new Error("failed to mint a sensitive-shape-safe token");
+}
+
 module.exports = {
   rejectInvalidArguments,
   resolveQueryLocusEndpoint,
   recordedQueryParamNames,
   sensitiveShapesPresent,
+  mintSensitiveShapeSafeToken,
   decodePathSegments,
   escapeRegExp,
   capturedIdSegmentIsSafe,

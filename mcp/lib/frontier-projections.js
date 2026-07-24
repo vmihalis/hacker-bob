@@ -316,6 +316,15 @@ const SURFACE_INDEX_SCALAR_FIELDS = [
   "kind",
   "owner",
   "surface_type",
+  // Preserve explicit deny-precedence routing provenance.  In particular,
+  // `surface_class: physical` can be the only physical signal when the surface
+  // type is an ordinary API/asset label.
+  "surface_class",
+  "capability_pack",
+  "required_capability_pack",
+  "disposition",
+  "reason",
+  "brief_profile",
   "attack_vector",
   "severity_ceiling",
   "chain_family",
@@ -336,6 +345,8 @@ const SURFACE_INDEX_SCALAR_FIELDS = [
 // fall back to the depth-1 default and OD4 depth-capping would never fire.
 const SURFACE_INDEX_INTEGER_FIELDS = [
   "depth",
+  "capability_pack_version",
+  "required_capability_pack_version",
 ];
 
 const SURFACE_INDEX_BOOLEAN_FIELDS = [

@@ -51,5 +51,6 @@ module.exports = Object.freeze({
   browser_access: true,
   scope_required: true,
   sensitive_output: false,
-  session_artifacts_written: ["browser-screenshots/"],
+ session_artifacts_written: ["browser-screenshots/"],
+  required_session_axes: ["url"],
 });

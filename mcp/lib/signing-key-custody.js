@@ -22,20 +22,27 @@ const {
 } = require("./handoff-signing-key.js");
 
 // The basenames of the signing secrets that MUST be custodied behind the signer
-// uid. Covers BOTH signing surfaces with one boundary: the ed25519 verdict-
-// ledger private key AND the symmetric handoff-provenance key. Custodying only
-// the ed25519 key would leave handoff provenance forgeable; both live in the
-// session dir, so relocating the whole tree to the signer uid covers both.
+// uid. Covers all THREE signing surfaces with one boundary: the ed25519 verdict-
+// ledger private key, the symmetric handoff-provenance key, and the Plane-PH
+// experiment-trust private key. Custodying only a subset would leave a signed
+// authority/evidence surface forgeable; all live below the session dir, so
+// relocating the whole tree to the signer uid covers all three.
+const PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME =
+  "physical-experiment-trust-signing-key-private.json";
+
 const SIGNING_SECRET_BASENAMES = Object.freeze([
   ".handoff-signing-key.json",
   ".handoff-signing-key-ed25519.json",
+  PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
 ]);
 
 // The per-secret intended octal mode. The symmetric key is owner read/write (the
-// server reads it back); the ed25519 private key is owner read-only (written once).
+// server reads it back); both asymmetric private keys are owner read-only and
+// written once.
 const SIGNING_SECRET_MODES = Object.freeze({
   ".handoff-signing-key.json": SYMMETRIC_SIGNING_KEY_MODE,
   ".handoff-signing-key-ed25519.json": ED25519_PRIVATE_KEY_MODE,
+  [PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME]: ED25519_PRIVATE_KEY_MODE,
 });
 
 // Render the chmod/chown intent the launcher applies to the signer-owned session
@@ -79,6 +86,7 @@ function octalModeString(mode) {
 }
 
 module.exports = {
+  PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
   SIGNING_SECRET_BASENAMES,
   SIGNING_SECRET_MODES,
   SYMMETRIC_SIGNING_KEY_MODE,

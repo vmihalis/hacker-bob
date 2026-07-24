@@ -66,10 +66,11 @@ module.exports = Object.freeze({
   handler,
   role_bundles: ["evaluator-move", "verifier", "evidence", "sc-recon"],
   mutating: false,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: [],
+  required_session_axes: ["contracts"],
 });

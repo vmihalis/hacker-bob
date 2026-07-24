@@ -11,7 +11,7 @@ module.exports = wrapWriteTool({
   name: "bob_write_evidence_packs",
   writes_audit_graded: true,
   description:
-    "Write bounded evidence packs for every final reportable finding to authoritative JSON plus a markdown mirror.",
+    "Write bounded evidence packs for every final reportable finding to authoritative JSON plus a markdown mirror. Capability-pack-owned evidence is generated server-side; omit those findings from packs[].",
   inputSchema: {
     type: "object",
     properties: {
