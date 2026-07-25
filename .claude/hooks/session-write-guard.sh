@@ -177,7 +177,22 @@ def _session_root_config_paths():
     would still be guarded, so the loss of coverage would be silent). The
     installer, doctor, and dev-sync edit these outside the agent tool path and
     are unaffected."""
-    project = pathlib.Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    explicit = os.environ.get("CLAUDE_PROJECT_DIR")
+    if explicit:
+        project = pathlib.Path(explicit)
+    else:
+        # Not every host exports a project dir. Falling back to the bare cwd would shift the
+        # fence whenever the tool call runs from a subdirectory, silently leaving the REAL
+        # host config unfenced, so walk UP to the nearest ancestor that looks like the
+        # workspace instead.
+        here = pathlib.Path(os.getcwd()).resolve()
+        project = here
+        for candidate in [here, *here.parents]:
+            if ((candidate / ".mcp.json").exists()
+                    or (candidate / ".claude").is_dir()
+                    or (candidate / ".kimi").is_dir()):
+                project = candidate
+                break
     resolved = []
     for relative in (".mcp.json", os.path.join(".kimi", "mcp.json")):
         try:
