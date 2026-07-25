@@ -16,6 +16,7 @@ const lifecycleCustodianTest = installLifecycleCustodianTestDouble();
 const {
   OPTIONAL_PROVIDER_REGISTRY,
   OPTIONAL_PROVIDER_STATUS_VALUES,
+  getOptionalProviderPackage,
 } = require("../scripts/lib/optional-provider-registry.js");
 const lifecycle = require("../scripts/lib/optional-provider-lifecycle.js");
 const {
@@ -3000,7 +3001,18 @@ test("optional-provider CLI fails closed for mutation while status stays inert a
   // against the projection's own supported_host rather than hard-coding one machine's answer.
   // The compatibility algorithm itself is covered by the host-pinned cases above.
   assert.equal(status.installed, false, "premise: nothing is installed");
-  assert.equal(status.status, status.supported_host ? "absent" : "unsupported_host");
+  // Derive the expectation from the REGISTRY's declared requirements against this process, so
+  // this is an independent check rather than the projection agreeing with itself (status and
+  // supported_host are both computed from the same internal `supported`, so comparing them
+  // would pass even if compatibility were computed wrongly).
+  const declared = getOptionalProviderPackage("chameleon_ultra", "worker_source").package;
+  const hostQualifies = (declared.target_os === "any" || declared.target_os === process.platform)
+    && (declared.target_architecture === "any" || declared.target_architecture === process.arch)
+    && declared.node_major === Number(process.versions.node.split(".")[0])
+    && (declared.napi_version === null || String(declared.napi_version) === process.versions.napi);
+  assert.equal(status.supported_host, hostQualifies,
+    "projection's host support must match the registry's declared requirements for this process");
+  assert.equal(status.status, hostQualifies ? "absent" : "unsupported_host");
   assert.equal(status.activation_performed, false);
   assert.equal(status.hardware_probe_performed, false);
   assert.equal(status.hardware_access_authorized, false);
