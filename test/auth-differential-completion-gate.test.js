@@ -19,9 +19,15 @@ const {
   attackSurfacePath,
   authDifferentialResultsPath,
   sessionDir,
+  surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
+const {
+  SURFACE_ROUTES_VERSION,
+  SURFACE_ROUTE_VERSION,
+} = require("../mcp/lib/surface-router.js");
+const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
 const {
   loadWaveAssignments,
 } = require("../mcp/lib/assignments.js");
@@ -114,6 +120,50 @@ function writeAttackSurface(domain) {
       endpoints: ["/api/accounts/789"],
     }],
   });
+}
+
+// A current-schema, validator-clean route row (pack fields DERIVED, never hardcoded, so it
+// survives pack edits) — the MCP-owned document the grade-time gate re-reads to re-establish the
+// id-bearing predicate. Every wave assignment required one of these at wave start
+// (wave-assignment-store's "Missing route" guard), so an id-bearing surface WITHOUT one at
+// finalize is an integrity anomaly, not a legitimate state.
+function validRouteRow(surfaceId, { idBearing = true, endpoints = ["/api/accounts/{id}"] } = {}) {
+  const classification = classifySurfaceCapability({
+    id: surfaceId,
+    surface_type: "web",
+    hosts: [`${surfaceId}.example.test`],
+    endpoints: [`https://${surfaceId}.example.test/api/accounts/789`],
+  });
+  return {
+    surface_id: surfaceId,
+    surface_type: classification.surface_type,
+    capability_pack: classification.capability_pack,
+    capability_pack_version: classification.capability_pack_version,
+    evaluator_agent: classification.evaluator_agent,
+    brief_profile: classification.brief_profile,
+    context_budget: classification.context_budget,
+    id_bearing: idBearing,
+    auth_differential_required: idBearing,
+    id_bearing_endpoints: endpoints,
+  };
+}
+
+function writeSurfaceRoutes(domain, routes = [validRouteRow("surface-auth")]) {
+  writeJson(surfaceRoutesPath(domain), {
+    version: SURFACE_ROUTES_VERSION,
+    route_version: SURFACE_ROUTE_VERSION,
+    routes,
+  });
+}
+
+// A route exactly as a PRE-rename framework version persisted it (evaluator_agent absent,
+// hunter_agent present): the resilient reader QUARANTINES it into malformed_routes[] keyed by its
+// surface_id, so the surface has no row in document.routes — the same state grade fails closed on.
+function staleQuarantinedRouteRow(surfaceId) {
+  const route = validRouteRow(surfaceId);
+  delete route.evaluator_agent;
+  route.hunter_agent = "hunter-agent";
+  return route;
 }
 
 function buildFlipRow() {
@@ -284,6 +334,7 @@ test("auth differential completion evaluator is self-activating and credits MCP 
     assert.equal(blocked.block_code, "missing_auth_differential");
 
     writeAttackSurface(domain);
+    writeSurfaceRoutes(domain);
     writeAuthDifferentialResults(domain);
     assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff), null);
   });
@@ -378,6 +429,7 @@ test("auth differential completion gate is enforced at finalize and merge", () =
       id_bearing_endpoints: ["/api/accounts/{id}"],
     }]);
     writeAttackSurface(domain);
+    writeSurfaceRoutes(domain);
     seedTechniqueAttempt(domain, "surface-auth");
     writeSignedHandoff(domain, 1, "a1", "surface-auth");
 
@@ -423,6 +475,7 @@ test("B3: a flip row whose effective_url resolves IN-SCOPE to a frozen id-bearin
     const handoff = { surface_status: "complete", blocked_prereqs: [], blocked_harness_runs: [] };
 
     writeAttackSurface(domain);
+    writeSurfaceRoutes(domain);
     // Real tested URL is the in-scope crown path — host is the target domain, path templatizes to
     // the frozen id-bearing endpoint. Both the signed endpoint AND effective_url pass.
     writeSignedFlipRowWithEffectiveUrl(domain, `https://${domain}/api/accounts/789`);
@@ -472,6 +525,7 @@ test("B3 back-compat: a legacy flip row with NO effective_url still clears the s
     const handoff = { surface_status: "complete", blocked_prereqs: [], blocked_harness_runs: [] };
 
     writeAttackSurface(domain);
+    writeSurfaceRoutes(domain);
     // buildFlipRow carries NO effective_url (pre-urlbind): the extra check is skipped and the MAC,
     // flip, surface_id-bind, and endpoint-template checks stand — the surface clears.
     writeAuthDifferentialResults(domain);
@@ -508,5 +562,253 @@ test("B1: a verified finding-differential of a NON-access-control class (CWE-79 
     const blocked = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
     assert.ok(blocked && blocked.ok === false, "a non-access-control finding-differential must not clear the crown");
     assert.equal(blocked.block_code, "missing_auth_differential");
+  });
+});
+
+// ---- FINALIZE/GRADE PARITY: the routes-integrity condition (deadlock, not false-clear) ----
+//
+// The grade-time gate (claims.js completionDepthGapForCompleteSurfaces) re-reads the MCP-owned
+// surface-routes.json to re-establish the id-bearing predicate, and fails CLOSED when that
+// document cannot speak for the surface (unreadable / this surface's route quarantined / no row
+// for the surface at all): the surface then clears at grade ONLY on executed access-control
+// evidence or a re-verified cross-stack composition — never on the auth-differential flip, whose
+// frozen endpoint basis lives in that same unreadable document. Finalize reads the FROZEN wave
+// assignment instead, so before this mirror a run settled here on a MAC-verified flip and was then
+// permanently held at GRADE with no artifact the agent could still add.
+
+function idBearingCrownFixture(domain) {
+  return {
+    marker: { target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-auth" },
+    assignment: {
+      agent: "a1",
+      surface_id: "surface-auth",
+      id_bearing: true,
+      auth_differential_required: true,
+      id_bearing_endpoints: ["/api/accounts/{id}"],
+    },
+    handoff: { surface_status: "complete", blocked_prereqs: [], blocked_harness_runs: [] },
+  };
+}
+
+test("PARITY: ABSENT surface-routes.json blocks a MAC-verified flip from settling an id-bearing complete surface (was: settled, then deadlocked at grade)", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-absent.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    // A genuine, MAC-verified cross-tenant flip — the exact evidence that used to settle here.
+    writeAuthDifferentialResults(domain);
+    // ...but NO routes document: grade cannot re-establish the id-bearing predicate and holds the
+    // surface, so settling it here would deadlock the run.
+    assert.equal(fs.existsSync(surfaceRoutesPath(domain)), false);
+
+    const blocked = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+    assert.ok(blocked && blocked.ok === false, "an unverifiable route must not settle the crown");
+    assert.equal(blocked.block_code, "unverifiable_surface_route");
+    assert.match(blocked.reason, /routes_unreadable/);
+    assert.match(blocked.reason, /bob_route_surfaces/);
+    assert.match(blocked.reason, /partial/);
+  });
+});
+
+test("PARITY: CORRUPT surface-routes.json blocks a MAC-verified flip from settling an id-bearing complete surface", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-corrupt.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    writeFileAtomic(surfaceRoutesPath(domain), "{ this is not valid json ]");
+
+    const blocked = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+    assert.ok(blocked && blocked.ok === false, "a corrupt routes document must not settle the crown");
+    assert.equal(blocked.block_code, "unverifiable_surface_route");
+    assert.match(blocked.reason, /routes_unreadable/);
+  });
+});
+
+test("PARITY: this surface's own QUARANTINED route blocks the flip from settling it (per-route drift, no attacker needed)", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-quarantined.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    // The envelope parses, but this surface's row fails route validation and is quarantined into
+    // malformed_routes[] — grade's per-surface fail-closed arm, mirrored here.
+    writeSurfaceRoutes(domain, [staleQuarantinedRouteRow("surface-auth")]);
+
+    const blocked = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+    assert.ok(blocked && blocked.ok === false, "a quarantined route must not settle the crown");
+    assert.equal(blocked.block_code, "unverifiable_surface_route");
+    assert.match(blocked.reason, /route_quarantined/);
+  });
+});
+
+test("PARITY: a readable routes document carrying NO row for the surface blocks the flip (totality anomaly)", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-missing-row.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    // Every assignment required a route at wave start, so a complete id-bearing surface with no
+    // row is an integrity anomaly — grade holds it, and so must finalize.
+    writeSurfaceRoutes(domain, [validRouteRow("surface-other", { idBearing: false, endpoints: [] })]);
+
+    const blocked = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+    assert.ok(blocked && blocked.ok === false, "a routeless crown must not settle");
+    assert.equal(blocked.block_code, "unverifiable_surface_route");
+    assert.match(blocked.reason, /route_absent/);
+  });
+});
+
+test("PARITY: an INTACT routes document + a MAC-verified flip still CLEARS the id-bearing surface", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-intact.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeSurfaceRoutes(domain);
+    writeAuthDifferentialResults(domain);
+    assert.equal(
+      evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff),
+      null,
+      "the routes mirror must not disturb the earned clear",
+    );
+  });
+});
+
+test("PARITY: finalize is not STRICTER than grade — an unattributable quarantine elsewhere does not block a surface whose own route is intact", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-other-quarantine.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    // A malformed row that LOST its surface_id raises grade's GLOBAL routesUnverifiable flag, but
+    // a surface whose own route is intact and id_bearing still takes grade's id-bearing branch and
+    // clears on the flip. Blocking here would trade the deadlock for a false block.
+    writeSurfaceRoutes(domain, [validRouteRow("surface-auth"), { surface_type: "web" }]);
+    assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff), null);
+  });
+});
+
+test("PARITY: an executed ACCESS-CONTROL finding-differential clears the surface even with routes absent (grade clears that branch too)", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-absent-ac.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    // Grade's fail-closed routes branch clears on an executed access-control finding, so finalize
+    // must clear on it as well — the block is scoped to the flip-only basis.
+    recordCrownFinding(domain, "CWE-639");
+    seedVerifiedFindingDifferential(domain, "F-1", "surface-auth");
+    assert.equal(fs.existsSync(surfaceRoutesPath(domain)), false);
+    assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff), null);
+  });
+});
+
+test("PARITY: a PARTIAL surface is unaffected by an unreadable routes document", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-partial.example.com";
+    const { marker, assignment } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    writeFileAtomic(surfaceRoutesPath(domain), "{ corrupt");
+
+    // The honest-partial fallback is the point of the block, so it must stay reachable.
+    assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, assignment, {
+      surface_status: "partial",
+      blocked_prereqs: [],
+      blocked_harness_runs: [],
+    }), null);
+  });
+});
+
+test("PARITY: end-to-end finalize refuses the settle with routes absent and allows it once the routes document is restored", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-routes-e2e.example.com";
+    writeAssignments(domain, 1, [{
+      agent: "a1",
+      surface_id: "surface-auth",
+      id_bearing: true,
+      auth_differential_required: true,
+      id_bearing_endpoints: ["/api/accounts/{id}"],
+    }]);
+    writeAttackSurface(domain);
+    seedTechniqueAttempt(domain, "surface-auth");
+    writeSignedHandoff(domain, 1, "a1", "surface-auth");
+    writeAuthDifferentialResults(domain);
+
+    const finalizeArgs = {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-auth",
+    };
+    const blocked = evaluateAgentCompletion(finalizeArgs);
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.block_code, "unverifiable_surface_route");
+
+    const readinessBlocked = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.deepEqual(readinessBlocked.received_agents, []);
+    assert.deepEqual(readinessBlocked.missing_agents, ["a1"]);
+
+    // bob_route_surfaces regenerates the document; the same executed flip now settles.
+    writeSurfaceRoutes(domain);
+    const allowed = evaluateAgentCompletion(finalizeArgs);
+    assert.equal(allowed.ok, true);
+    const readinessAllowed = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.deepEqual(readinessAllowed.received_agents, ["a1"]);
+  });
+});
+
+test("PARITY: a route whose id-bearing endpoint set DRIFTED away from the assignment does not settle the crown", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-endpoint-drift.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    writeSurfaceRoutes(domain);
+
+    // Readable, validator-clean, still id_bearing — but the frozen endpoint set no longer covers
+    // the endpoint this wave was assigned. Grade binds a credited flip through THAT set
+    // (claims.js endpoints.has(rowTemplate)), so it can never credit the sweep; settling here
+    // would strand the run with no way back.
+    const doc = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
+    doc.routes = doc.routes.map((route) => (route && route.surface_id === marker.surface_id
+      ? { ...route, id_bearing: true, id_bearing_endpoints: ["/api/somewhere-else/{id}"] }
+      : route));
+    fs.writeFileSync(surfaceRoutesPath(domain), `${JSON.stringify(doc, null, 2)}\n`);
+
+    const blocked = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+    assert.ok(blocked && blocked.ok === false, "a drifted endpoint set must not settle the crown");
+    assert.equal(blocked.block_code, "unverifiable_surface_route");
+    assert.match(blocked.reason, /route_endpoints_drifted|no longer lists/);
+  });
+});
+
+test("PARITY: finalize is not STRICTER than grade — a non-id_bearing route still settles", () => {
+  withTempHome(() => {
+    const domain = "auth-diff-not-idbearing.example.com";
+    const { marker, assignment, handoff } = idBearingCrownFixture(domain);
+
+    writeAttackSurface(domain);
+    writeAuthDifferentialResults(domain);
+    writeSurfaceRoutes(domain);
+
+    // When the route is no longer id_bearing, grade does not require a flip at all and clears on
+    // ordinary evidence. Blocking here would trade the deadlock for a false block.
+    const doc = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
+    doc.routes = doc.routes.map((route) => (route && route.surface_id === marker.surface_id
+      ? { ...route, id_bearing: false, id_bearing_endpoints: [] }
+      : route));
+    fs.writeFileSync(surfaceRoutesPath(domain), `${JSON.stringify(doc, null, 2)}\n`);
+
+    assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff), null);
   });
 });

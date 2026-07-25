@@ -833,6 +833,114 @@ function authDifferentialCompletionBlock(marker, { needsSecondPrincipal = false 
   };
 }
 
+// FINALIZE/GRADE PARITY (routes integrity). The grade-time gate (claims.js
+// completionDepthGapForCompleteSurfaces) re-establishes the id-bearing predicate from the
+// MCP-owned surface-routes.json at GRADE time, and fails CLOSED whenever that document cannot
+// speak for a surface. Three such states, all of which leave the surface with NO route row in the
+// readable document:
+//   1. the strict read THROWS — absent file, torn/corrupt write, dangling symlink, version drift;
+//   2. this surface's own route was QUARANTINED into malformed_routes[] (cross-version field drift
+//      on a resumed session, a duplicate row) — the resilient reader drops it from document.routes;
+//   3. the document is readable but carries NO row for the surface (the totality anomaly: every
+//      complete surface was assigned, and wave-assignment-store rejects a routeless assignment).
+// In every one of those states grade clears the surface ONLY on executed access-control evidence
+// or a re-verified cross-stack composition — never on the auth-differential flip, because the
+// FROZEN id-bearing endpoint set the flip must bind to lives in that same unreadable document.
+//
+// Finalize reads a DIFFERENT document — the frozen wave-N assignment's id_bearing /
+// id_bearing_endpoints — so without this mirror a run settles HERE on a MAC-verified flip and is
+// then permanently held at GRADE with no artifact the agent can still add. That is a DEADLOCK, not
+// a false clear, and it is why this condition is mirrored rather than left to grade.
+//
+// Deliberately NOT stricter than grade: an unattributable quarantine ELSEWHERE in the document (a
+// malformed row that lost its surface_id) raises grade's GLOBAL routesUnverifiable flag, but a
+// surface whose OWN route is intact and id_bearing still takes grade's id-bearing branch and
+// clears on the flip. So verifiability keys on THIS surface's route row only.
+function surfaceRouteVerifiability(domain, surfaceId, assignmentEndpoints = []) {
+  let routesRead;
+  try {
+    const { readSurfaceRoutesStrict } = require("./surface-router.js");
+    routesRead = readSurfaceRoutesStrict(domain);
+  } catch (error) {
+    return { verifiable: false, code: "routes_unreadable", detail: error.message || String(error) };
+  }
+  const routes = routesRead && routesRead.document && Array.isArray(routesRead.document.routes)
+    ? routesRead.document.routes
+    : [];
+  const route = routes.find((entry) => entry && entry.surface_id === surfaceId);
+  if (route) {
+    // A row existing is not enough. Grade credits the flip only through the ROUTE's frozen
+    // id_bearing_endpoints (claims.js surfaceEndpointValues -> endpoints.has(rowTemplate)), and
+    // surface-router.js rewrites that set from agent-writable attack_surface.json on every route
+    // pass — the never-downgrade guard restores prior endpoints only when the fresh derivation is
+    // id_bearing===false. So a readable, validator-clean row whose endpoint set drifted away from
+    // the endpoints this wave was assigned cannot credit the sweep at grade; settling on it here
+    // is exactly the settle-then-deadlock this function exists to prevent.
+    //
+    // Only checked while the route is still id_bearing: when it is not, grade does not require a
+    // flip at all and clears on ordinary evidence, so blocking here would be STRICTER than grade
+    // and would trade the deadlock for a false block. The goal is agreement, not severity.
+    if (route.id_bearing === true) {
+      const routeEndpoints = new Set(
+        (Array.isArray(route.id_bearing_endpoints) ? route.id_bearing_endpoints : [])
+          .filter((endpoint) => typeof endpoint === "string" && endpoint),
+      );
+      const dropped = (Array.isArray(assignmentEndpoints) ? assignmentEndpoints : [])
+        .filter((endpoint) => typeof endpoint === "string" && endpoint && !routeEndpoints.has(endpoint));
+      if (dropped.length > 0) {
+        return {
+          verifiable: false,
+          code: "route_endpoints_drifted",
+          detail: `surface-routes.json no longer lists the id-bearing endpoint(s) this wave was assigned (${dropped.join(", ")}), so a sweep against them cannot be credited at grade`,
+        };
+      }
+    }
+    return { verifiable: true, code: null, detail: null };
+  }
+  const quarantined = (Array.isArray(routesRead.malformed_routes) ? routesRead.malformed_routes : [])
+    .find((bad) => bad && bad.surface_id === surfaceId);
+  if (quarantined) {
+    return {
+      verifiable: false,
+      code: "route_quarantined",
+      detail: quarantined.reason || "route metadata was quarantined",
+    };
+  }
+  return {
+    verifiable: false,
+    code: "route_absent",
+    detail: `surface-routes.json carries no route row for ${surfaceId}`,
+  };
+}
+
+// Mirrors the grade-time gate's cross-stack composition arm (claims.js
+// compositionExecutedSurfaces). verified_cross_stack_path_surface_refs is re-derived at read time
+// from rows whose bind leaves MAC-resolve and re-adjudicate, and the `offensive:` prefix originates
+// from the MAC-verified offensive row's surface_id — never a hand-written field. Used ONLY as an
+// escape from the routes-unverifiable block below (grade's fail-closed branch clears on it), never
+// as a standalone clearing lever for an id-bearing surface. Fails CLOSED on an unreadable ledger.
+function hasVerifiedCrossStackCompositionForSurface(domain, surfaceId) {
+  try {
+    const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
+    const refsByHash = readCompositionVerifiedSummary(domain).verified_cross_stack_path_surface_refs || {};
+    for (const refs of Object.values(refsByHash)) {
+      if (Array.isArray(refs) && refs.includes(`offensive:${surfaceId}`)) return true;
+    }
+  } catch { /* missing/unreadable composition-verified contributes nothing */ }
+  return false;
+}
+
+function routesUnverifiableCompletionBlock(marker, verifiability) {
+  return {
+    ok: false,
+    status: "blocked",
+    block_code: "unverifiable_surface_route",
+    reason: `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete: its MCP-owned route in surface-routes.json cannot be re-read (${verifiability.code}: ${verifiability.detail}). A cross-tenant flip clears the grade-time completion gate only through the ROUTE-frozen id-bearing endpoints, so settling this surface now would deadlock the run at GRADE, which holds the same surface for the same reason. Re-run bob_route_surfaces to regenerate surface-routes.json and re-run bob_run_auth_differential, OR mark the surface partial with a blocked_prereqs entry naming the un-re-verifiable route — do NOT mark it complete.`,
+    marker,
+    handoff: null,
+  };
+}
+
 function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff) {
   if (!assignment) return null;
   // Fire on id_bearing (detector result), NOT only auth_differential_required, so a
@@ -845,15 +953,16 @@ function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff)
   if (!handoff || handoff.surface_status !== "complete") return null;
 
   let ledgerReadFailed = false;
-  let hasLedgerEvidence = false;
+  let hasSweepEvidence = false;
+  let hasFindingDifferential = false;
 
   try {
-    hasLedgerEvidence = hasAuthDifferentialSweepForSurface(marker, assignment) || hasLedgerEvidence;
+    hasSweepEvidence = hasAuthDifferentialSweepForSurface(marker, assignment);
   } catch {
     ledgerReadFailed = true;
   }
   try {
-    hasLedgerEvidence = hasVerifiedFindingDifferentialForSurface(marker) || hasLedgerEvidence;
+    hasFindingDifferential = hasVerifiedFindingDifferentialForSurface(marker);
   } catch {
     ledgerReadFailed = true;
   }
@@ -862,7 +971,25 @@ function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff)
   // distinct-principal sweep or a signed finding-differential). A genuinely-blocked
   // surface must be recorded PARTIAL — the grade-time gate rejects a complete surface
   // backed only by a blocker, so accepting it here would deadlock the run at grade.
-  if (!ledgerReadFailed && hasLedgerEvidence) return null;
+  if (!ledgerReadFailed && (hasSweepEvidence || hasFindingDifferential)) {
+    // ROUTES-INTEGRITY PARITY (see surfaceRouteVerifiability): the SWEEP is a clearing basis at
+    // grade only through the route-frozen endpoint set, so when this surface's route cannot be
+    // re-read the flip does not clear there. Accept exactly what grade's fail-closed branch
+    // accepts — an executed access-control finding-differential, or a re-verified cross-stack
+    // composition — so finalize never blocks a run grade would clear, and never settles one grade
+    // would hold. The MAC-verified-flip requirement, the effective_url/host binds, and the
+    // honest-partial fallback below are untouched: this only refuses to SETTLE on a flip whose
+    // route-frozen basis is unreadable.
+    if (hasFindingDifferential) return null;
+    const verifiability = surfaceRouteVerifiability(
+      marker.target_domain,
+      marker.surface_id,
+      Array.isArray(assignment.id_bearing_endpoints) ? assignment.id_bearing_endpoints : [],
+    );
+    if (verifiability.verifiable) return null;
+    if (hasVerifiedCrossStackCompositionForSurface(marker.target_domain, marker.surface_id)) return null;
+    return routesUnverifiableCompletionBlock(marker, verifiability);
+  }
   // With <2 distinct principals a cross-tenant flip is not runnable — guide to partial.
   return authDifferentialCompletionBlock(marker, { needsSecondPrincipal: isIdBearing && !authDiffRequired });
 }
