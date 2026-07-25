@@ -56,6 +56,10 @@ const {
 const {
   buildCapabilityPackReportSections,
 } = require("../capability-pack-report-adapters.js");
+const {
+  buildReportCredentialFence,
+  findCredentialExportLeaks,
+} = require("../report-credential-fence.js");
 
 const SECTION_KINDS = Object.freeze([
   "impact",
@@ -1152,6 +1156,91 @@ function readAmendments(domain) {
   return out;
 }
 
+// Locator for a hit that the rendered document carries but no structured region
+// explains — a capability-pack-generated section body, a CVSS/coverage/blocked-surface
+// projection, or any future server-rendered block.
+const RENDERED_REPORT_LOCATION = "report.md (server-rendered content)";
+
+// Structural locators for every piece of text that reaches report.md. Deliberately
+// free of caller-supplied strings (no heading, no section_id, no finding_id, no
+// excerpt): these locators are echoed in the refusal, and a credential pasted into a
+// heading must not leak back out through the message that refuses it. `kind` is a
+// closed enum (SECTION_KINDS), so it is safe to name.
+function credentialScanRegions({ sections, callerSectionCount, severitySummary, reproSteps, amendments }) {
+  const regions = [];
+  if (severitySummary) {
+    regions.push({ location: "severity_summary", text: severitySummary });
+  }
+  sections.forEach((section, index) => {
+    const where = index < callerSectionCount
+      ? `sections[${index}]`
+      : `capability_pack_sections[${index - callerSectionCount}]`;
+    const at = `${where} (kind: ${section.kind})`;
+    regions.push({ location: `${at}.heading`, text: section.heading });
+    regions.push({ location: `${at}.prose`, text: section.prose });
+    section.evidence_refs.forEach((ref, refIndex) => {
+      regions.push({ location: `${at}.evidence_refs[${refIndex}]`, text: ref });
+    });
+  });
+  reproSteps.forEach((entry, index) => {
+    entry.steps.forEach((step, stepIndex) => {
+      regions.push({
+        location: `repro_steps_by_finding[${index}].steps[${stepIndex}]`,
+        text: step,
+      });
+    });
+  });
+  amendments.forEach((amend, index) => {
+    const at = `report-amendments.jsonl[${index}]`;
+    if (typeof amend.rationale === "string") {
+      regions.push({ location: `${at}.rationale`, text: amend.rationale });
+    }
+    if (typeof amend.new_prose === "string") {
+      regions.push({ location: `${at}.new_prose`, text: amend.new_prose });
+    }
+  });
+  return regions;
+}
+
+// EXPORT FENCE. The last boundary before this session's stored credential material can
+// leave the operator's machine inside a document they submit to a bounty program.
+//
+// Responses reach the agent VERBATIM (operator policy — Bob logs into the operator's
+// own test accounts), so the agent holds the credential and can quote it into finding
+// evidence; the claim-time secret scanner does not stop it
+// (record-candidate-claim.js SECRET_DETECTION_BYPASS_FIELDS exempts the evidence
+// fields, and sensitive-material.js SENSITIVE_VALUE_RE cannot match an arbitrary
+// account password). This gate REFUSES the render instead. It never masks, truncates
+// or rewrites report content: mutating evidence is exactly what corrupted an
+// auth-differential result before, and a masked report would silently hide the fact
+// that the credential is still sitting in claims.jsonl upstream.
+//
+// The rendered markdown is the authoritative haystack — it is what would be written —
+// and the structured regions exist only to ATTRIBUTE each hit to a fixable place.
+// ADVISORY, never blocking. An earlier revision THREW here, and adversarial review proved that
+// disqualifying: report-amendments.jsonl is append-only and audit-graded, so a single
+// credential-bearing amendment refused EVERY later compose forever, with no in-band remedy —
+// landing squarely on the known worst failure mode where a failing compose_report discards
+// proven work. It was also unreliable in the common cases (the basis misses captured
+// cookies/bearers, one sanctioned bob_auth_store profile REPLACE silently deactivated it, and
+// raw matching missed percent/base64/markdown encodings), so it could neither be trusted to
+// stop a leak nor to stay out of the way. Detect and TELL the operator; never block the door,
+// never rewrite the document.
+function detectReportCredentialExport(domain, markdown, structuredRegions) {
+  const fence = buildReportCredentialFence(domain);
+  // Inactive fence (no stored credentials, or none clearing the precision floors):
+  // zero behaviour change, not even an extra scan pass.
+  if (!fence.active) return [];
+  const attributed = findCredentialExportLeaks(fence, structuredRegions);
+  const attributedLabels = new Set(attributed.map((hit) => hit.label));
+  const unattributed = findCredentialExportLeaks(fence, [
+    { location: RENDERED_REPORT_LOCATION, text: markdown },
+  ]).filter((hit) => !attributedLabels.has(hit.label));
+  const leaks = [...attributed, ...unattributed];
+  if (leaks.length === 0) return [];
+  return leaks;
+}
+
 function handler(args) {
   if (args == null || typeof args !== "object" || Array.isArray(args)) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "bob_compose_report args must be a plain object");
@@ -1236,6 +1325,16 @@ function handler(args) {
     const markdown = renderMarkdown(
       domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations, coverageClosure, blockedSurfaces,
     );
+    // Advisory scan of the fully-composed document (so it sees pack-generated sections,
+    // amendments and the server-rendered projections). Surfaced on the result; never blocks
+    // the write and never rewrites the content.
+    const credentialExportWarnings = detectReportCredentialExport(domain, markdown, credentialScanRegions({
+      sections,
+      callerSectionCount: normalizedSections.length,
+      severitySummary,
+      reproSteps,
+      amendments,
+    }));
     const reportPath = reportMarkdownPath(domain);
     fs.writeFileSync(reportPath, markdown, "utf8");
     const contentHash = crypto.createHash("sha256").update(markdown, "utf8").digest("hex");
@@ -1250,6 +1349,12 @@ function handler(args) {
       cvss_annotations_rendered: cvssAnnotations.length,
       coverage_closure_rendered: coverageClosure != null,
       blocked_surfaces_rendered: blockedSurfaces != null,
+      // Advisory only. Names the placeholder label and the structural location, never the
+      // value, so the warning itself cannot publish the secret. report.md is what the operator
+      // submits to the bounty program, so a live credential quoted into evidence is worth
+      // flagging loudly — but composing is never blocked, because a blocked compose discards
+      // proven work and an append-only amendment would make the refusal permanent.
+      credential_export_warnings: credentialExportWarnings,
     };
     // CONSTRAINT 5: degrade is never silent. When the sandbox gate downgraded
     // bob_verified sections to advisory, surface it in the structured result so a

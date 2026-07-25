@@ -267,6 +267,7 @@
   "test/belief-residual-unmapped-fact.test.js",
   "test/belief-recalibration-scheduler-loop.test.js",
   "test/compose-report.test.js",
+  "test/compose-report-credential-fence.test.js",
   "test/proof-bundle.test.js",
   "test/amend-report.test.js",
   "test/write-chain-rollup.test.js",
