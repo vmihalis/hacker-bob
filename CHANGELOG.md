@@ -2,6 +2,14 @@
 
 ## [2.1.0]
 
+### Install drift guard: local edits are never silently overwritten
+
+- The installer no longer overwrites or deletes an installed file whose bytes differ from what Bob put there. The local copy is moved aside first — to `<file>.bob-local` beside the original, or into a `<dir>.bob-local/` mirror for a directory Bob replaces whole (`mcp/lib`) — the new version is written in its place, and the run prints a `LOCAL EDITS PRESERVED` notice naming every path it moved and where it went. Nothing is deleted. This covers both installer copy stacks (`scripts/install.js` for `.claude/**`, `scripts/lib/install-fs.js` for the codex/kimi/generic-mcp writes under `$HOME`) and the delete paths, not only overwrites.
+- `.hacker-bob/install.json` gained an additive `installed_file_ownership` receipt: a `path` / `byte_size` / `sha256` / `mode` record per installed file, the same record shape `optional-provider-lifecycle.js` already uses. It is what lets a later install tell Bob's own bytes from your edits, so a reinstall or upgrade of a file you never touched stays silent. An `install.json` without the key is still valid.
+- **First upgrade only:** upgrading a workspace installed by any earlier release means there is no receipt yet, so Bob cannot separate a file you edited from a file the release rewrote, and preserves both. On that one run expect a `.bob-local` copy for roughly every file the release changed (measured upgrading v2.0.1 → 2.1.0: 273 files, of which 249 are the previous release's `mcp/lib` runtime under `mcp/lib.bob-local/`). The notice says so, lists only the copies that sit beside a file, and summarizes each wholesale-replaced tree with a `diff -rq` command instead of naming its contents. **Do not copy a `mcp/lib.bob-local/` tree back** — it holds the previous release's runtime and restoring it downgrades the install. Delete the preserved copies once you have recovered anything of yours; the next install records digests and is silent.
+- Enumerate every preserved copy at any time with `find . -name '*.bob-local*'`. A preserved copy is never loaded as live config: the suffix lands after the extension, so `.claude/agents/report-writer.md.bob-local` no longer matches the `.md` predicates the adapters scan.
+- Bounds that could drop protection now announce themselves under a `DRIFT GUARD LIMIT REACHED` heading rather than failing quietly: an unreadable ownership receipt, a per-file size or path-length limit, a full receipt, and a truncated pre-replace sweep.
+
 ### Removed the bounty_* tool-alias layer
 
 - Removed the v2.0.x `bounty_*` → `bob_*` one-release tool-alias layer from `tool-registry.js`, along with the per-module `aliases:[...]` arrays. A v1.x caller pinned to a `bounty_*` tool name now receives `UNKNOWN_TOOL`; call the `bob_*` primary directly. The `governance.tool_deprecated` event kind is retired with the alias handler that emitted it.

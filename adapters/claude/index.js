@@ -463,9 +463,22 @@ function install({
   packageName,
   readJsonIfExists,
   removeIfExists,
+  // The DIRECTORY twin of removeIfExists, injected by scripts/install.js from
+  // the same family-A drift guard. Required, NOT defaulted: a local fallback
+  // could only be a bare recursive fs.rmSync, which is exactly the hole this
+  // parameter closes. A missing injection must be a loud TypeError.
+  removeDirIfExists,
   serverPath,
   sessionsRoot = null,
   writeJson,
+  // Injected by scripts/install.js alongside copyFile/copyDirFiles: the
+  // drift-guarded family-A render write. The renderer-driven command files are
+  // wholesale rewrites with no merge semantics, so without the guard an
+  // operator's edit to bob-evaluate.md / bob-update.md / bob-export.md is
+  // destroyed with no sidecar and no summary line — while bob-egress.md, the
+  // one real copyFile below, survives. Falls back to the unguarded local
+  // writer so this module stays usable outside an install.
+  writeTextFile: writeGeneratedFile = writeTextFile,
 }) {
   const claudeDir = path.join(targetAbs, ".claude");
   fsSafeMkdir(claudeDir);
@@ -496,11 +509,18 @@ function install({
     removeIfExists(path.join(claudeDir, "commands", "bob", legacyCommand));
   }
   removeEmptyDirIfExists(path.join(claudeDir, "commands", "bob"));
+  // Legacy skill DIRECTORIES. This used to be a raw recursive fs.rmSync while
+  // every neighbouring delete in this function already went through the
+  // guarded removeIfExists, so an operator edit under
+  // .claude/skills/bob-evaluate/ — a directory name that was LIVE until the
+  // bob-evaluate-runner rename above, i.e. one real upgraders still have —
+  // was destroyed with no preserved copy and no summary line. The directory
+  // twin sweeps the doomed tree into the install-root quarantine first.
   for (const legacySkill of LEGACY_BOB_SKILLS) {
-    fs.rmSync(path.join(claudeDir, "skills", legacySkill), { force: true, recursive: true });
+    removeDirIfExists(path.join(claudeDir, "skills", legacySkill));
   }
   for (const commandId of commandIds()) {
-    writeTextFile(
+    writeGeneratedFile(
       path.join(claudeDir, "commands", commandSpec(commandId).file),
       renderCommand(commandId),
     );

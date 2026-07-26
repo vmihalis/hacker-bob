@@ -22,7 +22,26 @@ const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 // compatibility alias, and intrinsic-poisoning defenses while retaining one
 // implementation in the tarball; that reviewed runtime growth warrants this
 // 50 KB increment and leaves less than 1.4% headroom.
-const CANONICAL_PACKAGE_MAX_BYTES = 3_700_000;
+//
+// Raised to 3.85 MB for the install drift guard. Two things forced this, and the
+// docs were NOT one of them -- both engineering surveys written for that work
+// (docs/install-ownership.md 43,213 B and docs/report-md-format-facts.md 31,443 B)
+// are denied pack budget in EXCLUDED_CANONICAL_PACKAGE_FILES below rather than
+// shipped. Excluding them was measured, not assumed: it recovers only 24,723
+// compressed bytes, because ~75 KB of markdown gzips roughly 3x. What remains is:
+//   1. A PRE-EXISTING breach. The tarball was already 3,734,856 B at the branch
+//      point -- 34,856 B over the old 3.70 MB ceiling before this branch added a
+//      single byte, so `npm run test:package` was already red on main. The ceiling
+//      had been outgrown by earlier merges and the tripwire went unaddressed.
+//   2. Genuine shipped runtime growth: scripts/lib/install-drift.js (the guard
+//      itself, 27,458 B) plus the report-format contract, which by design is
+//      replicated into all four role surfaces it governs -- .claude/agents/
+//      report-writer.md, prompts/roles/reporter.md, and the codex and kimi
+//      bob-evaluate SKILL.md bundles -- at 17,911 B each.
+// Post-exclusion the lean tarball measures 3,795,479 B, so 3.85 MB leaves ~54 KB
+// (1.4%) of headroom: the same margin as the prior increment, and still tight
+// enough to fire on a re-added asset or a vendored dependency.
+const CANONICAL_PACKAGE_MAX_BYTES = 3_850_000;
 
 // Explicit deny-by-default manifest for the JavaScript files installed at the
 // top level of mcp/. It is shared by install, doctor, and package tests so the
@@ -180,6 +199,12 @@ const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   "docs/COMPETITOR_ANALYSIS_APPENDIX.md",
   "docs/LLM_AGENT_SECURITY_LANDSCAPE_2026.md",
   "docs/ISSUE_111_SURFACE_BINDING_PLAN.md",
+  // Engineering surveys written while building the install ownership/drift guard and the
+  // report.md format contract. They record how the in-tree copy families and report layer
+  // were mapped; they are development artifacts, not runtime or end-user documentation, and
+  // nothing in the installed runtime reads them. Kept in the source tree, denied pack budget.
+  "docs/install-ownership.md",
+  "docs/report-md-format-facts.md",
   "docs/BOB_OSS_BENCHMARK_PLAN.md",
   "docs/hacker-bob-offline-guide.md",
   "docs/bob-architecture-event.html",
