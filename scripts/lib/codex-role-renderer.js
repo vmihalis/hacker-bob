@@ -12,6 +12,8 @@ const {
   substituteCapabilityPackVerifierTable,
   substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -42,6 +44,9 @@ const CODEX_WORKER_CONTRACT_ROLE_IDS = Object.freeze([
   // after the per-chain evaluator contracts so the appendix groups all
   // evaluator family contracts together before the cross-cutting roles.
   "evaluator-spawn",
+  // Smart-contract recon expander — a scratch-only producer worker grouped with
+  // the evaluator/producer-family contracts (mirrors Kimi).
+  "sc-recon-expander",
   ...CODEX_CROSS_CUTTING_ROLE_IDS.slice(4),
 ]);
 
@@ -126,9 +131,17 @@ function codexLaunchTemplates() {
       "Wait with `wait_agent`. If routing fails or returns zero surfaces, report the error and stop. After reading the result, call `close_agent` for the host agent.",
       "```",
     ].join("\n"),
+    "{{SPAWN_RECON_ANGLE_AGENT}}": [
+      "```text",
+      `For each plan angle, use Codex spawn_agent for ${workerLabel("surface-discovery")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include `Bob role: surface-discovery-agent`, `DOMAIN=[domain]`, `SESSION=~/hacker-bob-sessions/[domain]`, `ANGLE=[angle.id]`, and the full `surface-discovery` contract from Codex Worker Role Contracts below.",
+      "Wait with `wait_agent` for all angle workers to drain, then spawn the `ANGLE=assembly` worker. After reading the results, call `close_agent` for the host agent.",
+      "```",
+    ].join("\n"),
     "{{SPAWN_EVALUATOR_AGENT}}": [
       "```text",
-      `For each assignment, use Codex spawn_agent for the evaluator family chosen by the MCP capability router (\`assignment.evaluator_agent\` from wave-start result.data.assignments[] — one of evaluator-agent or any of the per-pack evaluators listed in the smart-contract pack catalogue: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}).`,
+      `For each assignment, use Codex spawn_agent for the evaluator family chosen by the MCP capability router (\`assignment.evaluator_agent\` from wave-start result.data.assignments[] — one of evaluator-agent or a registered evaluator role: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}). A registered role is not dispatch authority: spawn it only when the assignment came from a dispatchable capability pack.`,
       "- agent_type: \"worker\"",
       "- message: include the compact run header below plus the full contract for `assignment.evaluator_agent` from Codex Worker Role Contracts.",
       "- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Evaluator agent: [assignment.evaluator_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].",
@@ -185,7 +198,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("reporter")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: report-writer. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Write the canonical ~/hacker-bob-sessions/[domain]/report.md before calling bounty_report_written.` Include the full `reporter` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: report-writer. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Compose ~/hacker-bob-sessions/[domain]/report.md via bob_compose_report, then finalize with bob_finalize_report.` Include the full `reporter` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the report, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -273,8 +286,10 @@ function codexRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
       // evidence prompts embed the verifier-table placeholder and evaluator
       // prompts embed the handoff-limits placeholder; Codex workers read
       // both from the appendix in bob-evaluate SKILL.md.
-      substituteHandoffFieldLimits(
-        substituteCapabilityPackVerifierTable(applyCodexHostText(roleBody(roleId, { root })).trimEnd()),
+      substituteEvaluatorReframePosture(
+        substituteHandoffFieldLimits(
+          substituteCapabilityPackVerifierTable(applyCodexHostText(roleBody(roleId, { root })).trimEnd()),
+        ),
       ),
       `END ${roleId} CONTRACT`,
     );
@@ -308,6 +323,8 @@ function renderCodexPromptBody(roleId, body, options = {}) {
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelForPack);
   document = substituteHandoffFieldLimits(document);
+  document = substituteEvaluatorReframePosture(document);
+  document = substituteProducerCatalogue(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${codexOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${codexRoleContractAppendix(options)}\n`;

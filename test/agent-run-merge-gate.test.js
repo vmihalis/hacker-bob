@@ -37,6 +37,12 @@ const {
 const {
   writeFileAtomic,
 } = require("../mcp/lib/storage.js");
+const {
+  logTechniqueAttempt,
+} = require("../mcp/lib/technique-packs.js");
+const {
+  evaluateAgentCompletion,
+} = require("../mcp/lib/agent-run-completion.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -168,16 +174,19 @@ test("SubagentStop with valid handoff settles the AgentRun row through the merge
   });
 });
 
-test("killed agent (running, no settle) keeps merge gate closed on the in-flight agent", () => {
+test("a started (running) agent with a provenance-valid handoff merges via the lifecycle gate, not file-presence", () => {
   withTempHome(() => {
-    const domain = "agent-runs-killed.example.com";
+    const domain = "agent-runs-started-merges.example.com";
     const start = driveWaveStart(domain, ["surface-a", "surface-b"]);
     const assignmentTokenA = start.assignments[0].handoff_token;
     const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
 
-    // Agent a1 fired SubagentStart (state = running) and wrote its handoff,
-    // but the SubagentStop hook never settled. The stuck `running` row is
-    // the dead-agent signal the merge gate now refuses to advance through.
+    // Agent a1's first surface-scoped tool call recorded `running` (universal
+    // MCP-side start-recording, or the SubagentStart hook), and it wrote a
+    // provenance-valid handoff. No `settled` row exists (e.g. an adapter with no
+    // stop hook). The merge gate accepts a1 on the started lifecycle PLUS full
+    // on-disk payload+provenance validation — the existence boolean is no longer
+    // the decider.
     markAgentRunRunning({
       targetDomain: domain,
       wave: "w1",
@@ -191,8 +200,20 @@ test("killed agent (running, no settle) keeps merge gate closed on the in-flight
       surface_id: "surface-a",
       surface_status: "complete",
       handoff_token: assignmentTokenA,
-      summary: "surface mostly covered",
-      content: "# Handoff\n\nWrote handoff but died before settle",
+      summary: "surface fully covered; started but never settled",
+      content: "# Handoff\n\nWrote handoff, no stop hook fired",
+    }));
+    // The started run logged a real technique attempt, so its handoff carries
+    // the attempt_log_required evidence the merge gate requires.
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "no_finding",
+      evidence: "probed REST authz across two accounts on surface-a; no IDOR observed",
     }));
 
     const runsBeforeMerge = readAgentRuns(domain);
@@ -201,31 +222,86 @@ test("killed agent (running, no settle) keeps merge gate closed on the in-flight
 
     const artifacts = loadWaveArtifacts(domain, 1);
     const readiness = buildWaveReadiness(artifacts, { domain });
-    assert.equal(readiness.is_complete, false);
-    // a1 is gated closed by the running-without-settle row.
-    assert.ok(readiness.missing_agents.includes("a1"));
-    // a2 is gated by the file-presence fallback (no handoff file on disk).
+    // a1 is RECEIVED on the started lifecycle (no settled row required).
+    assert.ok(readiness.received_agents.includes("a1"));
+    assert.ok(!readiness.missing_agents.includes("a1"));
+    // a2 only ever got its `assigned` row and wrote no handoff -> missing.
     assert.ok(readiness.missing_agents.includes("a2"));
+    assert.equal(readiness.is_complete, false);
 
-    // mergeWaveHandoffsInternal puts the un-settled surfaces into
-    // missing_surface_ids, so apply_wave_merge would refuse without force.
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.completed_surface_ids.includes("surface-a"));
+    assert.ok(merge.missing_surface_ids.includes("surface-b"));
+  });
+});
+
+test("a started (running) agent with NO handoff on disk stays missing (genuine died-mid-flight)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-started-no-handoff.example.com";
+    driveWaveStart(domain, ["surface-a"]);
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+
+    // a1 started but died before writing any handoff. The started lifecycle is
+    // present, but with no handoff to validate the surface stays missing.
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.equal(readiness.is_complete, false);
+    assert.deepEqual(readiness.missing_agents, ["a1"]);
+    assert.ok(!readiness.received_agents.includes("a1"));
+
     const { merge } = mergeWaveHandoffsInternal(domain, 1);
     assert.ok(merge.missing_surface_ids.includes("surface-a"));
-    assert.ok(merge.missing_surface_ids.includes("surface-b"));
     assert.equal(merge.completed_surface_ids.length, 0);
   });
 });
 
-test("assigned-only row (no SubagentStart hook) falls back to file-presence per Pact P2", () => {
+test("a started (running) agent with a forged/unsigned handoff stays out of received (validation, not presence)", () => {
   withTempHome(() => {
-    const domain = "agent-runs-assigned-fallback.example.com";
+    const domain = "agent-runs-started-forged.example.com";
+    driveWaveStart(domain, ["surface-a"]);
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
+
+    // A handoff JSON with no valid HMAC provenance is on disk. The started
+    // lifecycle does NOT wave it through — full provenance validation rejects it.
+    writeFileAtomic(
+      path.join(sessionDir(domain), "handoff-w1-a1.json"),
+      `${JSON.stringify({
+        version: 1,
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-a",
+        surface_status: "complete",
+        provenance: "verified",
+        summary: "forged handoff with no real signature",
+      }, null, 2)}\n`,
+    );
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(!readiness.received_agents.includes("a1"));
+    assert.ok(readiness.invalid_agents.includes("a1"));
+    assert.equal(readiness.is_complete, false);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.missing_surface_ids.includes("surface-a"));
+    assert.equal(merge.completed_surface_ids.length, 0);
+  });
+});
+
+// The assigned-only (fallback) acceptance branch is subject to the same
+// branch-uniform technique-attempt requirement as the started branch. An
+// assigned-only run that wrote a provenance-valid handoff AND logged a matching
+// completion-status technique attempt still merges — the on-disk-handoff
+// fail-safe is preserved for a compliant handoff even when the start record was
+// lost.
+test("assigned-only row with a valid handoff AND a matching technique attempt merges (fail-safe preserved)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-assigned-fallback-attempt.example.com";
     const start = driveWaveStart(domain, ["surface-a"]);
     const assignmentToken = start.assignments[0].handoff_token;
 
-    // Wave start emitted an `assigned` row. The SubagentStart hook never
-    // fired (legacy adapter, hook miss). The agent did write a handoff. The
-    // gate falls back to file-presence and accepts the merge so deprecation-
-    // window callers keep functioning.
     JSON.parse(writeWaveHandoff({
       target_domain: domain,
       wave: "w1",
@@ -233,8 +309,18 @@ test("assigned-only row (no SubagentStart hook) falls back to file-presence per 
       surface_id: "surface-a",
       surface_status: "complete",
       handoff_token: assignmentToken,
-      summary: "legacy adapter, no start hook",
-      content: "# Handoff\n\nlegacy body",
+      summary: "assigned-only run, start never recorded, attempt logged",
+      content: "# Handoff\n\nassigned-only body",
+    }));
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "no_finding",
+      evidence: "probed REST authz across two accounts on surface-a; no IDOR observed",
     }));
     const runs = readAgentRuns(domain);
     assert.equal(runs[runs.length - 1].status, "assigned");
@@ -243,6 +329,128 @@ test("assigned-only row (no SubagentStart hook) falls back to file-presence per 
     const readiness = buildWaveReadiness(artifacts, { domain });
     assert.equal(readiness.is_complete, true);
     assert.deepEqual(readiness.received_agents, ["a1"]);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.completed_surface_ids.includes("surface-a"));
+    assert.equal(merge.missing_surface_ids.length, 0);
+  });
+});
+
+// The changed permanent-fail-safe semantics: an assigned-only (fallback) run on
+// an attempt-log-required (web) surface that wrote a provenance-valid handoff but
+// logged NO technique attempt is now REFUSED at readiness and merge. The
+// fallback branch no longer waves a lazy no-attempt handoff through — it is
+// branch-uniform with the started branch.
+test("assigned-only row with a valid handoff but NO technique attempt is refused at merge (web surface)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-assigned-fallback-no-attempt.example.com";
+    const start = driveWaveStart(domain, ["surface-a"]);
+    const assignmentToken = start.assignments[0].handoff_token;
+
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: assignmentToken,
+      summary: "assigned-only run, start never recorded, no attempt logged",
+      content: "# Handoff\n\nassigned-only body",
+    }));
+    const runs = readAgentRuns(domain);
+    assert.equal(runs[runs.length - 1].status, "assigned");
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(!readiness.received_agents.includes("a1"));
+    assert.ok(readiness.missing_agents.includes("a1"));
+    assert.equal(readiness.is_complete, false);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.missing_surface_ids.includes("surface-a"));
+    assert.equal(merge.completed_surface_ids.length, 0);
+  });
+});
+
+// SC surfaces carry attempt_log_required=false, so the merge-side technique-log
+// requirement does not apply: an assigned-only (fallback) SC run with a valid
+// handoff and NO technique attempt still merges. The independent SC
+// completion-substance depth gate is unaffected (partial here needs no
+// substance).
+test("assigned-only SC surface with a valid handoff and NO technique attempt merges (attempt_log_required=false)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-assigned-fallback-sc.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    seedAttackSurfaces(domain, [{
+      id: "surface-sc",
+      surface_type: "smart_contract",
+      chain_family: "evm",
+      hosts: [`https://${domain}`],
+      priority: "HIGH",
+    }]);
+    JSON.parse(advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER" }));
+    const start = JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-sc" }],
+    }));
+
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-sc",
+      surface_status: "partial",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "SC surface assigned-only, partial coverage, no attempt logged",
+      content: "# Handoff\n\nsc body",
+      blocked_harness_runs: [{
+        kind: "foundry_fork",
+        harness: "forge test --fork-url <archive-rpc>",
+        reason: "no archive RPC available to fork mainnet for the redeem-path invariant",
+      }],
+    }));
+    const runs = readAgentRuns(domain);
+    assert.equal(runs[runs.length - 1].status, "assigned");
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(readiness.received_agents.includes("a1"));
+    assert.equal(readiness.is_complete, true);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.partial_surface_ids.includes("surface-sc"));
+    assert.equal(merge.missing_surface_ids.length, 0);
+  });
+});
+
+// A promoted-lead ("lead-*") surface is relaxed on the fallback branch the same
+// way it is on the started and recovery branches: an assigned-only lead-* run
+// with a valid handoff and NO technique attempt merges (the genuine tooling gap
+// where an attempt cannot always be logged).
+test("assigned-only lead-* surface with a valid handoff and NO technique attempt merges (relaxed)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-assigned-fallback-lead.example.com";
+    const start = driveWaveStart(domain, ["lead-a"]);
+
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "lead-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "promoted-lead surface, assigned-only, no technique attempt loggable",
+      content: "# Handoff\n\nlead body",
+    }));
+    const runs = readAgentRuns(domain);
+    assert.equal(runs[runs.length - 1].status, "assigned");
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(readiness.received_agents.includes("a1"));
+    assert.equal(readiness.is_complete, true);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.completed_surface_ids.includes("lead-a"));
+    assert.equal(merge.missing_surface_ids.length, 0);
   });
 });
 
@@ -352,13 +560,13 @@ test("a fully driven wave yields N settled rows in agent-runs.jsonl", () => {
   });
 });
 
-test("missing AgentRun row falls back to file-presence per dual-write Pact P2", () => {
+test("a missing AgentRun row defers to on-disk handoff validation (permanent fail-safe)", () => {
   withTempHome(() => {
     const domain = "agent-runs-dual-write-fallback.example.com";
 
     // Construct a wave through the normal path, then erase the AgentRun ledger
-    // so the gate must rely on the file-presence fallback. This mirrors legacy
-    // sessions and the rollout window when the ledger is empty.
+    // so the gate must rely on the on-disk handoff. This mirrors a session whose
+    // ledger is absent (an empty/lost ledger).
     const started = driveWaveStart(domain, ["surface-a"]);
     JSON.parse(writeWaveHandoff({
       target_domain: domain,
@@ -370,6 +578,21 @@ test("missing AgentRun row falls back to file-presence per dual-write Pact P2", 
       summary: "legacy-session handoff",
       content: "# Handoff\n\nlegacy body",
     }));
+    // The merge-side technique-log check keys on the handoff surface_id + the
+    // on-disk technique-attempts.jsonl, both independent of the agent-runs
+    // ledger. A real handoff for a require-attempts surface that logged a real
+    // attempt still merges even after the ledger is lost — the null-ledger case
+    // does not over-gate beyond what attempt_log_required dictates.
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "no_finding",
+      evidence: "probed REST authz across two accounts on surface-a; no IDOR observed",
+    }));
 
     // Erase agent-runs.jsonl to simulate a legacy session with no ledger.
     const ledgerPath = agentRunsJsonlPath(domain);
@@ -377,10 +600,90 @@ test("missing AgentRun row falls back to file-presence per dual-write Pact P2", 
 
     const artifacts = loadWaveArtifacts(domain, 1);
     const readiness = buildWaveReadiness(artifacts, { domain });
-    // File-presence fallback path: the handoff file is on disk, so readiness
-    // reports the surface as received even without a `settled` ledger row.
+    // Degraded path: with no ledger the gate validates the on-disk handoff, so
+    // readiness reports the surface as received even without a `settled` row.
     assert.equal(readiness.is_complete, true);
     assert.deepEqual(readiness.received_agents, ["a1"]);
+  });
+});
+
+// Depth-gate composition. The smart_contract completion-substance gate lives in
+// validateWaveHandoffPayload, which fires at MERGE for every accept-eligible
+// run. A `started` (running) run is NOT exempt: it still flows through that
+// validation, so an SC handoff that claims `complete` without a finding or a
+// substantive bypass_attempt is rejected at merge even though the agent provably
+// started. This pins that universal start-recording did NOT weaken the depth
+// gate. The handoff is crafted + re-signed directly because bob_write_wave_handoff
+// refuses an SC-complete-no-substance handoff at WRITE time (the same gate's
+// other enforcement point), so it can never reach disk through the tool.
+test("depth gate: a started run's SC handoff lacking completion-substance is rejected at merge", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-started-sc-depth.example.com";
+    // Seed a smart_contract surface so the assignment file captures
+    // surface_type=smart_contract (the gate's tamper-resistant input).
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    seedAttackSurfaces(domain, [{
+      id: "surface-sc",
+      surface_type: "smart_contract",
+      chain_family: "evm",
+      hosts: [`https://${domain}`],
+      priority: "HIGH",
+    }]);
+    JSON.parse(advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER" }));
+    const start = JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-sc" }],
+    }));
+
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { signHandoffProvenance } = require("../mcp/lib/wave-handoff-contracts.js");
+    const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
+    const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-sc" });
+
+    // First write a VALID SC-complete handoff (with a substantive bypass_attempt)
+    // through the tool to obtain a correctly-shaped, signed handoff, then strip
+    // the substance and re-sign so a SIGNED but substance-free SC-complete
+    // handoff sits on disk.
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-sc",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "exercised the redeem path against the collateral invariant",
+      content: "# Handoff\n\nbody",
+      bypass_attempts: [{
+        condition: "permissionless collateral redemption bypasses the solvency check",
+        attempt_summary: "Forked mainnet and called redeem() with a crafted oracle update to break the solvency invariant; reverted, no break.",
+        outcome: "no_finding",
+      }],
+    }));
+
+    const assignment = loadWaveAssignments(domain, 1).assignmentByAgent.get("a1");
+    const signingKey = readHandoffSigningKey(domain);
+    const handoffPath = path.join(sessionDir(domain), "handoff-w1-a1.json");
+    const signed = JSON.parse(fs.readFileSync(handoffPath, "utf8"));
+    // Strip the substance and the existing provenance fields, then re-sign.
+    delete signed.bypass_attempts;
+    delete signed.provenance_model;
+    delete signed.provenance_signature;
+    delete signed.provenance_assignment_hash;
+    const reSigned = signHandoffProvenance(signed, signingKey, { assignment });
+    writeFileAtomic(handoffPath, `${JSON.stringify(reSigned, null, 2)}\n`);
+
+    // The re-signed handoff is SC-complete with no finding and no substantive
+    // bypass: the merge-time depth gate rejects it even for a started run.
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(!readiness.received_agents.includes("a1"));
+    assert.ok(readiness.invalid_agents.includes("a1"));
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.missing_surface_ids.includes("surface-sc"));
+    assert.equal(merge.completed_surface_ids.length, 0);
   });
 });
 
@@ -424,6 +727,20 @@ test("Test D: provenance-verified handoff is honored even after a `failed` row, 
       handoff_token: assignmentToken,
       summary: "fully covered, but the stop hook then wrote failed rows",
       content: "# Handoff\n\nbody",
+    }));
+    // A compliant handoff also logged its technique attempt, so the recovery
+    // branch's branch-uniform technique-log requirement is satisfied and the
+    // surface merges (the recovery is about the runaway-loop missing_handoff
+    // poisoning, not a technique-log gap).
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "no_finding",
+      evidence: "probed REST authz across two accounts on surface-a; no IDOR observed",
     }));
 
     // The runaway stop-hook loop appended a `failed` row tagged
@@ -509,6 +826,20 @@ test("Test D + finding: a finding-bearing handoff is honored on the recovery pat
         finding_id: recorded.finding_id,
       }],
     }));
+    // A recorded finding does NOT satisfy the technique-attempt requirement (the
+    // merge-side check reads technique-attempts.jsonl, not findings); the
+    // compliant run also logged a technique attempt, so the recovery branch's
+    // branch-uniform technique-log requirement is met.
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "validated",
+      outcome: "finding_recorded",
+      evidence: "Mainnet-fork PoC redirected the reward split; recorded as a finding.",
+    }));
 
     markAgentRunTerminal({
       targetDomain: domain,
@@ -570,6 +901,95 @@ test("Test D negative: a `failed` row with an unsigned/forged handoff stays in m
       "forged handoff must NOT be accepted by the verified-handoff fallback",
     );
     assert.ok(!doc.handoffs.some((h) => h.agent === "a1"));
+  });
+});
+
+// Recovery-branch parity: a recovered terminal row (failed + recoverable
+// missing_handoff + a provenance-verified handoff on disk) on an
+// attempt-log-required (web) surface is subject to the same branch-uniform
+// technique-attempt requirement as the started and fallback branches. With NO
+// technique attempt logged, the surface is REFUSED at readiness and merge — the
+// runaway-loop missing_handoff poisoning would otherwise be recovered, but a
+// lazy no-attempt handoff is not honored. buildWaveHandoffsDocument still
+// surfaces the on-disk handoff (its readout is consumed by the finalize gate,
+// which applies the technique check itself); the refusal lives at the
+// authoritative readiness + merge gates that apply_wave_merge consults.
+test("recovery branch refuses a web-surface handoff with NO technique attempt", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-recovery-no-attempt.example.com";
+    const start = driveWaveStart(domain, ["surface-a"]);
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "recovered terminal row, valid handoff, no technique attempt",
+      content: "# Handoff\n\nbody",
+    }));
+    markAgentRunTerminal({
+      targetDomain: domain,
+      wave: "w1",
+      agent: "a1",
+      surfaceId: "surface-a",
+      status: "failed",
+      blockCode: "missing_handoff",
+      failureReason: "runaway loop poisoned the row to missing_handoff",
+    });
+
+    // The document readout is unchanged: it still surfaces the on-disk handoff.
+    const doc = buildWaveHandoffsDocument(domain, [1]);
+    assert.ok(doc.handoffs.some((h) => h.agent === "a1" && h.surface_id === "surface-a"));
+
+    // The authoritative gates refuse the no-attempt handoff on the recovery branch.
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(!readiness.received_agents.includes("a1"));
+    assert.ok(readiness.missing_agents.includes("a1"));
+    assert.equal(readiness.is_complete, false);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.missing_surface_ids.includes("surface-a"));
+    assert.equal(merge.completed_surface_ids.length, 0);
+  });
+});
+
+// Recovery-branch lead-* relaxation: a recovered terminal row on a promoted-lead
+// ("lead-*") surface with a valid handoff and NO technique attempt MERGES — the
+// same lead-* relaxation the fallback and started branches apply, composed via
+// the shared isRecoverableBlockCode predicate.
+test("recovery branch relaxes a lead-* surface handoff with NO technique attempt", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-recovery-lead.example.com";
+    const start = driveWaveStart(domain, ["lead-a"]);
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "lead-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "promoted-lead surface, recovered terminal row, no attempt loggable",
+      content: "# Handoff\n\nlead body",
+    }));
+    markAgentRunTerminal({
+      targetDomain: domain,
+      wave: "w1",
+      agent: "a1",
+      surfaceId: "lead-a",
+      status: "abandoned",
+      blockCode: "missing_technique_attempt_log",
+      failureKind: "recoverable_tooling_gap",
+      failureReason: "missing technique attempt log",
+    });
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(readiness.received_agents.includes("a1"));
+    assert.equal(readiness.is_complete, true);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.completed_surface_ids.includes("lead-a"));
+    assert.equal(merge.missing_surface_ids.length, 0);
   });
 });
 
@@ -803,5 +1223,179 @@ test("Test F: a non-recoverable missing_oss_coverage failure is NOT relaxed by a
     const { merge } = mergeWaveHandoffsInternal(domain, 1);
     assert.ok(merge.missing_surface_ids.includes("surface-a"));
     assert.equal(merge.completed_surface_ids.length, 0);
+  });
+});
+
+// The crash window: a started (running) run wrote a provenance-valid handoff but
+// died before SubagentStop, so the finalize gate's attempt_log_required control
+// never ran. On an ordinary surface-* with no matching technique attempt, the
+// merge + readiness gates now refuse the handoff (the residual the finalize gate
+// alone could not close — it never executed for this run).
+test("crash window: a started run's valid handoff with NO technique attempt is refused at merge (ordinary surface)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-crash-window-refused.example.com";
+    const start = driveWaveStart(domain, ["surface-a"]);
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+
+    // a1 started (running) and wrote a valid handoff, but logged no technique
+    // attempt and never reached SubagentStop (no terminal row).
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "started, handoff written, crashed before any technique attempt was logged",
+      content: "# Handoff\n\ncrash-window body",
+    }));
+    assert.equal(readAgentRuns(domain).slice(-1)[0].status, "running");
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(!readiness.received_agents.includes("a1"));
+    assert.ok(readiness.missing_agents.includes("a1"));
+    assert.equal(readiness.is_complete, false);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.missing_surface_ids.includes("surface-a"));
+    assert.equal(merge.completed_surface_ids.length, 0);
+  });
+});
+
+// The same crash window on a promoted-lead surface (id "lead-*") is RELAXED: a
+// promoted lead cannot always log a technique attempt, so the merge gate honors
+// its provenance-valid handoff. This is the exact lead-* relaxation the
+// closed-terminal path uses (isRecoverableBlockCode), composed on the started
+// branch so the two gates agree.
+test("crash window: a started run's valid handoff with NO technique attempt MERGES for a lead-* surface (relaxed)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-crash-window-lead.example.com";
+    const start = driveWaveStart(domain, ["lead-a"]);
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "lead-a" });
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "lead-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "promoted-lead surface, started, handoff written, no technique attempt loggable",
+      content: "# Handoff\n\nlead crash-window body",
+    }));
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(readiness.received_agents.includes("a1"));
+    assert.ok(!readiness.missing_agents.includes("a1"));
+    assert.equal(readiness.is_complete, true);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.completed_surface_ids.includes("lead-a"));
+    assert.equal(merge.missing_surface_ids.length, 0);
+  });
+});
+
+// A started run with a matching completion-status technique attempt merges: the
+// requirement is satisfied, not bypassed. Pins that the new check refuses only
+// the genuinely technique-log-less crash, never a real evaluated surface.
+test("crash window: a started run with a matching technique attempt MERGES (ordinary surface)", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-crash-window-attempt.example.com";
+    const start = driveWaveStart(domain, ["surface-a"]);
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "started, handoff written, technique attempt logged",
+      content: "# Handoff\n\nattempt-present body",
+    }));
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "no_finding",
+      evidence: "probed REST authz across two accounts on surface-a; no IDOR observed",
+    }));
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.ok(readiness.received_agents.includes("a1"));
+    assert.equal(readiness.is_complete, true);
+
+    const { merge } = mergeWaveHandoffsInternal(domain, 1);
+    assert.ok(merge.completed_surface_ids.includes("surface-a"));
+    assert.equal(merge.missing_surface_ids.length, 0);
+  });
+});
+
+// The finalize gate and the merge gate agree: both consult the SAME shared
+// evaluateTechniqueAttemptRequirement. An ordinary started run with no attempt
+// blocks finalize with block_code missing_technique_attempt_log AND is bucketed
+// missing at merge; logging a matching attempt flips both to pass. This also
+// pins that the finalize gate keeps its own block_code (it is NOT relabeled to
+// missing_handoff by the merge-side check).
+test("the finalize gate and the merge gate agree on the technique-attempt requirement", () => {
+  withTempHome(() => {
+    const domain = "agent-runs-gates-agree.example.com";
+    const start = driveWaveStart(domain, ["surface-a"]);
+    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+
+    markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: start.assignments[0].handoff_token,
+      summary: "started, valid handoff, attempt deferred",
+      content: "# Handoff\n\ngates-agree body",
+    }));
+
+    // Before the attempt: finalize blocks on missing_technique_attempt_log
+    // (NOT missing_handoff) and the merge buckets the surface missing.
+    const beforeFinalize = evaluateAgentCompletion({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(beforeFinalize.ok, false);
+    assert.equal(beforeFinalize.block_code, "missing_technique_attempt_log");
+    const beforeMerge = mergeWaveHandoffsInternal(domain, 1).merge;
+    assert.ok(beforeMerge.missing_surface_ids.includes("surface-a"));
+    assert.equal(beforeMerge.completed_surface_ids.length, 0);
+
+    // After a matching attempt: both gates flip to pass.
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "no_finding",
+      evidence: "probed REST authz across two accounts on surface-a; no IDOR observed",
+    }));
+    const afterFinalize = evaluateAgentCompletion({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(afterFinalize.ok, true);
+    const afterMerge = mergeWaveHandoffsInternal(domain, 1).merge;
+    assert.ok(afterMerge.completed_surface_ids.includes("surface-a"));
+    assert.equal(afterMerge.missing_surface_ids.length, 0);
   });
 });

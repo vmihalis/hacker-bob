@@ -596,6 +596,24 @@ function normalizeEvidencePacksDocument(document, {
     throw new Error(`Evidence packs missing final reportable finding(s): ${missing.join(", ")}`);
   }
 
+  // Pack-owned evidence is server-generated and must remain byte-for-byte
+  // equivalent to the current live projection.  Compare the raw pack as well
+  // as the normalized shape so ignored/extra fields cannot carry physical raw
+  // evidence or caller narrative into the audit-graded artifact.
+  const capabilityPackProjection = require("./capability-pack-evidence-adapters.js")
+    .assertCapabilityPackEvidencePacksCurrent(
+      domain,
+      document.packs,
+      normalized.packs,
+      reportableIds,
+    );
+  if (capabilityPackProjection.handled_finding_ids.length > 0
+      && verificationBinding == null) {
+    throw new Error(
+      "capability-pack evidence must be bound to the current final verification",
+    );
+  }
+
   return normalized;
 }
 
@@ -839,6 +857,11 @@ function writeEvidencePacks(args) {
   }
 
   return withSessionLock(domain, () => {
+    // Fail-closed trust gate: refuse to write an evidence pack for a
+    // trust-degraded (unsigned) finding. Inert for signed/unmarked findings
+    // because degradedReportableFindingIds is empty for them.
+    const { degradedReportableFindingIds } = require("./tools/record-candidate-claim.js");
+    const degraded = degradedReportableFindingIds(domain);
     const findingIdSet = readFindingIdSet(domain);
     const finalRound = loadFinalVerification(domain, findingIdSet, "evidence collection");
     const verificationBinding = finalRound.version === 2
@@ -846,11 +869,45 @@ function writeEvidencePacks(args) {
       : null;
     const reportableIds = finalReportableIds(finalRound);
     const finalReportableIdSet = new Set(reportableIds);
+    const degradedReportable = reportableIds.filter((findingId) => degraded.has(findingId));
+    if (degradedReportable.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `Refusing to write evidence for trust-degraded (unsigned) finding(s): ${degradedReportable.join(", ")}`,
+        { degraded_finding_ids: degradedReportable },
+        {
+          remediation:
+            "Re-verify the source of the named finding(s) and clear the unsigned signature_verification_status marker before writing evidence-packs.json.",
+        },
+      );
+    }
+    const capabilityPackProjection = require("./capability-pack-evidence-adapters.js")
+      .buildCapabilityPackEvidencePacks(domain, finalReportableIdSet);
+    const packOwnedFindingIds = new Set(capabilityPackProjection.handled_finding_ids);
+    const callerPackOverrides = args.packs
+      .filter((pack) => pack && packOwnedFindingIds.has(pack.finding_id))
+      .map((pack) => pack.finding_id)
+      .sort();
+    if (callerPackOverrides.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `Caller-supplied evidence packs cannot override capability-pack findings: ${callerPackOverrides.join(", ")}`,
+        {
+          code: "capability_pack_evidence_override",
+          finding_ids: callerPackOverrides,
+        },
+        {
+          remediation:
+            "Remove the named packs; Bob generates them from live report-safe capability-pack projections.",
+        },
+      );
+    }
+    const combinedPacks = [...args.packs, ...capabilityPackProjection.packs];
     const document = normalizeEvidencePacksDocument({
       version: EVIDENCE_PACKS_VERSION,
       target_domain: domain,
       ...(verificationBinding || {}),
-      packs: args.packs,
+      packs: combinedPacks,
     }, {
       expectedDomain: domain,
       findingIdSet,
@@ -867,6 +924,7 @@ function writeEvidencePacks(args) {
       packs_count: document.packs.length,
       representative_samples_count: document.packs.reduce((total, pack) => total + pack.representative_samples.length, 0),
       reportable_findings_covered: reportableIds.length,
+      capability_pack_generated_count: capabilityPackProjection.packs.length,
       written_json: paths.json,
     };
     if (verificationBinding) {
@@ -886,6 +944,7 @@ function writeEvidencePacks(args) {
         packs: document.packs.length,
         representative_samples: response.representative_samples_count,
         reportable_findings_covered: reportableIds.length,
+        capability_pack_generated: capabilityPackProjection.packs.length,
       },
     }, safeGovernanceContextForDomain(domain));
     if (verificationBinding) verificationLib().refreshVerificationManifest(domain, { throw_on_error: true });

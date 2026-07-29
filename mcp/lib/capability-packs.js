@@ -1,5 +1,14 @@
 "use strict";
 
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
+const {
+  PHYSICAL_SURFACE_NODE_TYPES,
+} = require("./physical-surface-transition.js");
+const {
+  PHYSICAL_CAPABILITY_CONSUMERS,
+  PHYSICAL_CAPABILITY_PACK_DISPATCH_BLOCK_REASON,
+} = require("./physical-capability-manifest.js");
+
 // Capability pack manifest. Each pack is the single source of truth for:
 //   id              — string used in surface-routes.json and findings.jsonl
 //   evaluator_agent    — Claude/Codex subagent name spawned for this pack
@@ -35,11 +44,43 @@ const DEFAULT_REPLAY_SAFETY = Object.freeze({
   lease_scope: "attempt_pack",
 });
 
+// Plane-PH routing is intentionally registered before it is dispatchable. The
+// physical substrate already has provider-neutral authority, resource,
+// campaign, evidence, and SurfaceGraph contracts, but the pack-declared
+// assignment brief, closure, finding, verifier, grade, report, and composition
+// consumers are not all connected yet. Reusing the web evaluator while those
+// consumers are absent would let a web-shaped handoff claim completion for a
+// physical campaign. Keep the pack discoverable so physical surfaces can bind
+// the exact capability family they require, but make dispatch availability an
+// explicit registry fact that every consumer can fail closed on.
+const PHYSICAL_CAPABILITY_PACK_UNAVAILABLE_REASON =
+  PHYSICAL_CAPABILITY_PACK_DISPATCH_BLOCK_REASON;
+
+const PHYSICAL_SURFACE_TYPES = Object.freeze(Array.from(new Set([
+  "physical",
+  ...PHYSICAL_SURFACE_NODE_TYPES,
+])).sort());
+const PHYSICAL_SURFACE_TYPE_SET = new Set(PHYSICAL_SURFACE_TYPES);
+
 const SC_DIRECT_EGRESS_SUMMARY = "SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default.";
+
+// The objective + bar the orchestrator states when it dispatches an SC
+// evaluator — the same posture the role prompt carries, single-sourced here so
+// the spawn-dispatch line opens with WHY (break an invariant; a flipped control
+// is the bar) before the causal tool chain that follows describes HOW. The
+// trailing chain is the prerequisite ordering (fetch -> trust map -> scaffold
+// -> run) plus the recording contract, not a procedure to walk in lockstep.
+const SC_OBJECTIVE_LEAD = "Objective: break an invariant or demonstrate attacker-reachable impact on this surface; a surface closes only when an executed differential whose negative control flips is recorded, or with an honest partial/blocked. The tool chain below is the causal prerequisite order, not a checklist:";
 
 const WEB_CAPABILITY_PACK = Object.freeze({
   id: "web",
   capability_pack_version: 1,
+  // Technique guidance is keyed by capability family, not by the evaluator
+  // routing variant that happens to execute it. Routing variants derive from
+  // this pack and inherit the canonical family, so every technique-pack
+  // consumer can resolve compatibility through CAPABILITY_PACKS instead of
+  // maintaining local aliases (for example, web_fanout -> web).
+  technique_compatibility_pack: "web",
   evaluator_agent: "evaluator-agent",
   brief_profile: "web",
   role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
@@ -66,6 +107,43 @@ const WEB_CAPABILITY_PACK = Object.freeze({
     profile: "web",
   }),
 });
+
+// The spawn-capable web variant: byte-identical to WEB_CAPABILITY_PACK except the
+// evaluator_agent is the spawn-capable evaluator-fanout role. SPREAD-derived (never a
+// hand-cloned sibling) so verifier/evidence/completion_gate/context_budget/brief_profile
+// cannot drift from web. Selected (in place of web) for high-value surfaces when nesting is
+// actually possible (see selectWebEvaluatorPack); this is what ARMS the child fan-out plan a
+// flat evaluator-agent has no Task tool to actuate — the ns.com "0 of 33 spawned" gap.
+const WEB_FANOUT_CAPABILITY_PACK = Object.freeze({
+  ...WEB_CAPABILITY_PACK,
+  id: "web_fanout",
+  evaluator_agent: FANOUT_ROLE_REGISTRY.root.subagent_type,
+});
+
+// Select the web evaluator pack for a classified WEB surface: the spawn-capable web_fanout
+// variant for a HIGH-VALUE surface when nesting can actually fire, else the flat web pack.
+// idBearing is passed IN (from the MCP-owned route.id_bearing frozen in buildSurfaceRoutesDocument)
+// and NEVER re-derived here, so the routing choice and route.id_bearing cannot desync.
+//   - Default ON (route_high_value_to_fanout !== false): high-value web surfaces fan out.
+//   - Trigger = idBearing (the clean high-value signal). multi-auth is NOT a trigger — it is
+//     session-global (identical for every surface) and is the satisfiability PRECONDITION for a
+//     flip, not a depth signal. HIGH priority is an opt-in only (web_fanout_on_high_priority):
+//     priority is a RANK, agent-writable, and defaults medium.
+//   - Gated on spawnDepth>1: at max_spawn_depth<=1 nesting can never fire, so rerouting to the
+//     fanout role would only incur its transition-blindness for nothing — keep flat.
+function selectWebEvaluatorPack(classification, { idBearing = false, highPriority = false, spawnDepth = 1, hasBugClassHints = true, queuePolicy = null } = {}) {
+  if (!classification || classification.capability_pack !== "web") return null;
+  const policy = queuePolicy && typeof queuePolicy === "object" ? queuePolicy : {};
+  if (policy.route_high_value_to_fanout === false) return WEB_CAPABILITY_PACK;
+  if (!(Number.isInteger(spawnDepth) && spawnDepth > 1)) return WEB_CAPABILITY_PACK;
+  // Only reroute if the fan-out will actually produce CELLS: deriveChildFanoutPlan is a leaf
+  // (null plan) when bug_class_hints is empty, so rerouting such a surface to the
+  // transition-blind evaluator-fanout would incur its blindness for zero fan-out benefit —
+  // keep it on the transition-capable flat evaluator-agent.
+  if (!hasBugClassHints) return WEB_CAPABILITY_PACK;
+  const highValue = idBearing || (highPriority && policy.web_fanout_on_high_priority === true);
+  return highValue ? WEB_FANOUT_CAPABILITY_PACK : WEB_CAPABILITY_PACK;
+}
 
 function ossCapabilityPack(id, sampleType) {
   return Object.freeze({
@@ -133,7 +211,7 @@ const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-evm",
     evaluator_name_prefix: "evaluator-evm",
     chain_id_description: "the EVM chain id (e.g., 1, 137, 10, 42161)",
-    workflow_summary: `bob_evm_fetch_source -> read sources via Read -> bob_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bob_foundry_run with chain_id and pinned fork_block -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_evm_fetch_source -> read sources via Read -> bob_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bob_foundry_run with chain_id and pinned fork_block -> bob_halmos_run to symbolically explore the invariant a single concrete fork run cannot exhaust -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "forge",
     blocked_harness_kind_options: "foundry_fork or rpc_endpoint",
   }),
@@ -171,7 +249,7 @@ const SMART_CONTRACT_SVM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-svm",
     evaluator_name_prefix: "evaluator-svm",
     chain_id_description: "the Solana cluster",
-    workflow_summary: `bob_svm_fetch_program (confirm upgrade authority) -> bob_svm_fetch_account (read multisig + state accounts) -> scaffold an Anchor test under harness_path/tests/ via Write -> bob_anchor_run with cluster and optional pinned fork_slot -> record bypass_attempts[] entries citing the actual harness path + test description in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_svm_fetch_program (confirm upgrade authority) -> bob_svm_fetch_account (read multisig + state accounts) -> scaffold an Anchor test under harness_path/tests/ via Write -> bob_anchor_run with cluster and optional pinned fork_slot -> record bypass_attempts[] entries citing the actual harness path + test description in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "anchor",
     blocked_harness_kind_options: "anchor_fork or rpc_endpoint",
   }),
@@ -215,7 +293,7 @@ const SMART_CONTRACT_APTOS_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-move",
     evaluator_name_prefix: "evaluator-aptos",
     chain_id_description: "the network name (mainnet/testnet/devnet)",
-    workflow_summary: `bob_aptos_fetch_module (enumerate exposed_functions, structs, friends) -> bob_aptos_fetch_resource (read capability tokens, ownership records, treasury balances) -> scaffold an \`aptos move test\` harness under harness_path/sources/ via Write -> bob_aptos_run with network and optional pinned fork_version -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_aptos_fetch_module (enumerate exposed_functions, structs, friends) -> bob_aptos_fetch_resource (read capability tokens, ownership records, treasury balances) -> scaffold an \`aptos move test\` harness under harness_path/sources/ via Write -> bob_aptos_run with network and optional pinned fork_version -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "aptos",
     blocked_harness_kind_options: "aptos_fork or rpc_endpoint",
   }),
@@ -251,7 +329,7 @@ const SMART_CONTRACT_SUI_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-move",
     evaluator_name_prefix: "evaluator-sui",
     chain_id_description: "the network name (mainnet/testnet/devnet/localnet)",
-    workflow_summary: `bob_sui_fetch_package (enumerate entry functions and friend relationships) -> bob_sui_fetch_object (inspect Owner=Immutable/Shared/AddressOwner/ObjectOwner, Move type, capability fields) -> scaffold a \`sui move test\` harness under harness_path/sources/ via Write -> bob_sui_run with network and optional pinned fork_checkpoint -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_sui_fetch_package (enumerate entry functions and friend relationships) -> bob_sui_fetch_object (inspect Owner=Immutable/Shared/AddressOwner/ObjectOwner, Move type, capability fields) -> scaffold a \`sui move test\` harness under harness_path/sources/ via Write -> bob_sui_run with network and optional pinned fork_checkpoint -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "sui",
     blocked_harness_kind_options: "sui_fork or rpc_endpoint",
   }),
@@ -291,7 +369,7 @@ const SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-substrate",
     evaluator_name_prefix: "evaluator-substrate",
     chain_id_description: "the network name (polkadot/kusama/astar/shiden/rococo/westend/localnet)",
-    workflow_summary: `bob_substrate_fetch_runtime (confirm chain identity + spec_version) -> bob_substrate_fetch_storage (read pallet_contracts.ContractInfoOf for code_hash and admin) -> scaffold an ink! \`cargo test\` harness under harness_path/ via Write (uses #[ink::test] for unit or #[ink_e2e::test] for E2E) -> bob_substrate_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_substrate_fetch_runtime (confirm chain identity + spec_version) -> bob_substrate_fetch_storage (read pallet_contracts.ContractInfoOf for code_hash and admin) -> scaffold an ink! \`cargo test\` harness under harness_path/ via Write (uses #[ink::test] for unit or #[ink_e2e::test] for E2E) -> bob_substrate_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "cargo or substrate-contracts-node",
     blocked_harness_kind_options: "substrate_fork or rpc_endpoint",
   }),
@@ -330,14 +408,63 @@ const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-cosmwasm",
     evaluator_name_prefix: "evaluator-cosmwasm",
     chain_id_description: "the network name (osmosis/juno/neutron/archway/sei/stargaze/terra/kava/localnet)",
-    workflow_summary: `bob_cosmwasm_fetch_contract (confirm contract exists, capture code_id + admin) -> bob_cosmwasm_smart_query (inspect public Config / Owner / Balance entrypoints) -> scaffold a cw-multi-test integration test under harness_path/tests/ via Write -> bob_cosmwasm_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_cosmwasm_fetch_contract (confirm contract exists, capture code_id + admin) -> bob_cosmwasm_smart_query (inspect public Config / Owner / Balance entrypoints) -> scaffold a cw-multi-test integration test under harness_path/tests/ via Write -> bob_cosmwasm_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "cargo",
     blocked_harness_kind_options: "cosmwasm_fork or rpc_endpoint",
   }),
 });
 
+// Registered, provider-neutral Plane-PH capability family.  PH-S9/PH-X1 now
+// supplies dedicated consumer metadata and a physical-only evaluator role,
+// while dispatch stays false until the production verdict resolver and the
+// no-active-effects wave-handoff adapter exist.  No consumer borrows web
+// endpoint/PoC/base_url semantics and no role receives provider transport.
+const PHYSICAL_CAPABILITY_PACK = Object.freeze({
+  id: "physical",
+  capability_pack_version: 1,
+  surface_class: "physical",
+  dispatchable: false,
+  dispatch_block_reason: PHYSICAL_CAPABILITY_PACK_UNAVAILABLE_REASON,
+  technique_compatibility_pack: "physical",
+  evaluator_agent: "evaluator-physical-agent",
+  brief_profile: "physical",
+  role_bundles: Object.freeze(["evaluator-physical"]),
+  completion_gate: PHYSICAL_CAPABILITY_CONSUMERS.coverage.adapter,
+  context_budget: DEFAULT_CONTEXT_BUDGET,
+  verifier: Object.freeze({
+    replay_tool: PHYSICAL_CAPABILITY_CONSUMERS.finding.verifier_tool,
+    sample_type: "physical_candidate_claim_projection",
+    fresh_state_omit_field: null,
+    disambiguation: null,
+    replay_safety: Object.freeze({
+      mode: "server_owned_projection",
+      lease_scope: "physical_verdict_ref",
+    }),
+  }),
+  evidence: Object.freeze({
+    runner: PHYSICAL_CAPABILITY_CONSUMERS.finding.verifier_tool,
+    sample_type: "physical_candidate_claim_projection",
+    adapter: PHYSICAL_CAPABILITY_CONSUMERS.evidence.adapter,
+  }),
+  proof: PHYSICAL_CAPABILITY_CONSUMERS.proof,
+  spawn: Object.freeze({
+    profile: "physical",
+    role_id: "evaluator-physical",
+    evaluator_name_prefix: "evaluator-physical",
+    authority_summary: "Evidence planning only; every hardware effect requires an independent broker grant and admission decision.",
+  }),
+  assignment: PHYSICAL_CAPABILITY_CONSUMERS.assignment,
+  coverage: PHYSICAL_CAPABILITY_CONSUMERS.coverage,
+  finding: PHYSICAL_CAPABILITY_CONSUMERS.finding,
+  verdict: PHYSICAL_CAPABILITY_CONSUMERS.verdict,
+  grade: PHYSICAL_CAPABILITY_CONSUMERS.grade,
+  report: PHYSICAL_CAPABILITY_CONSUMERS.report,
+  composition: PHYSICAL_CAPABILITY_CONSUMERS.composition,
+});
+
 const CAPABILITY_PACKS = Object.freeze({
   web: WEB_CAPABILITY_PACK,
+  web_fanout: WEB_FANOUT_CAPABILITY_PACK,
   oss_dependency: OSS_DEPENDENCY_CAPABILITY_PACK,
   oss_native_code: OSS_NATIVE_CODE_CAPABILITY_PACK,
   oss_api_schema: OSS_API_SCHEMA_CAPABILITY_PACK,
@@ -351,6 +478,7 @@ const CAPABILITY_PACKS = Object.freeze({
   smart_contract_sui: SMART_CONTRACT_SUI_CAPABILITY_PACK,
   smart_contract_substrate: SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK,
   smart_contract_cosmwasm: SMART_CONTRACT_COSMWASM_CAPABILITY_PACK,
+  physical: PHYSICAL_CAPABILITY_PACK,
 });
 
 // Evaluator-role registry — keyed by role_id, deduped across packs. Multiple
@@ -367,6 +495,15 @@ const CAPABILITY_PACKS = Object.freeze({
 // individual consumer modules — they are not chain-specific and there is
 // no value in routing them through this registry.
 const EVALUATOR_ROLES = Object.freeze({
+  "evaluator-physical": Object.freeze({
+    role_id: "evaluator-physical",
+    name: "evaluator-physical-agent",
+    description: "Provider-neutral physical-security evaluator — plans bounded coverage and records opaque evidence references without direct hardware, transport, or provider authority",
+    color: "red",
+    role_bundles: Object.freeze(["evaluator-physical"]),
+    prompt_body_filename: "evaluator-physical.md",
+    local_tools: Object.freeze([]),
+  }),
   "evaluator-evm": Object.freeze({
     role_id: "evaluator-evm",
     name: "evaluator-evm-agent",
@@ -456,8 +593,62 @@ function normalizeSurfaceType(value) {
   return normalized || null;
 }
 
+// A physical surface must carry an explicit, provider-neutral signal. The
+// canonical `physical` surface type and the SurfaceGraph ontology are the
+// closed known vocabulary; a `physical_*` type or `surface_class:physical`
+// preserves future/unknown physical types as physical-but-unroutable instead
+// of laundering them into the web fallback. An explicit `capability_pack`
+// or `required_capability_pack` marker is also deny-precedence input: stale or
+// tampered physical metadata may become unavailable, but it cannot silently
+// acquire web tools.
+function isPhysicalSurfaceMetadata(surface) {
+  if (!surface || typeof surface !== "object" || Array.isArray(surface)) return false;
+  const surfaceType = normalizeSurfaceType(surface.surface_type);
+  const surfaceClass = normalizeSurfaceType(surface.surface_class);
+  const declaredPack = normalizeSurfaceType(surface.capability_pack);
+  const requiredPack = normalizeSurfaceType(surface.required_capability_pack);
+  return surfaceClass === "physical"
+    || declaredPack === "physical"
+    || requiredPack === "physical"
+    || PHYSICAL_SURFACE_TYPE_SET.has(surfaceType)
+    || (typeof surfaceType === "string" && surfaceType.startsWith("physical_"));
+}
+
 function getCapabilityPack(packId) {
   return CAPABILITY_PACKS[packId] || null;
+}
+
+function isCapabilityPackDispatchable(packOrId) {
+  const pack = typeof packOrId === "string" ? getCapabilityPack(packOrId) : packOrId;
+  return !!pack && pack.dispatchable !== false;
+}
+
+function dispatchableCapabilityPacks() {
+  return Object.values(CAPABILITY_PACKS).filter(isCapabilityPackDispatchable);
+}
+
+// NS-6 — Resolve the canonical capability-pack id used by the technique registry.
+// Most packs are their own technique family. Routing-only variants declare
+// `technique_compatibility_pack` on their registry entry (or inherit it via a
+// SPREAD-derived entry such as web_fanout), keeping the relation registry-owned
+// and automatically shared by selection, full reads, and attempt logging.
+function techniqueCompatibilityPackId(packId) {
+  const pack = getCapabilityPack(packId);
+  if (!isCapabilityPackDispatchable(pack)) return null;
+  const compatibilityPackId = pack.technique_compatibility_pack || pack.id;
+  const compatibilityPack = getCapabilityPack(compatibilityPackId);
+  if (!isCapabilityPackDispatchable(compatibilityPack)) {
+    throw new Error(
+      `Capability pack ${pack.id} references unavailable technique_compatibility_pack ${compatibilityPackId}`,
+    );
+  }
+  const canonicalTarget = compatibilityPack.technique_compatibility_pack || compatibilityPack.id;
+  if (canonicalTarget !== compatibilityPackId) {
+    throw new Error(
+      `Capability pack ${pack.id} references non-canonical technique_compatibility_pack ${compatibilityPackId}; use ${canonicalTarget}`,
+    );
+  }
+  return compatibilityPackId;
 }
 
 function cloneContextBudget(budget) {
@@ -470,13 +661,13 @@ function cloneContextBudget(budget) {
 
 function getCapabilityPackContextBudget(packId) {
   const pack = getCapabilityPack(packId);
-  if (!pack) return null;
+  if (!isCapabilityPackDispatchable(pack)) return null;
   return cloneContextBudget(pack.context_budget || DEFAULT_CONTEXT_BUDGET);
 }
 
 function evaluatorAgentNamesForCapabilityPacks() {
   return Array.from(new Set(
-    Object.values(CAPABILITY_PACKS)
+    dispatchableCapabilityPacks()
       .map((pack) => pack && pack.evaluator_agent)
       .filter((value) => typeof value === "string" && value.trim()),
   ));
@@ -495,6 +686,7 @@ function familyTagForCapabilityPackId(packId) {
   // Web pack has spawn.profile = "web" without a chain_family field;
   // SC packs carry spawn.chain_family directly.
   if (pack.spawn.profile === "web") return "web";
+  if (pack.spawn.profile === "physical") return "physical";
   if (typeof pack.spawn.chain_family === "string" && pack.spawn.chain_family.length > 0) {
     return pack.spawn.chain_family;
   }
@@ -545,11 +737,86 @@ function defaultWebRouteMetadata() {
   };
 }
 
+// Ordinal confidence ladder in demotion order (highest first).
+// deriveConfidenceAdjustment only ever walks DOWN this ladder, never UP.
+const CONFIDENCE_LADDER = Object.freeze(["high", "medium", "low"]);
+
+// N distinct tool_inadequate observations on a surface/pack = one confidence
+// step down. Heavier friction crosses more thresholds and demotes further.
+const HEAVY_FRICTION_DEMOTION_THRESHOLD = 3;
+
+// PURE, deterministic post-adjustment of a classifier confidence given a
+// per-surface / per-pack friction aggregate. No fs, no frontier reads, no
+// Date.now(), no randomness — input maps to output only. Demotes one ordinal
+// step per HEAVY_FRICTION_DEMOTION_THRESHOLD tool_inadequate observations,
+// clamped at "low"; NEVER promotes above baseConfidence, NEVER changes
+// routability. An unrecognised/absent base is returned unchanged.
+function deriveConfidenceAdjustment(baseConfidence, frictionSignalForSurfaceOrPack) {
+  const idx = CONFIDENCE_LADDER.indexOf(baseConfidence);
+  // Unrecognised base (or absent): never invent a level — no-op passthrough.
+  if (idx === -1) return baseConfidence;
+
+  // Accept the small aggregate shape { tool_inadequate_count: <int> }, or a
+  // bare non-negative integer as shorthand for that count. Any other shape,
+  // null, or undefined means zero steps (no demotion).
+  let count = 0;
+  if (
+    frictionSignalForSurfaceOrPack &&
+    typeof frictionSignalForSurfaceOrPack === "object" &&
+    Number.isInteger(frictionSignalForSurfaceOrPack.tool_inadequate_count) &&
+    frictionSignalForSurfaceOrPack.tool_inadequate_count >= 0
+  ) {
+    count = frictionSignalForSurfaceOrPack.tool_inadequate_count;
+  } else if (
+    Number.isInteger(frictionSignalForSurfaceOrPack) &&
+    frictionSignalForSurfaceOrPack >= 0
+  ) {
+    count = frictionSignalForSurfaceOrPack;
+  }
+
+  const steps = Math.floor(count / HEAVY_FRICTION_DEMOTION_THRESHOLD);
+  // demotedIdx >= idx structurally guarantees demotion-only (never promotes);
+  // steps === 0 returns baseConfidence unchanged.
+  const demotedIdx = Math.min(CONFIDENCE_LADDER.length - 1, idx + steps);
+  return CONFIDENCE_LADDER[demotedIdx];
+}
+
 function classifySurfaceCapability(surface) {
   const rawSurfaceType = surface && typeof surface === "object" ? surface.surface_type : null;
   const normalizedType = normalizeSurfaceType(rawSurfaceType);
   const surfaceType = normalizedType || "unknown";
   const reasons = normalizedType ? [`surface_type:${surfaceType}`] : ["surface_type:missing"];
+
+  if (isPhysicalSurfaceMetadata(surface)) {
+    const surfaceClass = normalizeSurfaceType(surface.surface_class);
+    const declaredPack = normalizeSurfaceType(surface.capability_pack);
+    const requiredPack = normalizeSurfaceType(surface.required_capability_pack);
+    if (surfaceClass === "physical") reasons.push("surface_class:physical");
+    if (declaredPack === "physical") reasons.push("declared_capability_pack:physical");
+    if (requiredPack === "physical") reasons.push("required_capability_pack:physical");
+    if (!PHYSICAL_SURFACE_TYPE_SET.has(normalizedType)
+        && typeof normalizedType === "string"
+        && normalizedType.startsWith("physical_")) {
+      reasons.push("physical_surface_type:unregistered");
+    }
+    reasons.push("capability_pack:physical_registered_unavailable");
+    return {
+      surface_type: surfaceType,
+      surface_class: "physical",
+      capability_pack: null,
+      capability_pack_version: null,
+      required_capability_pack: PHYSICAL_CAPABILITY_PACK.id,
+      required_capability_pack_version: PHYSICAL_CAPABILITY_PACK.capability_pack_version,
+      evaluator_agent: null,
+      brief_profile: null,
+      context_budget: null,
+      chain_family: null,
+      confidence: PHYSICAL_SURFACE_TYPE_SET.has(normalizedType) ? "high" : "low",
+      routable: false,
+      unroutable_reason: PHYSICAL_CAPABILITY_PACK_UNAVAILABLE_REASON,
+      reasons,
+    };
+  }
 
   if (normalizedType === "smart_contract") {
     const rawChainFamily = surface && typeof surface === "object" ? surface.chain_family : null;
@@ -565,21 +832,50 @@ function classifySurfaceCapability(surface) {
           evaluator_agent: pack.evaluator_agent,
           brief_profile: pack.brief_profile,
           context_budget: cloneContextBudget(pack.context_budget),
+          chain_family: normalizedChainFamily,
           confidence: "high",
+          routable: true,
           reasons,
         };
       }
-      // Smart-contract surface with an unrecognised chain_family. Falling
-      // back to the web pack would create a contradiction (surface_type=smart_contract
-      // routed to a evaluator that has no on-chain tools); fail loudly so the
-      // operator either fixes the surface or registers the missing pack.
-      throw new Error(
-        `smart_contract surface ${surface && surface.id ? surface.id : "(unknown)"} has unsupported chain_family ${normalizedChainFamily}; register a capability pack or correct the surface`,
-      );
+      // Smart-contract surface with an unrecognised chain_family. Falling back
+      // to the web pack would launder an on-chain surface into a web evaluator
+      // with no chain tools, contradicting surface_type. Per Y-D21 the
+      // smart_contract classification and its chain_family are preserved and
+      // the result is marked unroutable so the caller records a graceful
+      // disposition instead of mis-routing.
+      reasons.push(`chain_family:${normalizedChainFamily}`);
+      return {
+        surface_type: surfaceType,
+        capability_pack: null,
+        capability_pack_version: null,
+        evaluator_agent: null,
+        brief_profile: null,
+        context_budget: null,
+        chain_family: normalizedChainFamily,
+        confidence: "low",
+        routable: false,
+        unroutable_reason: `smart_contract surface has unsupported chain_family ${normalizedChainFamily}; register a capability pack or correct the surface`,
+        reasons,
+      };
     }
-    throw new Error(
-      `smart_contract surface ${surface && surface.id ? surface.id : "(unknown)"} is missing chain_family; capability routing requires it`,
-    );
+    // Smart-contract surface without a chain_family: routing requires it, so
+    // preserve the smart_contract classification and mark unroutable rather
+    // than falling through to the web pack (Y-D21).
+    reasons.push("chain_family:missing");
+    return {
+      surface_type: surfaceType,
+      capability_pack: null,
+      capability_pack_version: null,
+      evaluator_agent: null,
+      brief_profile: null,
+      context_budget: null,
+      chain_family: normalizedChainFamily,
+      confidence: "low",
+      routable: false,
+      unroutable_reason: "smart_contract surface is missing chain_family; capability routing requires it",
+      reasons,
+    };
   }
 
   if (normalizedType && OSS_SURFACE_TYPE_TO_PACK[normalizedType]) {
@@ -592,7 +888,9 @@ function classifySurfaceCapability(surface) {
       evaluator_agent: pack.evaluator_agent,
       brief_profile: pack.brief_profile,
       context_budget: cloneContextBudget(pack.context_budget),
+      chain_family: null,
       confidence: "high",
+      routable: true,
       reasons,
     };
   }
@@ -609,7 +907,9 @@ function classifySurfaceCapability(surface) {
     evaluator_agent: WEB_CAPABILITY_PACK.evaluator_agent,
     brief_profile: WEB_CAPABILITY_PACK.brief_profile,
     context_budget: cloneContextBudget(WEB_CAPABILITY_PACK.context_budget),
+    chain_family: null,
     confidence: knownWebType ? "high" : "medium",
+    routable: true,
     reasons,
   };
 }
@@ -671,6 +971,12 @@ function normalizeContextBudget(value, pack) {
 }
 
 function normalizeAssignmentRouteMetadata(assignment) {
+  // The FROZEN (MCP-owned, route-time) id-bearing endpoint set is carried regardless of
+  // which route-metadata path applies, so the AD1 completion gate can bind sweep coverage
+  // to it — never re-derived from agent-writable attack_surface.json.
+  const idBearingEndpoints = Array.isArray(assignment && assignment.id_bearing_endpoints)
+    ? assignment.id_bearing_endpoints.filter((e) => typeof e === "string" && e) : [];
+  const idBearing = !!(assignment && assignment.id_bearing === true);
   const hasRouteMetadata = !!assignment && (
     assignment.capability_pack != null ||
     assignment.capability_pack_version != null ||
@@ -692,16 +998,31 @@ function normalizeAssignmentRouteMetadata(assignment) {
         "assignment with surface_type=smart_contract is missing capability_pack/evaluator_agent/brief_profile; route the surface via bob_route_surfaces before starting the wave",
       );
     }
-    return defaultWebRouteMetadata();
+    if (isPhysicalSurfaceMetadata(assignment)) {
+      throw new Error(
+        "assignment with physical surface metadata is missing a dispatchable capability_pack/evaluator_agent/brief_profile; route the surface via bob_route_surfaces before starting the wave",
+      );
+    }
+    return { ...defaultWebRouteMetadata(), id_bearing: idBearing, id_bearing_endpoints: idBearingEndpoints };
   }
 
   const capabilityPack = assertPackString(assignment.capability_pack, "capability_pack");
-  const evaluatorAgent = assertPackString(assignment.evaluator_agent, "evaluator_agent");
-  const briefProfile = assertPackString(assignment.brief_profile, "brief_profile");
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
     throw new Error(`assignment route metadata references unknown capability_pack: ${capabilityPack}`);
   }
+  if (!isCapabilityPackDispatchable(pack)) {
+    throw new Error(
+      `assignment route metadata references non-dispatchable capability_pack ${capabilityPack}: ${pack.dispatch_block_reason}`,
+    );
+  }
+  if (isPhysicalSurfaceMetadata(assignment)) {
+    throw new Error(
+      `assignment with physical surface metadata cannot bind active capability_pack ${capabilityPack}; ${PHYSICAL_CAPABILITY_PACK_UNAVAILABLE_REASON}`,
+    );
+  }
+  const evaluatorAgent = assertPackString(assignment.evaluator_agent, "evaluator_agent");
+  const briefProfile = assertPackString(assignment.brief_profile, "brief_profile");
   if (evaluatorAgent !== pack.evaluator_agent) {
     throw new Error(`assignment route metadata evaluator_agent ${evaluatorAgent} does not match pack ${capabilityPack}`);
   }
@@ -718,6 +1039,8 @@ function normalizeAssignmentRouteMetadata(assignment) {
     evaluator_agent: evaluatorAgent,
     brief_profile: briefProfile,
     context_budget: normalizeContextBudget(assignment.context_budget, pack),
+    id_bearing: idBearing,
+    id_bearing_endpoints: idBearingEndpoints,
   };
 }
 
@@ -729,6 +1052,12 @@ function normalizeAssignmentRouteMetadata(assignment) {
 // each having to implement the same fallback. Returns null when the
 // record carries no usable signal.
 function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence: scEvidence } = {}) {
+  if (isPhysicalSurfaceMetadata({ surface_type: surfaceType })) {
+    // Physical findings require their own opaque-asset/verdict schema and may
+    // never be reinterpreted as legacy web findings. That schema is not wired
+    // in this slice, so the only honest read-side backfill is no backfill.
+    return null;
+  }
   if (surfaceType === "smart_contract") {
     const chainFamily = scEvidence && typeof scEvidence === "object" ? scEvidence.chain_family : null;
     const normalized = normalizeSurfaceType(chainFamily);
@@ -746,8 +1075,107 @@ function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence
     // Caller decides whether to leave nulls or treat as malformed.
     return null;
   }
-  // Any non-SC legacy row maps to the web pack.
+  // Any non-SC, non-physical legacy row maps to the web pack.
   return defaultWebRouteMetadata();
+}
+
+// Coarse (surface-class x bug_class) applicability gate for cell enumeration.
+// Maps the clearly type-restricted bug classes to the surface class(es) they
+// can occur on. FAILS OPEN: a bug_class with no rule here is relevant on every
+// surface, so the gate only prunes the structurally-impossible (e.g. reentrancy
+// on a web surface, sqli on a smart contract), never the merely-unmapped. Keep
+// it conservative — over-pruning loses coverage, which is the opposite of the
+// goal; ambiguous classes (idor, ssrf, dos, ...) stay unmapped on purpose.
+const BUG_CLASS_SURFACE_APPLICABILITY = Object.freeze({
+  reentrancy: Object.freeze(["smart_contract"]),
+  sql_injection: Object.freeze(["web"]),
+  sqli: Object.freeze(["web"]),
+  xss: Object.freeze(["web"]),
+  csrf: Object.freeze(["web"]),
+});
+
+function normalizeBugClassKey(bugClass) {
+  return typeof bugClass === "string"
+    ? bugClass.trim().toLowerCase().replace(/[\s-]+/g, "_")
+    : "";
+}
+
+// Broad surface class ("web" | "smart_contract" | "oss") for a surface's
+// metadata, mirroring packIdForSurfaceMetadata's honor-then-classify order.
+// Returns null (-> fail open) on any unknown/throwing classification.
+function surfaceClassForMetadata(surfaceMetadata) {
+  let packId = null;
+  try {
+    if (isPhysicalSurfaceMetadata(surfaceMetadata)) return "physical";
+    if (surfaceMetadata && typeof surfaceMetadata === "object"
+      && typeof surfaceMetadata.capability_pack === "string") {
+      const pack = getCapabilityPack(surfaceMetadata.capability_pack);
+      if (pack && isCapabilityPackDispatchable(pack)) packId = pack.id;
+      if (pack && pack.surface_class === "physical") return "physical";
+    }
+    if (!packId) {
+      const classification = classifySurfaceCapability(surfaceMetadata || {});
+      packId = classification.capability_pack;
+      // An unavailable physical pack and an ambiguous smart_contract both
+      // classify with capability_pack:null. Preserve their declared class;
+      // neither is ever a web surface.
+      if (packId == null && classification.surface_class === "physical") {
+        return "physical";
+      }
+      if ((packId == null) && classification.surface_type === "smart_contract") {
+        return "smart_contract";
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (typeof packId !== "string") return null;
+  if (packId.startsWith("smart_contract")) return "smart_contract";
+  if (packId.startsWith("oss")) return "oss";
+  if (packId === "physical") return "physical";
+  return "web";
+}
+
+// OSS/native coverage modality axes. An OSS surface IS a harness (a code_module
+// fuzz target); its cells cross the build-config axis (sanitizer class) with the
+// fuzzing-strategy axis (input class). The specific crash found is an OUTCOME
+// recorded at reconcile, NOT a pre-enumerated axis. All values are lowercase so
+// they survive coverage-key normalization unchanged.
+const OSS_SANITIZER_CLASS_AXIS = Object.freeze(["asan", "ubsan", "msan"]);
+const OSS_INPUT_CLASS_AXIS = Object.freeze(["raw_corpus", "value_profile", "cmplog"]);
+
+// Transition-cell bug_class axis (A2). A transition-cell is a (transition_edge x
+// bug_class) coverage obligation — a cross-surface invariant a per-surface model
+// cannot see because it lives on the EDGE. The axis is keyed by the transition
+// KIND (the closed TRANSITION_KIND_VALUES enum), so the bug_class is the class of
+// trust hop being crossed, not a per-surface vuln hint. There is NO auth axis:
+// the cross-surface invariant holds regardless of which credential probes one
+// endpoint. The replay/cross-chain/identity classes are exactly the ones
+// BUG_CLASS_WEAPON maps to web3_identity_handoff, so a transition-cell auto-adopts
+// the cross-surface weapon a surface-cell never reaches for. All lowercase so the
+// values survive coverage-key normalization unchanged; 1-2 entries each keeps the
+// floor finite and deterministic.
+const TRANSITION_BUG_CLASS_AXIS = Object.freeze({
+  identity_propagation: Object.freeze(["identity_handoff", "replay"]),
+  value_movement: Object.freeze(["value_flow", "replay"]),
+  trust_handoff: Object.freeze(["trust_boundary", "cross_chain_replay"]),
+  state_dependency: Object.freeze(["state_consistency", "replay"]),
+  oracle_dependency: Object.freeze(["oracle_manipulation", "staleness"]),
+  message_passing: Object.freeze(["cross_chain_replay", "message_forgery"]),
+});
+
+function isOssSurfaceMetadata(surfaceMetadata) {
+  return surfaceClassForMetadata(surfaceMetadata) === "oss";
+}
+
+// Is this bug_class structurally possible on this surface? Fail-open: unmapped
+// bug_classes and unknown surface classes are always relevant.
+function isBugClassRelevantForSurface(surfaceMetadata, bugClass) {
+  const allowed = BUG_CLASS_SURFACE_APPLICABILITY[normalizeBugClassKey(bugClass)];
+  if (!allowed) return true;
+  const surfaceClass = surfaceClassForMetadata(surfaceMetadata);
+  if (surfaceClass === null) return true;
+  return allowed.includes(surfaceClass);
 }
 
 module.exports = {
@@ -755,10 +1183,22 @@ module.exports = {
   DEFAULT_CONTEXT_BUDGET,
   DEFAULT_REPLAY_SAFETY,
   EVALUATOR_ROLES,
+  PHYSICAL_CAPABILITY_PACK,
+  PHYSICAL_CAPABILITY_PACK_UNAVAILABLE_REASON,
+  PHYSICAL_SURFACE_TYPES,
   WEB_SURFACE_TYPES,
   capabilityPackForLegacyFinding,
   chainSpecificEvaluatorBundles,
   classifySurfaceCapability,
+  deriveConfidenceAdjustment,
+  dispatchableCapabilityPacks,
+  isBugClassRelevantForSurface,
+  isCapabilityPackDispatchable,
+  isPhysicalSurfaceMetadata,
+  isOssSurfaceMetadata,
+  OSS_SANITIZER_CLASS_AXIS,
+  OSS_INPUT_CLASS_AXIS,
+  TRANSITION_BUG_CLASS_AXIS,
   defaultWebRouteMetadata,
   getCapabilityPack,
   getCapabilityPackContextBudget,
@@ -767,6 +1207,8 @@ module.exports = {
   evaluatorRoleSpecs,
   familyTagForCapabilityPackId,
   normalizeAssignmentRouteMetadata,
+  selectWebEvaluatorPack,
+  techniqueCompatibilityPackId,
   normalizeContextBudget,
   normalizeSurfaceType,
   SMART_CONTRACT_CONTEXT_BUDGET,

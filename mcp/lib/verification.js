@@ -506,16 +506,19 @@ function isHighOrCritical(severity) {
   return ["critical", "high"].includes(severity);
 }
 
-function replayReasonForResult(result) {
+function replayReasonsForResult(result) {
   const reasons = Array.isArray(result.confidence_reasons) ? result.confidence_reasons : [];
-  if (result.confidence === "low" || result.confidence === "medium") return "low_confidence";
-  if (reasons.includes("auth_expired")) return "auth";
-  if (reasons.includes("tooling_blocked")) return "tooling";
-  if (reasons.includes("disambiguation_failed")) return "disambiguation";
-  if (reasons.includes("roast_disagreement")) return "roast";
-  if (reasons.includes("manual_inference")) return "manual_inference";
-  if (reasons.includes("state_changed")) return "state_changed";
-  return null;
+  const replayReasons = [];
+  if (result.confidence === "low" || result.confidence === "medium") replayReasons.push("low_confidence");
+  if (reasons.includes("auth_expired")) replayReasons.push("auth");
+  if (reasons.includes("tooling_blocked")) replayReasons.push("tooling");
+  if (reasons.includes("disambiguation_failed")) replayReasons.push("disambiguation");
+  if (reasons.includes("roast_disagreement")) replayReasons.push("roast");
+  if (reasons.includes("manual_inference")) replayReasons.push("manual_inference");
+  if (reasons.includes("state_changed")) replayReasons.push("state_changed");
+  if (reasons.includes("unruled_confounder")) replayReasons.push("unruled_confounder");
+  if (reasons.includes("missing_control")) replayReasons.push("missing_control");
+  return replayReasons;
 }
 
 function deterministicQaSample(targetDomain, state, snapshot, candidates) {
@@ -685,8 +688,9 @@ function buildVerificationAdjudication(args) {
       addReplay(findingId, "state_sensitive");
     }
     for (const result of [brutalistById.get(findingId), balancedById.get(findingId)]) {
-      const reason = replayReasonForResult(result || {});
-      if (reason) addReplay(findingId, reason);
+      for (const reason of replayReasonsForResult(result || {})) {
+        addReplay(findingId, reason);
+      }
     }
   }
 

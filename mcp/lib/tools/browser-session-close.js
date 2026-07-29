@@ -153,5 +153,6 @@ module.exports = Object.freeze({
   browser_access: true,
   scope_required: true,
   sensitive_output: false,
-  session_artifacts_written: ["traffic.jsonl"],
+ session_artifacts_written: ["traffic.jsonl"],
+  required_session_axes: ["url"],
 });

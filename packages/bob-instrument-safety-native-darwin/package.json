@@ -1,0 +1,34 @@
+{
+  "name": "@hacker-bob/instrument-safety-native-darwin",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Provider-neutral Darwin safety deadman and cleanup-worker precursor for Hacker Bob instruments",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "gypfile": false,
+  "main": "lib/safety-deadman.js",
+  "files": [
+    "binding.gyp",
+    "lib/**/*.js",
+    "native/**/*.cc",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/safety-deadman.js",
+    "./safety-deadman": "./lib/safety-deadman.js"
+  },
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "check:syntax": "node --check lib/safety-deadman.js && node --check test/safety-deadman.test.js",
+    "test": "node --test test/safety-deadman.test.js"
+  }
+}

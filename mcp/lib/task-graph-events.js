@@ -24,6 +24,7 @@
 
 const {
   appendFrontierEvent,
+  appendTaskGraphTransitionEvent,
   readFrontierEvents,
 } = require("./frontier-events.js");
 const {
@@ -37,47 +38,16 @@ const {
   normalizeOptionalId,
   normalizeOptionalObject,
 } = require("./fabric-common.js");
+const {
+  NODE_STATE_TRANSITIONS,
+  NODE_STATE_VALUES,
+  TASK_GRAPH_NODE_ID_PREFIX,
+  isAllowedNodeTransition,
+  projectLiveTaskGraphNodeState,
+} = require("./task-graph-state-machine.js");
 
 // Plane X Target Vocabulary: state ∈ {proposed, contracted, ready,
 // dispatched, executed, verified, finalized, failed, abandoned}.
-const NODE_STATE_VALUES = Object.freeze([
-  "proposed",
-  "contracted",
-  "ready",
-  "dispatched",
-  "executed",
-  "verified",
-  "finalized",
-  "failed",
-  "abandoned",
-]);
-
-// X.1 Do step 4 + X.8 re-contract path: the state-transition table.
-// Append-time enforcement: any (from_state, to_state) pair outside this
-// table is refused with a structured `invalid_node_transition` error.
-//
-// `failed → contracted` is the operator re-contract path (X.8 spec
-// line 338): `bob_prepare_node` must succeed on a node the operator has
-// re-contracted from a prior failed attempt so the brief's
-// `prior_attempt` slice can surface the prior failure payload.
-// `finalized` and `abandoned` remain terminal — no workflow re-enters
-// from those states.
-const NODE_STATE_TRANSITIONS = Object.freeze({
-  proposed: Object.freeze(["contracted", "abandoned"]),
-  contracted: Object.freeze(["ready", "abandoned"]),
-  ready: Object.freeze(["dispatched", "abandoned"]),
-  dispatched: Object.freeze(["executed", "failed"]),
-  executed: Object.freeze(["verified", "failed"]),
-  verified: Object.freeze(["finalized", "failed"]),
-  // `failed` is non-terminal: the X.8 re-contract path re-enters via
-  // `failed → contracted` (operator re-contracts with a refined Contract;
-  // the prior failure events stay on the ledger and the prepare_node
-  // brief inlines them via the `prior_attempt` slice). `finalized` and
-  // `abandoned` remain terminal.
-  finalized: Object.freeze([]),
-  failed: Object.freeze(["contracted"]),
-  abandoned: Object.freeze([]),
-});
 
 // X-D3 closed enum of transition surface kinds. Imported here so the
 // proposal-tool input schema and the wrapper both share one source of
@@ -99,13 +69,44 @@ const TRANSITION_KIND_VALUES = Object.freeze([
 const TRANSITION_TRUST_ASSUMPTION_MAX_CHARS = 512;
 const HYPOTHESIS_STATEMENT_MAX_CHARS = 512;
 
+// Composition-experiment vocabulary. A path-composition experiment confirms a
+// composed cross-surface path only when EVERY leaf is bound to a replayable
+// frontier event. The result is binary: `pass` (every leaf resolved to a real
+// validated observation) or `fail` (at least one leaf was refused because its
+// evidence_ref did not bind to a real event). There is no third "partial"
+// outcome — an unbound leaf means the path cannot be confirmed at all.
+const COMPOSITION_EXPERIMENT_RESULT_KINDS = Object.freeze(["pass", "fail"]);
+
+// Every leaf's `evidence_ref` must be a `frontier_event:<event_id>` binding.
+// The text after the colon is the frontier event_id the harness resolves
+// against readFrontierEvents(domain); a bare string that merely "looks like"
+// evidence (an opaque hash, a URL, a free-form note) does not match and so
+// cannot bind a leaf. The id charset mirrors normalizeId's accepted shape so a
+// ref that passes this pattern can be looked up verbatim.
+const EVIDENCE_BINDING_REF_PATTERN = /^frontier_event:[A-Za-z0-9_-]+$/;
+
 // Node identifiers in the TaskGraph plane carry a `TG-` prefix. The
 // pre-flight sweep noted that mcp/lib/surface-graph.js uses generic
 // `node_id` strings for an unrelated surface-adjacency graph; the prefix
 // disambiguates which graph a given id belongs to in tool descriptions,
 // in agent reasoning, and in any cross-tool join.
-const TASK_GRAPH_NODE_ID_PREFIX = "TG-";
 const TASK_GRAPH_NODE_ID_PATTERN = /^TG-[A-Za-z0-9][A-Za-z0-9._:-]{0,128}$/;
+const SHA256_DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
+const PHYSICAL_RESERVATION_REF_PATTERN = /^reservation:[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$/u;
+
+// Safe, compact proof that a physical node reached `dispatched` only while an
+// exact broker-held reservation was live. This is evidence/binding metadata,
+// never a reservation credential: it deliberately excludes raw fences,
+// allocation bodies, device handles, and callbacks.
+const PHYSICAL_RESOURCE_DISPATCH_BINDING_FIELDS = Object.freeze([
+  "source_graph_hash",
+  "session_nucleus_hash",
+  "resource_bundle_digest",
+  "reservation_ref",
+  "receipt_digest",
+  "allocation_plan_digest",
+  "eligibility_digest",
+]);
 
 function assertTaskGraphNodeId(value, fieldName = "node_id") {
   const text = assertNonEmptyString(value, fieldName);
@@ -117,16 +118,65 @@ function assertTaskGraphNodeId(value, fieldName = "node_id") {
   return text;
 }
 
+function normalizePhysicalResourceDispatchBinding(
+  input,
+  fieldName = "physical_resource_dispatch",
+) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${fieldName} must be a plain object`);
+  }
+  const keys = Reflect.ownKeys(input);
+  if (keys.some((key) => typeof key !== "string")) {
+    throw new Error(`${fieldName} cannot contain symbol fields`);
+  }
+  const allowed = new Set(PHYSICAL_RESOURCE_DISPATCH_BINDING_FIELDS);
+  const unknown = keys.filter((key) => !allowed.has(key)).sort();
+  const missing = PHYSICAL_RESOURCE_DISPATCH_BINDING_FIELDS
+    .filter((key) => !Object.prototype.hasOwnProperty.call(input, key));
+  if (unknown.length > 0) {
+    throw new Error(`${fieldName} has unknown fields: ${unknown.join(", ")}`);
+  }
+  if (missing.length > 0) {
+    throw new Error(`${fieldName} is missing fields: ${missing.join(", ")}`);
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) {
+      throw new Error(`${fieldName}.${key} must be an enumerable data field`);
+    }
+  }
+  const reservationRef = input.reservation_ref;
+  if (typeof reservationRef !== "string"
+      || !PHYSICAL_RESERVATION_REF_PATTERN.test(reservationRef)) {
+    throw new Error(`${fieldName}.reservation_ref must be a namespaced reservation reference`);
+  }
+  const out = {
+    source_graph_hash: input.source_graph_hash,
+    session_nucleus_hash: input.session_nucleus_hash,
+    resource_bundle_digest: input.resource_bundle_digest,
+    reservation_ref: reservationRef,
+    receipt_digest: input.receipt_digest,
+    allocation_plan_digest: input.allocation_plan_digest,
+    eligibility_digest: input.eligibility_digest,
+  };
+  for (const field of PHYSICAL_RESOURCE_DISPATCH_BINDING_FIELDS) {
+    if (field === "reservation_ref") continue;
+    if (typeof out[field] !== "string" || !SHA256_DIGEST_PATTERN.test(out[field])) {
+      throw new Error(`${fieldName}.${field} must be a lowercase SHA-256 digest`);
+    }
+  }
+  return Object.freeze(out);
+}
+
 function assertSurfaceRef(value, fieldName) {
   // Surface refs are arbitrary strings minted by surface discovery (e.g.
   // "surface:billing-profile"). They are not TaskGraph node ids and they
   // intentionally do NOT carry the TG- prefix.
   return normalizeId(value, fieldName);
-}
-
-function isAllowedNodeTransition(fromState, toState) {
-  const successors = NODE_STATE_TRANSITIONS[fromState];
-  return Array.isArray(successors) && successors.includes(toState);
 }
 
 function assertNodeTransitionAllowed(fromState, toState) {
@@ -144,6 +194,45 @@ function assertNodeTransitionAllowed(fromState, toState) {
     };
     throw err;
   }
+}
+
+// Resolve the live TaskGraph state from the exact ledger snapshot read while
+// frontier-events.js holds the session lock.  The pure state projector is
+// shared with the materializer and owns no I/O, so this atomic validation does
+// not introduce a reverse dependency or CommonJS require cycle.
+function assertLiveNodeTransition({ event, existing_events: existingEvents }) {
+  const payload = event && event.payload ? event.payload : {};
+  const nodeId = payload.node_id;
+  const fromState = payload.from_state;
+  const toState = payload.to_state;
+  const liveState = projectLiveTaskGraphNodeState(existingEvents, nodeId);
+  if (liveState == null) {
+    const err = new Error(
+      `node_not_proposed: node ${nodeId} has no live TaskGraph proposal`,
+    );
+    err.code = "node_not_proposed";
+    err.details = {
+      node_id: nodeId,
+      current_state: null,
+      asserted_from_state: fromState,
+      asserted_to_state: toState,
+    };
+    throw err;
+  }
+  if (liveState !== fromState) {
+    const err = new Error(
+      `stale_node_transition: node ${nodeId} is in state "${liveState}", not asserted from_state "${fromState}"`,
+    );
+    err.code = "stale_node_transition";
+    err.details = {
+      node_id: nodeId,
+      current_state: liveState,
+      asserted_from_state: fromState,
+      asserted_to_state: toState,
+    };
+    throw err;
+  }
+  return true;
 }
 
 function assertProseUnderCap(value, fieldName, maxChars) {
@@ -189,6 +278,10 @@ function assertProseUnderCap(value, fieldName, maxChars) {
 //   - `verification` — the mechanical verifier verdict carried on the
 //     executed → verified | failed events. The verdict is already
 //     structured (X.6 output shape) and bounded by the witness count.
+// Plane-PH adds `physical_resource_dispatch` on ready → dispatched only: a
+// closed digest/reference projection proving the broker-held reservation that
+// authorized preparation. It contains no credential, fence, allocation body,
+// callback, or device handle.
 function appendNodeTransition(input, options = {}) {
   if (input == null || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("appendNodeTransition input must be an object");
@@ -217,6 +310,20 @@ function appendNodeTransition(input, options = {}) {
     .map((edge) => assertTaskGraphNodeId(edge, "edge_added_to[]"));
   const contractPayload = normalizeOptionalObject(input.contract, "contract");
   const verification = normalizeOptionalObject(input.verification, "verification");
+  const physicalResourceDispatch = input.physical_resource_dispatch == null
+    ? null
+    : normalizePhysicalResourceDispatchBinding(
+      input.physical_resource_dispatch,
+      "physical_resource_dispatch",
+    );
+  if (physicalResourceDispatch && toState !== "dispatched") {
+    throw new Error("physical_resource_dispatch is valid only on a transition to dispatched");
+  }
+  if (physicalResourceDispatch && !SHA256_DIGEST_PATTERN.test(prepTokenHash || "")) {
+    throw new Error(
+      "a physical_resource_dispatch requires an exact lowercase SHA-256 prep_token_hash",
+    );
+  }
   // X.9 Do step 1: the graph-scheduler sorts by priority + queue_policy.
   // The X.2 materializer already folds `payload.priority` and
   // `payload.severity_floor` from node.transitioned events, so the
@@ -240,6 +347,7 @@ function appendNodeTransition(input, options = {}) {
   if (outputHash) payload.output_hash = outputHash;
   if (failureReason) payload.failure_reason = failureReason;
   if (verification) payload.verification = verification;
+  if (physicalResourceDispatch) payload.physical_resource_dispatch = physicalResourceDispatch;
   if (priority) payload.priority = priority;
   if (severityFloor) payload.severity_floor = severityFloor;
   if (edgeAddedTo.length > 0) payload.edge_added_to = edgeAddedTo;
@@ -247,7 +355,7 @@ function appendNodeTransition(input, options = {}) {
   const source = normalizeOptionalObject(input.source, "source");
   const actor = normalizeOptionalText(input.actor, "actor");
 
-  return appendFrontierEvent({
+  return appendTaskGraphTransitionEvent({
     target_domain: input.target_domain,
     kind: "node.transitioned",
     ts: input.ts,
@@ -257,7 +365,7 @@ function appendNodeTransition(input, options = {}) {
     // node.transitioned events do not have a surface_id, frontier_item_id,
     // task_id, or claim_id. The materializer (X.2) joins via payload.node_id
     // → node.surface_refs[] folded from the proposal event.
-  }, options);
+  }, assertLiveNodeTransition, options);
 }
 
 // Find the most recent node.transitioned event for `nodeId` that carries
@@ -341,18 +449,41 @@ function expireStaleDispatchedNodes(targetDomain, materializedDocument, options 
     const tsMs = Date.parse(lastDispatched.ts);
     if (!Number.isFinite(tsMs)) continue;
     if (nowMs - tsMs < staleAfterMs) continue;
+    const failureReason = {
+      reason: "dispatch_timeout",
+      stale_after_ms: staleAfterMs,
+      dispatched_at: lastDispatched.ts,
+      elapsed_ms: nowMs - tsMs,
+    };
+    if (node.physical_resource_dispatch != null) {
+      const physical = normalizePhysicalResourceDispatchBinding(
+        node.physical_resource_dispatch,
+        "stale_dispatched_node.physical_resource_dispatch",
+      );
+      const prepTokenHash = lastDispatched.payload.prep_token_hash;
+      if (!SHA256_DIGEST_PATTERN.test(prepTokenHash || "")) {
+        throw new Error(
+          "a stale physical dispatch requires an exact lowercase SHA-256 prep_token_hash",
+        );
+      }
+      Object.assign(failureReason, {
+        reservation_ref: physical.reservation_ref,
+        receipt_digest: physical.receipt_digest,
+        allocation_plan_digest: physical.allocation_plan_digest,
+        eligibility_digest: physical.eligibility_digest,
+        resource_bundle_digest: physical.resource_bundle_digest,
+        source_graph_hash: physical.source_graph_hash,
+        session_nucleus_hash: physical.session_nucleus_hash,
+        prep_token_hash: prepTokenHash,
+      });
+    }
     const event = appendNodeTransition({
       target_domain: targetDomain,
       node_id: node.node_id,
       from_state: "dispatched",
       to_state: "failed",
       contract_hash: node.contract_hash || undefined,
-      failure_reason: {
-        reason: "dispatch_timeout",
-        stale_after_ms: staleAfterMs,
-        dispatched_at: lastDispatched.ts,
-        elapsed_ms: nowMs - tsMs,
-      },
+      failure_reason: failureReason,
       ts: now.toISOString(),
       source: { tool: "expireStaleDispatchedNodes" },
     });
@@ -448,6 +579,65 @@ function appendHypothesisProposal(input, options = {}) {
   }, options);
 }
 
+// Append a cell_proposed observation.recorded event — one coverage cell
+// (a (surface x bug_class x auth_role) obligation, or for OSS a
+// (harness x sanitizer x input_class) obligation) emitted from a
+// deriveChildFanoutPlan child. The cell keys on the REAL parent surface_id
+// (never a synthetic id); the cell_key is carried verbatim in the payload for
+// 1:1 coverage reconciliation. Single-spawner: the orchestrator appends; no
+// worker spawn. Mirrors appendHypothesisProposal (same observation.recorded
+// top-level kind — no new frontier-event-kind budget spent).
+function appendCellProposal(input, options = {}) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("appendCellProposal input must be an object");
+  }
+  const surfaceId = assertSurfaceRef(input.surface_id, "surface_id");
+  const bugClass = assertNonEmptyString(input.bug_class, "bug_class");
+  const cellKey = assertNonEmptyString(input.cell_key, "cell_key");
+  const authProfile = normalizeOptionalText(input.auth_profile, "auth_profile") || "";
+  // A2: a transition-cell rides the SAME cell_proposed payload but is grounded in
+  // an EDGE — both endpoint surfaces. When present, the materializer attaches
+  // both as surface_refs (instead of the single surface_id); absent keeps the
+  // surface-cell path byte-identical.
+  const fromSurface = input.from_surface == null ? "" : assertSurfaceRef(input.from_surface, "from_surface");
+  const toSurface = input.to_surface == null ? "" : assertSurfaceRef(input.to_surface, "to_surface");
+  const techniquePackIds = normalizeStringArray(input.technique_pack_ids, "technique_pack_ids");
+  const capabilityPackIds = normalizeStringArray(input.capability_pack_ids, "capability_pack_ids");
+  const planningKey = normalizeOptionalText(input.planning_key, "planning_key") || "";
+  const proposalId = normalizeOptionalId(input.proposal_id, "proposal_id");
+  // E2 depth re-probe: a residual-flagged covered cell is re-proposed as a
+  // Tier-2 cell. tier=2 (the only non-default) sorts the node after all Tier-1
+  // breadth cells (C1). Absent/1 keeps the surface-cell path byte-identical.
+  const tier = Number.isInteger(input.tier) && input.tier > 1 ? input.tier : null;
+
+  const payload = {
+    kind: "cell_proposed",
+    surface_id: surfaceId,
+    cell_key: cellKey,
+    bug_class: bugClass,
+    auth_profile: authProfile,
+    technique_pack_ids: techniquePackIds,
+    capability_pack_ids: capabilityPackIds,
+  };
+  if (planningKey) payload.planning_key = planningKey;
+  if (proposalId) payload.proposal_id = proposalId;
+  if (fromSurface) payload.from_surface = fromSurface;
+  if (toSurface) payload.to_surface = toSurface;
+  if (tier) payload.tier = tier;
+
+  const source = normalizeOptionalObject(input.source, "source");
+  const actor = normalizeOptionalText(input.actor, "actor");
+
+  return appendFrontierEvent({
+    target_domain: input.target_domain,
+    kind: "observation.recorded",
+    ts: input.ts,
+    payload,
+    source: source || undefined,
+    actor: actor || undefined,
+  }, options);
+}
+
 // Reader helpers. The materializer (X.2) will subsume most of these but
 // during X.1 the proposal-tool tests need a lightweight projection that
 // returns only the TaskGraph-flavored events without re-decoding every
@@ -475,24 +665,40 @@ function readHypothesisProposals(targetDomain) {
     ));
 }
 
+function readCellProposals(targetDomain) {
+  return readFrontierEvents(targetDomain)
+    .filter((event) => (
+      event.kind === "observation.recorded"
+      && event.payload
+      && event.payload.kind === "cell_proposed"
+    ));
+}
+
 module.exports = {
+  COMPOSITION_EXPERIMENT_RESULT_KINDS,
   DEFAULT_STALE_DISPATCH_MS,
+  EVIDENCE_BINDING_REF_PATTERN,
   HYPOTHESIS_STATEMENT_MAX_CHARS,
   NODE_STATE_TRANSITIONS,
   NODE_STATE_VALUES,
+  PHYSICAL_RESOURCE_DISPATCH_BINDING_FIELDS,
   TASK_GRAPH_NODE_ID_PATTERN,
   TASK_GRAPH_NODE_ID_PREFIX,
   TRANSITION_KIND_VALUES,
   TRANSITION_TRUST_ASSUMPTION_MAX_CHARS,
+  appendCellProposal,
   appendHypothesisProposal,
   appendNodeTransition,
   appendTransitionProposal,
+  assertLiveNodeTransition,
   assertNodeTransitionAllowed,
   assertTaskGraphNodeId,
   expireStaleDispatchedNodes,
   findAttachedContract,
   findMostRecentNodeTransition,
   isAllowedNodeTransition,
+  normalizePhysicalResourceDispatchBinding,
+  readCellProposals,
   readHypothesisProposals,
   readNodeTransitions,
   readTransitionProposals,

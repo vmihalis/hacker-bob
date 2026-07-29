@@ -9,6 +9,10 @@ const {
 } = require("../../scripts/lib/codex-role-renderer.js");
 const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
 const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
+const {
+  bobMcpServerEntry,
+  isBobManagedMcpServerEntry,
+} = require("../../scripts/lib/workspace-sessions-root.js");
 
 const id = "codex";
 const PLUGIN_NAME = "hacker-bob";
@@ -165,13 +169,10 @@ function managedDirs() {
   ];
 }
 
-function mergeConfig({ serverPath }) {
+function mergeConfig({ serverPath, sessionsRoot = null }) {
   return {
     mcpServers: {
-      "hacker-bob": {
-        command: "node",
-        args: [serverPath],
-      },
+      "hacker-bob": bobMcpServerEntry({ serverPath, sessionsRoot }),
       brutalist: { ...BRUTALIST_MCP_SERVER, args: [...BRUTALIST_MCP_SERVER.args] },
     },
   };
@@ -432,7 +433,14 @@ function activateCodexPlugin({ targetAbs, pluginDir, homeFs }) {
   const cacheDir = codexCacheRoot({ home, version });
   const safeHomeFs = homeFs || createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
   safeHomeFs.mkdirp(cacheBase);
-  safeHomeFs.removeDirContents(cacheBase);
+  // Every child of cacheBase is a version directory holding a verbatim copy of
+  // pluginDir — written by the copyTree on the next line, whose destination
+  // cacheDir is cacheBase/<version>. Handing that source tree to the delete
+  // guard is what keeps a normal re-install SILENT: a cached file whose bytes
+  // still equal its pluginDir counterpart cannot be destroyed by wiping the
+  // cache ahead of the re-copy, so it is left for the delete instead of being
+  // preserved as local work. Only a genuinely edited cache file is moved aside.
+  safeHomeFs.removeDirContents(cacheBase, { childSourceTree: pluginDir });
   safeHomeFs.copyTree(pluginDir, cacheDir);
 
   const existingConfig = safeHomeFs.readTextIfExists(configPath, "", {
@@ -499,7 +507,7 @@ function codexActivationStatus(targetAbs) {
   };
 }
 
-function install({ sourceRoot, targetAbs, serverPath, activate = false, installFs }) {
+function install({ sourceRoot, targetAbs, serverPath, sessionsRoot = null, activate = false, installFs }) {
   const projectFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
   const home = codexHome();
   const homeFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
@@ -508,7 +516,7 @@ function install({ sourceRoot, targetAbs, serverPath, activate = false, installF
   removeStalePluginSurfaces(destination, projectFs);
   const copied = projectFs.copyTree(source, destination);
   writeCommandFiles(destination, projectFs);
-  projectFs.writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath }), {
+  projectFs.writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath, sessionsRoot }), {
     kind: "generated file",
   });
   installMarketplace(targetAbs, projectFs);
@@ -656,8 +664,17 @@ function doctor({ targetAbs }) {
   } else {
     try {
       const mcp = readJson(mcpPath);
-      const expected = mergeConfig({ serverPath: path.join(targetAbs, "mcp", "server.js") });
-      if (JSON.stringify(mcp) === JSON.stringify(expected)) {
+      const serverPath = path.join(targetAbs, "mcp", "server.js");
+      const expected = mergeConfig({ serverPath });
+      // The whole document must still be Bob's, but the hacker-bob entry may
+      // carry the Bob-managed BOB_SESSIONS_ROOT env block (its value is
+      // operator config, so it is never asserted here).
+      const servers = (mcp && mcp.mcpServers) || {};
+      const bobManaged = Object.keys(mcp || {}).length === 1
+        && Object.keys(servers).length === Object.keys(expected.mcpServers).length
+        && isBobManagedMcpServerEntry(servers["hacker-bob"], { serverPath })
+        && JSON.stringify(servers.brutalist) === JSON.stringify(expected.mcpServers.brutalist);
+      if (bobManaged) {
         addCheck(checks, "ok", "codex_plugin_mcp", "Codex plugin MCP config points at this project's mcp/server.js");
       } else {
         addCheck(checks, "error", "codex_plugin_mcp", "Codex plugin MCP config is not Bob-managed");

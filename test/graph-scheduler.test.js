@@ -163,7 +163,10 @@ test("graph-scheduler: empty graph returns empty selection (no frontier events a
     const domain = "x9-empty-graph.example.com";
     // Touch the session directory but emit no node-producing events.
     seedSession(domain);
-    const result = selectNextExecutableNodes(domain, {}, 4);
+    // Explicit off-profile (no in-flight cap) so the single-cap path holds and
+    // capacity_limit equals the requested capacity. (The default's sized in-flight
+    // cap exercises the per-kind split, covered separately by the D2 test.)
+    const result = selectNextExecutableNodes(domain, { max_concurrent_evaluators: null }, 4);
     assert.equal(result.selected.length, 0);
     assert.equal(result.skipped.length, 0);
     assert.equal(result.capacity_used, 0);
@@ -243,6 +246,58 @@ test("graph-scheduler: capacity cap selects top N by priority then deterministic
     // Hypothesis ids carry the proposal_id; ordering is HP-a < HP-b < ...
     assert.equal(result.selected[0].node_id, ids[0]);
     assert.equal(result.selected[1].node_id, ids[1]);
+  });
+});
+
+test("graph-scheduler: max_total_spawned_agents binds the closure-dispatch breadth", () => {
+  withTempHome(() => {
+    const domain = "x9-closure-governor.example.com";
+    seedSession(domain);
+    const ids = ["a", "b", "c", "d"].map((slug) => seedContractedHypothesis(domain, `GP-${slug}`));
+    // Wide capacity so only the governor can bind the dispatch count.
+    const widePolicy = { max_parallel_tasks: 100 };
+
+    // Governor 2, nothing reserved -> exactly 2 dispatched; the rest skipped
+    // (they ride the next drain cycle — no node dropped, fixpoint preserved).
+    const bound = selectNextExecutableNodes(
+      domain,
+      { ...widePolicy, max_total_spawned_agents: 2 },
+      100,
+      { reservedSpawnTotal: 0 },
+    );
+    assert.equal(bound.selected.length, 2, "governor clamps the closure dispatch to the remaining budget");
+    assert.equal(bound.skipped.length, 2, "over-budget nodes are skipped, not dropped");
+    assert.equal(bound.considered_count, 4);
+
+    // Reserved 1 of budget 3 -> remaining 2.
+    const reserved = selectNextExecutableNodes(
+      domain,
+      { ...widePolicy, max_total_spawned_agents: 3 },
+      100,
+      { reservedSpawnTotal: 1 },
+    );
+    assert.equal(reserved.selected.length, 2, "prior reservations subtract from the closure budget");
+
+    // Governor null -> byte-identical default-off: all four dispatch under the
+    // wide capacity, reservedSpawnTotal ignored.
+    const off = selectNextExecutableNodes(domain, widePolicy, 100, { reservedSpawnTotal: 999 });
+    assert.equal(off.selected.length, 4, "null governor ignores reservedSpawnTotal — byte-identical");
+    assert.deepEqual(ids.slice().sort(), off.selected.map((n) => n.node_id).sort());
+
+    // Fully exhausted budget -> nothing dispatched, but a coverage_gap NAMES the
+    // uncovered cells (STOP + report, never a silent drop). Null governor never
+    // attaches coverage_gap, so default-off stays clean.
+    const exhausted = selectNextExecutableNodes(
+      domain,
+      { ...widePolicy, max_total_spawned_agents: 2 },
+      100,
+      { reservedSpawnTotal: 2 },
+    );
+    assert.equal(exhausted.selected.length, 0, "no budget => nothing dispatched");
+    assert.ok(exhausted.coverage_gap, "exhaustion surfaces a coverage_gap");
+    assert.equal(exhausted.coverage_gap.kind, "spawn_budget_exhausted");
+    assert.equal(exhausted.coverage_gap.uncovered_node_ids.length, 4, "all four cells named as uncovered");
+    assert.equal(off.coverage_gap, undefined, "null governor never attaches coverage_gap");
   });
 });
 
@@ -520,8 +575,8 @@ test("wave-scheduler still functions for Surface + Claim nodes after X.9 lands (
   });
 });
 
-test("graph-scheduler kinds enumerate Transition + Hypothesis only", () => {
-  assert.deepEqual(GRAPH_SCHEDULED_KINDS.slice(), ["transition", "hypothesis"]);
+test("graph-scheduler kinds enumerate the graph-dispatched node kinds", () => {
+  assert.deepEqual(GRAPH_SCHEDULED_KINDS.slice(), ["transition", "hypothesis", "cell"]);
 });
 
 // ─── End-to-end: bob_schedule_graph_nodes tool ──────────────────────
@@ -530,6 +585,11 @@ test("bob_schedule_graph_nodes dispatches a contracted Hypothesis node via prepa
   withTempHome(() => {
     const domain = "x9-e2e-dispatch.example.com";
     seedSession(domain);
+    // Explicit off-profile (no in-flight cap) so capacity_limit equals the
+    // requested capacity through the single-cap path; the default's sized in-flight
+    // cap (per-kind split) is exercised by the D2 test instead.
+    const { writeQueuePolicy: writeLean } = require("../mcp/lib/queue-policy.js");
+    writeLean(domain, { max_concurrent_evaluators: null });
     const nodeId = seedContractedHypothesis(domain, "HP-e2e");
     const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
       target_domain: domain,
@@ -556,6 +616,51 @@ test("bob_schedule_graph_nodes dispatches a contracted Hypothesis node via prepa
     const doc = materializeTaskGraph(domain, { write: false }).document;
     const node = doc.nodes.find((n) => n.node_id === nodeId);
     assert.equal(node.state, "dispatched");
+  });
+});
+
+test("bob_schedule_graph_nodes reserves each dispatched closure cell in the spawn-ledger (cross-cycle bind)", () => {
+  withTempHome(() => {
+    const domain = "x9-closure-ledger.example.com";
+    seedSession(domain);
+    const nodeId = seedContractedHypothesis(domain, "HP-ledger");
+    // Governor set: each dispatched closure cell must reserve one lifetime slot so
+    // the budget binds ACROSS drain cycles (without it, every cycle re-reads the
+    // same reservedSpawnTotal=0 and could re-dispatch up to the budget forever).
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY: DQP } =
+      require("../mcp/lib/queue-policy.js");
+    const { readSpawnLedgerEntries, spawnLedgerTotal } = require("../mcp/lib/spawn-ledger.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DQP, max_total_spawned_agents: 50 }));
+
+    const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
+      target_domain: domain,
+      capacity: 1,
+    }));
+    assert.equal(result.dispatched.length, 1);
+
+    const rows = readSpawnLedgerEntries(domain);
+    assert.equal(rows.length, 1, "the dispatched cell is reserved");
+    assert.equal(rows[0].kind, "closure_cell");
+    assert.equal(rows[0].surface_id, nodeId);
+    assert.equal(rows[0].root_count, 1);
+    assert.equal(rows[0].descendant_tree, 0, "a closure cell does not nest");
+    assert.equal(rows[0].worst_case_tree, 1);
+    assert.equal(spawnLedgerTotal(domain), 1, "the cell now draws down the lifetime budget");
+  });
+});
+
+test("bob_schedule_graph_nodes closure dispatch with no governor writes no ledger rows — byte-identical", () => {
+  withTempHome(() => {
+    const domain = "x9-closure-ledger-off.example.com";
+    seedSession(domain);
+    seedContractedHypothesis(domain, "HP-ledger-off");
+    const { readSpawnLedgerEntries } = require("../mcp/lib/spawn-ledger.js");
+    const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
+      target_domain: domain,
+      capacity: 1,
+    }));
+    assert.equal(result.dispatched.length, 1);
+    assert.deepEqual(readSpawnLedgerEntries(domain), [], "no governor => no reservation rows");
   });
 });
 
@@ -749,4 +854,314 @@ test("graph-scheduler ignores nodes in terminal states (finalized / abandoned)",
     assert.equal(result.selected.length, 0,
       "finalized nodes must NEVER appear in graph-scheduler selection");
   });
+});
+
+// ─── E1: belief-VoI advisory scheduler overlay ────────────────────────────
+//
+// The deterministic spine (priority -> ts_first -> node_id) stays byte-
+// identical with the CB-C1 flag off (the default). When an operator opts in,
+// a per-cell belief score RAISES hotter-surface cells WITHIN their priority
+// band — never across a band, never dropping a cell. These tests pin the
+// comparator contract (pure), the real belief→cell wiring (helper), and the
+// spine-green/raise-only behavior at the selection boundary (integration).
+
+const {
+  compareGraphCandidates,
+} = require("../mcp/lib/graph-scheduler.js");
+const {
+  buildCellBeliefRank,
+} = require("../mcp/lib/belief/cell-scheduler-priority.js");
+const {
+  appendCellProposal: appendCellProposalE1,
+} = require("../mcp/lib/task-graph-events.js");
+const {
+  cellNodeId: cellNodeIdE1,
+} = require("../mcp/lib/task-graph-materializer.js");
+const {
+  buildCellCoverageContract: buildCellCoverageContractE1,
+} = require("../mcp/lib/cell-contract.js");
+const {
+  materializeFrontier: materializeFrontierE1,
+} = require("../mcp/lib/frontier-materializer.js");
+const {
+  appendEdges: appendEdgesE1,
+} = require("../mcp/lib/surface-graph.js");
+const {
+  DEFAULT_QUEUE_POLICY: DEFAULT_QUEUE_POLICY_E1,
+} = require("../mcp/lib/queue-policy.js");
+
+const PRIORITY_RANK_E1 = new Map([
+  ["critical", 0],
+  ["high", 1],
+  ["medium", 2],
+  ["low", 3],
+]);
+
+function cellCandidateE1(nodeId, { priority = "medium", ts = "2026-05-31T00:01:00.000Z" } = {}) {
+  return { node_id: nodeId, kind: "cell", state: "contracted", priority, ts_first: ts, ts_last: ts };
+}
+
+// Seed a single dispatch-eligible (contracted) coverage cell on a surface and
+// return its materialized node_id. Mirrors bob_materialize_cell_floor's
+// proposal → materialize → synthetic-contract dance for exactly one cell.
+function seedContractedCellE1(domain, surfaceId, {
+  bugClass = "idor",
+  authProfile = "admin",
+  ts = "2026-05-31T00:01:00.000Z",
+} = {}) {
+  const cellKey = JSON.stringify([surfaceId, "", "", bugClass, authProfile]);
+  appendCellProposalE1({
+    target_domain: domain,
+    surface_id: surfaceId,
+    cell_key: cellKey,
+    bug_class: bugClass,
+    auth_profile: authProfile,
+    technique_pack_ids: [],
+    capability_pack_ids: [],
+    ts,
+  });
+  materializeTaskGraph(domain, { write: true });
+  const nodeId = cellNodeIdE1({ cellKey });
+  appendContract({
+    target_domain: domain,
+    node_id: nodeId,
+    contract: buildCellCoverageContractE1({ surfaceId, bugClass, authProfile, cellKey }),
+    ts,
+  });
+  materializeTaskGraph(domain, { write: true });
+  return nodeId;
+}
+
+function seedDescribedSurfaceE1(domain, surfaceId, title) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "surface.observed",
+    ts: "2026-05-31T00:00:00.000Z",
+    surface_id: surfaceId,
+    payload: { title },
+  });
+  materializeFrontierE1(domain, { write: true });
+}
+
+// The causal graph the wave-planner belief test uses: an attacker principal
+// tests an owner gate that permits an unauth effect. rankInterventions surfaces
+// this as a value-of-information candidate whose tokens match the idor surface.
+function seedBeliefCausalGraphE1(domain) {
+  appendEdgesE1({
+    target_domain: domain,
+    edges: [
+      {
+        source: { type: "principal", id: "principal:attacker" },
+        target: { type: "policy_gate", id: "policy_gate:owner" },
+        edge_type: "tests_gate",
+      },
+      {
+        source: { type: "policy_gate", id: "policy_gate:owner" },
+        target: { type: "effect", id: "effect:unauth_succeeds_where_auth_blocked:victim" },
+        edge_type: "permits_effect",
+      },
+    ],
+  });
+}
+
+test("E1 comparator: an empty/absent belief map is byte-identical to the deterministic 3-key sort", () => {
+  const a = cellCandidateE1("TG-cell-aaa");
+  const b = cellCandidateE1("TG-cell-bbb");
+  // No map, null map, and empty map must all reduce to node_id alpha (ts tied).
+  const baseline = compareGraphCandidates(a, b, PRIORITY_RANK_E1);
+  assert.equal(compareGraphCandidates(a, b, PRIORITY_RANK_E1, null), baseline);
+  assert.equal(compareGraphCandidates(a, b, PRIORITY_RANK_E1, new Map()), baseline);
+  assert.ok(baseline < 0, "TG-cell-aaa sorts before TG-cell-bbb by node_id");
+});
+
+test("E1 comparator: a belief score RAISES a cell WITHIN its priority band (tie-break only)", () => {
+  const a = cellCandidateE1("TG-cell-aaa"); // alpha-first by default
+  const b = cellCandidateE1("TG-cell-bbb");
+  // Give b a positive belief score; it must now sort ahead of a despite a's
+  // earlier node_id — but both are still medium, so this is a within-band raise.
+  const belief = new Map([["TG-cell-bbb", 90]]);
+  assert.ok(compareGraphCandidates(a, b, PRIORITY_RANK_E1, belief) > 0, "b raised ahead of a");
+  // Symmetry: the reverse comparison agrees (no contradictory ordering).
+  assert.ok(compareGraphCandidates(b, a, PRIORITY_RANK_E1, belief) < 0);
+});
+
+test("E1 comparator: belief NEVER crosses a priority band (a critical cell always beats a boosted medium)", () => {
+  const critical = cellCandidateE1("TG-cell-zzz", { priority: "critical" });
+  const medium = cellCandidateE1("TG-cell-aaa", { priority: "medium" });
+  // Even with a maximal belief score on the medium cell, the critical cell wins
+  // because the belief compare sits AFTER the priority compare.
+  const belief = new Map([["TG-cell-aaa", 100]]);
+  assert.ok(
+    compareGraphCandidates(critical, medium, PRIORITY_RANK_E1, belief) < 0,
+    "critical precedes a belief-boosted medium",
+  );
+});
+
+// ─── C1: two-tier breadth-then-depth comparator ───────────────────────────
+
+test("C1 comparator: the tier key is a no-op when every candidate is Tier-1 (byte-identical baseline)", () => {
+  const a = cellCandidateE1("TG-cell-aaa");
+  const b = cellCandidateE1("TG-cell-bbb");
+  // No tier field (default Tier-1) must equal the pre-C1 priority->ts->node_id sort.
+  const baseline = compareGraphCandidates(a, b, PRIORITY_RANK_E1);
+  // An explicit tier:1 on both is identical to the default.
+  assert.equal(compareGraphCandidates({ ...a, tier: 1 }, { ...b, tier: 1 }, PRIORITY_RANK_E1), baseline);
+  assert.ok(baseline < 0, "TG-cell-aaa before TG-cell-bbb by node_id when all keys tie");
+});
+
+test("C1 comparator: breadth precedes depth UNCONDITIONALLY (a Tier-1 cell beats a higher-priority Tier-2 re-probe)", () => {
+  // Tier-1 uncovered floor cell at MEDIUM priority vs a Tier-2 depth re-probe at
+  // CRITICAL priority. Breadth-before-depth: the Tier-1 cell must dispatch first
+  // even though the re-probe outranks it on priority.
+  const tier1Medium = { ...cellCandidateE1("TG-cell-floor", { priority: "medium" }), tier: 1 };
+  const tier2Critical = { ...cellCandidateE1("TG-cell-reprobe", { priority: "critical" }), tier: 2 };
+  assert.ok(
+    compareGraphCandidates(tier1Medium, tier2Critical, PRIORITY_RANK_E1) < 0,
+    "the uncovered Tier-1 floor cell precedes the higher-priority Tier-2 re-probe",
+  );
+  // Symmetric and even when the Tier-2 cell carries a maximal belief boost.
+  const belief = new Map([["TG-cell-reprobe", 100]]);
+  assert.ok(compareGraphCandidates(tier2Critical, tier1Medium, PRIORITY_RANK_E1, belief) > 0);
+});
+
+test("C1 comparator: within a tier+priority band, higher severity_floor dispatches first", () => {
+  const crit = { ...cellCandidateE1("TG-cell-zzz", { priority: "medium" }), severity_floor: "critical" };
+  const low = { ...cellCandidateE1("TG-cell-aaa", { priority: "medium" }), severity_floor: "low" };
+  // Same tier + priority: the higher-severity cell wins, overriding the node_id
+  // alpha tie-break (which would otherwise put TG-cell-aaa first).
+  assert.ok(
+    compareGraphCandidates(crit, low, PRIORITY_RANK_E1) < 0,
+    "critical-severity cell precedes a low-severity cell despite later node_id",
+  );
+  // Uniform severity falls through to the deterministic node_id tie-break.
+  const lowA = { ...cellCandidateE1("TG-cell-aaa", { priority: "medium" }), severity_floor: "low" };
+  const lowB = { ...cellCandidateE1("TG-cell-bbb", { priority: "medium" }), severity_floor: "low" };
+  assert.ok(compareGraphCandidates(lowA, lowB, PRIORITY_RANK_E1) < 0);
+});
+
+test("E1 helper: buildCellBeliefRank scores a cell from its parent surface's belief hint", () => {
+  withTempHome(() => {
+    const domain = "e1-belief-rank.example.com";
+    seedSession(domain);
+    seedDescribedSurfaceE1(domain, "surface:idor", "idor victim object unauth succeeds where auth blocked");
+    seedDescribedSurfaceE1(domain, "surface:generic", "generic admin dashboard");
+    seedBeliefCausalGraphE1(domain);
+    const idorCell = seedContractedCellE1(domain, "surface:idor");
+    const genericCell = seedContractedCellE1(domain, "surface:generic", { bugClass: "xss", authProfile: "anon" });
+
+    const doc = materializeTaskGraph(domain, { write: false }).document;
+    const candidates = doc.nodes
+      .filter((n) => n.kind === "cell")
+      .map((n) => ({ node_id: n.node_id, kind: "cell" }));
+
+    // Real path: buildCellBeliefRank reads currentSurfaces + the belief machinery.
+    const rank = buildCellBeliefRank({
+      target_domain: domain,
+      document: doc,
+      candidates,
+      seed: DEFAULT_QUEUE_POLICY_E1.belief_assisted_priority_seed,
+      rank_limit: DEFAULT_QUEUE_POLICY_E1.belief_assisted_priority_rank_limit,
+    });
+    assert.ok(rank.has(idorCell), "the idor cell inherits its surface's belief hint");
+    assert.ok(rank.get(idorCell) > 0, "the inherited score is a positive RAISE");
+    assert.ok(!rank.has(genericCell), "the unmatched generic surface yields no boost");
+  });
+});
+
+test("E1 selection: flag ON with no belief signal is identical to flag OFF (graceful cold start)", () => {
+  withTempHome(() => {
+    const domain = "e1-cold-start.example.com";
+    seedSession(domain);
+    seedDescribedSurfaceE1(domain, "surface:one", "surface one");
+    seedDescribedSurfaceE1(domain, "surface:two", "surface two");
+    // No causal edges => no belief hints => empty rank map.
+    seedContractedCellE1(domain, "surface:one");
+    seedContractedCellE1(domain, "surface:two", { bugClass: "xss", authProfile: "anon" });
+
+    const off = selectNextExecutableNodes(domain, {}, 8);
+    const on = selectNextExecutableNodes(
+      domain,
+      { ...DEFAULT_QUEUE_POLICY_E1, belief_assisted_priority_enabled: true },
+      8,
+    );
+    assert.equal(JSON.stringify(on.selected), JSON.stringify(off.selected));
+    assert.equal(JSON.stringify(on.skipped), JSON.stringify(off.skipped));
+  });
+});
+
+test("E1 selection: flag ON RAISES the hotter-surface cell but drops no cell (monotonic)", () => {
+  withTempHome(() => {
+    const domain = "e1-raise-only.example.com";
+    seedSession(domain);
+    seedDescribedSurfaceE1(domain, "surface:idor", "idor victim object unauth succeeds where auth blocked");
+    seedDescribedSurfaceE1(domain, "surface:generic", "generic admin dashboard");
+    seedBeliefCausalGraphE1(domain);
+    const idorCell = seedContractedCellE1(domain, "surface:idor");
+    const genericCell = seedContractedCellE1(domain, "surface:generic", { bugClass: "xss", authProfile: "anon" });
+
+    // The advisory is default-ON; the no-belief baseline is taken with an explicit
+    // operator `false` (assertBoolean honors an explicit false per session).
+    const off = selectNextExecutableNodes(domain, { belief_assisted_priority_enabled: false }, 8);
+    const offIds = new Set([...off.selected, ...off.skipped].map((n) => n.node_id));
+
+    const on = selectNextExecutableNodes(
+      domain,
+      { ...DEFAULT_QUEUE_POLICY_E1, belief_assisted_priority_enabled: true },
+      8,
+    );
+    const order = [...on.selected, ...on.skipped].map((n) => n.node_id);
+    const onIds = new Set(order);
+
+    // The overlay actually changed the order (guards against a silent no-op
+    // regardless of how the content-hash node_ids happen to sort).
+    assert.notEqual(
+      JSON.stringify(on.selected),
+      JSON.stringify(off.selected),
+      "the belief overlay reordered selection (not a no-op)",
+    );
+    // RAISE: the belief-matched idor cell sorts ahead of the unmatched generic cell.
+    assert.ok(order.indexOf(idorCell) >= 0 && order.indexOf(genericCell) >= 0);
+    assert.ok(
+      order.indexOf(idorCell) < order.indexOf(genericCell),
+      "the hotter (belief-matched) cell is raised ahead of the cold cell",
+    );
+    // MONOTONIC: the overlay reorders only — the candidate SET and count are unchanged.
+    assert.equal(onIds.size, offIds.size);
+    for (const id of offIds) assert.ok(onIds.has(id), `cell ${id} survives the overlay`);
+    assert.equal(on.considered_count, off.considered_count);
+  });
+});
+
+test("D2 per-kind cap split: max_concurrent_evaluators scales cells while transition/hypothesis stay at the graph cap", () => {
+  const document = {
+    materialized_at: "2026-06-21T00:00:00.000Z",
+    hashes: { graph_hash: "d2deadbeef" },
+    nodes: [
+      ...Array.from({ length: 6 }, (_, i) => ({ node_id: `cell-${i}`, kind: "cell", state: "ready", priority: "medium" })),
+      ...Array.from({ length: 3 }, (_, i) => ({ node_id: `tr-${i}`, kind: "transition", state: "ready", priority: "medium" })),
+    ],
+  };
+  // Off-profile (explicit null in-flight cap): one combined cap => single slice.
+  const def = selectNextExecutableNodes("d2-split.example.com", { max_concurrent_evaluators: null }, 2, { document });
+  assert.equal(def.capacity_used, 2);
+  assert.equal(def.capacity_limit, 2, "a null in-flight cap keeps the single combined cap");
+  assert.equal(def.capacity_used, def.selected.length);
+
+  // On-default: the shipped default's sized in-flight cap (128) scales the cell kind
+  // while transition/hypothesis stay at the graph cap (the per-kind split is on).
+  const { DEFAULT_QUEUE_POLICY: DQP_D2 } = require("../mcp/lib/queue-policy.js");
+  const onDefault = selectNextExecutableNodes("d2-split.example.com", DQP_D2, 2, { document });
+  assert.equal(onDefault.selected.filter((n) => n.kind === "cell").length, 6, "the on-default scales all 6 cells (cap 128 > 6)");
+  assert.equal(onDefault.selected.filter((n) => n.kind !== "cell").length, 2, "transition/hypothesis stay at the graph cap 2");
+  assert.equal(onDefault.capacity_limit, 130, "capacity_limit = cellCap(128) + graphCap(2)");
+
+  // Opt-in: cell cap 5 (max_concurrent_evaluators), graph cap 2 (the `cap` arg = max_parallel_tasks).
+  const split = selectNextExecutableNodes("d2-split.example.com", { max_concurrent_evaluators: 5 }, 2, { document });
+  const cells = split.selected.filter((n) => n.kind === "cell").length;
+  const graph = split.selected.filter((n) => n.kind !== "cell").length;
+  assert.equal(cells, 5, "cells scale to max_concurrent_evaluators (5 of 6)");
+  assert.equal(graph, 2, "transition/hypothesis stay at the graph cap (2 of 3) — dispatch count unchanged");
+  assert.equal(split.capacity_limit, 7, "capacity_limit = cellCap + graphCap");
+  assert.equal(split.capacity_used, 7);
+  assert.equal(split.capacity_used, split.selected.length, "capacity_used === selected.length contract holds");
 });

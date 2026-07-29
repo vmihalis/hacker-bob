@@ -26,6 +26,13 @@ const {
 const {
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
+const {
+  extractChainTuples,
+} = require("./chain-authority.js");
+const {
+  PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION,
+  normalizePhysicalScopeNucleusAxis,
+} = require("./physical-scope-axis.js");
 
 const GOVERNANCE_VERSION = 1;
 const LIFECYCLE_STATE_VALUES = Object.freeze([
@@ -115,39 +122,81 @@ function normalizeTargetRepo(input, fieldName = "target_repo") {
   return repo;
 }
 
-function normalizeScopePolicy(input) {
+// Canonical, order-independent projection of a contracts axis. Each entry is
+// re-normalized through the shared chain-authority tuple parser (extractChainTuples
+// case-folds the address, normalizes chain_family, and drops non-tuples) and the
+// result is sorted with the same comparator chainAuthorityHash uses. A scope
+// policy's target_contracts — and therefore its nucleus_hash — is byte-stable
+// regardless of input order or whether entries arrived as CAIP-10 strings
+// (state-derived first read) or tuple objects (re-derived from a stored nucleus).
+function sortChainTuples(tuples) {
+  return extractChainTuples(tuples)
+    .map((t) => ({ chain_family: t.chain_family, chain_id: t.chain_id, address: t.address }))
+    .sort((a, b) => (
+      a.chain_family !== b.chain_family
+        ? (a.chain_family < b.chain_family ? -1 : 1)
+        : a.chain_id !== b.chain_id
+          ? (a.chain_id < b.chain_id ? -1 : 1)
+          : a.address !== b.address
+            ? (a.address < b.address ? -1 : 1)
+            : 0
+    ));
+}
+
+function normalizeScopePolicyInternal(input, { allowPhysicalOnly = false } = {}) {
   if (input == null || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("scope_policy must be an object");
   }
   const targetDomain = assertSafeDomain(input.target_domain);
   const hasUrl = input.target_url != null && (typeof input.target_url !== "string" || input.target_url.trim().length > 0);
   const hasRepo = input.target_repo != null;
-  if (!hasUrl && !hasRepo) {
-    throw new Error("scope_policy requires exactly one of target_url or target_repo");
+  // The contracts axis is independent of the url/repo primary axis: it may stand
+  // alone OR ride alongside a url/repo binding. It counts as present only when at
+  // least one entry parses to a valid {chain_family, chain_id, address} tuple —
+  // a supplied-but-all-garbage target_contracts fails CLOSED here, never a silent
+  // drop to an empty scope.
+  const contractsProvided = input.target_contracts != null;
+  const contractTuples = contractsProvided ? sortChainTuples(input.target_contracts) : [];
+  const hasContracts = contractTuples.length > 0;
+  if (contractsProvided && !hasContracts) {
+    throw new Error("scope_policy target_contracts carries no valid {chain_family, chain_id, address} tuple");
   }
+  // target_url and target_repo remain mutually exclusive primary axes.
   if (hasUrl && hasRepo) {
     throw new Error("scope_policy must carry exactly one of target_url or target_repo, not both");
   }
-  const internalHostPolicy = blockInternalHostsPolicyFields(input);
-  if (hasRepo) {
-    const targetRepo = normalizeTargetRepo(input.target_repo);
-    return {
-      target_domain: targetDomain,
-      target_repo: targetRepo,
-      checkpoint_mode: internalHostPolicy.checkpoint_mode,
-      block_internal_hosts: internalHostPolicy.block_internal_hosts,
-      block_internal_hosts_source: internalHostPolicy.block_internal_hosts_source,
-    };
+  // At least one scope axis must be present.
+  if (!hasUrl && !hasRepo && !hasContracts && allowPhysicalOnly !== true) {
+    throw new Error("scope_policy requires exactly one of target_url or target_repo, or a target_contracts axis");
   }
-  const targetUrl = assertNonEmptyString(input.target_url, "target_url");
-  validateNoSensitiveMaterial(targetUrl, "target_url", { maxTextChars: 2048 });
-  return {
+  const internalHostPolicy = blockInternalHostsPolicyFields(input);
+  const policy = {
     target_domain: targetDomain,
-    target_url: targetUrl,
     checkpoint_mode: internalHostPolicy.checkpoint_mode,
     block_internal_hosts: internalHostPolicy.block_internal_hosts,
     block_internal_hosts_source: internalHostPolicy.block_internal_hosts_source,
   };
+  if (hasRepo) {
+    policy.target_repo = normalizeTargetRepo(input.target_repo);
+  } else if (hasUrl) {
+    const targetUrl = assertNonEmptyString(input.target_url, "target_url");
+    validateNoSensitiveMaterial(targetUrl, "target_url", { maxTextChars: 2048 });
+    policy.target_url = targetUrl;
+  }
+  if (hasContracts) {
+    policy.target_contracts = contractTuples;
+    if (input.chain_authority_hash != null) {
+      policy.chain_authority_hash = String(input.chain_authority_hash).toLowerCase();
+    }
+  }
+  return policy;
+}
+
+// Public callers cannot opt into an empty cyber-axis shell. Only
+// buildSessionNucleus may do so, and only after it has successfully normalized
+// a compact physical_scope authority axis below.
+function normalizeScopePolicy(input) {
+  return normalizeScopePolicyInternal(input);
 }
 
 function normalizeEgressIdentity(input = {}) {
@@ -229,7 +278,26 @@ function buildSessionNucleus(input) {
   } else if (scopePolicyInput.target_repo != null) {
     mergedScopePolicy.target_repo = scopePolicyInput.target_repo;
   }
-  const scopePolicy = normalizeScopePolicy(mergedScopePolicy);
+  // The contracts axis threads the same way as url/repo: a top-level override
+  // wins, otherwise the value already carried on scope_policy is used.
+  // normalizeScopePolicy re-projects it to the canonical sorted tuple list, so the
+  // input shape (CAIP-10 strings vs stored tuple objects) does not affect the hash.
+  if (input.target_contracts != null) {
+    mergedScopePolicy.target_contracts = input.target_contracts;
+  } else if (scopePolicyInput.target_contracts != null) {
+    mergedScopePolicy.target_contracts = scopePolicyInput.target_contracts;
+  }
+  if (input.chain_authority_hash != null) {
+    mergedScopePolicy.chain_authority_hash = input.chain_authority_hash;
+  } else if (scopePolicyInput.chain_authority_hash != null) {
+    mergedScopePolicy.chain_authority_hash = scopePolicyInput.chain_authority_hash;
+  }
+  const physicalScope = input.physical_scope == null
+    ? null
+    : normalizePhysicalScopeNucleusAxis(input.physical_scope);
+  const scopePolicy = normalizeScopePolicyInternal(mergedScopePolicy, {
+    allowPhysicalOnly: physicalScope != null,
+  });
   const nucleus = {
     version: GOVERNANCE_VERSION,
     target_domain: scopePolicy.target_domain,
@@ -239,6 +307,11 @@ function buildSessionNucleus(input) {
     auth_context: normalizeAuthContext(input.auth_context),
     operator_constraint: normalizeOperatorConstraint(input.operator_constraint),
   };
+  // Legacy/session nuclei with no physical axis retain their existing hashes
+  // and mean physical-disabled. Presence is explicit and hash-bound.
+  if (physicalScope != null) {
+    nucleus.physical_scope = physicalScope;
+  }
   // Cycle O.1: repo sessions persist the session-init repo_hash so the
   // docker image tag derivation stays stable across the session lifetime
   // (Plane O O-D6 cache-bust contract). repo_hash is supplied by the
@@ -266,6 +339,14 @@ function sessionNucleusFromState(state) {
     scopePolicy.target_repo = state.target_repo;
   } else if (state.target_url != null) {
     scopePolicy.target_url = state.target_url;
+  }
+  // The contracts axis is orthogonal to url/repo: a non-empty target_contracts is
+  // carried regardless (a mixed url+contracts or repo+contracts session keeps both).
+  if (Array.isArray(state.target_contracts) && state.target_contracts.length > 0) {
+    scopePolicy.target_contracts = state.target_contracts;
+    if (state.chain_authority_hash != null) {
+      scopePolicy.chain_authority_hash = state.chain_authority_hash;
+    }
   }
   const args = {
     target_domain: state.target,
@@ -296,6 +377,15 @@ function sessionNucleusFromState(state) {
   if (state.repo_hash != null) {
     args.repo_hash = state.repo_hash;
   }
+  if (Array.isArray(state.target_contracts) && state.target_contracts.length > 0) {
+    args.target_contracts = state.target_contracts;
+    if (state.chain_authority_hash != null) {
+      args.chain_authority_hash = state.chain_authority_hash;
+    }
+  }
+  if (state.physical_scope != null) {
+    args.physical_scope = state.physical_scope;
+  }
   return buildSessionNucleus(args);
 }
 
@@ -306,12 +396,14 @@ function sessionNucleusHash(nucleus) {
 module.exports = {
   GOVERNANCE_VERSION,
   LIFECYCLE_STATE_VALUES,
+  PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION,
   assertRepoRootPath,
   buildSessionNucleus,
   normalizeAuthContext,
   normalizeEgressIdentity,
   normalizeLifecycleState,
   normalizeOperatorConstraint,
+  normalizePhysicalScopeNucleusAxis,
   normalizeScopePolicy,
   normalizeTargetRepo,
   sessionNucleusFromState,

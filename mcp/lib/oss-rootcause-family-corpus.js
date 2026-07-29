@@ -135,6 +135,21 @@ const FAMILIES = Object.freeze([
     }),
   }),
   Object.freeze({
+    id: "OSS-FAM-OBJECT-AUTHORIZATION-001",
+    family: "object_authorization",
+    name: "Object selector crosses an authorization boundary",
+    description: "A principal-controlled object id, owner id, namespace key, or resource handle reaches an effect before ownership or policy-gate checks prove the principal may act on that object.",
+    lens_affinity: Object.freeze(["behavior_probe"]),
+    source_sink_signature: Object.freeze(["principal", "object_selector", "policy_gate", "effect"]),
+    witness: Object.freeze({
+      project: "web/API object authorization fixture",
+      cve_or_commit: "CWE-639",
+      file_symbol: "principal-fixed object selector swap",
+      controlling_fields: Object.freeze(["principal", "object_id", "owner_check", "effect"]),
+      impact: "authorization bypass when changing an object selector produces an effect for another principal's object",
+    }),
+  }),
+  Object.freeze({
     id: "OSS-FAM-SIGNEDNESS-CONVERSION-001",
     family: "signedness_conversion",
     name: "Signed/unsigned boundary changes safety checks",

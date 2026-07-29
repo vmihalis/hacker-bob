@@ -15,12 +15,22 @@ const {
   deriveTestNamesFromTemplate,
   renameTestFunction,
   classifyFoundryOutcome,
+  classifyFoundryViolation,
+  classifyHalmosViolation,
+  adjudicateInvariantDifferential,
+  verifyInvariantDifferential,
+  readInvariantVerifiedSummary,
   computeInvariantRunHash,
   invariantFoundryResultHash,
 } = require("../mcp/lib/invariant-runner.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
+  appendJsonlLine,
 } = require("../mcp/lib/storage.js");
+const {
+  invariantRunsJsonlPath,
+  invariantVerifiedJsonlPath,
+} = require("../mcp/lib/paths.js");
 
 function uniqueDomain(prefix = "bob-invariant-runner-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -286,6 +296,10 @@ test("deriveTestNamesFromTemplate includes slot values in the generated test ide
   assert.notEqual(first.function_name, second.function_name);
 });
 
+// MINT ≠ CONFIRM: classifyFoundryOutcome maps a single run to its per-run
+// PRIMITIVE (test_passed/test_failed/...). test_passed is an OBSERVATION here, NOT
+// a verified verdict — confirmation is the differential FLIP adjudicated by
+// verifyInvariantDifferential. Do not re-couple this primitive to verification.
 test("classifyFoundryOutcome maps tests array, kind tags, and success flag", () => {
   assert.equal(classifyFoundryOutcome({ tests: [{ success: true }] }), "test_passed");
   assert.equal(classifyFoundryOutcome({ tests: [{ success: false }] }), "test_failed");
@@ -324,6 +338,133 @@ test("dry_run returns a report without writing the test file or persisting", asy
   }
 });
 
+// SECURITY: the cross-stack target binding's on-chain cross-check MUST query the operator-
+// pinned TRUSTED RPC ladder, never the AGENT-supplied fork_urls. The agent controls the fork
+// (and thus the executed target's bytecode), so resolving the "independent" on-chain value
+// through the same agent endpoints would let the agent serve a fake bytecode matching its fake
+// target — a forged verified_pass. This locks that agent fork_urls never reach the cross-check.
+test("cross-stack target cross-check uses the TRUSTED ladder, NOT agent-supplied fork_urls (forgery fix)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const evmClient = require("../mcp/lib/evm-client.js");
+  const originalAgreed = evmClient.ethGetCodeAgreed;
+  let agreedArgs = null;
+  evmClient.ethGetCodeAgreed = async (args) => { agreedArgs = args; return { status: "unavailable", reason: "stubbed" }; };
+  const stubFoundry = async () => ({
+    tests: [{ name: "testX", success: false }],
+    // The pinned template's emitted binding (address + sha256 of the executed target bytecode).
+    target_binding: { address: `0x${"ab".repeat(20)}`, code_sha256: `0x${"cd".repeat(32)}` },
+  });
+  try {
+    await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+      run_id: "inv-xstack-trust",
+      chain_id: 1,
+      fork_block: 21000000,
+      // The AGENT supplies these. They drive the FORK, but must NOT reach the on-chain cross-check.
+      fork_urls: ["https://attacker-controlled.example/rpc"],
+    });
+    assert.ok(agreedArgs, "the on-chain cross-check ran");
+    assert.equal(agreedArgs.chainId, 1);
+    assert.equal(agreedArgs.block, 21000000);
+    // THE FIX: agent fork_urls are NOT passed as endpoints — ethGetCodeAgreed resolves the
+    // operator-pinned trusted ladder itself. A regression that re-passes fork_urls fails here.
+    assert.equal(agreedArgs.endpoints, undefined, "agent fork_urls must NOT reach the on-chain cross-check");
+  } finally {
+    evmClient.ethGetCodeAgreed = originalAgreed;
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+// SEALED ROUTING — the cross-stack template executes the RUNNER-OWNED sealed Foundry project, not
+// the agent harness, so no agent Solidity / forge-std / setUp is on the execution path (closes the
+// cheatcode forgery). The runner stamps the MAC-covered sealed_harness:true that the verifier requires.
+test("SEALED ROUTING: a cross-stack invariant run executes the runner-owned SEALED project (NOT the agent harness) and stamps sealed_harness:true", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness(); // the agent harness — MUST be ignored for a sealed cross-stack run
+  let foundryCall = null;
+  let sealedSrc = null;
+  const stubFoundry = async (args) => {
+    foundryCall = args;
+    // Capture the source DURING the run (the runner removes the sealed temp project afterward).
+    try { sealedSrc = fs.readFileSync(args.match_path, "utf8"); } catch {}
+    return { tests: [{ name: "t", success: false }] };
+  };
+  try {
+    await runInvariantForFinding({
+      target_domain: domain,
+      finding: { finding_id: "F-1", finding_hash: "h1", title: "web auth replay on-chain", vulnerability_class: "signature_validation" },
+      template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+      slot_values: { target_address: `0x${"ab".repeat(20)}`, gated_function: "execute", victim_type: "uint256", victim_value: "7" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+      run_id: "inv-sealed-1",
+      chain_id: 1,
+      fork_block: 21000000,
+      fork_urls: ["https://attacker-controlled.example/rpc"], // drives the fork; the SOURCE is runner-owned
+    });
+    assert.ok(foundryCall, "foundry_run was invoked");
+    assert.notEqual(foundryCall.harness_path, harness, "the agent harness_path is NOT used for a sealed run");
+    assert.match(foundryCall.harness_path, /\.bob-sealed-xstack-/, "forge ran the runner-owned sealed project");
+    // The FORK uses the operator-pinned trusted ladder, NOT the agent fork_urls — otherwise an
+    // attacker RPC could serve real bytecode but fake storage to forge the flip.
+    assert.ok(
+      Array.isArray(foundryCall.fork_urls) && !foundryCall.fork_urls.includes("https://attacker-controlled.example/rpc"),
+      "the agent fork_urls are NOT used for the sealed fork",
+    );
+    assert.ok(
+      foundryCall.fork_urls.some((u) => /publicnode|llamarpc|1rpc|ankr/.test(u)),
+      "the sealed fork uses the operator-pinned trusted ladder",
+    );
+    assert.ok(sealedSrc, "the sealed test file existed during the run");
+    assert.ok(!/import\s+["']forge-std/.test(sealedSrc), "no forge-std on the build path");
+    assert.match(sealedSrc, /interface IBobVm/, "inlined Vm (self-contained)");
+    assert.match(sealedSrc, /target\.execute\(7, capturedAuth\)/, "gated call built from the DATA slots");
+    const corpus = readInvariantRuns({ target_domain: domain });
+    assert.equal(corpus.runs.length, 1);
+    assert.equal(corpus.runs[0].sealed_harness, true, "the row carries the MAC-covered sealed_harness marker");
+    // The runner removed the sealed temp project after the run (single-use).
+    assert.ok(!fs.existsSync(path.dirname(path.dirname(foundryCall.match_path))), "sealed project cleaned up");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("SEALED ROUTING: a cross-stack run with a malformed DATA slot is REFUSED (no Solidity injection, never runs)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  let ran = false;
+  try {
+    await assert.rejects(
+      () => runInvariantForFinding({
+        target_domain: domain,
+        finding: { finding_id: "F-1", finding_hash: "h1", title: "x", vulnerability_class: "signature_validation" },
+        template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+        // target_address is a Solidity expression, not a 20-byte address — the generator refuses it.
+        slot_values: { target_address: "address(this)", gated_function: "execute", victim_type: "uint256", victim_value: "7" },
+        harness_path: harness,
+        foundry_run: async () => { ran = true; return { tests: [{ success: false }] }; },
+        run_id: "inv-sealed-bad",
+        chain_id: 1, fork_block: 1, fork_urls: ["https://x.example/rpc"],
+      }),
+      /target_address must be a 20-byte/,
+    );
+    assert.equal(ran, false, "forge never ran on a malformed slot");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+// The persisted test_passed here is the per-run PRIMITIVE (MINT), not a verified
+// verdict (CONFIRM). A verified FV finding requires the differential flip via
+// verifyInvariantDifferential; this test only asserts the run is recorded.
 test("runInvariantForFinding writes the test file, dispatches foundry_run, and persists the result", async () => {
   const domain = uniqueDomain();
   const harness = makeHarness();
@@ -1450,4 +1591,422 @@ test("input validation rejects unsafe target_domain and missing finding/harness_
     }),
     /foundry_run/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The refuting-control requirement. classifyFoundryOutcome stays the honest
+// per-run PRIMITIVE; CONFIRM is the adjudicated FLIP over a {positive, control}
+// pair written only to the MCP-owned invariant-verified.jsonl ledger.
+// ---------------------------------------------------------------------------
+
+// Build a fully-bound invariant-runs.jsonl row: outcome derived from the
+// foundry_result, run_hash from computeInvariantRunHash — exactly as
+// runInvariantForFinding persists it, so the verifier's re-validation passes.
+function makeInvariantRunRow(domain, {
+  findingId = "F-1",
+  outcome,
+  treeRef,
+  checkoutKind = "tree",
+  templateId = "INV-REENTRANCY-CALLBACK-001",
+  contractName = "BobInvariantTest_fixture",
+  functionName = "testBobInvariant_fixture",
+  executionContextHash = "ctx-hash-shared",
+  slotValues = { a: "1" },
+} = {}) {
+  const foundryResult = outcome === "test_failed"
+    ? { tests: [{ success: false }] }
+    : { tests: [{ success: true }] };
+  const row = {
+    target_domain: domain,
+    finding_id: findingId,
+    finding_hash: null,
+    template_id: templateId,
+    slot_values: slotValues,
+    contract_name: contractName,
+    function_name: functionName,
+    execution_context_hash: executionContextHash,
+    tree_ref: treeRef || null,
+    checkout_kind: checkoutKind || null,
+    outcome,
+    foundry_result_hash: invariantFoundryResultHash(foundryResult),
+    foundry_result: foundryResult,
+    dry_run: false,
+  };
+  row.run_hash = computeInvariantRunHash(row);
+  appendJsonlLine(invariantRunsJsonlPath(domain), row);
+  return row;
+}
+
+function verifiedRecords(domain) {
+  const filePath = invariantVerifiedJsonlPath(domain);
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, "utf8")
+    .split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+}
+
+test("classifyFoundryViolation maps the per-run primitive to invariant direction", () => {
+  assert.equal(classifyFoundryViolation({ tests: [{ success: false }] }), "violated");
+  assert.equal(classifyFoundryViolation({ tests: [{ success: true }] }), "held");
+  assert.equal(classifyFoundryViolation({ kind: "foundry_fork" }), "degraded");
+  assert.equal(classifyFoundryViolation({ kind: "forge_not_in_path" }), "degraded");
+  assert.equal(classifyFoundryViolation({}), "degraded");
+});
+
+test("adjudicateInvariantDifferential reuses the repro flip rule on violation semantics", () => {
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "violated" }, controlRun: { violation: "held" },
+  }).result, "verified_pass");
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "held" }, controlRun: { violation: "held" },
+  }).result, "refuted");
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "violated" }, controlRun: { violation: "violated" },
+  }).result, "refuted");
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "degraded" }, controlRun: { violation: "held" },
+  }).result, "inconclusive");
+});
+
+test("verifyInvariantDifferential refuses a single-run pass with no control arm", () => {
+  const domain = uniqueDomain();
+  try {
+    // The exact rubber-stamp the readiness probe flagged: a bare positive run,
+    // no control. It must NOT mint a verified_pass.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+    });
+    assert.equal(result.result, "inconclusive");
+    const records = verifiedRecords(domain);
+    assert.equal(records.filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential verifies a real two-sided differential", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    const control = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+    });
+    assert.equal(result.result, "verified_pass");
+    const summary = readInvariantVerifiedSummary(domain);
+    assert.equal(summary.verified_pass_count, 1);
+    assert.deepEqual(summary.verified_by_finding["F-1"], {
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+      template_id: positive.template_id,
+      // HIGH-1: the re-resolved positive row carries no container_isolated field
+      // (makeInvariantRunRow predates it / omits it), so the summary surfaces false
+      // (fail-closed un-isolated) — the gate then refuses to trust an SC reportable
+      // backed by this verdict unless the run was containerized.
+      container_isolated: false,
+    });
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential refuses a forgery that fails both arms", () => {
+  const domain = uniqueDomain();
+  try {
+    // A tautology-false / mis-authored assertion fails on the known-safe baseline
+    // too: no flip → refused as a harness/template artifact.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    const control = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "fixed", checkoutKind: "upstream_fix" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+    });
+    assert.equal(result.result, "refuted");
+    assert.match(result.reason, /no differential flip/);
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential refuses a non-reproducing claim", () => {
+  const domain = uniqueDomain();
+  try {
+    // Positive HELD on the real target: the violation did not reproduce.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "target" });
+    const control = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+    });
+    assert.equal(result.result, "refuted");
+    assert.match(result.reason, /did not reproduce/);
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential returns inconclusive on a degraded arm", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    // A fork_blocked control arm cannot establish the baseline.
+    const forkBlockedResult = { kind: "foundry_fork" };
+    const controlRow = {
+      target_domain: domain,
+      finding_id: "F-1",
+      finding_hash: null,
+      template_id: positive.template_id,
+      slot_values: positive.slot_values,
+      contract_name: positive.contract_name,
+      function_name: positive.function_name,
+      execution_context_hash: positive.execution_context_hash,
+      tree_ref: "fixed",
+      checkout_kind: "upstream_fix",
+      outcome: classifyFoundryOutcome(forkBlockedResult),
+      foundry_result_hash: invariantFoundryResultHash(forkBlockedResult),
+      foundry_result: forkBlockedResult,
+      dry_run: false,
+    };
+    controlRow.run_hash = computeInvariantRunHash(controlRow);
+    appendJsonlLine(invariantRunsJsonlPath(domain), controlRow);
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: controlRow.run_hash,
+    });
+    assert.equal(result.result, "inconclusive");
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential rejects a control bound to a different template/contract/slots", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    // Control shares finding_id but is a DIFFERENT test (different execution context):
+    // not the same discriminator on a different tree.
+    const control = makeInvariantRunRow(domain, {
+      outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix",
+      executionContextHash: "ctx-hash-DIFFERENT",
+    });
+    assert.throws(
+      () => verifyInvariantDifferential({
+        target_domain: domain,
+        finding_id: "F-1",
+        positive_run_hash: positive.run_hash,
+        control_run_hash: control.run_hash,
+      }),
+      /SAME test on a different tree/,
+    );
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential rejects a control on the SAME tree (non-discriminating)", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    // Same tree_ref + checkout_kind → cannot discriminate target from control.
+    const control = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "target", checkoutKind: "tree" });
+    assert.throws(
+      () => verifyInvariantDifferential({
+        target_domain: domain,
+        finding_id: "F-1",
+        positive_run_hash: positive.run_hash,
+        control_run_hash: control.run_hash,
+      }),
+      /DIFFERENT tree\/checkout/,
+    );
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("classifyHalmosViolation: ok is a single-run primitive, not a verified verdict", () => {
+  // A halmos run with no counterexample is merely "held" — alone it cannot
+  // confirm. Routed through the differential with no control arm, it is
+  // inconclusive (closes the halmos mint-ok leg).
+  assert.equal(classifyHalmosViolation({ summary: { total: 3, passed: 3, failed: 0 } }), "held");
+  assert.equal(classifyHalmosViolation({ summary: { total: 2, passed: 1, failed: 1 } }), "violated");
+  assert.equal(classifyHalmosViolation({ reason: "halmos_not_in_path" }), "degraded");
+  assert.equal(classifyHalmosViolation({ summary: { total: 0, passed: 0, failed: 0 } }), "degraded");
+  assert.equal(classifyHalmosViolation({ timed_out: true, summary: { total: 1, passed: 1, failed: 0 } }), "degraded");
+
+  const domain = uniqueDomain();
+  try {
+    // A halmos "held" persisted as a foundry-shaped primitive (test_passed), with
+    // NO control arm, yields inconclusive — never verified.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "target" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+    });
+    assert.equal(result.result, "inconclusive");
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+// ── HIGH-1: executed-test identity binding (shadow-test poison) ──────────────────────────
+//
+// A REAL forge --json envelope carries per-test rows with string `suite` ("<path>:<Contract>")
+// and `test` ("<fn-sig>()") fields (summarizeForgeJson). The runner pins --match-path to the
+// generated file and anchors the filters; THIS bind is the result-side line: EVERY executed
+// row must map to the generated <writtenPath>:<contract>::<fn>, and EXACTLY one must run. A
+// shadow contract/test that slips through is refused (outcome:"identity_unbound").
+
+function richForgeResult({ suite, test, status = "Fail", containerIsolated = true }) {
+  return {
+    ok: status === "Pass",
+    summary: { total: 1, passed: status === "Pass" ? 1 : 0, failed: status === "Pass" ? 0 : 1 },
+    tests: [{ suite, test, status }],
+    container_isolated: containerIsolated,
+    command: ["forge", "test", "--json"],
+    fork_attempts: [],
+  };
+}
+
+// A foundry_run stub returning the GENUINE rich envelope: it reads the generated identity
+// off the args the runner threads in (match_path/match_contract/match_test), so the executed
+// identity is exactly the generated contract::function@path.
+function genuineRichFoundry(status = "Fail") {
+  return async (args) => {
+    const rel = path.relative(fs.realpathSync(args.harness_path), args.match_path);
+    return richForgeResult({ suite: `${rel}:${args.match_contract}`, test: `${args.match_test}()`, status });
+  };
+}
+
+test("HIGH-1: a GENUINE rich forge envelope binds — the executed identity maps to the generated contract::function@path (outcome NOT identity_unbound)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: genuineRichFoundry("Fail"),
+    });
+    assert.equal(result.outcome, "test_failed");
+    const corpus = readInvariantRuns({ target_domain: domain });
+    assert.equal(corpus.runs[0].outcome, "test_failed");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: a SHADOW contract whose name CONTAINS the generated name is REFUSED (outcome=identity_unbound, can never be violated)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const shadowFoundry = async (args) => {
+    // forge ran an EVIL contract at a DIFFERENT path whose name is a SUPERSTRING of the
+    // generated one — exactly the poison an unanchored --match-contract would let through.
+    return richForgeResult({ suite: `test/Evil.t.sol:Evil${args.match_contract}`, test: `${args.match_test}()`, status: "Fail" });
+  };
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: shadowFoundry,
+    });
+    assert.equal(result.outcome, "identity_unbound", "a shadow contract's executed identity does not bind");
+    assert.notEqual(result.outcome, "test_failed");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: a run where MORE THAN ONE test executed (a shadow function also matched) is REFUSED (outcome=identity_unbound)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const extraFoundry = async (args) => {
+    const rel = path.relative(fs.realpathSync(args.harness_path), args.match_path);
+    const suite = `${rel}:${args.match_contract}`;
+    return {
+      ok: false,
+      summary: { total: 2, passed: 0, failed: 2 },
+      tests: [
+        { suite, test: `${args.match_test}()`, status: "Fail" },
+        { suite, test: "testShadowExtra()", status: "Fail" },
+      ],
+      container_isolated: true,
+      command: ["forge", "test", "--json"],
+      fork_attempts: [],
+    };
+  };
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: extraFoundry,
+    });
+    assert.equal(result.outcome, "identity_unbound", "more than the generated test ran -> unbound");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: a SHADOW function (correct contract, wrong function) is REFUSED (outcome=identity_unbound)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const wrongFnFoundry = async (args) => {
+    const rel = path.relative(fs.realpathSync(args.harness_path), args.match_path);
+    return richForgeResult({ suite: `${rel}:${args.match_contract}`, test: "testNotTheGeneratedFunction()", status: "Fail" });
+  };
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: wrongFnFoundry,
+    });
+    assert.equal(result.outcome, "identity_unbound", "the executed function is not the generated one -> unbound");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: the SIMPLIFIED forge shape (no suite/test identity fields) is SKIPPED — legacy/test fixtures stay green", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: async () => ({ tests: [{ success: false }] }),
+    });
+    assert.equal(result.outcome, "test_failed", "no identity fields -> strict bind not applicable -> normal classification");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
 });

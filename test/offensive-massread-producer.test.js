@@ -25,10 +25,10 @@ const {
 const { initSession } = require("../mcp/lib/session-state.js");
 const { authStore } = require("../mcp/lib/auth.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, sessionDir } = require("../mcp/lib/paths.js");
 const { appendCandidateClaim, readOffensiveRunRecords, OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/lib/claims.js");
-const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
 
@@ -221,7 +221,8 @@ test("positive: attacker bulk-reads PII a denied control cannot → signed MEDIU
   assert.equal(rows.length, 1);
   assert.equal(rows[0].tool_id, TOOL_ID);
   assert.equal(rows[0].demonstrated_severity, "medium");
-  assert.equal(verifyOffensiveRunRowMac(rows[0], ensureHandoffSigningKey(domain)), true, "row MAC must verify");
+  assert.equal(rows[0].row_mac.version, 2, "producer-minted rows are the v2 ed25519 envelope");
+  assert.ok(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, rows[0], resolveOffensiveRowVerifier(domain)), "row must be MAC-signed");
 
   // The signed rail carries NO raw PII value (only the field-name bucket + booleans).
   const rail = signedRailBytes(domain);
@@ -1144,7 +1145,10 @@ test("a 401 control with a LONE support email in free text IS still a clean deni
   const { driver } = makeDriver({ control });
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true, "a lone support email at 401 is a clean denial → the differential mints");
-  assert.equal(result.masked_oracle.demonstrated_severity ?? "medium", "medium");
+  assert.equal(result.demonstrated_severity, "medium",
+    "the authn-vs-anon differential alone mints the registry-stamped MEDIUM tier (no cross-tenant victim arm ran)");
+  assert.equal(result.cross_tenant_proven, false,
+    "with no victim arm the run is NOT elevated to cross-tenant HIGH");
 }));
 
 // ── round-12: nested-record PII, non-identifier bulk control PII ──
@@ -1303,7 +1307,8 @@ test("v2 HIGH: victim reads its own private subject, anon is denied it, attacker
   assert.equal(rows[0].demonstrated_severity, "high");
   assert.equal(rows[0].victim_read_own_private_scope, true);
   assert.equal(rows[0].attacker_read_victim_subject, true);
-  assert.equal(verifyOffensiveRunRowMac(rows[0], ensureHandoffSigningKey(domain)), true, "HIGH row MAC must verify");
+  assert.equal(rows[0].row_mac.version, 2, "producer-minted rows are the v2 ed25519 envelope");
+  assert.ok(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, rows[0], resolveOffensiveRowVerifier(domain)), "HIGH row MAC must verify");
 
   // Masked rail invariant STILL holds with the victim arm: the SIGNED offensive proof (the row + its
   // stdout/stderr captures) never carries the raw overlapping email. (The victim's email legitimately lives

@@ -16,13 +16,16 @@
 // Selection rules (closed):
 //   1. Only frictions whose `surface_id` matches a `surface_ref` of the
 //      dispatched node are included (wave-scoped, Y-P5).
-//   2. Records are de-duped by the Y-P3 5-tuple
-//      (run_id, node_id, wanted_tool, friction_kind, detected_by).
+//   2. Records are de-duped by the Y-P3 canonical 6-tuple
+//      (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by) —
+//      the identical field set + order the append side keys on.
 //   3. `tool_inadequate` frictions are EXCLUDED unless
 //      `options.include_inadequacy === true` (Y-P11 voluntary +
 //      synthetic quarantine — operator must opt in).
 //   4. Result is hard-capped at `options.limit` (default 32 per Y-P4
 //      bounded input).
+
+const { frictionIdentityKey } = require("./capability-observations.js");
 
 // ─── Pure friction selection ────────────────────────────────────────────
 //
@@ -41,16 +44,13 @@ function asStringArray(value) {
 }
 
 function frictionKeyForDedupe(record) {
-  // Y-P3 5-tuple. Anything missing collapses to empty string so the key
-  // is stable; the validator at Y.2 emit time guarantees the 5 fields
-  // populate when the record was appended through bob_log_capability_friction.
-  return [
-    typeof record.run_id === "string" ? record.run_id : "",
-    typeof record.node_id === "string" ? record.node_id : "",
-    typeof record.wanted_tool === "string" ? record.wanted_tool : "",
-    typeof record.friction_kind === "string" ? record.friction_kind : "",
-    typeof record.detected_by === "string" ? record.detected_by : "",
-  ].join("|");
+  // Delegate to the canonical Y-P3 identity (capability-observations.js) — no
+  // hand-listed field array here. `frictionIdentityKey` is pure (string-only,
+  // no clock / random / env / IO), so this call keeps the purity-guarded body
+  // pure. Selection keys are compared only within one `selectRelevantFrictions`
+  // `seen` Set, never string-compared across modules, so the canonical joiner
+  // is safe here.
+  return frictionIdentityKey(record);
 }
 
 function selectRelevantFrictions(allFrictions, node, options) {
@@ -82,7 +82,7 @@ function selectRelevantFrictions(allFrictions, node, options) {
     if (typeof record.surface_id !== "string" || !surfaceRefs.has(record.surface_id)) {
       continue;
     }
-    // Rule 2: 5-tuple dedupe.
+    // Rule 2: canonical 6-tuple dedupe.
     const key = frictionKeyForDedupe(record);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -143,4 +143,7 @@ function selectRelevantFrictions(allFrictions, node, options) {
 module.exports = {
   DEFAULT_LIMIT,
   selectRelevantFrictions,
+  // exported for the single-source friction-identity test (proves this entry
+  // point derives the same canonical Y-P3 key as the log / mechanization sites)
+  frictionKeyForDedupe,
 };

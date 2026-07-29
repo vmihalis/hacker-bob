@@ -11,15 +11,22 @@ const {
 const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const recordFinding = recordCandidateClaimTool.handler;
 const {
+  normalizeCandidateClaim,
+  readCandidateClaims,
+} = require("../mcp/lib/claims.js");
+const {
   readGradeVerdict,
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   gradeArtifactPaths,
   sessionDir,
   statePath,
+  verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationRoundPaths,
+  findingDifferentialVerifiedJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   readSessionArtifactSummary,
@@ -96,6 +103,42 @@ test("session state contract normalizes and reads the shared state shape", () =>
   });
 });
 
+// A standalone web (IDOR) finding is an executable-flip class; seed its
+// finding-differential verified_pass arm so the grade-time standalone gate is satisfied
+// (NO amputation). Post-A1 the gate re-resolves the verdict against MAC-covered
+// offensive-runs rows, so seed a real signed exploited_safely positive +
+// blocked_by_defense control (high severity) + the verdict line binding them.
+function seedFindingDifferentialArm(domain, findingId = "F-1") {
+  const { appendJsonlLine } = require("../mcp/lib/storage.js");
+  const surfaceId = "surface:billing-profile";
+  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: surfaceId,
+    source: "offensive_runs", positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+  });
+}
+
 function findingInput(domain, overrides = {}) {
   return {
     target_domain: domain,
@@ -109,6 +152,9 @@ function findingInput(domain, overrides = {}) {
     impact: "Cross-tenant billing metadata disclosure.",
     validated: true,
     auth_profile: "attacker",
+    // Bind the finding to the surface its executed-flip arm is signed on, so the
+    // grade-time finding-differential surface bind (B1) is satisfied.
+    surface_id: "surface:billing-profile",
     // Cross-tenant billing IDOR: network-reachable, low-privilege attacker
     // tenant, confidentiality impact.
     cvss_inputs: {
@@ -247,6 +293,54 @@ test("computeAdjudicationPlanHash ignores volatile adjudication metadata", () =>
   );
 });
 
+test("candidate claim causal support is persisted and folded into claim_hash", () => {
+  withTempHome(() => {
+    const domain = "claim-causal-support.example.com";
+    const result = JSON.parse(recordFinding(findingInput(domain, {
+      created_at: "2026-06-13T00:00:00.000Z",
+      mechanism_id: "CWE-639",
+      hypothesis_statement: "A low-privilege tenant can read another tenant's billing object.",
+      intervention: "Swap the billing profile id while preserving attacker credentials.",
+      expected_effect: "The victim billing metadata is returned to the attacker profile.",
+      controls_run: [{
+        control: "Attacker-owned billing profile returns only attacker metadata.",
+        expected_effect: "No cross-tenant fields appear.",
+        observed_effect: "Only attacker billing fields returned.",
+        evidence_ref: "finding:F-1",
+      }],
+      confounders_ruled_out: ["public object", "cache-only replay"],
+    })));
+
+    const [claim] = readCandidateClaims(domain);
+    assert.equal(result.claim_id, claim.claim_id);
+    assert.deepEqual(claim.payload.causal_support, {
+      mechanism_id: "CWE-639",
+      hypothesis_statement: "A low-privilege tenant can read another tenant's billing object.",
+      intervention: "Swap the billing profile id while preserving attacker credentials.",
+      expected_effect: "The victim billing metadata is returned to the attacker profile.",
+      controls_run: [{
+        control: "Attacker-owned billing profile returns only attacker metadata.",
+        expected_effect: "No cross-tenant fields appear.",
+        observed_effect: "Only attacker billing fields returned.",
+        evidence_ref: "finding:F-1",
+      }],
+      confounders_ruled_out: ["public object", "cache-only replay"],
+    });
+
+    const withoutSupport = {
+      ...claim,
+      payload: { ...claim.payload },
+    };
+    delete withoutSupport.claim_hash;
+    delete withoutSupport.payload.causal_support;
+    const recomputedWithoutSupport = normalizeCandidateClaim(withoutSupport, {
+      targetDomain: domain,
+      now: null,
+    });
+    assert.notEqual(claim.claim_hash, recomputedWithoutSupport.claim_hash);
+  });
+});
+
 test("artifactDivergence is deterministic and only flags both-replayed artifact divergence", () => {
   const replayed = (artifactHashes, overrides = {}) => v2VerificationResult("F-1", {
     artifact_hashes: artifactHashes,
@@ -356,7 +450,7 @@ test("verification round store writes, reads, mirrors markdown, and enforces pri
 });
 
 test("grade verdict store requires final verification and valid evidence before read/write", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const missingFinalDomain = "grade-missing-final.example.com";
     seedFinding(missingFinalDomain);
     assert.throws(
@@ -371,6 +465,9 @@ test("grade verdict store requires final verification and valid evidence before 
 
     const missingEvidenceDomain = "grade-missing-evidence.example.com";
     seedFinalVerification(missingEvidenceDomain);
+    // Seed the standalone-finding arm so the (earlier) finding-differential gate is
+    // satisfied and the EVIDENCE gate under test is the one that blocks the grade.
+    seedFindingDifferentialArm(missingEvidenceDomain, "F-1");
     assert.throws(
       () => writeGradeVerdict({
         target_domain: missingEvidenceDomain,
@@ -384,6 +481,7 @@ test("grade verdict store requires final verification and valid evidence before 
     const domain = "grade-store.example.com";
     seedFinalVerification(domain);
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedFindingDifferentialArm(domain, "F-1");
     const written = JSON.parse(writeGradeVerdict({
       target_domain: domain,
       verdict: "SUBMIT",
@@ -403,7 +501,7 @@ test("grade verdict store requires final verification and valid evidence before 
     const analytics = readSessionArtifactSummary(domain);
     assert.equal(analytics.grade.valid, false);
     assert.match(analytics.grade.error, /Evidence packs are required/);
-  });
+  }));
 });
 
 test("verification status contract keeps verification context and analytics aligned for current and archived attempts", () => {
@@ -487,6 +585,60 @@ test("verification adjudication and grade writers use the session lock before mu
     } finally {
       release();
     }
+  });
+});
+
+test("confounder confidence reasons are accepted and folded into adjudication hash", () => {
+  withTempHome(() => {
+    const domain = "verification-causal-reasons.example.com";
+    seedFinding(domain);
+    const entry = prepareVerificationEntry(domain, {
+      phase: "CHAIN",
+      verification_schema_version: null,
+      verification_attempt_id: null,
+      verification_snapshot_hash: null,
+    }, { now: new Date("2026-06-13T00:00:00.000Z") });
+    writeVerifyState(domain, entry.state_fields);
+
+    const writeRounds = (brutalistReasons, balancedReasons) => {
+      writeVerificationRound({
+        target_domain: domain,
+        round: "brutalist",
+        notes: "causal reason brutalist",
+        verification_attempt_id: entry.state_fields.verification_attempt_id,
+        verification_snapshot_hash: entry.state_fields.verification_snapshot_hash,
+        round_profile: "brutalist",
+        results: [v2VerificationResult("F-1", {
+          confidence_reasons: brutalistReasons,
+        })],
+      });
+      writeVerificationRound({
+        target_domain: domain,
+        round: "balanced",
+        notes: "causal reason balanced",
+        verification_attempt_id: entry.state_fields.verification_attempt_id,
+        verification_snapshot_hash: entry.state_fields.verification_snapshot_hash,
+        round_profile: "balanced",
+        results: [v2VerificationResult("F-1", {
+          confidence_reasons: balancedReasons,
+        })],
+      });
+    };
+
+    writeRounds(
+      ["fresh_replay_passed", "missing_control"],
+      ["fresh_replay_passed", "unruled_confounder"],
+    );
+    const causal = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+    const causalDocument = JSON.parse(fs.readFileSync(verificationAdjudicationPath(domain), "utf8"));
+    assert.equal(causal.adjudication_plan_hash, causalDocument.adjudication_plan_hash);
+    assert.deepEqual(causalDocument.replay_reasons["F-1"].filter((reason) => (
+      reason === "missing_control" || reason === "unruled_confounder"
+    )), ["missing_control", "unruled_confounder"]);
+
+    writeRounds(["fresh_replay_passed"], ["fresh_replay_passed"]);
+    const withoutCausalSignals = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+    assert.notEqual(causal.adjudication_plan_hash, withoutCausalSignals.adjudication_plan_hash);
   });
 });
 

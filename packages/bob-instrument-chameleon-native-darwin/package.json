@@ -1,0 +1,42 @@
+{
+  "name": "@hacker-bob/instrument-chameleon-native-darwin",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Optional Darwin serial, direct-CDC, and signed native-dispatch custody precursors for the Chameleon Ultra",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "gypfile": false,
+  "main": "lib/serial-custody.js",
+  "files": [
+    "binding.gyp",
+    "lib/**/*.js",
+    "native/**/*.cc",
+    "native/**/*.h",
+    "native/**/*.mm",
+    "scripts/*.js",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/serial-custody.js",
+    "./direct-cdc-custody": "./lib/direct-cdc-custody.js",
+    "./native-bootstrap-sequence": "./lib/native-bootstrap-sequence.js",
+    "./native-dispatch-custodian": "./lib/native-dispatch-custodian.js",
+    "./serial-custody": "./lib/serial-custody.js"
+  },
+  "scripts": {
+    "build": "npm run check:generated && node-gyp rebuild",
+    "check:generated": "node scripts/generate-bootstrap-semantics.js --check",
+    "check:syntax": "node --check lib/serial-custody.js && node --check lib/direct-cdc-custody.js && node --check lib/generated-bootstrap-semantics.js && node --check lib/native-bootstrap-sequence.js && node --check lib/native-dispatch-custodian.js && node --check lib/native-dispatch-custodian-entry.js && node --check scripts/generate-bootstrap-semantics.js && node --check test/bootstrap-semantics.test.js && node --check test/serial-custody.test.js && node --check test/direct-cdc-custody.test.js && node --check test/native-dispatch-custodian.test.js && node --check test/fixtures/native-dispatch-custodian-runner.js",
+    "test": "npm run check:generated && npm run check:syntax && node --test test/bootstrap-semantics.test.js test/serial-custody.test.js test/direct-cdc-custody.test.js test/native-dispatch-custodian.test.js",
+    "test:native-dispatch": "node --test test/native-dispatch-custodian.test.js"
+  }
+}

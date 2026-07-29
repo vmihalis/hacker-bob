@@ -4,7 +4,6 @@ const { applyWaveMerge } = require("../waves.js");
 
 module.exports = Object.freeze({
   name: "bob_apply_wave_merge",
-  aliases: ["bounty_apply_wave_merge"],
   description:
     "Apply one wave merge to session state from authoritative structured handoff JSON, including exclusions, leads, and findings summary.",
   inputSchema: {

@@ -3,8 +3,16 @@
 
 const fs = require("fs");
 const path = require("path");
+const { FANOUT_ROLE_REGISTRY } = require("../../mcp/lib/nested-spawn.js");
 
 const MARKER = "BOB_AGENT_RUN_DONE";
+const CHILD_MARKER = "BOB_CHILD_CELL_DONE";
+const CHILD_ROOT_ONLY_TOOL_NAMES = new Set([
+  "Agent",
+  "Task",
+  "bob_write_wave_handoff",
+  "bob_finalize_agent_run",
+]);
 
 function readStdin() {
   return fs.readFileSync(0, "utf8");
@@ -35,23 +43,140 @@ function readTranscriptLastAssistant(transcriptPath) {
   return "";
 }
 
+function readTranscriptInitialUser(transcriptPath) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return "";
+  const lines = fs.readFileSync(transcriptPath, "utf8").trim().split(/\r?\n/).filter(Boolean);
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line);
+      const role = event.role || event.message?.role;
+      if (role !== "user") continue;
+      return textFromValue(event.message || event);
+    } catch {}
+  }
+  return "";
+}
+
+function agentTranscriptPathFromPayload(payload) {
+  if (typeof payload.agent_transcript_path === "string") return payload.agent_transcript_path;
+  if (typeof payload.agentTranscriptPath === "string") return payload.agentTranscriptPath;
+  if (typeof payload.transcript_path === "string") return payload.transcript_path;
+  if (typeof payload.transcriptPath === "string") return payload.transcriptPath;
+  return null;
+}
+
+function isNestedChildContext(payload) {
+  const prompt = readTranscriptInitialUser(agentTranscriptPathFromPayload(payload));
+  return /(?:^|\n)\s*Nested child\s*:\s*true\s*(?:\n|$)/i.test(prompt)
+    && /(?:^|\n)\s*remaining_depth\s*:\s*0\s*(?:\n|$)/i.test(prompt);
+}
+
+function isFanoutChildAgentType(payload) {
+  return !!payload
+    && payload.agent_type === FANOUT_ROLE_REGISTRY.child.subagent_type;
+}
+
+function isWaveRootContext(payload) {
+  const prompt = readTranscriptInitialUser(agentTranscriptPathFromPayload(payload));
+  return /(?:^|\n)\s*Domain\s*:\s*\S.+(?:\n|$)/i.test(prompt)
+    && /(?:^|\n)\s*Wave\s*:\s*w[1-9][0-9]*\s*(?:\n|$)/i.test(prompt)
+    && /(?:^|\n)\s*Agent\s*:\s*a[1-9][0-9]*\s*(?:\n|$)/i.test(prompt)
+    && /(?:^|\n)\s*Handoff token\s*:\s*\S.+(?:\n|$)/i.test(prompt)
+    && !/(?:^|\n)\s*Nested child\s*:\s*true\s*(?:\n|$)/i.test(prompt)
+    && !/(?:^|\n)\s*remaining_depth\s*:/i.test(prompt);
+}
+
+function waveRootIdentity(payload) {
+  const prompt = readTranscriptInitialUser(agentTranscriptPathFromPayload(payload));
+  const domain = prompt.match(/(?:^|\n)\s*Domain\s*:\s*([^\s\n]+)/i);
+  const wave = prompt.match(/(?:^|\n)\s*Wave\s*:\s*(w[1-9][0-9]*)\s*(?:\n|$)/i);
+  const agent = prompt.match(/(?:^|\n)\s*Agent\s*:\s*(a[1-9][0-9]*)\s*(?:\n|$)/i);
+  if (!domain || !wave || !agent) return null;
+  return {
+    target_domain: domain[1].trim(),
+    wave: wave[1].toLowerCase(),
+    agent: agent[1].toLowerCase(),
+  };
+}
+
+function normalizedToolName(toolName) {
+  if (typeof toolName !== "string") return "";
+  const segments = toolName.split("__");
+  return segments[segments.length - 1];
+}
+
+function rootFanoutInvocationViolation(payload) {
+  const input = payload && payload.tool_input && typeof payload.tool_input === "object"
+    ? payload.tool_input
+    : {};
+  if (input.subagent_type !== FANOUT_ROLE_REGISTRY.child.subagent_type) {
+    return `Wave root may spawn only ${FANOUT_ROLE_REGISTRY.child.subagent_type}; received ${String(input.subagent_type || "(missing)")}.`;
+  }
+  if (input.name != null && String(input.name).trim() !== "") {
+    return "Wave root fanout child must be anonymous; omit name.";
+  }
+  if (input.run_in_background !== false) {
+    return "Wave root fanout child must be explicitly synchronous; run_in_background must equal false.";
+  }
+  const rootContext = waveRootIdentity(payload);
+  if (!rootContext) {
+    return "Wave root fanout identity could not be parsed from the host transcript.";
+  }
+  const completion = loadAgentCompletion();
+  if (!completion || typeof completion.evaluateNestedChildSpawn !== "function") {
+    return "Wave root fanout plan attestation is unavailable; child spawn denied fail-closed.";
+  }
+  const evaluation = completion.evaluateNestedChildSpawn(rootContext, input.prompt);
+  if (!evaluation.ok) return evaluation.reason;
+  return null;
+}
+
+function fanoutChildPreToolBlock(payload) {
+  if (!payload) return null;
+  const rootAgentType = FANOUT_ROLE_REGISTRY.root.subagent_type;
+  const childAgentType = FANOUT_ROLE_REGISTRY.child.subagent_type;
+  if (payload.agent_type !== rootAgentType && payload.agent_type !== childAgentType) return null;
+  const toolName = normalizedToolName(payload.tool_name);
+  if (!CHILD_ROOT_ONLY_TOOL_NAMES.has(toolName)) return null;
+  // NS-7 — a distinct leaf role is denied solely by its host-owned agent type;
+  // the transcript check then sharpens remediation. This remains effective if
+  // a malformed child prompt leaks a root token. The legacy shared-role branch
+  // below is retained as defense in depth for already-running pre-upgrade roots.
+  if (payload.agent_type === childAgentType) {
+    if (isNestedChildContext(payload)) {
+      return `Nested ${childAgentType} cannot call root-owned tool ${toolName}; record durable claims/coverage, then emit ${CHILD_MARKER}.`;
+    }
+    return `${childAgentType} execution scope could not be attested from the host transcript; root-owned tool ${toolName} is denied fail-closed.`;
+  }
+  if (isWaveRootContext(payload)) {
+    if (toolName === "Agent" || toolName === "Task") {
+      return rootFanoutInvocationViolation(payload);
+    }
+    return null;
+  }
+  if (isNestedChildContext(payload)) {
+    return `Nested ${rootAgentType} child cannot call root-owned tool ${toolName}; record durable claims/coverage, then emit ${CHILD_MARKER}.`;
+  }
+  return `${rootAgentType} execution scope could not be attested from the host transcript; root-owned tool ${toolName} is denied fail-closed.`;
+}
+
 function lastAssistantMessage(payload) {
   return textFromValue(
     payload.last_assistant_message ||
     payload.lastAssistantMessage ||
     payload.assistant_message ||
     payload.message,
-  ) || readTranscriptLastAssistant(payload.transcript_path);
+  ) || readTranscriptLastAssistant(agentTranscriptPathFromPayload(payload));
 }
 
 function parseMarker(message) {
   return parseMarkerWithStatus(message).marker;
 }
 
-function parseMarkerWithStatus(message) {
-  const markerPattern = new RegExp(`${MARKER}\\s+(\\{[^\\n]+\\})`, "g");
+function parseNamedMarkerWithStatus(message, markerName) {
+  const markerPattern = new RegExp(`${markerName}\\s+(\\{[^\\n]+\\})`, "g");
   let match;
-  let malformed = typeof message === "string" && message.includes(MARKER);
+  let malformed = typeof message === "string" && message.includes(markerName);
   while ((match = markerPattern.exec(message)) !== null) {
     try {
       const parsed = JSON.parse(match[1]);
@@ -66,14 +191,59 @@ function parseMarkerWithStatus(message) {
   return { marker: null, malformed };
 }
 
+function parseMarkerWithStatus(message) {
+  return parseNamedMarkerWithStatus(message, MARKER);
+}
+
+function parseChildMarkerWithStatus(message) {
+  return parseNamedMarkerWithStatus(message, CHILD_MARKER);
+}
+
 function block(reason, telemetryInput = null) {
   recordAgentCompletionTelemetry(telemetryInput);
   console.error(reason);
   process.exit(2);
 }
 
+function denyPreTool(reason) {
+  // Claude's documented PreToolUse contract is an explicit permission
+  // decision on stdout. Do not rely on exit 2: current Agent/Task hook paths
+  // have not consistently treated that process status as a blocking decision.
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  }));
+  process.exit(0);
+}
+
 function projectRoot() {
   return process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..", "..");
+}
+
+// This hook loads mcp/lib/paths.js in-process, and paths.js freezes the session
+// root from the environment at first require. The installer gives each
+// workspace its OWN session root so two workspaces can run engines
+// concurrently; if this hook resolved the default root instead, it would look
+// for handoffs in a directory the engine never writes to. Seed the value from
+// the workspace's `.mcp.json` — the same operator config the engine boots from
+// — but never override an environment that already carries it: the host's boot
+// env is authoritative, and this only fills a gap.
+function seedConfiguredSessionsRoot() {
+  if ((process.env.BOB_SESSIONS_ROOT || "").trim()) return;
+  try {
+    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot(), ".mcp.json"), "utf8"));
+    const entry = mcp && mcp.mcpServers && mcp.mcpServers["hacker-bob"];
+    const configured = entry && entry.env && entry.env.BOB_SESSIONS_ROOT;
+    if (typeof configured === "string" && path.isAbsolute(configured.trim())) {
+      process.env.BOB_SESSIONS_ROOT = configured.trim();
+    }
+  } catch {
+    // No workspace config, unreadable, or malformed: paths.js keeps its default
+    // root, which is exactly the pre-override behavior.
+  }
 }
 
 function loadAgentCompletion() {
@@ -332,9 +502,7 @@ function isEvidenceMarker(marker) {
 }
 
 function transcriptPathFromPayload(payload) {
-  if (typeof payload.transcript_path === "string") return payload.transcript_path;
-  if (typeof payload.transcriptPath === "string") return payload.transcriptPath;
-  return null;
+  return agentTranscriptPathFromPayload(payload);
 }
 
 function finalizeMarker(marker, payload, now) {
@@ -342,6 +510,22 @@ function finalizeMarker(marker, payload, now) {
   return completion.finalizeAgentCompletion(marker, {
     transcript_path: transcriptPathFromPayload(payload),
     telemetry_source: "agent-run-stop",
+    now,
+  });
+}
+
+function inspectNestedChild(marker, payload) {
+  const completion = loadAgentCompletion();
+  const transcriptPath = agentTranscriptPathFromPayload(payload);
+  return completion.evaluateNestedChildCompletion(marker, {
+    spawn_prompt: readTranscriptInitialUser(transcriptPath),
+  });
+}
+
+function nestedChildTelemetryInput(evaluation, payload, now) {
+  const completion = loadAgentCompletion();
+  return completion.nestedChildTelemetryInput(evaluation, {
+    transcript_path: transcriptPathFromPayload(payload),
     now,
   });
 }
@@ -372,6 +556,7 @@ function markerTelemetryInput({
 }
 
 function main() {
+  seedConfiguredSessionsRoot();
   const now = new Date();
   let payload = {};
   let marker = null;
@@ -381,22 +566,79 @@ function main() {
     payload = {};
   }
 
+  if (payload.hook_event_name === "PreToolUse") {
+    const preToolBlock = fanoutChildPreToolBlock(payload);
+    if (preToolBlock) {
+      denyPreTool(preToolBlock);
+    }
+    process.exit(0);
+  }
+
   const message = lastAssistantMessage(payload);
   const markerResult = parseMarkerWithStatus(message);
-  marker = markerResult.marker;
+  const childMarkerResult = parseChildMarkerWithStatus(message);
+  // NS-7 — the host-owned distinct role identity is sufficient to enter child
+  // scope. Transcript attestation is still required for successful completion,
+  // but an unreadable/malformed transcript must never let this role fall
+  // through to root marker finalization.
+  const nestedChildContext = isFanoutChildAgentType(payload) || isNestedChildContext(payload);
+  // NS-7 caller scope comes from the host-owned initial spawn prompt BEFORE
+  // marker selection. A child must never reach root finalization merely by
+  // emitting (or echoing) BOB_AGENT_RUN_DONE under the shared root identity.
+  // Conversely, in root context a valid root marker wins over quoted child
+  // pointers and takes the normal finalization path.
+  if (nestedChildContext && markerResult.marker) {
+    const childEvaluation = {
+      ok: false,
+      status: "blocked",
+      block_code: "root_marker_in_child_context",
+      reason: `Nested child must not emit ${MARKER}; emit only ${CHILD_MARKER} after terminal cell coverage. Do not write a wave handoff or call bob_finalize_agent_run.`,
+      marker: markerResult.marker,
+    };
+    block(childEvaluation.reason, nestedChildTelemetryInput(childEvaluation, payload, now));
+  }
+  marker = nestedChildContext ? null : markerResult.marker;
+  if (nestedChildContext && childMarkerResult.marker) {
+    const childEvaluation = inspectNestedChild(childMarkerResult.marker, payload);
+    const childTelemetry = nestedChildTelemetryInput(childEvaluation, payload, now);
+    if (!childEvaluation.ok) {
+      block(childEvaluation.reason, childTelemetry);
+    }
+    recordAgentCompletionTelemetry(childTelemetry);
+    console.log(JSON.stringify({
+      ok: true,
+      message: childEvaluation.reason,
+      child_cell: childMarkerResult.marker.planning_key,
+    }));
+    process.exit(0);
+  }
   if (!marker) {
     // No marker at all: the agent stopped without finalizing. We have no
     // (wave, agent) anchor to attribute the AgentRun row to, so the ledger
     // gets nothing here. The merge gate's file-presence fallback (Pact P2)
     // keeps the gate closed until a real handoff lands.
+    const malformedChild = nestedChildContext && childMarkerResult.malformed;
+    const reason = nestedChildContext
+      ? `Nested child stop blocked: ${malformedChild ? "re-emit valid" : "emit"} ${CHILD_MARKER} JSON with the exact injected target_domain, wave, agent, surface_id, cell_key, planning_key, bug_class, auth_profile, and terminal coverage_status. Do not write a wave handoff, call bob_finalize_agent_run, or emit ${MARKER}.`
+      : `Evaluator stop blocked: write the wave handoff with bob_write_wave_handoff, then emit ${MARKER} {"target_domain":"...","wave":"wN","agent":"aN","surface_id":"..."}.`;
     block(
-      `Evaluator stop blocked: write the wave handoff with bob_write_wave_handoff, then emit ${MARKER} {"target_domain":"...","wave":"wN","agent":"aN","surface_id":"..."}.`,
-      markerTelemetryInput({
-        payload,
-        now,
-        status: "blocked",
-        block_code: markerResult.malformed ? "malformed_marker" : "missing_marker",
-      }),
+      reason,
+      nestedChildContext
+        ? nestedChildTelemetryInput({
+          ok: false,
+          status: "blocked",
+          block_code: malformedChild ? "malformed_child_marker" : "missing_child_marker",
+          reason: malformedChild
+            ? "Nested child completion marker JSON is malformed."
+            : "Nested child completion marker is missing.",
+          marker: null,
+        }, payload, now)
+        : markerTelemetryInput({
+          payload,
+          now,
+          status: "blocked",
+          block_code: markerResult.malformed ? "malformed_marker" : "missing_marker",
+        }),
     );
   }
 
@@ -502,8 +744,16 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CHILD_ROOT_ONLY_TOOL_NAMES,
+  CHILD_MARKER,
   MARKER,
+  agentTranscriptPathFromPayload,
+  fanoutChildPreToolBlock,
+  isNestedChildContext,
+  isWaveRootContext,
   lastAssistantMessage,
+  parseChildMarkerWithStatus,
   parseMarker,
   parseMarkerWithStatus,
+  readTranscriptInitialUser,
 };

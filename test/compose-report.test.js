@@ -21,14 +21,60 @@ const path = require("path");
 
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
 const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const { deriveCvss31 } = require("../mcp/lib/cvss31.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
+const { appendJsonlLine } = require("../mcp/lib/storage.js");
+const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+const { initSession } = require("../mcp/lib/session-state.js");
+const {
+  readSessionStateStrict,
+  writeSessionStateDocument,
+} = require("../mcp/lib/session-state-store.js");
+const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
 const {
   claimsJsonlPath,
+  findingDifferentialVerifiedJsonlPath,
+  offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
+
+// The web surface the CVSS-render tests bind their reportable medium+ finding to, so a
+// matching executed-flip arm satisfies the C1 report gate while the CVSS block renders.
+const CVSS_WEB_SURFACE = "surface:orders";
+
+// Seed a genuine, re-derivable finding-differential verified_pass arm (a real MAC-signed
+// exploited_safely positive + blocked_by_defense control on CVSS_WEB_SURFACE + the verdict
+// line that binds them) so bob_compose_report's executed-flip report-door gate is satisfied for a
+// final-reportable medium+ web finding. positiveSeverity must be >= the finding severity.
+function seedComposeExecutedArm(domain, findingId, { positiveSeverity = "high" } = {}) {
+  const mkRow = (over) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: over.run_id, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/orders/1`),
+      offensive_outcome: over.offensive_outcome, dry_run: false, timed_out: false,
+      command_hash: over.command_hash, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: positiveSeverity, surface_id: CVSS_WEB_SURFACE,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow({ run_id: "fd-positive-1", offensive_outcome: "exploited_safely", command_hash: "1".repeat(64) });
+  const control = mkRow({ run_id: "fd-control-1", offensive_outcome: "blocked_by_defense", command_hash: "2".repeat(64) });
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: CVSS_WEB_SURFACE, source: "offensive_runs",
+    positive_run_id: "fd-positive-1", positive_row_hash: offensiveRowHash(positive),
+    control_run_id: "fd-control-1", control_row_hash: offensiveRowHash(control),
+  });
+}
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -256,6 +302,9 @@ function recordWebClaim(domain, overrides = {}) {
     description: overrides.description || "An attacker can read other users' orders.",
     proof_of_concept: overrides.proof_of_concept || "curl https://audit.example.com/api/orders/2",
     validated: true,
+    // Bind to a known surface so the executed-flip report-door gate can match a seeded arm; tests
+    // that intentionally leave a finding surfaceless pass surface_id: null.
+    ...(overrides.surface_id !== undefined ? { surface_id: overrides.surface_id } : { surface_id: CVSS_WEB_SURFACE }),
     ...(overrides.cvss_inputs !== undefined ? { cvss_inputs: overrides.cvss_inputs } : {}),
   }));
 }
@@ -280,8 +329,11 @@ test("bob_compose_report renders a server-derived CVSS v3.1 + CWE block whose ve
       repro_steps: ["step 1"],
       evidence_refs: ["frontier_event:e1"],
     }]);
+    // The executed-flip report-door gate requires a binding for a final-reportable medium+
+    // finding; seed a genuine high-severity arm so the CVSS render path is reached.
+    seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "high" });
 
-    const result = callTool(composeReportTool, {
+    const result = withIsolatedSigner(() => callTool(composeReportTool, {
       target_domain: domain,
       sections: [{
         kind: "impact",
@@ -290,7 +342,7 @@ test("bob_compose_report renders a server-derived CVSS v3.1 + CWE block whose ve
         provenance: "operator_osint",
         evidence_refs: [],
       }],
-    });
+    }));
 
     assert.equal(result.cvss_annotations_rendered, 1);
     const expected = deriveCvss31(cvssInputs);
@@ -400,8 +452,11 @@ test("bob_compose_report renders the insufficient-verified-facts marker for a le
       repro_steps: ["step 1"],
       evidence_refs: ["frontier_event:e1"],
     }]);
+    // The executed-flip report-door gate requires a binding for the reportable medium
+    // finding; a medium-severity arm satisfies the ceiling while inputs are absent.
+    seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "medium" });
 
-    const result = callTool(composeReportTool, {
+    const result = withIsolatedSigner(() => callTool(composeReportTool, {
       target_domain: domain,
       sections: [{
         kind: "impact",
@@ -410,7 +465,7 @@ test("bob_compose_report renders the insufficient-verified-facts marker for a le
         provenance: "operator_osint",
         evidence_refs: [],
       }],
-    });
+    }));
 
     assert.equal(result.cvss_annotations_rendered, 1);
     const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
@@ -431,12 +486,16 @@ test("bob_compose_report content hash binds the CVSS block; non-reportable findi
       title: "Denied finding",
       cwe: "CWE-200",
       endpoint: "https://audit.example.com/api/other",
+      surface_id: "surface:other",
       cvss_inputs: { attack_vector: "network", privileges_required: "none", confidentiality: "high" },
     });
     seedFinalRound(domain, [
       { finding_id: "F-1", disposition: "confirmed", severity: "high", reportable: true, reasoning: "ok", repro_steps: ["s"], evidence_refs: ["frontier_event:e1"] },
       { finding_id: "F-2", disposition: "denied", severity: "low", reportable: false, reasoning: "no", repro_steps: ["s"], evidence_refs: ["frontier_event:e1"] },
     ]);
+    // Only F-1 is reportable medium+; seed its executed-flip arm so the report-door gate passes.
+    // F-2 is not reportable, so it never reaches the gate.
+    seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "high" });
 
     const args = {
       target_domain: domain,
@@ -448,7 +507,7 @@ test("bob_compose_report content hash binds the CVSS block; non-reportable findi
         evidence_refs: [],
       }],
     };
-    const result = callTool(composeReportTool, args);
+    const result = withIsolatedSigner(() => callTool(composeReportTool, args));
     // Only the reportable finding is annotated.
     assert.equal(result.cvss_annotations_rendered, 1);
     const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
@@ -459,5 +518,92 @@ test("bob_compose_report content hash binds the CVSS block; non-reportable findi
     const recomputed = require("crypto").createHash("sha256").update(rendered, "utf8").digest("hex");
     assert.equal(result.report_content_hash, recomputed);
     assert.ok(rendered.includes("CVSS:3.1/"), "the bound markdown must contain the derived vector");
+  });
+});
+
+// --- H2: "surfaces we could not test, and why" (blocked prerequisites) ---
+
+// Seed a currently-blocked surface: a blocked_prereq_history entry AND a
+// matching frontier blocker.asserted event so summarizeBlockedPrereqs's
+// currentBlockers ∩ blocked_prereq_history projection returns the surface.
+function seedBlockedSurface(domain, { surfaceId, kind, identifierHint, reason, wave = 1 }) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  const { raw, state } = readSessionStateStrict(domain);
+  const historyEntry = { wave, surface_id: surfaceId, kind, reason };
+  if (identifierHint) historyEntry.identifier_hint = identifierHint;
+  writeSessionStateDocument(domain, raw, {
+    ...state,
+    blocked_prereq_history: [historyEntry],
+  });
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "blocker.asserted",
+    surface_id: surfaceId,
+    payload: { terminally_blocked: true, wave, kind, identifier_hint: identifierHint, reason },
+    source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+  });
+}
+
+test("bob_compose_report renders a 'surfaces we could not test' section for a currently-blocked surface", () => {
+  withTempHome(() => {
+    const domain = "audit.example.com";
+    seedBlockedSurface(domain, {
+      surfaceId: "surface-admin",
+      kind: "auth_missing",
+      identifierHint: "attacker",
+      reason: "no attacker auth profile registered",
+    });
+
+    const result = callTool(composeReportTool, {
+      target_domain: domain,
+      sections: [{
+        kind: "impact",
+        heading: "Recon summary",
+        prose: "Recon-only summary; no exploitable finding recorded.",
+        provenance: "operator_osint",
+        evidence_refs: [],
+      }],
+    });
+
+    assert.equal(result.blocked_surfaces_rendered, true);
+    const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
+    // Distinct first-class section heading + informational disclaimer.
+    assert.match(rendered, /## Surfaces Not Tested \(blocked prerequisites\)/);
+    assert.match(rendered, /surfaces we could not test, and why/);
+    // Human label + identifier hint for the kind.
+    assert.match(rendered, /### Authentication profile missing \(attacker\)/);
+    // The affected surface id.
+    assert.match(rendered, /surface-admin/);
+    // The typed reason ("not tested because ...").
+    assert.match(rendered, /Not tested because:\*\* no attacker auth profile registered/);
+    // The concrete per-kind next step.
+    assert.match(rendered, /Next step:\*\* Register an auth profile/);
+    // The section bytes are covered by the single report_content_hash.
+    const recomputed = require("crypto").createHash("sha256").update(rendered, "utf8").digest("hex");
+    assert.equal(result.report_content_hash, recomputed);
+  });
+});
+
+test("bob_compose_report omits the blocked-surfaces section when no surface is blocked", () => {
+  withTempHome(() => {
+    const domain = "audit.example.com";
+    // A real session with no blocked_prereq_history / blocker events.
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+
+    const result = callTool(composeReportTool, {
+      target_domain: domain,
+      sections: [{
+        kind: "impact",
+        heading: "Recon summary",
+        prose: "Recon-only summary; no exploitable finding recorded.",
+        provenance: "operator_osint",
+        evidence_refs: [],
+      }],
+    });
+
+    assert.equal(result.blocked_surfaces_rendered, false);
+    const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
+    // Drop-empty: no heading, no empty scaffold.
+    assert.doesNotMatch(rendered, /## Surfaces Not Tested/);
   });
 });

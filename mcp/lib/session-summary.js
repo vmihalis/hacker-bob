@@ -196,6 +196,21 @@ function summarizeBlockedPrereqs(state) {
   };
 }
 
+// H2 — read accessor for the report composer's "surfaces we could not test"
+// section (bob_compose_report). Reuses summarizeBlockedPrereqs (the
+// currentBlockers ∩ blocked_prereq_history projection) over the strictly-read
+// session state. Returns null on ANY read error (no session / unreadable
+// state) so the composer's blocked-surface annotation degrades to null exactly
+// like the CVSS / coverage-closure blocks — it never adds a new failure path.
+function readBlockedPrereqsSummary(domain) {
+  try {
+    const { state } = readSessionStateStrict(domain);
+    return summarizeBlockedPrereqs(state);
+  } catch (_error) {
+    return null;
+  }
+}
+
 function readSessionSummary(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const { state } = readSessionStateStrict(domain);
@@ -271,4 +286,5 @@ function readSessionSummary(args) {
 
 module.exports = {
   readSessionSummary,
+  readBlockedPrereqsSummary,
 };

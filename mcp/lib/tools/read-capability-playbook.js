@@ -10,7 +10,6 @@ function readCapabilityPlaybookHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_read_capability_playbook",
-  aliases: ["bounty_read_capability_playbook"],
   description:
     "Read an externalized orchestrator capability playbook from prompts/playbooks/<capability_id>.md. Returns the markdown guidance for a registered capability without exposing unrelated prompt bodies.",
   inputSchema: {

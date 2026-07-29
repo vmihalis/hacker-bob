@@ -8,7 +8,6 @@ function readTechniquePackTool(args) {
 
 module.exports = Object.freeze({
   name: "bob_read_technique_pack",
-  aliases: ["bounty_read_technique_pack"],
   description: "Read one technique pack in summary or full bounded mode. Full mode requires target_domain, wave, agent, and surface_id so full_pack_read_limit can be enforced for the assignment.",
   inputSchema: {
     type: "object",
@@ -23,7 +22,7 @@ module.exports = Object.freeze({
     required: ["pack_id"],
   },
   handler: readTechniquePackTool,
-  role_bundles: ["evaluator-web", "orchestrator"],
+  role_bundles: ["evaluator-web", "evaluator-physical", "orchestrator"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

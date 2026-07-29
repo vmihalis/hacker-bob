@@ -59,7 +59,7 @@ const { TOOL_REGISTRY } = require("../mcp/lib/tool-registry.js");
 
 const ROOT = path.join(__dirname, "..");
 const REGISTERED_TOOL_NAMES = new Set(
-  TOOL_REGISTRY.filter((tool) => !tool.alias_of).map((tool) => tool.name),
+  TOOL_REGISTRY.map((tool) => tool.name),
 );
 
 // D4 positive whitelist. The rev-4.1 leverage_audit flagged these four

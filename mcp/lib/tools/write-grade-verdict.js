@@ -5,7 +5,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_grade_verdict",
-  aliases: ["bounty_write_grade_verdict"],
+  writes_audit_graded: true,
   description:
     "Write the authoritative grading verdict JSON plus a markdown mirror.",
   inputSchema: {

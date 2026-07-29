@@ -1,0 +1,42 @@
+.git
+.github
+.claude-plugin
+.codex-plugin
+.agents
+.agent
+node_modules
+**/node_modules
+hacker-bob-sessions
+coverage
+dist
+build
+.cache
+.pytest_cache
+*.log
+*.tgz
+.DS_Store
+
+# The AgentCore image copies only the runtime engine, generated Claude config,
+# provider adapters, package manifests, and infra/runner glue. Excluding the
+# remaining development/release surfaces keeps the context small and prevents
+# local test/session artifacts from ever reaching ECR.
+agents
+docs
+examples
+evals
+fixtures
+planning
+prompts
+proposals
+reports
+security
+templates
+test
+testing
+tools
+vendor
+infra/aws
+infra/sandbox
+packages/hacker-bob-cc
+packages/hacker-bob-codex
+packages/hacker-bob-kimi

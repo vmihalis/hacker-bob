@@ -1,0 +1,23 @@
+{
+  "name": "@hacker-bob/instrument-principal-acl-darwin",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Pure Darwin dedicated-principal and device-ACL qualification contracts for Hacker Bob",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "main": "lib/index.js",
+  "files": [
+    "lib/**/*.js"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./principal-acl": "./lib/principal-acl.js"
+  },
+  "scripts": {
+    "check:syntax": "node --check lib/principal-acl.js && node --check lib/index.js && node --check test/principal-acl.test.js",
+    "test": "node --test test/principal-acl.test.js"
+  }
+}

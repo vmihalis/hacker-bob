@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -71,7 +71,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnForge(args, { workdir, env, timeoutMs }) {
+function spawnForge(args, { workdir, env, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     let stdoutChunks = [];
@@ -83,17 +83,24 @@ function spawnForge(args, { workdir, env, timeoutMs }) {
     try {
       // detached: true lets us kill the process group on timeout. Forge spawns
       // solc and (when forking) anvil subprocesses; a parent-only kill leaves
-      // them running.
-      child = spawn("forge", args, {
+      // them running. The container route mounts ONLY this workdir (never the
+      // session tree / signing key) and runs as a non-signer container user;
+      // the degrade route is a byte-identical direct spawn. targetDomain lets the
+      // seam probe signer isolation so it can REFUSE a host-as-signer degrade under
+      // enforce (HIGH-1) rather than run the SC tool as the signer.
+      child = scSubprocessContainerExec("forge", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({
         ok: false,
-        reason: "forge_spawn_failed",
+        reason: error && error.code === "sc_isolation_refused"
+          ? "sc_isolation_refused"
+          : "forge_spawn_failed",
         error: error.message || String(error),
       });
       return;
@@ -110,7 +117,15 @@ function spawnForge(args, { workdir, env, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -149,6 +164,13 @@ function spawnForge(args, { workdir, env, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this forge in a filesystem-namespace container
+        // (true) or degraded to a host spawn AS THE SIGNER (false). The seam sets
+        // child.container_isolated; absence/non-true defaults to false (un-isolated)
+        // so a host-as-signer run can never masquerade as containerized. This rides
+        // up through finalizeRun -> the invariant-runs record so the verdict gate can
+        // refuse to trust an SC verdict whose backing run was NOT containerized.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -172,13 +194,27 @@ function parseForgeJson(stdout) {
   return { ok: false, reason: "unparseable_json" };
 }
 
+// The cross-stack target-binding line the PINNED template emits exactly once, before the
+// gated call: "BOB_TARGET_BIND:<0xaddress>:<0xsha256(target.code)>". Captured here so the
+// invariant runner can cross-check the executed target's runtime bytecode against the real
+// on-chain bytecode (eth_getCode). EXACTLY ONE must appear in the run's decoded logs: the
+// pinned emission always fires and cannot be suppressed, so an agent-authored harness that
+// injects a second (fake) BOB_TARGET_BIND in setUp pushes the count to >1 → refused.
+const TARGET_BIND_PREFIX = "BOB_TARGET_BIND:";
+const TARGET_BIND_RE = /^BOB_TARGET_BIND:(0x[0-9a-fA-F]{40}):(0x[0-9a-fA-F]{64})$/;
+
 function summarizeForgeJson(document) {
   const tests = [];
   let total = 0;
   let passed = 0;
   let failed = 0;
   let truncated = false;
-  if (!document || typeof document !== "object") return { tests, total, passed, failed, truncated };
+  let target_binding = null;
+  let target_binding_error = null;
+  const targetBindLines = [];
+  if (!document || typeof document !== "object") {
+    return { tests, total, passed, failed, truncated, target_binding, target_binding_error };
+  }
   // Forge JSON uses "Success"/"Failure"/"Skipped" status strings. Verifier
   // prompts speak "Pass"/"Fail" for the test-pass=bug-reproduced convention.
   // Translate at the runner so prompts and runner share one vocabulary; if the
@@ -210,15 +246,45 @@ function summarizeForgeJson(document) {
       } else {
         truncated = true;
       }
+      // Collect cross-stack target-binding lines from this test's decoded logs.
+      const decodedLogs = Array.isArray(result?.decoded_logs) ? result.decoded_logs : [];
+      for (const logLine of decodedLogs) {
+        if (typeof logLine === "string" && logLine.startsWith(TARGET_BIND_PREFIX)) {
+          targetBindLines.push(logLine.trim());
+        }
+      }
     }
   }
-  return { tests, total, passed, failed, truncated };
+  // EXACTLY ONE BOB_TARGET_BIND line: the pinned template emits it once and cannot be
+  // suppressed, so 0 means no cross-stack binding ran (single-surface / old template) and
+  // >1 means an agent-authored setUp injected a fake → refuse (target_binding stays null).
+  if (targetBindLines.length === 1) {
+    const m = TARGET_BIND_RE.exec(targetBindLines[0]);
+    if (m) {
+      target_binding = { address: m[1].toLowerCase(), code_sha256: m[2].toLowerCase() };
+    } else {
+      target_binding_error = "malformed BOB_TARGET_BIND line";
+    }
+  } else if (targetBindLines.length > 1) {
+    target_binding_error = `multiple BOB_TARGET_BIND lines (found ${targetBindLines.length}, expected exactly 1) — setUp-injection refused`;
+  }
+  return { tests, total, passed, failed, truncated, target_binding, target_binding_error };
 }
 
 function truncateString(value, maxChars) {
   if (typeof value !== "string") return null;
   if (value.length <= maxChars) return value;
   return value.slice(0, maxChars) + `…[truncated, total ${value.length} chars]`;
+}
+
+// Anchor a runner-generated match identifier so forge matches it EXACTLY (full string),
+// not as a substring. Used ONLY for the internally-generated invariant path (anchorMatch),
+// so a shadow contract/test whose name merely CONTAINS the generated name is not selected.
+// The identifiers are derived from [A-Za-z0-9_]-only template names so they are regex-
+// literal-safe; escape defensively before anchoring.
+function anchorMatchExpr(value) {
+  const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^${escaped}$`;
 }
 
 async function runFoundryTest({
@@ -230,8 +296,29 @@ async function runFoundryTest({
   forkUrls,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
+  consumedArtifact = null,
+  // INTERNAL invariant path (HIGH-1): the EXACT generated test file forge must run, and a
+  // flag to ANCHOR matchTest/matchContract to the full identifier. matchPath pins forge's
+  // --match-path to this one file so a same-named shadow .t.sol elsewhere is never selected;
+  // anchorMatch wraps matchTest/matchContract in ^...$. The standalone bob_foundry_run tool
+  // leaves both unset (its caller-supplied match strings stay unanchored, no --match-path),
+  // so single-surface use is unregressed. matchPath is a runner-controlled parameter, never
+  // routed through the extra_args allowlist (which still rejects an agent --match-path).
+  matchPath = null,
+  anchorMatch = false,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
+  // The cross-stack consumable artifact, delivered to the corpus-generated test as
+  // the BOB_CONSUMED_ARTIFACT subprocess env var. The bytes are hex-encoded so a forge
+  // env string round-trips arbitrary binary unchanged (vm.envOr returns the empty
+  // default when absent, so old templates and the control arm — empty env — are
+  // unaffected). Only ever populated on a violated arm with a verified cause; the
+  // egress policy passes it through (SC_CONTROLLED_SUBPROCESS_ENV_KEYS) but would never
+  // confuse it with an RPC/secret var.
+  const consumedArtifactEnv = Buffer.isBuffer(consumedArtifact) && consumedArtifact.length > 0
+    ? { BOB_CONSUMED_ARTIFACT: consumedArtifact.toString("hex") }
+    : {};
   if (!matchTest && !matchContract) {
     throw new Error("at least one of match_test or match_contract is required (forge test must be filtered)");
   }
@@ -254,8 +341,18 @@ async function runFoundryTest({
   if (matchContract && typeof matchContract !== "string") throw new Error("match_contract must be a string");
 
   const baseArgs = ["test", "--json"];
-  if (matchTest) baseArgs.push("--match-test", matchTest);
-  if (matchContract) baseArgs.push("--match-contract", matchContract);
+  // INVARIANT path: pin forge to the EXACT generated file so a shadow .t.sol whose contract
+  // name merely CONTAINS the generated name is never compiled-as-target. matchPath is the
+  // absolute generated file under the resolved harness root; forge's --match-path is a glob
+  // over project paths, and the absolute path that lives under the project root selects
+  // exactly that one file unambiguously.
+  if (typeof matchPath === "string" && matchPath.trim()) {
+    baseArgs.push("--match-path", matchPath.trim());
+  }
+  const effectiveMatchTest = anchorMatch && matchTest ? anchorMatchExpr(matchTest) : matchTest;
+  const effectiveMatchContract = anchorMatch && matchContract ? anchorMatchExpr(matchContract) : matchContract;
+  if (effectiveMatchTest) baseArgs.push("--match-test", effectiveMatchTest);
+  if (effectiveMatchContract) baseArgs.push("--match-contract", effectiveMatchContract);
   if (forkBlock != null) baseArgs.push("--fork-block-number", String(forkBlock));
   // Allowlist extra_args. Reject anything not in the allowlist (no --ffi, no
   // --rpc-url, no --match-path, no -- pass-through). A flag value (e.g. "8" for
@@ -295,14 +392,14 @@ async function runFoundryTest({
     }
     // No chain_id supplied — run a local-only test (covers chain-independent
     // fixtures and pure-fuzz harnesses).
-    const result = await spawnForge(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnForge(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: consumedArtifactEnv, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkBlock, fork_used: null, rpcPolicyRejections });
   }
 
   let lastResult = null;
   for (const url of candidateForkUrls) {
     const args = [...baseArgs, "--fork-url", url];
-    const result = await spawnForge(args, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnForge(args, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: consumedArtifactEnv, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),
@@ -331,11 +428,18 @@ async function runFoundryTest({
 }
 
 function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPolicyRejections = [] }) {
-  if (!result || result.reason === "forge_not_in_path" || result.reason === "forge_spawn_failed") {
+  if (!result
+    || result.reason === "forge_not_in_path"
+    || result.reason === "forge_spawn_failed"
+    || result.reason === "sc_isolation_refused") {
     return {
       ok: false,
       reason: result && result.reason ? result.reason : "spawn_failed",
       error: result && result.error ? result.error : null,
+      // A refused run NEVER ran the SC tool host-as-signer, so it is by definition
+      // not containerized; surface false so a producer that records this envelope
+      // never marks the (non-existent) run as isolated.
+      container_isolated: false,
       command: ["forge", ...redactRpcEndpointArgs(args)],
       rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
       fork_attempts: forkAttempts,
@@ -395,6 +499,14 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
     fork_block: forkBlock || null,
     fork_block_used: forkBlockUsed,
     fork_attempts: forkAttempts,
+    // TOP-LEVEL containerization signal (NOT inside any hashed sub-object). It is
+    // lifted from the spawnForge result, which read child.container_isolated from
+    // the SC seam. The invariant-runner records it as a sibling top-level record
+    // field (outside computeInvariantRunHash) so run_hash stays byte-stable whether
+    // the run was containerized or a degrade-host spawn; the field is covered by the
+    // row_mac and consulted by the verdict gate. A host-as-signer (degrade) run
+    // resolves false, so its backing row can never back a trusted SC reportable.
+    container_isolated: result.container_isolated === true,
     command: ["forge", ...redactRpcEndpointArgs(args)],
     rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
     summary: {
@@ -404,6 +516,11 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
     },
     tests: summary.tests,
     tests_truncated: summary.truncated === true,
+    // Cross-stack target binding parsed from the pinned template's single emitted log line
+    // ({ address, code_sha256 } or null), plus an injection/malformed error if the count != 1.
+    // The invariant runner cross-checks code_sha256 against eth_getCode at fork_block.
+    target_binding: summary.target_binding || null,
+    target_binding_error: summary.target_binding_error || null,
     raw_excerpt: {
       stdout: truncateString(redactRpcEndpointText(result.stdout || ""), RAW_EXCERPT_BYTES),
       stderr: truncateString(redactRpcEndpointText(result.stderr || ""), RAW_EXCERPT_BYTES),

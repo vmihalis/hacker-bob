@@ -4,7 +4,6 @@ const { promoteSurfaceLeads } = require("../surface-leads.js");
 
 module.exports = Object.freeze({
   name: "bob_promote_surface_leads",
-  aliases: ["bounty_promote_surface_leads"],
   description:
     "Promote top-ranked entries from surface-leads.json into frontier surface events so later waves can assign them from surface-index.json.",
   inputSchema: {

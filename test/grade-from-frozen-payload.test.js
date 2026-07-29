@@ -26,7 +26,9 @@ const {
   evidencePackPaths,
   gradeArtifactPaths,
   claimFreezePath,
+  repoCommandRunsJsonlPath,
   repoInventoryPath,
+  findingDifferentialVerifiedJsonlPath,
   sessionDir,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
@@ -37,6 +39,9 @@ const {
   buildRepoInventory,
   initRepoSession,
 } = require("../mcp/lib/repo-target.js");
+const {
+  seedGenuineReproPair,
+} = require("./helpers/repro-run-pair.js");
 const {
   normalizeFindingRecord,
 } = require("../mcp/lib/finding-contracts.js");
@@ -60,13 +65,18 @@ const {
 const {
   hashDocumentExcluding,
 } = require("../mcp/lib/fabric-common.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-grade-from-frozen-"));
   process.env.HOME = home;
   try {
-    return fn(home);
+    // These tests grade verdict-ledger-backed reportable findings to exercise the
+    // frozen-payload grade math, not the sandbox posture; run under an isolated
+    // signer so the grade-door sandbox gate is inert (passes under enforce AND
+    // degrade).
+    return withIsolatedSigner(() => fn(home));
   } finally {
     process.env.HOME = previousHome;
     resetMaterializationDebounce();
@@ -204,34 +214,90 @@ function seedLocalParserRepo(home, targetDomain) {
   };
 }
 
+// The PoC recipe the reproduction verifier re-runs. Native high/critical findings
+// declare it (on the claim's finding payload) and a matching verified_pass is
+// seeded so the grade-time O-P4 gate can bind one to the other by command_hash.
+const REPRO_COMMAND_ARGV = ["sh", "-lc", "./harness crash-input.bin"];
+
+// Seed the MCP-write-only verified_pass ledger row the reproduction verifier would
+// mint on a genuine differential flip (crashes vuln tree, quiet on fix tree),
+// bound to REPRO_COMMAND_ARGV by command_hash.
+// The O-P4 record gate requires a high/critical native-code claim to cite a
+// backed repo_command_run row. Append the matching ledger row and return the
+// evidence_ref so the frozen claim carries demonstrated (not inflated) impact.
+const REPO_COMMAND_RUN_REF = Object.freeze({
+  kind: "repo_command_run",
+  run_id: "grade-repro-run-1",
+  command_hash: "b".repeat(64),
+  exit_code: 134,
+  stdout_hash: "c".repeat(64),
+  stderr_hash: "d".repeat(64),
+});
+
+function seedRepoCommandRun(domain) {
+  appendJsonlLine(repoCommandRunsJsonlPath(domain), {
+    run_id: REPO_COMMAND_RUN_REF.run_id,
+    command_hash: REPO_COMMAND_RUN_REF.command_hash,
+    exit_code: REPO_COMMAND_RUN_REF.exit_code,
+    stdout_hash: REPO_COMMAND_RUN_REF.stdout_hash,
+    stderr_hash: REPO_COMMAND_RUN_REF.stderr_hash,
+    dry_run: false,
+  });
+}
+
+// Seed a GENUINE flipping repro pair (two repo-command-runs rows + matching capture files)
+// + the verified_pass verdict line citing it, so readReproVerifiedSummary's read-time
+// re-adjudication ADMITS it at grade time. A bare verdict line citing nonexistent runs is
+// no longer trusted.
+function seedReproVerifiedPass(domain, findingId = "F-1") {
+  seedGenuineReproPair(domain, {
+    findingId,
+    argv: REPRO_COMMAND_ARGV,
+    // Distinct run ids per finding so multiple findings in one session never collide.
+    vulnRunId: `repro-vuln-${findingId}`,
+    controlRunId: `repro-control-${findingId}`,
+  });
+}
+
 function seedFrozenRepoFinding(domain, surfaceIds, {
   findingId = "F-1",
   severity = "high",
   reachabilityAssertion = null,
 } = {}) {
+  const reproArgv = REPRO_COMMAND_ARGV;
+  const isHighOrCritical = severity === "high" || severity === "critical";
+  // A high/critical native claim must cite a backed repo_command_run row (O-P4);
+  // seed the ledger row before recording so the frozen baseline is demonstrated.
+  if (isHighOrCritical) seedRepoCommandRun(domain);
   const claim = {
     target_domain: domain,
     title: "Native parser over-read",
     summary: "Local file parser reads past the available buffer.",
-    severity: "medium",
+    // Freeze at the demonstrated tier the verification rounds assert. The
+    // repo/SC severity-rise guard clamps any verify-time rise above the frozen
+    // baseline (no tiered SC allow-path), so a finding meant to be graded at
+    // `severity` must be FROZEN at that tier, not raised at VERIFY.
+    severity,
     status: "candidate",
     surface_ids: surfaceIds,
-    evidence_refs: [{
-      kind: "finding",
-      finding_id: findingId,
-      content_hash: "0".repeat(64),
-    }],
+    evidence_refs: [
+      {
+        kind: "finding",
+        finding_id: findingId,
+        content_hash: "0".repeat(64),
+      },
+      ...(isHighOrCritical ? [REPO_COMMAND_RUN_REF] : []),
+    ],
     impact: "Parser crash on crafted input.",
-  };
-  if (reachabilityAssertion) {
-    claim.payload = {
+    payload: {
       finding: {
         id: findingId,
         capability_pack: "oss_native_code",
-        reachability_assertion: reachabilityAssertion,
+        repro_command_argv: reproArgv,
+        ...(reachabilityAssertion ? { reachability_assertion: reachabilityAssertion } : {}),
       },
-    };
-  }
+    },
+  };
   appendCandidateClaim(claim);
   buildClaimFreeze(domain, {
     write: true,
@@ -246,6 +312,53 @@ function seedFrozenRepoFinding(domain, surfaceIds, {
     });
   }
   writeEvidencePacks({ target_domain: domain, packs: [evidencePack(findingId)] });
+  // A native finding verified up to high/critical needs a differential
+  // reproduction verified_pass to clear the grade-time O-P4 gate.
+  if (severity === "high" || severity === "critical") {
+    seedReproVerifiedPass(domain, findingId);
+  }
+}
+
+// A standalone web (IDOR) finding is an executable-flip class; seed the
+// finding-differential verified_pass arm the grade-time standalone gate requires so the
+// web fixtures keep grading SUBMIT. Post-A1 the gate re-resolves the verdict against
+// MAC-covered offensive-runs rows + re-adjudicates the flip, so seed a real MAC-signed
+// exploited_safely positive + blocked_by_defense control (distinct command_hash, same
+// surface, demonstrated severity >= the finding's), then the verdict line binding them.
+function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface:billing-profile", demonstratedSeverity = "high") {
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: demonstratedSeverity, surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1,
+    target_domain: domain,
+    finding_id: findingId,
+    result: "verified_pass",
+    reason: "executed_finding_differential_flip",
+    surface_id: surfaceId,
+    source: "offensive_runs",
+    positive_run_id: `${findingId}-pos`,
+    positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`,
+    control_row_hash: offensiveRowHash(control),
+  });
 }
 
 function seedFinalVerificationFromFrozen(domain, { findingId = "F-1" } = {}) {
@@ -269,6 +382,9 @@ function seedFinalVerificationFromFrozen(domain, { findingId = "F-1" } = {}) {
     });
   }
   writeEvidencePacks({ target_domain: domain, packs: [evidencePack(findingId)] });
+  // The web IDOR fixture is a standalone executable-flip class; seed its arm row so the
+  // grade-time standalone-finding gate is satisfied (it stays reportable, NO amputation).
+  seedFindingDifferentialArm(domain, findingId);
 }
 
 test("grade verdict is bound to the frozen claim batch via claim_freeze_id", () => {
@@ -303,6 +419,11 @@ test("grade verdict is bound to the frozen claim batch via claim_freeze_id", () 
       false,
       "ordinary non-repo findings must not receive unknown reachability metadata",
     );
+    // Producer-fires proof: a no-reachability (web/SC) finding still gets its graded
+    // severity (== recorded, uncapped) + defender word stamped, so the hosted witness
+    // can light a severe live-target finding without a reachability stamp.
+    assert.equal(onDisk.findings[0].graded_severity, "high");
+    assert.equal(onDisk.findings[0].defender_disposition, "fix_now");
 
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
     assert.equal(read.claim_freeze_id, freeze.freeze_id);
@@ -313,20 +434,35 @@ test("reachability cap stamps graded severity without removing the reportable fi
   withTempHome((home) => {
     const repoSession = seedLocalParserRepo(home, "grade-reachability-cap");
     const domain = repoSession.target_domain;
+    seedRepoCommandRun(domain);
     appendCandidateClaim({
       target_domain: domain,
       title: "Native parser over-read",
       summary: "Local file parser reads past the available buffer.",
-      severity: "medium",
+      // Frozen at the demonstrated high tier (the repo/SC rise guard clamps any
+      // verify-time rise above the baseline); the reachability cap then lowers
+      // the GRADED severity to medium without clamping the recorded baseline.
+      severity: "high",
       status: "candidate",
       surface_ids: [repoSession.surface_id],
-      evidence_refs: [{
-        kind: "finding",
-        finding_id: "F-1",
-        content_hash: "0".repeat(64),
-      }],
+      evidence_refs: [
+        {
+          kind: "finding",
+          finding_id: "F-1",
+          content_hash: "0".repeat(64),
+        },
+        REPO_COMMAND_RUN_REF,
+      ],
       impact: "Parser crash on crafted local input.",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          repro_command_argv: REPRO_COMMAND_ARGV,
+        },
+      },
     });
+    seedReproVerifiedPass(domain, "F-1");
     buildClaimFreeze(domain, {
       write: true,
       now: new Date("2026-05-27T01:00:00.000Z"),
@@ -340,6 +476,9 @@ test("reachability cap stamps graded severity without removing the reportable fi
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    // A native finding recorded at high needs a differential reproduction
+    // verified_pass to clear the grade-time O-P4 gate.
+    seedReproVerifiedPass(domain, "F-1");
 
     const written = JSON.parse(writeGradeVerdict({
       target_domain: domain,
@@ -366,6 +505,13 @@ test("reachability cap stamps graded severity without removing the reportable fi
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
     assert.equal(read.findings[0].reachability.graded_severity, "medium");
     assert.equal(read.findings[0].reachability.disposition, "capped");
+
+    // Wiring proof (end-to-end): the grade verdict actually STAMPS the defender
+    // relens per finding, and it reads the GRADED severity — capped-to-medium at a
+    // submit score is worth_fixing, never fix_now, even though the RECORDED severity
+    // was high. Reachability flows into the customer word exactly as into the grade.
+    assert.equal(onDisk.findings[0].defender_disposition, "worth_fixing");
+    assert.equal(read.findings[0].defender_disposition, "worth_fixing");
 
     appendCandidateClaim({
       target_domain: domain,
@@ -651,6 +797,7 @@ test("conflicting forced reachability assertions use the earliest assertion with
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -667,6 +814,7 @@ test("conflicting forced reachability assertions use the earliest assertion with
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "local",
@@ -689,6 +837,7 @@ test("conflicting forced reachability assertions use the earliest assertion with
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -731,6 +880,7 @@ test("same-classification frozen reachability assertions with different call pat
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -747,6 +897,7 @@ test("same-classification frozen reachability assertions with different call pat
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -769,6 +920,7 @@ test("same-classification frozen reachability assertions with different call pat
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -811,6 +963,7 @@ test("reachability assertion ordering sorts missing created_at after valid times
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -827,6 +980,7 @@ test("reachability assertion ordering sorts missing created_at after valid times
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "local",
@@ -850,6 +1004,13 @@ test("reachability assertion ordering sorts missing created_at after valid times
     assert.ok(undatedClaim, "fixture must include a network assertion to make timestamp fallback observable");
     delete undatedClaim.created_at;
     freeze.freeze_hash = hashDocumentExcluding(freeze, ["frozen_at", "freeze_hash"]);
+    // This fixture hand-edits the frozen doc (drops a claim's created_at) and re-writes it
+    // raw, so the Cycle B freeze_mac minted by buildClaimFreeze no longer covers the
+    // content. Drop it so the re-written doc is a clean LEGACY (unsigned) freeze accepted-
+    // with-warning by readCurrentClaimFreeze — not a present-but-invalid (tampered) mac,
+    // which would correctly fail closed. The keying integrity is exercised in the dedicated
+    // claim-freeze-mac-keying tests; this test exercises reachability-assertion ordering.
+    delete freeze.freeze_mac;
     writeFileAtomic(claimFreezePath(domain), `${JSON.stringify(freeze, null, 2)}\n`);
     for (const round of ["brutalist", "balanced", "final"]) {
       writeVerificationRound({
@@ -860,6 +1021,7 @@ test("reachability assertion ordering sorts missing created_at after valid times
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -883,22 +1045,36 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
   withTempHome((home) => {
     const repoSession = seedLocalParserRepo(home, "grade-reachability-assertion-bad-frozen");
     const domain = repoSession.target_domain;
+    seedRepoCommandRun(domain);
     const baseClaim = {
       target_domain: domain,
       title: "Native parser over-read",
       summary: "Parser reads past the available buffer.",
-      severity: "medium",
+      // The F-1-bearing claims are frozen at the demonstrated high tier (backed
+      // by repo_command_run) so the recorded baseline is high; the valid network
+      // assertion then LIFTS the graded severity. The idless first claim stays
+      // medium (it carries no finding id / repro recipe and is ignored).
+      severity: "high",
       status: "candidate",
       surface_ids: [repoSession.network_surface_id],
+      evidence_refs: [
+        {
+          kind: "finding",
+          finding_id: "F-1",
+          content_hash: "0".repeat(64),
+        },
+        REPO_COMMAND_RUN_REF,
+      ],
+      impact: "Parser crash on crafted input.",
+    };
+    appendCandidateClaim({
+      ...baseClaim,
+      severity: "medium",
       evidence_refs: [{
         kind: "finding",
         finding_id: "F-1",
         content_hash: "0".repeat(64),
       }],
-      impact: "Parser crash on crafted input.",
-    };
-    appendCandidateClaim({
-      ...baseClaim,
       created_at: "2026-05-27T00:00:00.000Z",
       payload: {
         finding: {
@@ -918,6 +1094,7 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -934,6 +1111,7 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -956,6 +1134,7 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -980,23 +1159,31 @@ test("corrupt frozen reachability assertion fallback is audited and not defensib
   withTempHome((home) => {
     const repoSession = seedLocalParserRepo(home, "grade-reachability-corrupt-fallback");
     const domain = repoSession.target_domain;
+    seedRepoCommandRun(domain);
     appendCandidateClaim({
       target_domain: domain,
       title: "Native parser over-read",
       summary: "Parser reads past the available buffer.",
-      severity: "medium",
+      // Frozen at high (demonstrated, repo_command_run-backed). The corrupt
+      // assertion fallback then lifts the network ceiling above this recorded
+      // baseline; the repo/SC rise guard does not touch a frozen baseline.
+      severity: "high",
       status: "candidate",
       created_at: "2026-05-27T00:00:00.000Z",
       surface_ids: [repoSession.network_surface_id],
-      evidence_refs: [{
-        kind: "finding",
-        finding_id: "F-1",
-        content_hash: "0".repeat(64),
-      }],
+      evidence_refs: [
+        {
+          kind: "finding",
+          finding_id: "F-1",
+          content_hash: "0".repeat(64),
+        },
+        REPO_COMMAND_RUN_REF,
+      ],
       impact: "Parser crash on crafted input.",
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -1019,6 +1206,7 @@ test("corrupt frozen reachability assertion fallback is audited and not defensib
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -1300,6 +1488,9 @@ test("non-OSS frozen reachability assertions are ignored at grade time", () => {
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    // Standalone web (IDOR) executable-flip class: seed its arm row so the grade-time
+    // standalone-finding gate is satisfied (isolates the reachability behavior under test).
+    seedFindingDifferentialArm(domain, "F-1");
 
     writeGradeVerdict({
       target_domain: domain,
@@ -1522,6 +1713,9 @@ test("strict gate: incomplete evidence (C.5 completeness contract) blocks the gr
     }
     // Confirm no evidence pack exists on disk.
     assert.equal(fs.existsSync(evidencePackPaths(domain).json), false);
+    // Seed the standalone-finding arm row so the (earlier) finding-differential gate is
+    // satisfied and the EVIDENCE gate under test is the one that blocks the grade.
+    seedFindingDifferentialArm(domain, "F-1");
 
     assert.throws(
       () => writeGradeVerdict({

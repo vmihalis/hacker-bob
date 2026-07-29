@@ -32,6 +32,8 @@ const TAG_GRAMMAR = Object.freeze({
     /\bY-[PDR]\d+[a-z]?\b/g, // Y-P13a, Y-D15b, Y-R22
     /\b[CX]\.\d+[a-z]?\b/g, //  C.7, X.10  (dotted cycle labels)
     /(?<![A-Za-z0-9_])X-P\d+\b/g, // X-P8 (plane-X invariant)
+    /\bNS-\d+[a-z]?\b/g, // NS-1, NS-2 (coverage-nesting Step B — unique shape)
+    /\bAD\d+\b/g, // AD1 (auth-differential completion gate — unique shape)
   ]),
   // S/C/I families: collision-prone bare tokens. Matched ONLY as a leading
   // comment token so docs-prose homonyms (I6 the capability node, C2 the C&C
@@ -42,6 +44,20 @@ const TAG_GRAMMAR = Object.freeze({
 });
 
 const REGISTRY = Object.freeze({
+  // Auth-differential routing (S1)
+  "S1": Object.freeze({
+    kind: "invariant",
+    class: "auth_differential_routing",
+    title:
+      "a routable web surface exposing an id-bearing collection with >=2 auth "
+      + "profiles MUST carry auth_differential_required=true on its route; set "
+      + "fail-closed at route time (count 0 on unreadable auth.json -> false); "
+      + "vacuous on single-profile/collection-only surfaces",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/surface-router.js", symbol: "buildSurfaceRoutesDocument" }),
+    ]),
+  }),
+
   // ── Lifecycle (I6 — the reopenability back-edges) ───────────────────────
   "I6": Object.freeze({
     kind: "invariant",
@@ -93,6 +109,195 @@ const REGISTRY = Object.freeze({
     ]),
   }),
 
+  "S5": Object.freeze({
+    kind: "invariant",
+    class: "composition_floor",
+    title: "Monotone edge-coverage convergence for the composition cell floor.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-cell-floor.js", symbol: "emitOrAutoBlock" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-cell-floor.js", symbol: "S5" }), // tag anchor
+    ]),
+  }),
+
+  // ── Coverage-nesting Step B (NS family) ─────────────────────────────────
+  // The bounded, brain-owned nested fan-out muscle. Each tag is anchored as a
+  // comment at its enforcing site; enforced_by points at a live symbol there.
+  "NS-1": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Single declared spawner (Y-P8): exactly ONE registry role (evaluator-fanout) "
+      + "may hold a host spawn primitive, and its grant is the exact parameterized "
+      + "Agent(evaluator-fanout-child) allowlist rather than bare Agent/Task.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "claudeSpawnGrantForRole" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "NS-1" }), // tag anchor
+      Object.freeze({ file: "test/single-spawner-topology.test.js", symbol: "spawnCapableAgentNames" }),
+      Object.freeze({ file: "test/single-spawner-topology.test.js", symbol: "NS-1" }), // tag anchor
+    ]),
+  }),
+  "NS-2": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "G2 disjointness by role-level deny: the Task-holder holds NO coverage-cell "
+      + "tool (evaluator-fanout denies bob_propose_transition), verified prefix-stripped.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "test/coverage-cell-invariant-envelope.test.js", symbol: "coverageCellTools" }),
+      Object.freeze({ file: "test/coverage-cell-invariant-envelope.test.js", symbol: "NS-2" }), // tag anchor
+    ]),
+  }),
+  "NS-3": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Host-only nesting: depth>1 is reachable only when host==claude and "
+      + "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 is explicitly asserted. The topology "
+      + "requires Claude >=2.1.172 (an operator prerequisite, not a runtime version probe) "
+      + "and is clamped before plan emission; default Claude and every other host fail closed.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "runtimeNestingEnabledForHost" }),
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-3" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "effectiveSpawnDepth" }),
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "NS-3" }), // tag anchor
+    ]),
+  }),
+  "NS-4": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Bounded brain-owned fan-out: the depth-1 width is preventively capped to the "
+      + "root-plus-descendant spawn budget (maxBranchingForBudget); handoff validation "
+      + "reconstructs the dispatch-time plan and bounds depth/count/type/exact issued cell.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "validateSpawnFanout" }),
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-4" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "buildChildFanoutPlanForSurface" }),
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "NS-4" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/waves/wave-scheduler.js", symbol: "startWaveLocked" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-scheduler.js", symbol: "NS-4" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "spawnFanoutBudgetForSurface" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "NS-4" }), // tag anchor
+    ]),
+  }),
+  "NS-5": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "RANK != BOUND: DEFAULT_QUEUE_POLICY raises width/depth but keeps "
+      + "max_total_spawned_agents=null (unbounded fixpoint, no coverage cap). The "
+      + "shipped default is exempt from the governor auto-fill; raising a knob above "
+      + "it re-arms the safety governor; a lean override restores the conservative floor.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "DEFAULT_QUEUE_POLICY" }),
+      Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "NS-5" }), // tag anchor
+    ]),
+  }),
+  "NS-6": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Routing variants retain canonical technique compatibility: every technique "
+      + "selection/read/log consumer resolves web_fanout through the capability-pack "
+      + "registry while preserving web_fanout as audit metadata.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/capability-packs.js", symbol: "techniqueCompatibilityPackId" }),
+      Object.freeze({ file: "mcp/lib/capability-packs.js", symbol: "NS-6" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/technique-packs.js", symbol: "techniquePackSupportsCapability" }),
+      Object.freeze({ file: "mcp/lib/technique-packs.js", symbol: "NS-6" }), // tag anchor
+    ]),
+  }),
+  "NS-7": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Nested child authority and completion are cell-bound and root-owned: a distinct "
+      + "registry-generated evaluator-fanout-child receives no host-local tools and no "
+      + "handoff/finalize authority at spawn time, while the root's parameterized Agent "
+      + "grant and PreTool guard admit only that anonymous synchronous child; "
+      + "BOB_CHILD_CELL_DONE must match an "
+      + "MCP-issued cell plus terminal durable coverage, and only the root may hand off, "
+      + "finalize, or settle the shared AgentRun.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "FANOUT_ROLE_REGISTRY" }),
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/role-model.js", symbol: "ROLE_DEFINITIONS" }),
+      Object.freeze({ file: "mcp/lib/role-model.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "claudeAllowedToolsForRole" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "claudeSpawnGrantForRole" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "fanoutChildAgentNames" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "adapters/claude/config.js", symbol: "subagentStopAttestedAgentNames" }),
+      Object.freeze({ file: "adapters/claude/config.js", symbol: "fanoutChildScopeGuardHookEntry" }),
+      Object.freeze({ file: "adapters/claude/config.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "scripts/generate-claude-settings.js", symbol: "SubagentStart" }),
+      Object.freeze({ file: "scripts/generate-claude-settings.js", symbol: "SubagentStop" }),
+      Object.freeze({ file: "scripts/generate-claude-settings.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "prompts/roles/evaluator-fanout-child.md", symbol: "BOB_CHILD_CELL_DONE" }),
+      Object.freeze({ file: "prompts/roles/evaluator-fanout-child.md", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "evaluateNestedChildSpawn" }),
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "evaluateNestedChildCompletion" }),
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "CHILD_MARKER" }),
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "rootFanoutInvocationViolation" }),
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "denyPreTool" }),
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "assertSpawnFanoutWithinBudget" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "NS-7" }), // tag anchor
+    ]),
+  }),
+
+  // ── Chain-tool scope gate (PRD-3) ───────────────────────────────────────
+  // Bound solely through the enforced_by-substring mechanism (TAG_GRAMMAR is
+  // intentionally NOT widened): direction-b requires both the function literal
+  // and the `// PRD-3` anchor comment to live in session-authority.js, so
+  // removing the anchor fails check:invariant-registry.
+  "PRD-3": Object.freeze({
+    kind: "invariant",
+    class: "chain_authority_scope",
+    title:
+      "Chain-tool scope gate: when a session binds non-empty target_contracts[], "
+      + "a bob_* chain tool whose (chain_family, chain_id, address) is outside the "
+      + "bound authority (exact or OD3 same-chain provenanced) is SCOPE_BLOCKED "
+      + "pre-handler; an empty target_contracts[] session is a no-op.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/session-authority.js", symbol: "authorizeChainScope" }),
+      Object.freeze({ file: "mcp/lib/session-authority.js", symbol: "PRD-3" }), // tag anchor
+    ]),
+  }),
+
+  // ── Producer-run / producer-floor integrity (PRD-1, PRD-2) ──────────────
+  // Bound through the enforced_by-substring mechanism (TAG_GRAMMAR is NOT
+  // widened): direction-b requires both the function literal and the
+  // `// PRD-N` anchor comment to live in the enforcing file, so removing the
+  // anchor fails check:invariant-registry.
+  "PRD-1": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "Producer-run strike-counter monotonicity: only a STRUCTURAL "
+      + "failed_retryable strikes; the structural strike tally is monotone "
+      + "non-decreasing over the append-only ledger, and the producer_key is "
+      + "auto-blocked exactly once at STUCK_PRODUCER_DISPATCH_THRESHOLD, "
+      + "idempotent against an already-terminal key.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/producer-run-ledger.js", symbol: "producerStrikeTally" }),
+      Object.freeze({ file: "mcp/lib/producer-run-ledger.js", symbol: "PRD-1" }), // tag anchor
+    ]),
+  }),
+  "PRD-2": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "Producer floor RANK != BOUND: every not-ready derived producer is "
+      + "REPORTED at the producer_gap construction site, never dropped or "
+      + "truncated at construction.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "planProducerFloor" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-2" }), // tag anchor
+    ]),
+  }),
+
   // ── Frontier producer-boundary integrity (Y-D21) ────────────────────────
   // The append funnel is the cheapest fail-closed boundary every surface.observed
   // emitter flows through. Enforcing the smart_contract => chain_family pairing
@@ -109,6 +314,150 @@ const REGISTRY = Object.freeze({
       + "routing INTERNAL_ERROR.",
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/frontier-events.js", symbol: "assertSmartContractChainFamily" }),
+    ]),
+  }),
+  "Y-D22": Object.freeze({
+    kind: "invariant",
+    class: "frontier_integrity",
+    title:
+      "Lead-intake smart-contract chain context integrity: an intake lead with "
+      + "surface_type smart_contract and a contract_address but no chain_family "
+      + "must either resolve a CHAIN_FAMILY_VALUES member from address shape plus "
+      + "observed chain context, or carry a visible blocked_prereqs entry for "
+      + "capability routing.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/lead-intake.js", symbol: "resolveChainContext" }),
+    ]),
+  }),
+
+  // -- Step-up capability typing (S3-cap) --------------------------------
+  // Registers the account-registration / email-OTP / OOB-callback tools under a
+  // capability_id so capabilityToolMapFromRegistry is no longer blind to the
+  // step-up capability (M6b reachability ceiling). enforced_by points at the
+  // literal capability_id strings, which must be present in the tool defs.
+  "S3-cap": Object.freeze({
+    kind: "invariant",
+    class: "capability_typing",
+    title:
+      "Step-up tools (temp-email/auto-signup/signup-detect/oob-mint) carry a "
+      + "capability_id so the registry can answer 'does Bob own a tool for X' "
+      + "and the reachability ceiling can contradict a self-capped severity.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/temp-email.js", symbol: "S3_stepup_registration" }),
+      Object.freeze({ file: "mcp/lib/tools/auto-signup.js", symbol: "S3_stepup_registration" }),
+      Object.freeze({ file: "mcp/lib/tools/signup-detect.js", symbol: "S3_stepup_registration" }),
+      Object.freeze({ file: "mcp/lib/tools/bob-oob-mint.js", symbol: "S3_oob_callback" }),
+    ]),
+  }),
+
+  // ── Confidence-modulated friction widening (Y-P16) ───────────────────────
+  // The per-surface routing confidence tunes how eagerly derivePackForNode
+  // widens the allowed-tools set from friction. Modulation only ADDS
+  // friction-derived tools and only RAISES the widen threshold for confident
+  // routes; the absent-confidence default (threshold 1) is never LESS eager
+  // than the unconditional union — RANKED, never bounded.
+  "Y-P16": Object.freeze({
+    kind: "invariant",
+    class: "capability_widening",
+    title:
+      "Confidence modulates friction-widening eagerness: a friction wanted_tool "
+      + "joins allowed_tools_for_node only when its occurrence count in "
+      + "friction_history meets the confidence-derived widen threshold "
+      + "(low/absent=1, medium=2, high=2); modulation only ADDS tools and never "
+      + "widens LESS eagerly than the unconditional union.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/capability-pack-derivation.js", symbol: "widenThresholdForConfidence" }),
+    ]),
+  }),
+  "X-DONE1": Object.freeze({
+    kind: "invariant",
+    class: "completion_depth",
+    title:
+      "An id-bearing multi-principal complete surface earns completion only via an "
+      + "MCP-owned auth-differential row (>=2 profiles covering it) or a re-derived "
+      + "verified_pass; a coverage-row-alone or free-text bypass cannot clear it.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/claims.js", symbol: "completionDepthGapForCompleteSurfaces" }),
+      Object.freeze({ file: "mcp/lib/claims.js", symbol: "X-DONE1" }),
+    ]),
+  }),
+  "AD1": Object.freeze({
+    kind: "invariant",
+    class: "auth_differential_completion",
+    title:
+      "Id-bearing surfaces marked complete require MCP-owned auth-differential "
+      + "execution evidence, a signed finding differential bound to the surface, "
+      + "or a substantive cross-tenant blocker.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "evaluateAuthDifferentialCompletionCoverage" }),
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "AD1" }),
+      Object.freeze({ file: "mcp/lib/wave-handoff-store.js", symbol: "AD1" }),
+    ]),
+  }),
+  "Y-D23": Object.freeze({
+    kind: "invariant",
+    class: "blocked_prereq_capability_clear",
+    title:
+      "A current blocked_prereqs premise whose required capability is now "
+      + "materialized stays open for requeue and blocks freeze until the surface "
+      + "is rerun or the current blocker resolves.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/waves/wave-promotion-detector.js", symbol: "computeCapabilityClearedPremiseSurfaceIds" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-promotion-detector.js", symbol: "Y-D23" }),
+      Object.freeze({ file: "mcp/lib/scheduler-preconditions.js", symbol: "blocked_prereqs_capability_clear" }),
+    ]),
+  }),
+  "S3c": Object.freeze({
+    kind: "invariant",
+    class: "capability",
+    title:
+      "Capability-blocker ceiling: a reportable finding cannot stay severity-capped "
+      + "on a 'cannot do X' rationale when the registry owns a tool for X unless a "
+      + "substantive blocked_harness_runs escape exists for the finding surface.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/reachability-ceiling.js", symbol: "S3c" }),
+      Object.freeze({ file: "mcp/lib/lifecycle-gates.js", symbol: "S3c" }),
+    ]),
+  }),
+  "PRD-4": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "A materialized http-body corpus carrying an on-chain reference obligates "
+      + "a web_onchain_ref producer run — fail-closed, so a web session cannot "
+      + "reach the producer-floor fixpoint while an unscanned body corpus remains.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "executeWebOnchainRefProducer" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-4" }),
+    ]),
+  }),
+  "PRD-5": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "A web frontier cannot drain OPEN_FRONTIER -> CLAIM_FREEZE while a materialized "
+      + "http_bodies corpus is unscanned — the web_onchain_ref producer stays READY "
+      + "with no terminal producer_run row — so the unrouted on-chain reference is a "
+      + "recorded, MCP-owned drain obligation, never a silent pass.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/scheduler-preconditions.js", symbol: "unscanned_bodies_drained" }),
+      Object.freeze({ file: "mcp/lib/scheduler-preconditions.js", symbol: "PRD-5" }),
+    ]),
+  }),
+  "PRD-6": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "Leaked-identifier composition floor: cross-surface shared-identifier pairs "
+      + "deterministically propose DEDUPED identity_propagation transitions (dedup by "
+      + "transitionSurfaceId, RANK != BOUND, self-activating - zero edges when no leaked "
+      + "identifier is shared). Strictly monotone: each edge is proposed at most once so "
+      + "the reachable edge set stays finite and a repeat pass proposes nothing new, "
+      + "preserving the transition-cell floor's convergence-proof finiteness precondition; "
+      + "the existing enumerateTransitionCellFloor + emitOrAutoBlock fan and converge it.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "planCompositionFloor" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-6" }),
     ]),
   }),
 });

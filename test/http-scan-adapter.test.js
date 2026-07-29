@@ -186,6 +186,40 @@ test("makePerCallHttpScanFetcher omits auth_profile when blank and reports sent_
   assert.equal(observed.sent_with_auth, false);
 });
 
+test("makePerCallHttpScanFetcher with freshness:true carries no-cache request headers", async () => {
+  const calls = [];
+  const stubHttpScan = async (args) => {
+    calls.push(args);
+    return JSON.stringify({ status: 200, headers: {}, body: "" });
+  };
+  const fetcher = makePerCallHttpScanFetcher({
+    httpScanFn: stubHttpScan,
+    target_domain: "example.com",
+    freshness: true,
+  });
+  await fetcher({ url: "https://example.com/orders/1", method: "GET", auth_profile: "admin" });
+  assert.deepEqual(calls[0].headers, {
+    "Cache-Control": "no-cache, no-store",
+    "Pragma": "no-cache",
+  });
+  // Freshness rides args.headers and never displaces auth_profile forwarding.
+  assert.equal(calls[0].auth_profile, "admin");
+});
+
+test("makePerCallHttpScanFetcher WITHOUT freshness sends no cache-control headers (default off, non-differential callers unchanged)", async () => {
+  const calls = [];
+  const stubHttpScan = async (args) => {
+    calls.push(args);
+    return JSON.stringify({ status: 200, headers: {}, body: "" });
+  };
+  const fetcher = makePerCallHttpScanFetcher({
+    httpScanFn: stubHttpScan,
+    target_domain: "example.com",
+  });
+  await fetcher({ url: "https://example.com/x", method: "GET", auth_profile: "admin" });
+  assert.equal("headers" in calls[0], false);
+});
+
 test("makePerCallHttpScanFetcher rejects invalid configuration", () => {
   assert.throws(
     () => makePerCallHttpScanFetcher({ httpScanFn: null, target_domain: "x" }),

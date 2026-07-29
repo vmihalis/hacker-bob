@@ -9,7 +9,7 @@
 //   Subtest A — Capability friction (tool_absent) is appendable through the
 //               Y.2 logger; the round-trip lands a frontier-event of kind
 //               capability_friction_observed (Y.1 substrate) and the Y-P3
-//               5-tuple idempotency holds.
+//               6-tuple idempotency holds.
 //   Subtest B — Adversarial scanner (Y.7) catches silent Bash + the five W2
 //               extensions + the rev-4.1 silent_lead_threshold_drop runtime
 //               tripwire. Closed-set drift_signatures are surfaced for each
@@ -52,6 +52,8 @@ const os = require("node:os");
 const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
+
+const { spawnCapableAgentNames } = require("../scripts/lib/claude-role-renderer.js");
 
 const {
   AUDIT_GRADED_PATHS,
@@ -303,19 +305,19 @@ test("Y.13 Subtest A — tool_absent capability friction round-trips through Y.2
     assert.equal(frictionEvents[0].payload.wanted_tool, "bob_browser_session_start");
     assert.equal(frictionEvents[0].payload.friction_kind, "tool_absent");
 
-    // Y-P3 5-tuple idempotency: re-emit with the SAME (run_id, node_id,
-    // wanted_tool, purpose, detected_by) — must be deduped to a single
-    // event on the ledger.
+    // Y-P3 6-tuple idempotency: re-emit with the SAME (run_id, node_id,
+    // wanted_tool, friction_kind, purpose, detected_by) — must be deduped to a
+    // single event on the ledger.
     const dupResponse = callTool(logFrictionTool, args);
     assert.equal(dupResponse.appended, false,
-      "second emission with the same 5-tuple MUST be reported as not appended (Y-P3 idempotency)");
+      "second emission with the same 6-tuple MUST be reported as not appended (Y-P3 idempotency)");
     assert.equal(dupResponse.idempotent, true);
     const eventsAfter = readFrontierEvents(domain).filter(
       (e) => e.payload && e.payload.observation_kind === "capability_friction_observed",
     );
     assert.equal(
       eventsAfter.length, 1,
-      "Y-P3 5-tuple idempotency MUST silently de-dup a second emission with the same tuple",
+      "Y-P3 6-tuple idempotency MUST silently de-dup a second emission with the same tuple",
     );
   });
 });
@@ -857,10 +859,13 @@ test("Y.13 Subtest G-6 (Y-P14d brief-discipline coverage) — chain-builder comp
   );
 });
 
-test("Y.13 Subtest G-7 (Y-P14e non-example coverage) — no agent carries Task; ROLE_TRACE_EXPECTATIONS decision_boundaries are CLOSED enum", () => {
-  // (Y-P8 preserved) — single-spawner topology test already enforces no
-  // agent gains Task. Mirror the assertion here against the agents/
-  // directory to make the structural anchor visible in the smoke.
+test("Y.13 Subtest G-7 (Y-P14e non-example coverage) — Agent/Task spawn grants only on registry-declared spawn_capable agents; ROLE_TRACE_EXPECTATIONS decision_boundaries are CLOSED enum", () => {
+  // (Y-P8, CN coverage-nesting) — single-spawner-topology.test.js owns the
+  // full registry-derived IFF gate. Mirror its NON-allowlisted direction here
+  // (no agent carries a bare or parameterized Agent/Task grant UNLESS its role spec is spawn_capable) to keep the
+  // structural anchor visible in the smoke. Sourcing the allowlist from the
+  // SAME renderer registry keeps the invariant single-definition.
+  const spawnCapable = new Set(spawnCapableAgentNames());
   const agentsDir = path.join(REPO_ROOT, ".claude", "agents");
   const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
   for (const file of agentFiles) {
@@ -868,9 +873,10 @@ test("Y.13 Subtest G-7 (Y-P14e non-example coverage) — no agent carries Task; 
     const frontMatterEnd = text.indexOf("\n---\n");
     const frontMatter = frontMatterEnd === -1 ? text : text.slice(0, frontMatterEnd);
     const toolsLine = (frontMatter.match(/^tools:\s*(.*)$/m) || [, ""])[1];
+    if (spawnCapable.has(path.basename(file, ".md"))) continue;
     assert.equal(
-      /\bTask\b/.test(toolsLine), false,
-      `${file} MUST NOT carry Task in its tools frontmatter (Y-P8 preserved unconditionally)`,
+      /\b(?:Agent|Task)(?:\([^)]*\))?/.test(toolsLine), false,
+      `${file} MUST NOT carry Agent/Task in tools unless registry-declared spawn_capable (Y-P8 / CN)`,
     );
   }
 

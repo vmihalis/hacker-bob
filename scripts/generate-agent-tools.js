@@ -35,6 +35,14 @@ const AGENT_TOOL_SPECS = Object.freeze({
     roleBundles: [],
     extras: ["Read", "mcp__hacker-bob__bob_route_surfaces"],
   },
+  // Smart-contract recon expander. Rendered via the role-id path so the tools
+  // line tracks mcpToolNamesForRole (the read/fetch-only sc-recon bundle) and
+  // carries no spawn primitive.
+  "sc-recon-expander.md": {
+    roleId: "sc-recon-expander",
+    roleBundles: ["sc-recon"],
+    extras: ["Bash", "Read", "Write", "Grep", "Glob"],
+  },
   "evaluator-agent.md": {
     roleBundles: ["evaluator-shared", "evaluator-web"],
     extras: ["Bash", "Read", "Grep", "Glob"],
@@ -53,8 +61,25 @@ const AGENT_TOOL_SPECS = Object.freeze({
       "evaluator-move",
       "evaluator-substrate",
       "evaluator-cosmwasm",
+      "evaluator-physical",
     ],
     extras: ["Bash", "Read", "Write", "Grep", "Glob"],
+  },
+  // CN (coverage-nesting) Step B — spawn_capable per-surface evaluator. Rendered
+  // via the role-id path so the tools line tracks mcpToolNamesForRole including
+  // the bob_propose_transition deny and parameterized spawn-capable Agent grant.
+  "evaluator-fanout.md": {
+    roleId: "evaluator-fanout",
+    roleBundles: ["evaluator-shared", "evaluator-web"],
+    extras: ["Bash", "Read", "Grep", "Glob"],
+  },
+  // NS-7 — distinct synchronous leaf. The role-id path renders its denied MCP
+  // settlement tools out of frontmatter; an empty extras list also proves the
+  // child receives no host-local Agent/Task/Bash/file surface at spawn time.
+  "evaluator-fanout-child.md": {
+    roleId: "evaluator-fanout-child",
+    roleBundles: ["evaluator-shared", "evaluator-web"],
+    extras: [],
   },
   "brutalist-verifier.md": {
     roleId: "brutalist-verifier",

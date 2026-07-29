@@ -12,6 +12,10 @@ const {
 const {
   updateClaudeRoleFiles,
 } = require("../../scripts/lib/claude-role-renderer.js");
+const {
+  bobMcpServerEntry,
+  isBobManagedMcpServerEntry,
+} = require("../../scripts/lib/workspace-sessions-root.js");
 
 const id = "claude";
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
@@ -197,10 +201,10 @@ function managedDirs() {
   ];
 }
 
-function mergeConfig({ existingMcp, existingSettings, serverPath }) {
+function mergeConfig({ existingMcp, existingSettings, serverPath, sessionsRoot = null }) {
   return {
-    mcp: mergeMcp(existingMcp || {}, serverPath),
-    settings: mergeSettings(existingSettings || {}, config.defaultClaudeSettings()),
+    mcp: mergeMcp(existingMcp || {}, serverPath, { sessionsRoot }),
+    settings: mergeSettings(existingSettings || {}, config.defaultClaudeSettings(), { sessionsRoot }),
   };
 }
 
@@ -231,7 +235,7 @@ function renderEvaluateCommand() {
     "description: Run or resume a Hacker Bob bug bounty evaluate.",
     "allowed-tools:",
     ...allowedTools.map((tool) => `  - ${tool}`),
-    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
+    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
     "---",
     "Run or resume a Hacker Bob bug bounty evaluate.",
     "",
@@ -329,15 +333,14 @@ function updateCommandFiles({ check = false, root = DEFAULT_ROOT } = {}) {
   return changed;
 }
 
-function expectedMcpServer(targetAbs) {
-  return {
-    command: "node",
-    args: [path.join(targetAbs, "mcp", "server.js")],
-  };
-}
-
+// Bob-managed means command + args point at THIS project's server. The optional
+// BOB_SESSIONS_ROOT env block is Bob-managed too (its value is operator config,
+// so it is never asserted); any other env key or field means an operator owns
+// the entry and doctor/uninstall must not claim it.
 function mcpServerMatches(server, targetAbs) {
-  return JSON.stringify(server) === JSON.stringify(expectedMcpServer(targetAbs));
+  return isBobManagedMcpServerEntry(server, {
+    serverPath: path.join(targetAbs, "mcp", "server.js"),
+  });
 }
 
 function hookKey(hook) {
@@ -460,8 +463,22 @@ function install({
   packageName,
   readJsonIfExists,
   removeIfExists,
+  // The DIRECTORY twin of removeIfExists, injected by scripts/install.js from
+  // the same family-A drift guard. Required, NOT defaulted: a local fallback
+  // could only be a bare recursive fs.rmSync, which is exactly the hole this
+  // parameter closes. A missing injection must be a loud TypeError.
+  removeDirIfExists,
   serverPath,
+  sessionsRoot = null,
   writeJson,
+  // Injected by scripts/install.js alongside copyFile/copyDirFiles: the
+  // drift-guarded family-A render write. The renderer-driven command files are
+  // wholesale rewrites with no merge semantics, so without the guard an
+  // operator's edit to bob-evaluate.md / bob-update.md / bob-export.md is
+  // destroyed with no sidecar and no summary line — while bob-egress.md, the
+  // one real copyFile below, survives. Falls back to the unguarded local
+  // writer so this module stays usable outside an install.
+  writeTextFile: writeGeneratedFile = writeTextFile,
 }) {
   const claudeDir = path.join(targetAbs, ".claude");
   fsSafeMkdir(claudeDir);
@@ -492,11 +509,18 @@ function install({
     removeIfExists(path.join(claudeDir, "commands", "bob", legacyCommand));
   }
   removeEmptyDirIfExists(path.join(claudeDir, "commands", "bob"));
+  // Legacy skill DIRECTORIES. This used to be a raw recursive fs.rmSync while
+  // every neighbouring delete in this function already went through the
+  // guarded removeIfExists, so an operator edit under
+  // .claude/skills/bob-evaluate/ — a directory name that was LIVE until the
+  // bob-evaluate-runner rename above, i.e. one real upgraders still have —
+  // was destroyed with no preserved copy and no summary line. The directory
+  // twin sweeps the doomed tree into the install-root quarantine first.
   for (const legacySkill of LEGACY_BOB_SKILLS) {
-    fs.rmSync(path.join(claudeDir, "skills", legacySkill), { force: true, recursive: true });
+    removeDirIfExists(path.join(claudeDir, "skills", legacySkill));
   }
   for (const commandId of commandIds()) {
-    writeTextFile(
+    writeGeneratedFile(
       path.join(claudeDir, "commands", commandSpec(commandId).file),
       renderCommand(commandId),
     );
@@ -560,6 +584,7 @@ function install({
     existingMcp: readJsonIfExists(mcpPath, {}),
     existingSettings: readJsonIfExists(settingsPath, {}),
     serverPath,
+    sessionsRoot,
   });
   writeJson(mcpPath, mergedConfig.mcp);
   writeJson(settingsPath, mergedConfig.settings);
@@ -886,7 +911,12 @@ function removeSettingsConfig(targetAbs, result, helpers) {
 
   if (isPlainObject(next.permissions) && Array.isArray(next.permissions.allow)) {
     const bobPermissions = new Set([
-      ...requiredBobMcpPermissions(bobSettings),
+      // Installation merges every canonical primary tool permission, including
+      // tools that deliberately require per-call approval rather than global
+      // preapproval. Uninstall must derive the same registry-complete surface;
+      // using defaultClaudeSettings() alone leaves non-preapproved network and
+      // browser permissions behind after Bob's runtime is removed.
+      ...config.permissionsForAllTools(),
       ...STALE_GLOBAL_MCP_PERMISSIONS,
     ]);
     const allow = next.permissions.allow.filter((permission) => !bobPermissions.has(permission));

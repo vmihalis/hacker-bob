@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "frozen_at": null,
+  "split": {
+    "dev": ["EXAMPLE-positive-planted-idor", "EXAMPLE-negative-patched-clean"],
+    "test": []
+  },
+  "targets": [
+    {
+      "target_id": "EXAMPLE-positive-planted-idor",
+      "stratum": "positive",
+      "negative_kind": null,
+      "source": "planted",
+      "ground_truth_ref": "docs/plane-fabric/planted/EXAMPLE-idor-path-spec.md",
+      "true_path": [
+        { "edge_type": "reachability", "expected_verdict": "confirmed", "evidence_ref": "frontier_event:REPLACE_WITH_REAL_ID" },
+        { "edge_type": "guard", "expected_verdict": "confirmed", "evidence_ref": "frontier_event:REPLACE_WITH_REAL_ID" },
+        { "edge_type": "sink", "expected_verdict": "confirmed", "evidence_ref": "frontier_event:REPLACE_WITH_REAL_ID" }
+      ],
+      "decoys": [
+        { "kind": "fabricated_ref", "expected_result": "fail" },
+        { "kind": "benign_but_bound", "expected_result": "fail" }
+      ],
+      "independent_edge_labels": "docs/plane-fabric/labels/EXAMPLE-idor-edges.json"
+    },
+    {
+      "target_id": "EXAMPLE-negative-patched-clean",
+      "stratum": "negative",
+      "negative_kind": "patched_clean",
+      "source": "planted",
+      "ground_truth_ref": "docs/plane-fabric/planted/EXAMPLE-idor-path-spec.md (patched commit; guard now holds)",
+      "true_path": [],
+      "decoys": [
+        { "kind": "benign_but_bound", "expected_result": "fail" }
+      ],
+      "independent_edge_labels": "docs/plane-fabric/labels/EXAMPLE-idor-patched-edges.json"
+    }
+  ],
+  "manifest_hash": null
+}

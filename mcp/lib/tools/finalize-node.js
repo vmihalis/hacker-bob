@@ -39,15 +39,45 @@ const {
 const {
   assertSafeDomain,
 } = require("../paths.js");
+const { withSessionLock } = require("../storage.js");
 const {
   assertTaskGraphNodeId,
   appendNodeTransition,
   findAttachedContract,
   findMostRecentNodeTransition,
+  readCellProposals,
 } = require("../task-graph-events.js");
 const {
   materializeTaskGraph,
+  cellNodeId,
+  producerNodeId,
 } = require("../task-graph-materializer.js");
+const {
+  appendFrontierEvent,
+  readFrontierEvents,
+} = require("../frontier-events.js");
+const {
+  assertCapabilityFrictionPayload,
+} = require("../capability-observations.js");
+const {
+  idempotencyKeyFromPayload,
+  idempotencyKeyFromEvent,
+} = require("./log-capability-friction.js");
+const {
+  recordProducerRun,
+  recordProducerTerminalBlock,
+} = require("../producer-run-ledger.js");
+const {
+  buildProducerOutputContract,
+} = require("../producer-contract.js");
+const {
+  PRODUCER_PACKS,
+} = require("../producer-packs.js");
+const { contractSurfaceId, caip10Endpoint } = require("../contract-target.js");
+const { normalizeContractTupleStrict } = require("../chain-authority.js");
+const {
+  logCellCoverage,
+} = require("../coverage.js");
 const {
   mechanicalVerify,
 } = require("../contract-verifier.js");
@@ -58,12 +88,15 @@ const {
   isPlainObject,
 } = require("../verification-contracts.js");
 const {
-  buildOneHopGraphContext,
-  derivePackForNode,
-} = require("../capability-pack-derivation.js");
+  deriveDispatchNodePack,
+  safeSurfaceRouteMap,
+} = require("../dispatch-node-pack.js");
 const {
-  readSurfaceRoutesStrict,
-} = require("../surface-router.js");
+  readCompositionVerifiedSummary,
+} = require("../composition-live-verifier.js");
+const {
+  isBindLeaf,
+} = require("../cross-stack-differential-verifier.js");
 
 // Adjudication chain shape per X-D9: severity_floor → rounds. The X.8
 // finalize emits the chain REQUEST shape into the verification round
@@ -81,49 +114,6 @@ function structuredError(code, message, details) {
   err.code = code;
   if (details) err.details = details;
   return err;
-}
-
-// Helper shared with bob_prepare_node for the surface metadata used in
-// pack derivation. Inlined here (rather than imported) because the
-// surface-router strict read is sensitive to absent route files and we
-// must not regress finalize on a missing routes shape.
-function safeSurfaceRouteMap(targetDomain) {
-  let result;
-  try {
-    result = readSurfaceRoutesStrict(targetDomain);
-  } catch {
-    return {};
-  }
-  const map = {};
-  const doc = result && result.document;
-  if (!doc || !Array.isArray(doc.routes)) return map;
-  // readSurfaceRoutesStrict is now tolerant: it QUARANTINES stale/duplicate routes (it used to throw,
-  // which the catch above turned into a silent empty {} — losing ALL routes). The valid routes survive
-  // in doc.routes; the quarantined ones are omitted from this metadata map. Surface a diagnostic so a
-  // fully- or partially-corrupt routing artifact is not silently indistinguishable from "no routes were
-  // set up". This map only enriches one-hop graph context, so we degrade gracefully (no throw) — unlike
-  // getContextBudget/findRoutedSurface, where a wrong/missing route must hard-fail the operation.
-  if (Array.isArray(result.malformed_routes) && result.malformed_routes.length > 0) {
-    const quarantinedIds = result.malformed_routes
-      .map((m) => (m && m.surface_id) || `routes[${m && m.index}]`)
-      .join(", ");
-    process.stderr.write(
-      `WARNING: surface-routes.json has ${result.malformed_routes.length} quarantined route(s) [${quarantinedIds}] omitted from the surface metadata map; re-run bob_route_surfaces to regenerate (${doc.routes.length} valid route(s) retained).\n`,
-    );
-  }
-  for (const route of doc.routes) {
-    if (!route || typeof route !== "object") continue;
-    const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
-    if (!surfaceId) continue;
-    map[surfaceId] = {
-      id: surfaceId,
-      surface_type: route.surface_type || null,
-      chain_family: route.chain_family || null,
-      capability_pack: route.capability_pack || null,
-      brief_profile: route.brief_profile || null,
-    };
-  }
-  return map;
 }
 
 // Plane X Cycle X.10 — tool_constraint_violation detective control.
@@ -160,6 +150,50 @@ function checkToolConstraintViolation(agentOutput, allowedToolsForNode) {
   return violations;
 }
 
+// Pure map from an X.6 tool_constraint_violation list to capability_friction
+// payloads so the friction→pack-widening loop does not depend on voluntary
+// agent reporting. Each violating tool the agent reached for outside
+// allowed_tools_for_node[] becomes one tool_absent synthetic
+// (detected_by = "mcp_runtime_auto_emit"). tool_absent — NOT tool_inadequate —
+// is the honest kind: the tool was literally not in the routed pack, and
+// tool_inadequate would require a witness whose recorded tool matches
+// wanted_tool (Y-P10), which the only available witness (the
+// bob_finalize_node node.transitioned event) can never satisfy. The
+// failedEventId witness is carried in the free-text rationale for traceability.
+// No fs, no append, no clock — deterministic; the caller does the dedupe read
+// and the append.
+function synthesizeToolConstraintFriction({
+  toolViolations,
+  nodeId,
+  runId,
+  surfaceId,
+  failedEventId,
+}) {
+  const violations = Array.isArray(toolViolations) ? toolViolations : [];
+  const payloads = [];
+  for (const violation of violations) {
+    if (!violation || typeof violation.tool !== "string" || !violation.tool) continue;
+    const payload = {
+      run_id: runId,
+      node_id: nodeId,
+      wanted_tool: violation.tool,
+      purpose: "other",
+      fallback_used: "none",
+      friction_kind: "tool_absent",
+      detected_by: "mcp_runtime_auto_emit",
+      rationale:
+        `X.6 tool_constraint_violation: agent invoked ${violation.tool} outside `
+        + `allowed_tools_for_node[]; auto-emitted tool_absent friction. Witness `
+        + `node.transitioned frontier_event:${failedEventId}.`,
+    };
+    if (typeof surfaceId === "string" && surfaceId.length > 0) {
+      payload.surface_id = surfaceId;
+    }
+    payloads.push(payload);
+  }
+  return payloads;
+}
+
 function findNodeInDocument(document, nodeId) {
   if (!document || !Array.isArray(document.nodes)) return null;
   for (const node of document.nodes) {
@@ -171,8 +205,11 @@ function findNodeInDocument(document, nodeId) {
 // Compute downstream `edge_added_to[]` per Do step 2. Walks the
 // materialized graph for nodes whose surface_refs intersect with the
 // finalized node's surface_refs AND whose state is `contracted`. The
-// graph-scheduler (X.9) consumes the unblocks edges to decide what to
-// dispatch next; X.8 surfaces ONLY the unambiguous candidates.
+// materializer folds these into `unblocks` edges as an audit/telemetry
+// trace of which contracted nodes this finalization unblocked; X.8 surfaces
+// ONLY the unambiguous candidates. Dispatch order itself is driven by the
+// coverage-pruned cell floor and node state (the stigmergic wavefront READ in
+// the cell-floor producer), not by walking these post-hoc edges.
 function computeUnblockedDownstream(document, finalizedNode) {
   if (!finalizedNode) return [];
   const surfaces = Array.isArray(finalizedNode.surface_refs)
@@ -192,7 +229,309 @@ function computeUnblockedDownstream(document, finalizedNode) {
   return out.sort();
 }
 
+// Resolve a surface_ref's stack family from the route-metadata map already built
+// in handler() via safeSurfaceRouteMap. web vs smart_contract are distinct stacks;
+// an absent/unknown surface_type collapses to null (NOT a third stack) so a
+// missing-metadata surface NEVER manufactures a spurious distinct stack.
+function surfaceStackFamily(surfaceRef, surfaceMetadataById) {
+  const meta = surfaceMetadataById && surfaceMetadataById[surfaceRef];
+  const surfaceType = meta && typeof meta.surface_type === "string" ? meta.surface_type.trim() : "";
+  if (surfaceType === "web" || surfaceType === "smart_contract" || surfaceType === "code_module") {
+    return surfaceType;
+  }
+  return null;
+}
+
+// surfacesSpanDistinctStacks — true iff the node's surface_refs resolve (via the
+// route-metadata map) to >=2 DISTINCT stack families. A web<->web "nesting"
+// transition (both surfaces web) returns false. This is the POSITIVE detector for an
+// EXPLICITLY distinct-stack span; the fail-closed leg below (surfacesProvenSameStack)
+// is what catches a genuinely cross-stack transition whose route metadata is too poor
+// to resolve here.
+function surfacesSpanDistinctStacks(surfaceRefs, surfaceMetadataById) {
+  if (!Array.isArray(surfaceRefs)) return false;
+  const families = new Set();
+  for (const ref of surfaceRefs) {
+    if (typeof ref !== "string") continue;
+    const family = surfaceStackFamily(ref, surfaceMetadataById);
+    if (family) families.add(family);
+  }
+  return families.size >= 2;
+}
+
+// surfacesProvenSameStack — the FAIL-CLOSED inversion of the distinct-stack heuristic.
+// True ONLY when a multi-surface transition can be PROVEN same-stack: EVERY surface has
+// KNOWN route metadata AND they all share ONE family. ANY surface with absent/unknown
+// metadata returns false — we CANNOT prove same-stack, so the transition must produce a
+// bound cross-stack verified_pass rather than escape the gate on missing metadata. A
+// degenerate (<2 surfaces) transition is trivially same-stack (not multi-surface).
+function surfacesProvenSameStack(surfaceRefs, surfaceMetadataById) {
+  if (!Array.isArray(surfaceRefs) || surfaceRefs.length < 2) return true;
+  const families = new Set();
+  for (const ref of surfaceRefs) {
+    const family = surfaceStackFamily(ref, surfaceMetadataById);
+    if (family == null) return false; // ANY unknown-metadata surface -> NOT proven same-stack
+    families.add(family);
+  }
+  return families.size === 1; // all known and identical family
+}
+
+// anyWitnessOrLeafIsBindShaped — a Contract whose evidence carries a bind leaf
+// (positive_run_ref + control_run_ref, the cross-stack-differential-verifier
+// shape) is an explicit cross-stack claim. Today Contracts carry no leaf array,
+// so this scans the OPTIONAL cross_stack_verification.path_hash declaration as
+// the primary marker and any witness predicate object that is itself bind-shaped
+// (a defensive, forward-compatible read — absent in every existing Contract).
+function anyWitnessOrLeafIsBindShaped(contract) {
+  if (!contract || typeof contract !== "object") return false;
+  const witnesses = Array.isArray(contract.witnesses) ? contract.witnesses : [];
+  for (const witness of witnesses) {
+    if (witness && typeof witness === "object" && isBindLeaf(witness.predicate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// claimsCrossStackMechanism — the PRECISE, additive, FAIL-CLOSED trigger predicate for
+// the finalize cross-stack gate. Fires when ALL hold:
+//   (1) the node is a Transition node (kind === "transition") — a Hypothesis
+//       (even a cross-stack-SHAPED relational_value_match witness) NEVER triggers.
+//   (2) surface_refs is an array of length >= 2 — a single-surface transition
+//       (degenerate) never triggers.
+//   (3) a cross-stack claim: surface_refs span >= 2 distinct stacks, OR
+//       contract.cross_stack_verification.required === true, OR a bind-shaped witness
+//       predicate, OR — FAIL-CLOSED — a multi-surface transition we CANNOT PROVE is
+//       same-stack (poor/unknown route metadata). Inverting the trigger from "can I
+//       PROVE distinct" to "can I PROVE same-stack" closes the hole where a genuinely
+//       cross-stack transition with absent route metadata and no explicit marker
+//       escaped the gate (surfacesSpanDistinctStacks fails open on unknown metadata).
+// A two-surface SAME-stack transition with COMPLETE metadata (web<->web nesting) is
+// surfacesProvenSameStack -> NOT a cross-stack claim and finalizes EXACTLY as today.
+function claimsCrossStackMechanism(node, contract, surfaceMetadataById) {
+  if (!node || node.kind !== "transition") return false;
+  if (!Array.isArray(node.surface_refs) || node.surface_refs.length < 2) return false;
+  if (surfacesSpanDistinctStacks(node.surface_refs, surfaceMetadataById)) return true;
+  if (contract && contract.cross_stack_verification && contract.cross_stack_verification.required === true) {
+    return true;
+  }
+  if (anyWitnessOrLeafIsBindShaped(contract)) return true;
+  // FAIL-CLOSED: a multi-surface transition we cannot PROVE is same-stack must produce a
+  // bound cross-stack verified_pass — missing/unknown route metadata no longer lets it
+  // escape the gate. A genuine web<->web nesting transition with COMPLETE metadata is
+  // surfacesProvenSameStack===true here and still finalizes as before (no regression).
+  if (!surfacesProvenSameStack(node.surface_refs, surfaceMetadataById)) return true;
+  return false;
+}
+
+// crossStackDeclaredPathHash — the path_hash the transition's cross-stack
+// mechanism is bound to. Only the EXPLICIT cross_stack_verification.path_hash is
+// authoritative; without it the gate refuses (an unbound cross-stack claim cannot
+// name the verified_pass it would be satisfied by). Returns null when undeclared.
+function crossStackDeclaredPathHash(contract) {
+  if (contract && contract.cross_stack_verification
+    && typeof contract.cross_stack_verification.path_hash === "string"
+    && contract.cross_stack_verification.path_hash) {
+    return contract.cross_stack_verification.path_hash;
+  }
+  return null;
+}
+
+// resolveFinalizedProducerId — recover the producer_key a finalized 'producer'
+// node was minted from, plus the producing run's recursion depth. Replays the
+// producer_proposed observation.recorded stream and matches the node id via
+// producerNodeId (the same derivation the materializer folds), mirroring the cell
+// branch's readCellProposals + cellNodeId match. An sc-expander instance carries
+// its on-chain identity in the producer_key suffix and its proposed depth on the
+// payload; the base producer_id (no suffix) carries no depth and resolves at
+// depth 0 (the root expander minting the seed-derived depth-1 surfaces). Returns
+// null when no producer_proposed event resolves to this node id.
+function resolveFinalizedProducerId(domain, nodeId) {
+  for (const ev of readFrontierEvents(domain)) {
+    if (!ev || ev.kind !== "observation.recorded") continue;
+    const payload = ev.payload;
+    if (!isPlainObject(payload)) continue;
+    const obsKind = (typeof payload.observation_kind === "string" && payload.observation_kind.trim())
+      ? payload.observation_kind.trim()
+      : (typeof payload.kind === "string" ? payload.kind.trim() : "");
+    if (obsKind !== "producer_proposed") continue;
+    const producerKey = payload.producer_key || payload.producer_id;
+    if (typeof producerKey !== "string" || !producerKey) continue;
+    const candidateNodeId = producerNodeId({
+      producerKey,
+      proposalId: payload.proposal_id,
+      eventId: ev.event_id,
+    });
+    if (candidateNodeId === nodeId) {
+      const depth = Number.isInteger(payload.depth) ? payload.depth : 0;
+      return { producer_key: producerKey, depth };
+    }
+  }
+  return null;
+}
+
+// basePackId — resolve a per-instance expander producer_key
+// (`sc_address_expander:<family>:<chainId>:<addr>`) back to its base
+// PRODUCER_PACKS entry by splitting on the first `:`. A base producer_id with no
+// suffix resolves unchanged.
+function basePackId(producerKey) {
+  if (typeof producerKey !== "string" || !producerKey) return null;
+  const colon = producerKey.indexOf(":");
+  return colon === -1 ? producerKey : producerKey.slice(0, colon);
+}
+
+// buildAttestedProducerRun — assemble the run object the producer-output witness
+// reads, drawn ONLY from the agent's ATTESTED producer output. The membership
+// signals are strictly attested surface rows and numeric counts; there is NO
+// file_exists / agent-scratch existence check anywhere on this path (the
+// silent-loss cure). buildProducerOutputContract gates the counts (finite, > 0).
+function buildAttestedProducerRun(attestedOutput) {
+  const run = {
+    surfaces_observed: Array.isArray(attestedOutput.surfaces_observed)
+      ? attestedOutput.surfaces_observed
+      : [],
+  };
+  if (isPlainObject(attestedOutput.producer_run)) run.producer_run = attestedOutput.producer_run;
+  if (isPlainObject(attestedOutput.input_consumed)) run.input_consumed = attestedOutput.input_consumed;
+  return run;
+}
+
+// Read an attested surface row's surface_type, tolerating either a flat row or a
+// frontier-event-shaped { payload: { surface_type } } row (mirrors
+// producer-contract.js readSurfaceType).
+function readAttestedSurfaceType(row) {
+  if (typeof row === "string") return row;
+  if (!isPlainObject(row)) return null;
+  if (typeof row.surface_type === "string") return row.surface_type;
+  if (isPlainObject(row.payload) && typeof row.payload.surface_type === "string") {
+    return row.payload.surface_type;
+  }
+  return null;
+}
+
+// Read a string field (surface_id / chain_family) off an attested surface row,
+// tolerating the same flat-or-payload shapes.
+function readAttestedSurfaceField(row, field) {
+  if (!isPlainObject(row)) return null;
+  if (typeof row[field] === "string" && row[field]) return row[field];
+  if (isPlainObject(row.payload) && typeof row.payload[field] === "string" && row.payload[field]) {
+    return row.payload[field];
+  }
+  return null;
+}
+
+// OD3 provenance is DEPTH-1-SAFE. The server never stamps a verified-source
+// provenance marker from producer output: provenance is self-attested by the
+// sc-recon-expander, which runs in an untrusted container over untrusted on-chain
+// data, so trusting an agent's "eip1967_proxy"/etc. claim would let a compromised
+// or comment-manipulated agent force same-chain expansion of an arbitrary address
+// (a fail-open). Until the server independently RE-READS the EIP-1967 / beacon /
+// role slot on-chain to CONFIRM the edge from a bound contract, no producer surface
+// carries provenance — so the materialize-producer-floor OD3 gate withholds EVERY
+// discovered same-chain linked contract as a reported sc_unprovenanced_link gap
+// (RANK != BOUND — named, never silently dropped) and same-chain expansion stays
+// depth-1. Bound (in-authority) roots still expand; server-side verification is a
+// deferred increment.
+
+// emitProducerObservedSurfaces — the SERVER-minted surface emission for a
+// surface-producing producer. Emits one surface.observed frontier event per
+// attested surface whose surface_type is one of the producer's
+// emits_surface_types. A smart_contract surface threads the attested chain_family
+// (Y-D21 append-time gate) PLUS the chain_id, contract_address, the OD4 recursion
+// depth (= the producing expander's OWN depth, which the floor already set to
+// source.depth + 1 and OD4-gated at that value — NOT incremented again here, or
+// each hop would advance depth by 2 and halve the effective linked_contract_depth
+// reach), and — ONLY when the agent's attested per-surface provenance is one of the
+// PROVEN on-chain kinds (OD3_PROVEN_PROVENANCE_SET) — an OD3 verified-source
+// provenance marker (an unproven / "comment_only" / absent attestation leaves it
+// off so the OD3 gate withholds the same-chain link); its surface_id + endpoint
+// are built by the SAME shared builders as the seed path (contract-target
+// contractSurfaceId sc- slug + caip10Endpoint) so a seeded and a producer-discovered
+// instance of one contract fold onto ONE surface record — it never mints twice /
+// re-expands (producer-emit previously used the CAIP-10 colon form, which never
+// folded with the seed's sc- slug). A web surface
+// carries no chain identity and passes the gate. An intermediate producer (empty
+// emits_surface_types) emits nothing here.
+function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDepth, actor }) {
+  const emitTypes = Array.isArray(pack.emits_surface_types) ? pack.emits_surface_types : [];
+  if (emitTypes.length === 0) return;
+  const emitSet = new Set(emitTypes);
+  const rows = Array.isArray(run.surfaces_observed) ? run.surfaces_observed : [];
+  for (const row of rows) {
+    const surfaceType = readAttestedSurfaceType(row);
+    if (!surfaceType || !emitSet.has(surfaceType)) continue;
+    const attestedSurfaceId = readAttestedSurfaceField(row, "surface_id");
+    const payload = { surface_type: surfaceType, producer_key: producerId };
+    let surfaceId = attestedSurfaceId || null;
+    if (surfaceType === "smart_contract") {
+      const chainFamily = readAttestedSurfaceField(row, "chain_family");
+      const chainId = readAttestedSurfaceField(row, "chain_id");
+      const contractAddress = readAttestedSurfaceField(row, "contract_address");
+      // chain_id/contract_address here come from UNTRUSTED agent producer_output (a
+      // depth>1 contract's harvested links) and flow into the surface_id, the ledger,
+      // and the sc-recon scratch path contracts/<chain_id>/<address>/. Re-run the SAME
+      // strict normalizer the bind path uses (CHAIN_FAMILY_VALUES membership + ':' '/'
+      // '\' '..' traversal guards + case-fold): a producer smart_contract surface with
+      // a missing field or a hostile chain_id/address (e.g. '../../..') is REJECTED
+      // fail-closed here — no partial surface, no path escape — never persisted raw.
+      let norm;
+      try {
+        norm = normalizeContractTupleStrict({
+          chain_family: chainFamily,
+          chain_id: chainId,
+          address: contractAddress,
+        });
+      } catch {
+        continue;
+      }
+      payload.chain_family = norm.chain_family;
+      payload.chain_id = norm.chain_id;
+      payload.contract_address = norm.address;
+      // The expander's own depth (proposedDepth = source.depth + 1, set + OD4-gated by
+      // the floor) IS the depth of the surfaces it discovers — do NOT increment again
+      // or every hop advances depth by 2 and the linked_contract_depth reach is halved.
+      const baseDepth = Number.isInteger(sourceDepth) ? sourceDepth : 1;
+      payload.depth = baseDepth;
+      // Depth-1-safe: the server does NOT stamp a verified-source provenance marker
+      // from untrusted producer output (see OD3 note above). payload.provenance stays
+      // ABSENT, so materialize-producer-floor's OD3 gate withholds this discovered
+      // same-chain link as a reported sc_unprovenanced_link gap rather than
+      // auto-expanding an unverified (agent-attested) edge.
+      // Single-sourced identity from the NORMALIZED tuple: surface_id is the sc- slug
+      // (contractSurfaceId, matching the seed path so one contract folds to one record)
+      // and the endpoint is the CAIP-10 form (caip10Endpoint). Never hand-roll either.
+      surfaceId = contractSurfaceId({ chainFamily: norm.chain_family, chainId: norm.chain_id, address: norm.address });
+      payload.endpoints = [caip10Endpoint({ chainFamily: norm.chain_family, chainId: norm.chain_id, address: norm.address })];
+    }
+    if (surfaceId) payload.surface_id = surfaceId;
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      surface_id: surfaceId || undefined,
+      payload,
+      source: { tool: "bob_finalize_node" },
+      actor: actor || undefined,
+    });
+  }
+}
+
 function handler(args) {
+  const input = args || {};
+  const domain = assertSafeDomain(
+    assertNonEmptyString(input.target_domain, "target_domain"),
+  );
+  // Serialize the whole finalize state machine under the session lock. It validates the
+  // prep_token, then appends durable node.transitioned + producer_run rows and emits
+  // server-minted surfaces — a read-then-append that, run concurrently for ONE node (an
+  // MCP retry / double dispatch), would let two finalizes both pass the token check and
+  // double-append the producer_run 'produced' row + surfaces. Mirrors the withSessionLock
+  // discipline of its bob_schedule_seed_producers / bob_materialize_producer_floor siblings;
+  // the lock is reentrant, so the nested materialize / appendFrontierEvent / recordProducerRun
+  // locks compose without deadlock.
+  return withSessionLock(domain, () => finalizeNodeLocked(args));
+}
+
+function finalizeNodeLocked(args) {
   const input = args || {};
   const domain = assertSafeDomain(
     assertNonEmptyString(input.target_domain, "target_domain"),
@@ -323,18 +662,38 @@ function handler(args) {
   // violation. Note: we re-materialize only the ≤1-hop graph context
   // (not the full live graph) so the derivation matches what was
   // bound into the prep_token.
+  // surfaceMetadataById is needed on EVERY path — including a 'producer' node,
+  // whose pack is never derived — because the cross-stack mechanism gate
+  // (claimsCrossStackMechanism) reads it below. Compute it unconditionally via
+  // the shared safeSurfaceRouteMap; a non-producer additionally re-derives its
+  // pack through the same deriveDispatchNodePack bob_prepare_node used, so the
+  // X.6 allowed_tools_for_node[] is byte-identical by construction (not by two
+  // hand-duplicated copies happening to match).
   const surfaceMetadataById = safeSurfaceRouteMap(domain);
-  const finalizeGraphContext = buildOneHopGraphContext(document, nodeId, surfaceMetadataById);
-  const finalizePack = derivePackForNode(
-    finalizedNode,
-    finalizeGraphContext,
-    [],
-    attached.contract,
-  );
-  const toolViolations = checkToolConstraintViolation(
-    agentOutput,
-    finalizePack.allowed_tools_for_node,
-  );
+  // deriveDispatchNodePack (via derivePackForNode) derives the per-node tool
+  // allow-list only for the dispatchable evaluator kinds
+  // (surface/transition/hypothesis/claim/cell). A 'producer' node has no per-node
+  // capability pack (derivePackForNode throws on kind 'producer'), so the
+  // tool_constraint detective control is kind-scoped and skipped for it; its
+  // output is SERVER-minted from attested counts in the kind === "producer"
+  // branch below. Every other kind runs the derivation + check exactly as before.
+  const isProducerNode = finalizedNode.kind === "producer";
+  const finalizePack = isProducerNode
+    ? null
+    : deriveDispatchNodePack({
+      targetDomain: domain,
+      document,
+      nodeId,
+      node: finalizedNode,
+      contract: attached.contract,
+      surfaceMetadataById,
+    }).pack;
+  const toolViolations = isProducerNode
+    ? []
+    : checkToolConstraintViolation(
+      agentOutput,
+      finalizePack.allowed_tools_for_node,
+    );
   if (toolViolations.length > 0) {
     const failureReason = {
       reason: "tool_constraint_violation",
@@ -353,6 +712,63 @@ function handler(args) {
       source: { tool: "bob_finalize_node" },
       actor: input.actor,
     });
+    // Auto-emit tool_absent friction (detected_by = "mcp_runtime_auto_emit")
+    // per DISTINCT violating tool so the friction→pack-widening loop
+    // (capability-pack-derivation frictionWantedTools union) and the
+    // friction→confidence loop do not depend on voluntary agent reporting.
+    // Idempotent via the Y-P3 6-tuple (run_id, node_id, wanted_tool, friction_kind,
+    // purpose, detected_by): re-finalizing the same node with the same runId fallback
+    // does not double-count, and a voluntary agent_self_report for the same
+    // tool coexists (distinct detected_by leg — Y-P11). Best-effort telemetry:
+    // the executed → failed transition and the returned failure_reason are the
+    // authoritative result and MUST NOT be masked by a friction-append failure.
+    // Runs under the ambient withSessionLock (finalize handler); no nested lock.
+    try {
+      const frictionRunId = (typeof agentOutput.run_id === "string" && agentOutput.run_id.length > 0)
+        ? agentOutput.run_id
+        : nodeId;
+      const frictionSurfaceId = Array.isArray(finalizedNode.surface_refs)
+        && typeof finalizedNode.surface_refs[0] === "string"
+        ? finalizedNode.surface_refs[0]
+        : null;
+      const frictionPayloads = synthesizeToolConstraintFriction({
+        toolViolations,
+        nodeId,
+        runId: frictionRunId,
+        surfaceId: frictionSurfaceId,
+        failedEventId: failedEvent.event_id,
+      });
+      const existingKeys = new Set();
+      for (const event of readFrontierEvents(domain)) {
+        const key = idempotencyKeyFromEvent(event);
+        if (key !== null) existingKeys.add(key);
+      }
+      for (const payload of frictionPayloads) {
+        // Isolate each payload: a single malformed / non-capability-tool
+        // violation (e.g. a local Bash invocation, which is not a known
+        // capability tool) must not abort the remaining valid friction rows.
+        try {
+          const normalized = assertCapabilityFrictionPayload(payload);
+          const key = idempotencyKeyFromPayload(normalized);
+          if (existingKeys.has(key)) continue;
+          appendFrontierEvent({
+            target_domain: domain,
+            kind: "observation.recorded",
+            surface_id: normalized.surface_id == null ? null : normalized.surface_id,
+            payload: normalized,
+            source: {
+              artifact: "frontier-events.jsonl",
+              tool: "bob_finalize_node",
+            },
+          });
+          existingKeys.add(key);
+        } catch {
+          // Skip this one payload; continue recording the rest.
+        }
+      }
+    } catch {
+      // Best-effort telemetry; the executed → failed transition is authoritative.
+    }
     try { scheduleMaterialization(domain); } catch {}
     return JSON.stringify({
       version: 1,
@@ -399,6 +815,24 @@ function handler(args) {
       failures: verdict.failures,
       contract_hash: attached.contract.contract_hash,
     };
+    // A producer node reaching a terminal 'failed' state can never re-execute, so
+    // it must become terminal in the producer_run ledger in this single finalize;
+    // otherwise the run-set-driven producer floor (planProducerFloor is
+    // node-state-agnostic) re-proposes it every pass and neither reconciler covers
+    // 'failed', so seed_producers_drained never converges and the frontier can
+    // never freeze. Only a producer floor is run-set-driven, so non-producer nodes
+    // are untouched. The terminal block is idempotent against an already-terminal
+    // producer_key and is DIRECT (never a structural strike toward a threshold —
+    // that retryable orphan/stale path stays 3-strike).
+    if (finalizedNode.kind === "producer") {
+      const resolved = resolveFinalizedProducerId(domain, nodeId);
+      if (resolved && resolved.producer_key) {
+        recordProducerTerminalBlock(domain, {
+          producer_key: resolved.producer_key,
+          block_reason: "mechanical_verifier_failed",
+        });
+      }
+    }
     const failedEvent = appendNodeTransition({
       target_domain: domain,
       node_id: nodeId,
@@ -422,6 +856,242 @@ function handler(args) {
       contract_hash: attached.contract.contract_hash,
       executed_event_id: executedEvent.event_id,
       failed_event_id: failedEvent.event_id,
+    });
+  }
+
+  // Cross-stack mechanism gate (ADDITIVE — runs AFTER the mechanical verifier
+  // passes, BEFORE the executed → verified append). The structural mechanical
+  // verifier proves the witnesses resolve; it does NOT prove a cross-stack
+  // composition path's mechanism was executed and flipped. A Transition node
+  // that CLAIMS a cross-stack mechanism (claimsCrossStackMechanism: kind ===
+  // "transition", surface_refs span >= 2 distinct stacks / cross_stack_
+  // verification.required / a bind-shaped witness) requires a bound cross-stack
+  // verified_pass — the path_hash declared on the Contract must be a member of
+  // the audit-graded composition-verified.jsonl verified_path_hashes[], which
+  // is RE-RESOLVED (bind rows RE-MAC-verified, the flip RE-adjudicated) at read
+  // time. The agent cannot Write-forge that ledger. An ordinary transition (web
+  // <-> web nesting, single-surface, or no cross-stack marker) does NOT trigger
+  // this gate and finalizes EXACTLY as before; the object-auth guard re-execute
+  // path is never a kind === "transition" finalize and is untouched.
+  if (claimsCrossStackMechanism(finalizedNode, attached.contract, surfaceMetadataById)) {
+    const declaredPathHash = crossStackDeclaredPathHash(attached.contract);
+    let bound = false;
+    if (declaredPathHash) {
+      try {
+        const summary = readCompositionVerifiedSummary(domain);
+        // HIGH-3: a cross-stack mechanism requires has_bind_leaf && is_cross_stack
+        // membership — a guard-only or same-stack-family verified_pass can no longer
+        // satisfy this gate by plain path_hash membership.
+        const crossStackSet = Array.isArray(summary.verified_cross_stack_path_hashes)
+          ? summary.verified_cross_stack_path_hashes
+          : [];
+        if (crossStackSet.includes(declaredPathHash)) {
+          // HIGH-2: reconcile the bound path's surface_refs against THIS node's
+          // surface_refs — a verified_pass minted for a different node's surfaces must
+          // not arm this node's gate by plain membership. Bound surface_refs are
+          // ["invariant:<finding>:<contract>", "offensive:<surface_id>"]; require the
+          // bound offensive surface_id to be one of the node's surface_refs (the node's
+          // surface_refs are raw surface ids, no offensive:/invariant: prefix). An empty
+          // bound-surface set (a legacy row) falls back to membership alone.
+          const refsMap = summary.verified_cross_stack_path_surface_refs;
+          const boundSurfaceRefs = refsMap && Array.isArray(refsMap[declaredPathHash])
+            ? refsMap[declaredPathHash]
+            : [];
+          const nodeSurfaces = new Set(
+            Array.isArray(finalizedNode.surface_refs)
+              ? finalizedNode.surface_refs.filter((s) => typeof s === "string")
+              : [],
+          );
+          if (boundSurfaceRefs.length === 0) {
+            bound = true; // legacy row without surface_refs: membership alone
+          } else {
+            for (const ref of boundSurfaceRefs) {
+              if (typeof ref !== "string") continue;
+              if (ref.startsWith("offensive:") && nodeSurfaces.has(ref.slice("offensive:".length))) {
+                bound = true;
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+        bound = false; // fail-closed on an unreadable ledger
+      }
+    }
+    if (!bound) {
+      const failureReason = {
+        reason: "cross_stack_mechanism_unverified",
+        contract_hash: attached.contract.contract_hash,
+        surface_refs: Array.isArray(finalizedNode.surface_refs)
+          ? finalizedNode.surface_refs.slice()
+          : [],
+        declared_path_hash: declaredPathHash,
+        detail: "this transition claims a cross-stack mechanism (surface_refs span >= 2 stacks / a bind leaf / cross_stack_verification.required); run bob_verify_composition_path binding the positive executed row and its flipping control to mint a verified_pass to composition-verified.jsonl keyed by this path_hash before finalizing.",
+      };
+      const failedEvent = appendNodeTransition({
+        target_domain: domain,
+        node_id: nodeId,
+        from_state: "executed",
+        to_state: "failed",
+        contract_hash: attached.contract.contract_hash,
+        failure_reason: failureReason,
+        verification: verdict,
+        ts: input.ts,
+        source: { tool: "bob_finalize_node" },
+        actor: input.actor,
+      });
+      try { scheduleMaterialization(domain); } catch {}
+      return JSON.stringify({
+        version: 1,
+        target_domain: domain,
+        node_id: nodeId,
+        to_state: "failed",
+        // NOT null: the mechanical verifier DID pass; this is a second, additive gate.
+        mechanical_verdict: verdict,
+        failure_reason: failureReason,
+        contract_hash: attached.contract.contract_hash,
+        executed_event_id: executedEvent.event_id,
+        failed_event_id: failedEvent.event_id,
+      });
+    }
+  }
+
+  // Producer output gate (ADDITIVE — fires solely under kind === "producer",
+  // AFTER the mechanical verifier passes, BEFORE the executed → verified append).
+  // The mechanical verifier proves the Contract's witnesses resolve; it does NOT
+  // prove the producer actually EMITTED output. The SERVER mints the producer's
+  // output here — and only here — when the run-attested output witness is
+  // satisfied: a run-bound surface.observed, an output_artifact.item_count > 0,
+  // or an input_consumed.input_item_count > 0. Membership is ONLY attested
+  // numeric counts / attested surface rows — NEVER a file_exists / agent-scratch
+  // existence check. An empty-AND-input-untouched run fails the witness (the
+  // silent-loss cure): executed → failed, no produced row, no surface.observed.
+  // No other finalize path triggers this gate; cell/transition/surface stay
+  // exactly as before.
+  if (finalizedNode.kind === "producer") {
+    const resolvedProducer = resolveFinalizedProducerId(domain, nodeId);
+    const producerKey = resolvedProducer ? resolvedProducer.producer_key : null;
+    // An sc-expander instance carries its on-chain identity in the producer_key
+    // suffix; split on the first `:` to resolve its base PRODUCER_PACKS entry
+    // (the base producer_id with no suffix resolves unchanged).
+    const producerId = basePackId(producerKey);
+    if (!producerKey || !producerId || !Object.prototype.hasOwnProperty.call(PRODUCER_PACKS, producerId)) {
+      // A producer node always originates from a producer_proposed event whose
+      // producer_key resolves a PRODUCER_PACKS entry; a missing resolution is an
+      // invariant break, surfaced as a structured failure rather than a throw.
+      const failureReason = {
+        reason: "producer_unresolved",
+        producer_id: producerKey,
+        contract_hash: attached.contract.contract_hash,
+        detail: "the producer node could not be resolved to a PRODUCER_PACKS producer via its producer_proposed event",
+      };
+      // Terminal 'failed' ⇒ the producer must enter the run ledger so the
+      // run-set-driven floor never re-proposes it and the drain converges. Guard
+      // on a resolvable producer_key: an entirely unresolvable key is not
+      // proposable by the floor either, so there is nothing to terminal-block.
+      if (producerKey) {
+        recordProducerTerminalBlock(domain, {
+          producer_key: producerKey,
+          block_reason: "producer_unresolved",
+        });
+      }
+      const failedEvent = appendNodeTransition({
+        target_domain: domain,
+        node_id: nodeId,
+        from_state: "executed",
+        to_state: "failed",
+        contract_hash: attached.contract.contract_hash,
+        failure_reason: failureReason,
+        verification: verdict,
+        ts: input.ts,
+        source: { tool: "bob_finalize_node" },
+        actor: input.actor,
+      });
+      try { scheduleMaterialization(domain); } catch {}
+      return JSON.stringify({
+        version: 1,
+        target_domain: domain,
+        node_id: nodeId,
+        to_state: "failed",
+        mechanical_verdict: verdict,
+        failure_reason: failureReason,
+        contract_hash: attached.contract.contract_hash,
+        executed_event_id: executedEvent.event_id,
+        failed_event_id: failedEvent.event_id,
+      });
+    }
+    const producerPack = PRODUCER_PACKS[producerId];
+    const attestedOutput = isPlainObject(agentOutput.producer_output)
+      ? agentOutput.producer_output
+      : {};
+    const run = buildAttestedProducerRun(attestedOutput);
+    const witness = buildProducerOutputContract(producerId, run);
+    if (!witness.satisfied) {
+      const failureReason = {
+        reason: "producer_output_empty",
+        producer_id: producerId,
+        witness: witness.witness,
+        contract_hash: attached.contract.contract_hash,
+        detail: "the producer run is empty AND input-untouched (no run-bound surface.observed, no output_artifact.item_count > 0, no input_consumed.input_item_count > 0); the producer output witness reads only attested counts, never a file_exists check. Re-run the producer so it attests real output before finalizing.",
+      };
+      // The node turns 'failed' but a failed transition writes NO producer_run
+      // row, so without this the floor would re-propose the same producer every
+      // pass and the drain precondition would never converge. A witness-empty
+      // finalize is DEFINITIVE: the producer executed and emitted nothing, and a
+      // producer node can never re-execute, so it is terminal-on-first — write the
+      // terminal blocked row DIRECTLY (never a structural strike toward a
+      // threshold; the strike tally is the transient orphan-executed /
+      // stale-dispatch retry path). The blocked row joins the terminal run set, so
+      // the floor stops re-proposing this producer_key and the drain reaches a
+      // fixpoint. Idempotent against an already-terminal producer_key.
+      recordProducerTerminalBlock(domain, {
+        producer_key: producerKey,
+        block_reason: "producer_output_empty",
+      });
+      const failedEvent = appendNodeTransition({
+        target_domain: domain,
+        node_id: nodeId,
+        from_state: "executed",
+        to_state: "failed",
+        contract_hash: attached.contract.contract_hash,
+        failure_reason: failureReason,
+        verification: verdict,
+        ts: input.ts,
+        source: { tool: "bob_finalize_node" },
+        actor: input.actor,
+      });
+      try { scheduleMaterialization(domain); } catch {}
+      return JSON.stringify({
+        version: 1,
+        target_domain: domain,
+        node_id: nodeId,
+        to_state: "failed",
+        // NOT null: the mechanical verifier DID pass; the producer-output witness is a second, additive gate.
+        mechanical_verdict: verdict,
+        failure_reason: failureReason,
+        contract_hash: attached.contract.contract_hash,
+        executed_event_id: executedEvent.event_id,
+        failed_event_id: failedEvent.event_id,
+      });
+    }
+    // Witness satisfied → the SERVER mints the producer output: append the
+    // producer_run 'produced' row keyed by the FULL per-instance producer_key (so
+    // the same (family, chain_id, address) expander instance is terminal in the
+    // run ledger and never re-proposes — the dedup half of the recursion bound),
+    // then emit surface.observed for a surface-producing producer. Then FALL
+    // THROUGH to the existing verified → finalized append (no duplication).
+    recordProducerRun(domain, {
+      producer_key: producerKey,
+      status: "produced",
+      reason: witness.satisfied_by,
+    });
+    emitProducerObservedSurfaces({
+      domain,
+      pack: producerPack,
+      run,
+      producerId: producerKey,
+      sourceDepth: resolvedProducer.depth,
+      actor: input.actor,
     });
   }
 
@@ -465,6 +1135,42 @@ function handler(args) {
     source: { tool: "bob_finalize_node" },
     actor: input.actor,
   });
+
+  // Cell coverage reconcile: a finalized CELL writes measurable coverage. The cell reached
+  // finalized only because its coverage witness verified (mechanicalVerify
+  // passed the cell_coverage evidence-ref witness), so the probe evidence is
+  // present — coverage stays falsifiable. Recover the cell's identity from its
+  // cell_proposed event and pull the evidence summary from the verified
+  // evidence ref. Best-effort: a coverage-write hiccup must not unwind the
+  // finalized transition.
+  if (finalizedNode && finalizedNode.kind === "cell") {
+    try {
+      const payload = readCellProposals(domain)
+        .map((ev) => ev && ev.payload)
+        .find((p) => p && typeof p.cell_key === "string"
+          && cellNodeId({ cellKey: p.cell_key }) === nodeId);
+      if (payload) {
+        const evidenceRefs = Array.isArray(agentOutput && agentOutput.evidence_refs)
+          ? agentOutput.evidence_refs
+          : [];
+        const cov = evidenceRefs.find(
+          (r) => r && (r.kind === "cell_coverage" || r === "cell_coverage"),
+        );
+        const evidenceSummary = (cov && typeof cov === "object" && typeof cov.summary === "string" && cov.summary)
+          || `cell ${payload.bug_class} probed and verified (graph-dispatched)`;
+        logCellCoverage({
+          target_domain: domain,
+          surface_id: payload.surface_id,
+          bug_class: payload.bug_class,
+          auth_profile: payload.auth_profile,
+          status: "tested",
+          evidence_summary: evidenceSummary,
+        });
+      }
+    } catch {
+      // Coverage reconcile is best-effort; the finalized transition stands.
+    }
+  }
 
   try { scheduleMaterialization(domain); } catch {}
 
@@ -545,4 +1251,8 @@ module.exports = Object.freeze({
   sensitive_output: false,
   session_artifacts_written: ["frontier-events.jsonl"],
   ADJUDICATION_CHAIN_BY_SEVERITY,
+  // Inert extra (ignored by defineTool, like ADJUDICATION_CHAIN_BY_SEVERITY):
+  // emitProducerObservedSurfaces is exported so the depth-1-safe provenance stance
+  // (server never stamps verified_source from producer output) is unit-testable.
+  emitProducerObservedSurfaces,
 });

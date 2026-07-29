@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  FRONTIER_EVENT_KINDS,
+  DIRECT_FRONTIER_EVENT_KINDS,
   appendFrontierEvent,
 } = require("../frontier-events.js");
 const {
@@ -40,10 +40,10 @@ module.exports = Object.freeze({
       },
       kind: {
         type: "string",
-        enum: [...FRONTIER_EVENT_KINDS],
+        enum: [...DIRECT_FRONTIER_EVENT_KINDS],
         description:
-          "Frontier event kind. Must be one of the enumerated kinds; the materializer folds " +
-          "kinds into the surface index and task queue projections.",
+          "Directly appendable frontier event kind. TaskGraph node transitions are deliberately " +
+          "excluded and may be emitted only by Bob's state-machine writers.",
       },
       ts: {
         type: "string",

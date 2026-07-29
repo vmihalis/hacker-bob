@@ -23,8 +23,23 @@ const {
   isFirstPartyHost,
   safeUrlObject,
 } = require("./url-surface.js");
+const { hashCanonicalJson } = require("./verification-contracts.js");
+// Leaf module (no requires of its own), so this cannot cycle back through auth.js.
+const { placeholderLabel } = require("./auth-placeholders.js");
 
 const authProfiles = new Map();
+
+// Bumped on every in-process auth.json write. The disk stamp below already catches a
+// cross-process write, but two writes inside the same filesystem timestamp tick with an
+// identical file size would be indistinguishable; the counter closes that window for the
+// only writer we control.
+let authWriteGeneration = 0;
+
+// Parallel to `authProfiles`, but keyed by auth.json PATH and holding the flattened
+// credential MATERIAL (every profile's credential/storage values) rather than one profile.
+// Read on every outbound request to build the domain-scoped response redactor, so it is
+// cached against a disk stamp instead of re-parsing auth.json per request.
+const credentialMaterialCache = new Map();
 
 function authCacheKey(domain, profileName) {
   const authPath = resolveAuthJsonPath(domain);
@@ -46,6 +61,14 @@ function buildHeaderProfile(headers, cookies, storage) {
     if (typeof v === "string" && v.startsWith("eyJ") && !profile["Authorization"]) {
       profile["Authorization"] = `Bearer ${v}`;
     }
+  }
+  // Retain the storage bag itself. Only a JWT-shaped value was promoted above, so an OAuth
+  // refresh_token / client_secret / csrf token stored by the operator was otherwise DISCARDED —
+  // which left the advertised refresh flow ({{auth.<profile>.refresh_token}}) permanently
+  // unsatisfiable. Bob-LOCAL metadata (local_storage is in PROFILE_METADATA_KEYS), so it is
+  // never emitted as an outbound header; it is addressable as credential material.
+  if (Object.keys(storage).length) {
+    profile["local_storage"] = { ...storage };
   }
   return profile;
 }
@@ -83,9 +106,10 @@ function applyAuthProfileHeaders(headers, profile) {
 }
 
 function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {
-  // Cycle P.2: scan the canonical `~/hacker-bob-sessions/` root for the
-  // legacy-fallback discovery path. Sessions copied from
-  // `~/bounty-agent-sessions/` by the migration shim land here.
+  // When no target_domain is supplied, `allowLegacyFallback` enables a
+  // no-target discovery path that picks the most-recently-modified session
+  // under the canonical `~/hacker-bob-sessions/` root. This is unrelated to the
+  // retired legacy session root; it never reads `~/bounty-agent-sessions/`.
   const sessionsDir = sessionsRoot();
   if (targetDomain) {
     assertSafeDomain(targetDomain);
@@ -151,11 +175,45 @@ function writeAuthFile(authPath, content) {
   }
 }
 
+// A profile carries SYNTHETIC PROVENANCE when it was stamped through the in-process
+// bob_auto_signup -> authStore seam (the 2nd-arg path in authStore, signup.js:493). The MCP
+// tool dispatcher only ever calls tool.handler(args) with ONE argument, so a dispatcher-path
+// bob_auth_store can never produce these markers. This is the signal that a profile is an
+// ORCHESTRATOR-PROVISIONED principal ("attacker"/"victim"). Keyed ONLY on the BOOLEAN
+// `synthetic === true` — the sole UN-FORGEABLE marker: bob_auth_store's headers/cookies schema
+// coerces every caller value to a STRING, so a header named `synthetic` can only ever be "true"
+// (!== boolean true), and a string marker like `provisioned_via` is caller-forgeable (a header
+// named provisioned_via becomes a top-level profile key via buildHeaderProfile's Object.assign).
+// The 2nd-arg provenance stamp always sets the boolean (auth.js provenance block), and the IDOR
+// producer's refuse-to-sign gate likewise AND-requires the boolean, so this is the same contract.
+function profileCarriesSyntheticProvenance(profile) {
+  return !!(profile && typeof profile === "object" && profile.synthetic === true);
+}
+
 function persistAuthProfiles(domain, profilesByName) {
   const authPath = resolveAuthJsonPath(domain);
   const result = withSessionLock(domain, () => {
     const existing = readAuthJson(authPath);
     const doc = migrateAuthJson(existing);
+    // NAMESPACE-CLOBBER GUARD: refuse to OVERWRITE an existing profile that carries synthetic
+    // provenance (an orchestrator-provisioned principal) unless THIS write itself carries that
+    // provenance (the in-process bob_auto_signup 2nd-arg path — a legitimate token refresh). A
+    // dispatcher-path bob_auth_store (reachable by evaluator-web, F3) never stamps provenance,
+    // so an evaluator that promotes a captured credential can freely CREATE a new profile name
+    // or overwrite a non-provenance name it made, but can never poison a concurrent worker's
+    // provisioned "attacker"/"victim". Checked under the session lock, before any write, so the
+    // read->write is atomic against a concurrent provision. Fails toward HOLD, never a silent
+    // no-op.
+    for (const [profileName, profile] of Object.entries(profilesByName)) {
+      const prior = doc.profiles ? doc.profiles[profileName] : undefined;
+      if (profileCarriesSyntheticProvenance(prior) && !profileCarriesSyntheticProvenance(profile)) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `refusing to overwrite provisioned auth profile "${profileName}": it was orchestrator-provisioned (synthetic provenance) and this write carries none — store the captured credential under a new profile name (e.g. tenant_b)`,
+          { success: false, profile_name: profileName, auth_path: authPath },
+        );
+      }
+    }
     for (const [profileName, profile] of Object.entries(profilesByName)) {
       doc.profiles[profileName] = { ...profile };
     }
@@ -177,6 +235,7 @@ function persistAuthProfiles(domain, profilesByName) {
   for (const [profileName, profile] of Object.entries(profilesByName)) {
     authProfiles.set(authCacheKey(domain, profileName), profile);
   }
+  authWriteGeneration += 1;
 
   return result;
 }
@@ -223,6 +282,9 @@ function authStore(args, options = {}) {
     try {
       persisted = persistAuthProfiles(domain, { [profileName]: profile });
     } catch (error) {
+      // The namespace-clobber refusal is a caller-facing ToolError (STATE_CONFLICT); surface
+      // it verbatim rather than masking it as an opaque INTERNAL_ERROR.
+      if (error instanceof ToolError) throw error;
       throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `failed to persist auth profile: ${error.message || String(error)}`, {
         success: false,
         profile_name: profileName,
@@ -291,6 +353,126 @@ function resolveAuthProfile(authProfile, urlValue, targetDomain) {
   return null;
 }
 
+// The BOUNDED source set for server-side credential placeholder substitution
+// ({{auth.<profile>.<field>}} in a bob_http_scan body): a named profile's operator-supplied
+// credentials plus the token material captured from browser storage. Deliberately excludes
+// every other profile key — outbound headers (Authorization/Cookie) already reach the
+// target through applyAuthProfileHeaders, and the provenance/mailbox metadata is Bob-local.
+// This is what keeps the placeholder from becoming a general read primitive: there is no
+// path from a placeholder to a file, an env var, or another session's profile.
+const CREDENTIAL_MATERIAL_SOURCES = Object.freeze(["credentials", "local_storage", "session_storage"]);
+
+// Return the PLAINTEXT credential value for a field of an already-resolved profile, or null
+// when the field is absent/unusable. SERVER-SIDE ONLY: the return value is consumed at
+// request-build time and must never enter an agent-facing summary, an audit record, an
+// error message, or a tool result. summarizeAuthProfile (bob_list_auth_profiles) stays
+// name-only — it surfaces credential_fields, never values, and is unaffected by this.
+// Fails closed on a non-string or blank value so a present-but-empty credential refuses the
+// request instead of silently sending "".
+function resolveProfileCredentialValue(profile, field) {
+  if (!profile || typeof profile !== "object") return null;
+  const fieldName = typeof field === "string" ? field : "";
+  if (!fieldName) return null;
+  for (const source of CREDENTIAL_MATERIAL_SOURCES) {
+    const bag = profile[source];
+    if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+    if (!Object.prototype.hasOwnProperty.call(bag, fieldName)) continue;
+    const value = bag[fieldName];
+    if (typeof value !== "string" || value.trim() === "") {
+      return { value: null, source, present: true };
+    }
+    return { value, source, present: true };
+  }
+  return null;
+}
+
+// A change stamp for auth.json: identity + last-write time + size. Cheap enough to take on
+// every outbound request, and it changes whenever the file is rewritten by ANY process, so a
+// credential stored by an earlier Bob run is picked up without a restart.
+function authMaterialStamp(authPath) {
+  try {
+    const stats = fs.statSync(authPath, { bigint: true });
+    return `${stats.ino}:${stats.mtimeNs}:${stats.size}`;
+  } catch {
+    try {
+      const stats = fs.statSync(authPath);
+      return `${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+    } catch {
+      return "absent";
+    }
+  }
+}
+
+// Every credential VALUE the session holds for one domain, flattened out of every stored
+// profile. This is the redaction basis for outbound-request responses (auth-placeholders
+// makeCredentialRedactor), NOT a substitution source: substitution still resolves through a
+// NAMED placeholder against a NAMED profile (resolveProfileCredentialValue).
+//
+// Why the whole session and not just what THIS request substituted: a request-local basis is
+// laundering-open. An agent posts {{auth.victim.password}} into any writable-then-readable
+// field (a bio, a display name, a note) — that response is redacted — and then issues an
+// ORDINARY placeholder-free GET of the same field, which under a request-local redactor is
+// the identity function and hands back the plaintext. Redaction has to be a property of the
+// DOMAIN, not of the individual call, and it has to come off the auth STORE so it survives a
+// process restart and covers material a previous session wrote.
+function credentialMaterialForDomain(domain) {
+  let authPath = null;
+  try {
+    authPath = resolveAuthJsonPath(domain);
+  } catch {
+    return [];
+  }
+  if (!authPath) return [];
+  const stamp = `${authWriteGeneration}:${authMaterialStamp(authPath)}`;
+  const cached = credentialMaterialCache.get(authPath);
+  if (cached && cached.stamp === stamp) return cached.material;
+
+  const doc = migrateAuthJson(readAuthJson(authPath));
+  const material = [];
+  const seen = new Set();
+  for (const [profileName, profile] of Object.entries((doc && doc.profiles) || {})) {
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue;
+    for (const source of CREDENTIAL_MATERIAL_SOURCES) {
+      const bag = profile[source];
+      if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+      for (const [field, value] of Object.entries(bag)) {
+        if (typeof value !== "string" || value.trim() === "") continue;
+        const label = placeholderLabel(profileName, field);
+        const key = `${label}\u0000${value}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        material.push({ label, profile: profileName, field, value });
+      }
+    }
+  }
+  credentialMaterialCache.set(authPath, { stamp, material });
+  return material;
+}
+
+// The credential material in scope for a request against `targetDomain`. Keyed on the
+// SESSION domain (the auth.json that a placeholder would resolve against), never on the
+// request URL — an off-target or scope-blocked URL must still have its response redacted,
+// and candidateAuthDomains would return nothing for one.
+function sessionCredentialMaterial(targetDomain) {
+  if (typeof targetDomain !== "string" || !targetDomain.trim()) return [];
+  const domain = targetDomain.toLowerCase().replace(/\.+$/, "");
+  return credentialMaterialForDomain(domain);
+}
+
+// The field names a profile can supply to a placeholder, for a fail-closed error message
+// that tells the agent what IS available without revealing any value.
+function credentialFieldNames(profile) {
+  const names = new Set();
+  if (profile && typeof profile === "object") {
+    for (const source of CREDENTIAL_MATERIAL_SOURCES) {
+      const bag = profile[source];
+      if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+      for (const key of Object.keys(bag)) names.add(key);
+    }
+  }
+  return Array.from(names).sort();
+}
+
 function parseCookieNames(cookieHeader) {
   if (typeof cookieHeader !== "string") return [];
   return cookieHeader
@@ -329,6 +511,53 @@ function profileExpiryHint(profile, mtimeMs) {
 // leak the mailbox into the summary JSON. Uses the canonical PROFILE_METADATA_KEYS so it
 // can never drift from the outbound-header merge + the producer strip. The producer reads
 // the RAW profile, not this summary, so this is operator-visibility hygiene only.
+// A NON-SECRET, non-reversible fingerprint of a profile's OUTBOUND auth material
+// (the header/cookie/credential/storage VALUES that actually reach the target),
+// mirroring the egress-identity-hash pattern. Two profile names bound to the same
+// session material produce the same fingerprint, so a completion gate can require
+// >=2 DISTINCT principals for an auth-differential sweep — a 2-name/1-token sweep
+// (distinct names, same principal, zero real cross-tenant test) can no longer be
+// counted as executed cross-tenant coverage. Returns null when a profile carries
+// no outbound auth material (an unauthenticated principal).
+// Extract a STABLE identity (iss+sub) from a Bearer JWT so the SAME account presented
+// across two sessions (different token strings) fingerprints identically — distinctness
+// then means distinct ACCOUNT identity, not distinct per-session credential material, so
+// one tenant re-authenticated twice cannot forge distinct_principal_count>=2.
+function jwtIdentityClaims(profile) {
+  try {
+    const authHeader = typeof profile.Authorization === "string" ? profile.Authorization
+      : (typeof profile.authorization === "string" ? profile.authorization : "");
+    const m = /^Bearer\s+([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(authHeader.trim());
+    if (!m) return null;
+    const json = Buffer.from(m[2].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    const claims = JSON.parse(json);
+    const sub = claims && claims.sub != null ? String(claims.sub) : "";
+    if (!sub) return null;
+    return { iss: claims && claims.iss != null ? String(claims.iss) : "", sub };
+  } catch {
+    return null;
+  }
+}
+
+function principalFingerprint(profile) {
+  const normalizedProfile = profile && typeof profile === "object" ? profile : {};
+  // Prefer a stable identity claim over the raw credential blob when available.
+  const identity = jwtIdentityClaims(normalizedProfile);
+  if (identity) return hashCanonicalJson({ __principal_identity: identity }).slice(0, 32);
+  // A principal is defined by what it TRANSMITS to the target (the headers/cookies actually sent),
+  // never by Bob-local metadata the target never sees. Fingerprinting over non-transmitted
+  // credentials/local_storage would let two profiles that send the IDENTICAL cookie (one real
+  // session) present as two distinct principals — a forged distinctness the auth-differential
+  // completion gate must not accept. Hash ONLY the transmitted material (JWT identity preferred
+  // above); PROFILE_METADATA_KEYS (credentials, local_storage, provenance, mailbox) are excluded.
+  const material = {};
+  for (const key of Object.keys(normalizedProfile).filter((k) => !PROFILE_METADATA_KEYS.has(k)).sort()) {
+    material[key] = normalizedProfile[key];
+  }
+  if (Object.keys(material).length === 0) return null;
+  return hashCanonicalJson(material).slice(0, 32);
+}
+
 function summarizeAuthProfile(name, profile, fileStats) {
   const normalizedProfile = profile && typeof profile === "object" ? profile : {};
   const headerKeys = Object.keys(normalizedProfile)
@@ -347,6 +576,7 @@ function summarizeAuthProfile(name, profile, fileStats) {
       : [],
     has_credentials: !!credentials,
     credential_fields: credentials ? Object.keys(credentials).sort() : [],
+    principal_fingerprint: principalFingerprint(normalizedProfile),
     expiry: profileExpiryHint(normalizedProfile, fileStats ? fileStats.mtimeMs : null),
   };
 }
@@ -438,6 +668,8 @@ module.exports = {
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,
+  credentialFieldNames,
+  CREDENTIAL_MATERIAL_SOURCES,
   hasUsableAuthProfile,
   listAuthProfiles,
   migrateAuthJson,
@@ -445,5 +677,7 @@ module.exports = {
   readAuthJson,
   resolveAuthJsonPath,
   resolveAuthProfile,
+  resolveProfileCredentialValue,
+  sessionCredentialMaterial,
   writeAuthFile,
 };

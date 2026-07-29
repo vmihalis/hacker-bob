@@ -26,6 +26,7 @@ const {
 } = require("./finding-contracts.js");
 const {
   normalizeVerificationRoundDocument,
+  reclampSeveritiesAgainstFreeze,
 } = require("./verification-round-store.js");
 
 const REACHABILITY_DISPOSITION_VALUES = Object.freeze([
@@ -387,6 +388,154 @@ function surfaceIdsForFinding(domain, findingId) {
   return ids;
 }
 
+function frozenFindingForFinding(domain, findingId) {
+  for (const claim of claimsForFinding(domain, findingId).slice().sort(compareClaimsByCreatedAtThenId)) {
+    const payload = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+      ? claim.payload
+      : {};
+    const finding = payload.finding && typeof payload.finding === "object" && !Array.isArray(payload.finding)
+      ? payload.finding
+      : null;
+    if (finding && finding.id === findingId) return finding;
+  }
+  return null;
+}
+
+function normalizeCapabilityBlocker(value, fieldName = "capability_blocker_rationale") {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object with {capability_id, rationale}`);
+  }
+  if (typeof value.capability_id !== "string" || !value.capability_id.trim()) {
+    throw new Error(`${fieldName}.capability_id must be a non-empty string`);
+  }
+  const capabilityId = value.capability_id.trim();
+  if (/[\r\n]/.test(capabilityId)) {
+    throw new Error(`${fieldName}.capability_id must not contain line breaks`);
+  }
+  if (typeof value.rationale !== "string" || !value.rationale.trim()) {
+    throw new Error(`${fieldName}.rationale must be a non-empty string`);
+  }
+  const rationale = value.rationale.trim();
+  if (/[\r\n]/.test(rationale)) {
+    throw new Error(`${fieldName}.rationale must not contain line breaks`);
+  }
+  return {
+    capability_id: capabilityId,
+    rationale,
+  };
+}
+
+function capabilityBlockerValueForFinding(finding) {
+  if (!finding || typeof finding !== "object" || Array.isArray(finding)) return { value: null, fieldName: "capability_blocker_rationale" };
+  if (Object.prototype.hasOwnProperty.call(finding, "capability_blocker_rationale")) {
+    return { value: finding.capability_blocker_rationale, fieldName: "capability_blocker_rationale" };
+  }
+  return { value: finding.capability_blocker, fieldName: "capability_blocker" };
+}
+
+function latestMergedBlockedHarnessRuns(domain) {
+  const {
+    mergeWaveHandoffsInternal,
+    waveHandoffsSnapshotDir,
+  } = require("./wave-handoff-store.js");
+  const dir = waveHandoffsSnapshotDir(domain);
+  if (!fs.existsSync(dir)) return [];
+  const entries = fs.readdirSync(dir);
+  const snapshotPattern = /^wave-([1-9][0-9]*)-merge-snapshot\.json$/;
+  const numbers = [];
+  for (const entry of entries) {
+    const match = entry.match(snapshotPattern);
+    if (match) numbers.push(Number(match[1]));
+  }
+  if (numbers.length === 0) return [];
+  const waveNumber = Math.max.apply(null, numbers);
+  const { merge } = mergeWaveHandoffsInternal(domain, waveNumber);
+  if (!merge || !Array.isArray(merge.blocked_harness_runs)) {
+    throw new Error(`wave ${waveNumber} merge did not return blocked_harness_runs`);
+  }
+  return merge.blocked_harness_runs;
+}
+
+function blockedHarnessRunAsSubstanceAttempt(entry) {
+  const reason = typeof entry.reason === "string" ? entry.reason.trim() : "";
+  const neededFor = typeof entry.needed_for === "string" ? entry.needed_for.trim() : "";
+  const wrapped = {
+    condition: typeof entry.condition === "string" && entry.condition.trim()
+      ? entry.condition.trim()
+      : (typeof entry.harness === "string" && entry.harness.trim()
+        ? entry.harness.trim()
+        : String(entry.kind || "")),
+    attempt_summary: [reason, neededFor].filter(Boolean).join(" "),
+    outcome: typeof entry.outcome === "string" && entry.outcome.trim() ? entry.outcome.trim() : "blocked",
+  };
+  if (typeof entry.finding_id === "string" && entry.finding_id.trim()) {
+    wrapped.finding_id = entry.finding_id.trim();
+  }
+  return wrapped;
+}
+
+function hasSubstantiveBlockedHarnessEscape(domain, surfaceIds) {
+  if (surfaceIds.length === 0) return false;
+  const surfaceSet = new Set(surfaceIds);
+  const { bypassAttemptHasSubstance } = require("./wave-handoff-contracts.js");
+  return latestMergedBlockedHarnessRuns(domain).some((entry) => (
+    entry
+      && typeof entry === "object"
+      && surfaceSet.has(entry.surface_id)
+      && bypassAttemptHasSubstance(blockedHarnessRunAsSubstanceAttempt(entry))
+  ));
+}
+
+// S3c capability-blocker ceiling: a "cannot do X" self-cap is not defensible when the registry owns a tool for X
+function capabilityBlockerCeilingViolations(domain) {
+  const { capabilityToolMapFromRegistry } = require("./tool-registry.js");
+  const map = capabilityToolMapFromRegistry();
+  const violations = [];
+  // S3c self-activating: an unreadable/malformed reportable-finding set has no
+  // capability-capped finding to block, and a malformed session state is already
+  // failed closed by the reachability/state gate — this refinement stays vacuous
+  // rather than double-blocking (never over-blocks a session another gate owns).
+  let reportableSeverities;
+  try {
+    reportableSeverities = finalReportableFindingSeverities(domain);
+  } catch {
+    return { violations };
+  }
+  for (const [findingId] of reportableSeverities) {
+    const finding = frozenFindingForFinding(domain, findingId);
+    const { value, fieldName } = capabilityBlockerValueForFinding(finding);
+    let blocker;
+    try {
+      blocker = normalizeCapabilityBlocker(value, fieldName);
+    } catch (error) {
+      // A malformed authored capability_blocker field blocks THIS finding (fail-closed per
+      // finding), never the whole session — do not let one finding's bad field propagate out
+      // and deadlock grading for every other finding.
+      violations.push({
+        finding_id: findingId,
+        capability_id: "malformed_capability_blocker",
+        owning_tools: [],
+        surface_ids: surfaceIdsForFinding(domain, findingId),
+        reason: error && error.message ? String(error.message) : "malformed capability_blocker",
+      });
+      continue;
+    }
+    if (!blocker) continue;
+    const owningTools = map[blocker.capability_id] || [];
+    if (owningTools.length === 0) continue;
+    const surfaceIds = surfaceIdsForFinding(domain, findingId);
+    if (hasSubstantiveBlockedHarnessEscape(domain, surfaceIds)) continue;
+    violations.push({
+      finding_id: findingId,
+      capability_id: blocker.capability_id,
+      owning_tools: owningTools.slice(),
+      surface_ids: surfaceIds,
+    });
+  }
+  return { violations };
+}
+
 function isReachabilityStampedSurfaceId(surfaceId) {
   return typeof surfaceId === "string"
     && REACHABILITY_STAMPED_SURFACE_PREFIXES.some((prefix) => surfaceId.startsWith(prefix));
@@ -554,10 +703,27 @@ function resolveFindingReachability({ domain, findingId } = {}) {
 function readFinalVerificationResults(domain) {
   const paths = verificationRoundPaths(domain, "final");
   const document = loadJsonDocumentStrict(paths.json, "final verification round JSON");
-  return normalizeVerificationRoundDocument(document, {
+  const results = normalizeVerificationRoundDocument(document, {
     expectedDomain: domain,
     expectedRound: "final",
   }).results;
+  // READ-TIME RE-CLAMP (single chokepoint): re-apply the frozen-baseline severity
+  // clamp so finalSeverityByFinding, finalReportableFindingSeverities, and
+  // requireFinalReportableSeveritySet all inherit it — compose and grade agree by
+  // construction. A runtime-indirection rewrite of verification-final.json that
+  // inflates a finding above its demonstrated baseline re-reads as the baseline; a
+  // MAC-armed proven rise keeps its higher value. reclampSeveritiesAgainstFreeze
+  // mutates result.severity DOWN only (never raises) and fails closed identically
+  // to the write-time clamp (a corrupt freeze throws STATE_CONFLICT).
+  const decisions = reclampSeveritiesAgainstFreeze(domain, results);
+  for (const result of results) {
+    if (!result || typeof result.finding_id !== "string") continue;
+    const decision = decisions.get(result.finding_id);
+    if (decision && SEVERITY_VALUES.includes(decision.severity)) {
+      result.severity = decision.severity;
+    }
+  }
+  return results;
 }
 
 function finalSeverityByFinding(domain) {
@@ -629,6 +795,7 @@ module.exports = {
   REACHABILITY_SOURCE_VALUES,
   REACHABILITY_STAMPED_SURFACE_PREFIXES,
   SEVERITY_CEILING_VALUES,
+  capabilityBlockerCeilingViolations,
   computeReachabilityDisposition,
   finalSeverityByFinding,
   findingHasReachabilityAssertion,
@@ -636,6 +803,7 @@ module.exports = {
   hasReachabilityInventory,
   isReachabilityStampedSurfaceId,
   missingReachabilityStampsForReportableFindings,
+  normalizeCapabilityBlocker,
   normalizeReachabilityDispositionStamp,
   reachabilityDispositionForFinding,
   readReachabilityInventory,

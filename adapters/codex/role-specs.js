@@ -18,6 +18,14 @@ const CODEX_ROLE_SPECS = Object.freeze({
     agent_type: "worker",
     lifecycle: "wait",
   }),
+  // Smart-contract recon expander — a scratch-only producer worker dispatched
+  // through bob_prepare_node, so its id source is the prepared node_id.
+  "sc-recon-expander": Object.freeze({
+    bob_role: "sc-recon-expander",
+    agent_type: "worker",
+    lifecycle: "async_wave",
+    bob_agent_id_source: "bob_prepare_node result.data.node_id",
+  }),
   evaluator: Object.freeze({
     bob_role: "evaluator-agent",
     agent_type: "worker",

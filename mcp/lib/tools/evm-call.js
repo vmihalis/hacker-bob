@@ -40,11 +40,11 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_evm_call",
-  aliases: ["bounty_evm_call"],
   description: "Read-only EVM eth_call against a contract through the DNS-pinned direct public HTTPS RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Used by EVM evaluators to read on-chain state (role membership, configuration, oracle prices) before constructing impact hypotheses.",
   inputSchema: {
     "type": "object",
     "properties": {
+      "target_domain": { "type": "string" },
       "chain_id": { "type": "integer", "minimum": 1 },
       "to": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
       "data": { "type": "string", "pattern": "^0x[0-9a-fA-F]*$" },
@@ -57,15 +57,16 @@ module.exports = Object.freeze({
       "from": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
       "endpoints": { "type": "array", "items": { "type": "string", "format": "uri" }, "maxItems": 8 }
     },
-    "required": ["chain_id", "to", "data"]
+    "required": ["target_domain", "chain_id", "to", "data"]
   },
   handler,
-  role_bundles: ["evaluator-evm", "verifier", "evidence"],
+  role_bundles: ["evaluator-evm", "verifier", "evidence", "sc-recon"],
   mutating: false,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: [],
+  required_session_axes: ["contracts"],
 });

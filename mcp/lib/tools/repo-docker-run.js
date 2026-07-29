@@ -15,6 +15,8 @@ async function handler(args) {
     replay_context: args.replay_context,
     blocked_harness_run_id: args.blocked_harness_run_id,
     egress_profile: args.egress_profile,
+    checkout_patch: args.checkout_patch,
+    platform: args.platform,
   });
   return JSON.stringify({
     version: 1,
@@ -62,6 +64,11 @@ module.exports = Object.freeze({
         additionalProperties: false,
         description: "Optional S14 differential checkout provenance. Refuses shallow or absent local history before docker argv construction.",
       },
+      checkout_patch: {
+        type: "string",
+        maxLength: 200000,
+        description: "Optional unified diff applied with git apply after the checkout is materialized — enables self_patch and instrumented upstream_fix differentials. Redacted for secrets and written to <session>/repo-work/patch.diff before the checkout is built; the patch content hash is bound into the run ledger.",
+      },
       dry_run: {
         type: "boolean",
         description: "When true (default), records the planned argv to repo-command-runs.jsonl without invoking docker.",
@@ -97,6 +104,11 @@ module.exports = Object.freeze({
         type: "string",
         description: "Optional egress profile name override. Defaults to the session's bound profile.",
       },
+      platform: {
+        type: "string",
+        enum: ["native", "linux/amd64", "linux/arm64"],
+        description: "Container platform. 'native' (default) = host arch; 'linux/amd64' runs an x86_64 image (via emulation on Apple Silicon) so x86-only targets like Firedancer build/fuzz correctly — the emulated CPU here supports AVX2+AES-NI.",
+      },
     },
     required: ["target_domain", "command"],
   },
@@ -110,6 +122,7 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
+  required_session_axes: ["repo"],
   session_artifacts_written: [
     "repo-command-runs.jsonl",
     "repo-runs/",

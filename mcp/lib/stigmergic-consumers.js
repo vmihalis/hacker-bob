@@ -31,6 +31,8 @@ const DECISION_BOUNDARY_VALUES = Object.freeze([
   "claim_recording",
   "grade_time_reconciliation",
   "validator_invocation",
+  "verification_adjudication",
+  "scheduler_selection",
 ]);
 
 const STIGMERGIC_CONSUMERS = Object.freeze([
@@ -44,6 +46,21 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     decision_boundary: "brief_composition",
     rationale:
       "renderer consumes selected_packs[].score before composing technique section",
+  }),
+  Object.freeze({
+    // The cell-floor producer READS the decentralized coverage deposits +
+    // proposed transitions to decide the next dispatch layer: covered cells are
+    // pruned, only uncovered (surface + transition) cells are re-emitted. This
+    // is the central deterministic READ of the stigmergic wavefront.
+    consumer_id: "cell_floor_coverage_prune_gate",
+    source_location: Object.freeze({
+      file: "mcp/lib/assignment-brief.js",
+      token_or_regex: "coveredCellKeys",
+    }),
+    producer_id: "coverage_cell_floor_dispatch_signals",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "cell-floor producer reads coverage.jsonl + proposed transitions to prune already-covered cells, emitting only the uncovered next layer the scheduler dispatches",
   }),
   Object.freeze({
     consumer_id: "orchestrator_handoff_receipt_record_surface_leads",
@@ -165,6 +182,169 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     decision_boundary: "brief_composition",
     rationale:
       "C11 brief slice consumes I10 static-analysis-index rows as unverified lead seeds",
+  }),
+  Object.freeze({
+    consumer_id: "belief_signal_read_query_tools",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-belief-signals.js",
+      token_or_regex: "queryBeliefSignals",
+    }),
+    producer_id: "belief_scratch_signals",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "belief query tooling consumes only advisory scratch signals and does not become claim or verification authority",
+  }),
+  Object.freeze({
+    consumer_id: "surface_graph_mechanism_query_mode",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-surface-graph.js",
+      token_or_regex: "queryMechanismView",
+    }),
+    producer_id: "mechanism_surface_graph_projection",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "mechanism query mode consumes principal/credential/policy_gate/effect/intervention edges from surface-graph.jsonl without creating a second graph store",
+  }),
+  Object.freeze({
+    consumer_id: "mechanism_template_loader_object_authorization",
+    source_location: Object.freeze({
+      file: "mcp/lib/invariant-template-corpus.js",
+      token_or_regex: "getMechanismTemplate",
+    }),
+    producer_id: "object_authorization_mechanism_template",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "bounded mechanism-template loader consumes object_authorization as a catalog-backed template without creating a second registry",
+  }),
+  Object.freeze({
+    consumer_id: "belief_frontier_fact_projection_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/belief/frontier-facts.js",
+      token_or_regex: "frontierEventToTypedFact",
+    }),
+    producer_id: "frontier_observation_typed_fact_projection",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "belief fact intake consumes normalized observation.recorded events from frontier-events.jsonl without creating a second typed-fact ledger",
+  }),
+  Object.freeze({
+    consumer_id: "belief_window_query_tool",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-belief-window.js",
+      token_or_regex: "buildBeliefWindow",
+    }),
+    producer_id: "belief_window_projection",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "read-only belief-window query consumes the bounded window projection without claim, verification, grade, or report authority",
+  }),
+  Object.freeze({
+    consumer_id: "belief_sample_scratch_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/belief/factor-graph.js",
+      token_or_regex: "readBeliefSamples",
+    }),
+    producer_id: "belief_factor_graph_samples",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "belief sample readers consume only advisory scratch marginals and rankings, never scheduler or claim authority",
+  }),
+  Object.freeze({
+    consumer_id: "belief_residual_diagnostic_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/belief/residual.js",
+      token_or_regex: "buildResidualDiagnostic",
+    }),
+    producer_id: "belief_residual_anomaly_diagnostic",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "residual anomaly diagnostics are consumed as non-gating human/scheduler hints and cannot become evidence, claims, or template authority",
+  }),
+  Object.freeze({
+    consumer_id: "belief_intervention_query_tool",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-intervention-calculus.js",
+      token_or_regex: "rankInterventions",
+    }),
+    producer_id: "belief_intervention_calculus_ranking",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "intervention calculus rankings are advisory do-operation candidates and never scheduler dispatch or claim authority",
+  }),
+  Object.freeze({
+    consumer_id: "belief_experiment_loop_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/plan-belief-experiment.js",
+      token_or_regex: "planBeliefExperiment",
+    }),
+    producer_id: "belief_experiment_hypothesis_proposals",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "experiment-loop proposals flow through the existing hypothesis-proposal writer and remain bounded advisory planning inputs",
+  }),
+  Object.freeze({
+    consumer_id: "verification_adjudication_causal_reason_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/verification.js",
+      token_or_regex: "replayReasonsForResult",
+    }),
+    producer_id: "claim_causal_support_payload",
+    decision_boundary: "verification_adjudication",
+    rationale:
+      "verification adjudication consumes causal-support verifier signals as closed confidence reasons folded into the adjudication plan hash",
+  }),
+  Object.freeze({
+    consumer_id: "wave_planner_belief_priority_bridge",
+    source_location: Object.freeze({
+      file: "mcp/lib/wave-planner.js",
+      token_or_regex: "belief_assisted_priority",
+    }),
+    producer_id: "belief_scheduler_priority_hints",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "wave planning consumes opt-in belief priority hints through the existing ranking and queue-policy path without a second scheduler authority",
+  }),
+  Object.freeze({
+    consumer_id: "belief_model_info_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/read-belief-model-info.js",
+      token_or_regex: "readBeliefModelInfo",
+    }),
+    producer_id: "belief_calibrated_factor_model",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "model-info reads consume inspectable calibrated factor metadata as advisory calibration evidence, never claim, grade, or dispatch authority",
+  }),
+  Object.freeze({
+    // The producer-floor materializer reads the PRODUCER_PACKS recon DAG and
+    // emits the producer_proposed deposits the scheduler dispatches as the next
+    // recon layer. Aggregate (dispatch-granular) consumer paired with the
+    // aggregate recon-DAG dispatch producer.
+    consumer_id: "recon_producer_floor_dispatch_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/materialize-producer-floor.js",
+      token_or_regex: "PRODUCER_PACKS",
+    }),
+    producer_id: "recon_producer_dag_dispatch_signals",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "producer-floor materializer reads the PRODUCER_PACKS DAG and emits producer_proposed events the scheduler dispatches as the next recon layer",
+  }),
+  Object.freeze({
+    // The producer-floor materializer's SC recursion planner reads the live
+    // smart_contract surface inventory and emits the per-instance
+    // sc_address_expander proposals the scheduler dispatches as the next
+    // chain-expansion layer. Aggregate (dispatch-granular) consumer paired
+    // with the aggregate SC-expander dispatch producer.
+    consumer_id: "sc_expander_floor_dispatch_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/materialize-producer-floor.js",
+      token_or_regex: "planScExpanderRecursion",
+    }),
+    producer_id: "sc_expander_recursion_dispatch_signals",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "sc-expander floor reader consumes the per-instance sc_address_expander proposals the recursion planner emits and dispatches the next chain-expansion layer",
   }),
 ]);
 

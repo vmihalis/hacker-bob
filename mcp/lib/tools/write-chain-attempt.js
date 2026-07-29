@@ -5,7 +5,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_chain_attempt",
-  aliases: ["bounty_write_chain_attempt"],
+  writes_audit_graded: true,
   description:
     "Append one structured CHAIN-phase impact proof-chain attempt to MCP-owned chain-attempts.jsonl.",
   inputSchema: {

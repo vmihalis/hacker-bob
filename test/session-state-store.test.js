@@ -1141,6 +1141,7 @@ test("session-state contract and store keep forbidden import boundaries", () => 
     "./constants.js",
     "./frontier-projections.js",
     "./frontier-projections.js",
+    "./physical-scope-axis.js",
     "./sensitive-material.js",
     "./validation.js",
   ].sort());
@@ -1497,6 +1498,18 @@ test("session-state store write callers keep explicit lock boundaries", () => {
     { relativePath: "mcp/lib/session-state.js", functionName: "clearTerminalBlock", callCount: 1 },
     { relativePath: "mcp/lib/session-state.js", functionName: "initSession", callCount: 1 },
     { relativePath: "mcp/lib/session-state.js", functionName: "setOperatorNote", callCount: 1 },
+    // bob_init_contract_session is the bootstrap path for the
+    // smart-contract axis and writes state.json under its own withSessionLock,
+    // mirroring session-state.initSession / repo-target.initRepoSession.
+    { relativePath: "mcp/lib/tools/init-contract-session.js", functionName: "handler", callCount: 1 },
+    // PH-IP1 physical-only bootstrap writes state.json only from the synchronous
+    // create path while its derived target-domain session lock is held.
+    { relativePath: "mcp/lib/tools/init-physical-session.js", functionName: "createPhysicalBootstrap", callCount: 1 },
+    // O-P6 MIXED program: the OPTIONAL contracts companion on bob_init_session /
+    // bob_init_repo_session binds target_contracts + chain_authority_hash into
+    // the primary-axis session's state.json under its own withSessionLock.
+    { relativePath: "mcp/lib/tools/init-session.js", functionName: "bindContractCompanion", callCount: 1 },
+    { relativePath: "mcp/lib/tools/init-repo-session.js", functionName: "bindContractCompanion", callCount: 1 },
     { relativePath: "mcp/lib/waves/wave-merge-settler.js", functionName: "applyWaveMerge", callCount: 1 },
   ];
   const storeWriterSummaries = runtimeCallSummaries("writeSessionStateDocument");

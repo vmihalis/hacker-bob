@@ -7,7 +7,6 @@ const {
 
 module.exports = Object.freeze({
   name: "bob_log_technique_attempt",
-  aliases: ["bounty_log_technique_attempt"],
   description:
     "Append one validated technique-pack selection, attempt, skip, or outcome record to MCP-owned technique-attempts.jsonl.",
   inputSchema: {
@@ -25,7 +24,7 @@ module.exports = Object.freeze({
     required: ["target_domain", "surface_id", "pack_id", "status", "evidence"],
   },
   handler: logTechniqueAttempt,
-  role_bundles: ["evaluator-web", "orchestrator"],
+  role_bundles: ["evaluator-web", "evaluator-physical", "orchestrator"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

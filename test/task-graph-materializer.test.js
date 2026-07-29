@@ -30,6 +30,7 @@ const path = require("path");
 const {
   appendFrontierEvent,
   FRONTIER_EVENTS_MAX_RECORDS,
+  normalizeFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
   appendHypothesisProposal,
@@ -46,6 +47,7 @@ const {
   claimNodeId,
   hypothesisNodeId,
   materializeTaskGraph,
+  materializeTaskGraphEvents,
   readTaskGraph,
   summarizeTaskGraph,
   surfaceNodeId,
@@ -87,8 +89,9 @@ test("LEDGER_PRESSURE thresholds sit below FRONTIER_EVENTS_MAX_RECORDS", () => {
   assert.ok(LEDGER_PRESSURE_REFUSE_THRESHOLD < FRONTIER_EVENTS_MAX_RECORDS);
 });
 
-test("TASK_GRAPH_NODE_KIND_VALUES is closed at the 4 X.2 node kinds", () => {
+test("TASK_GRAPH_NODE_KIND_VALUES is the closed node-kind set", () => {
   assert.deepEqual(TASK_GRAPH_NODE_KIND_VALUES.slice().sort(), [
+    "cell",
     "claim",
     "hypothesis",
     "surface",
@@ -148,6 +151,82 @@ test("materializeTaskGraph on an empty ledger returns 0 nodes / 0 edges / stable
     // Persisted to disk.
     assert.equal(fs.existsSync(taskGraphPath(domain)), true);
   });
+});
+
+test("materializer ignores orphan, jumping, and stale transition rows during hostile replay", () => {
+  const domain = "x2-hostile-transition-replay.example.com";
+  const proposal = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-proposal",
+    kind: "observation.recorded",
+    ts: "2026-05-31T00:00:00.000Z",
+    payload: {
+      kind: "hypothesis_proposed",
+      proposal_id: "replay",
+      hypothesis_statement: "Replay must preserve the authoritative graph head.",
+      surface_refs: ["surface:replay"],
+    },
+  });
+  const forgedJump = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-forged-jump",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:01.000Z",
+    payload: {
+      node_id: "TG-H-replay",
+      from_state: "proposed",
+      to_state: "finalized",
+      contract_hash: "forged",
+    },
+  });
+  const orphan = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-orphan",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:02.000Z",
+    payload: {
+      node_id: "TG-H-orphan",
+      from_state: "proposed",
+      to_state: "contracted",
+    },
+  });
+  const valid = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-valid",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:03.000Z",
+    payload: {
+      node_id: "TG-H-replay",
+      from_state: "proposed",
+      to_state: "contracted",
+      contract_hash: "real",
+    },
+  });
+  const stale = normalizeFrontierEvent({
+    target_domain: domain,
+    event_id: "FE-stale",
+    kind: "node.transitioned",
+    ts: "2026-05-31T00:00:04.000Z",
+    payload: {
+      node_id: "TG-H-replay",
+      from_state: "proposed",
+      to_state: "abandoned",
+    },
+  });
+
+  const result = materializeTaskGraphEvents(
+    domain,
+    [proposal, forgedJump, orphan, valid, stale],
+    { now: new Date("2026-05-31T00:01:00.000Z") },
+  );
+  assert.equal(result.document.node_count, 1);
+  assert.equal(result.document.nodes[0].node_id, "TG-H-replay");
+  assert.equal(result.document.nodes[0].state, "contracted");
+  assert.equal(result.document.nodes[0].contract_hash, "real");
+  assert.deepEqual(
+    result.document.nodes[0].source_events,
+    ["FE-proposal", "FE-valid"],
+  );
 });
 
 // ─── Folds the 4 node kinds + their edges ────────────────────────────────
@@ -469,10 +548,6 @@ test("readTaskGraph view: raw supports kind/state/node_id filters", () => {
 // like any real session. This isolates the threshold logic from the appender's
 // throughput and keeps the test in the millisecond range.
 
-const {
-  normalizeFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
-
 function fabricateLargeLedger(domain, count) {
   const sessionRoot = path.dirname(frontierEventsJsonlPath(domain));
   fs.mkdirSync(sessionRoot, { recursive: true });
@@ -683,5 +758,53 @@ test("claim.candidate.linked events emit a claim node + claim_links edge from su
     assert.ok(edge, "claim_links edge emitted");
     assert.equal(edge.from_node_id, surfaceNodeId("surface:billing"));
     assert.equal(edge.to_node_id, claimNodeId("F-42"));
+  });
+});
+
+test("summarizeTaskGraph reports composition telemetry and marks a composed graph composed=true", () => {
+  withTempHome(() => {
+    const domain = "composition-composed.example.com";
+    seedFourKindFixture(domain);
+    const summary = summarizeTaskGraph(domain);
+    assert.ok(summary.composition, "composition section present");
+    assert.equal(summary.composition.surfaces, 2);
+    assert.equal(summary.composition.hypotheses, 1);
+    assert.equal(summary.composition.transitions, 1);
+    assert.equal(summary.composition.claims, 1);
+    assert.equal(summary.composition.composed, true);
+    assert.equal(summary.composition.hypotheses_per_surface, 0.5);
+    assert.equal(summary.composition.transitions_per_hypothesis, 1);
+  });
+});
+
+test("a wide-and-flat graph (surfaces only) reports composed=false with zero composition rates", () => {
+  withTempHome(() => {
+    const domain = "composition-wide-flat.example.com";
+    for (let i = 1; i <= 3; i += 1) {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "surface.observed",
+        ts: `2026-05-31T01:00:0${i}.000Z`,
+        surface_id: `surface:s${i}`,
+        payload: { title: `S${i}`, surface_type: "web" },
+      });
+    }
+    const summary = summarizeTaskGraph(domain);
+    assert.equal(summary.composition.surfaces, 3);
+    assert.equal(summary.composition.hypotheses, 0);
+    assert.equal(summary.composition.transitions, 0);
+    assert.equal(summary.composition.composed, false);
+    assert.equal(summary.composition.hypotheses_per_surface, 0);
+    assert.equal(summary.composition.transitions_per_hypothesis, 0);
+  });
+});
+
+test("composition telemetry is summary-only and is never persisted into the hash-bound graph document", () => {
+  withTempHome(() => {
+    const domain = "composition-not-persisted.example.com";
+    seedFourKindFixture(domain);
+    materializeTaskGraph(domain, { write: true });
+    const persisted = JSON.parse(fs.readFileSync(taskGraphPath(domain), "utf8"));
+    assert.equal("composition" in persisted, false, "composition must not enter the hash-bound document");
   });
 });

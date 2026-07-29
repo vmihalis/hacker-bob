@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "graph_id": "plane-physical-security",
+  "version": "v0.3-proposed (2026-07-17)",
+  "note": "This is a conjunctive implementation-dependency hypergraph: each target has one all-of blocking clause, and each node's predecessors field is its validated projection. Runtime any-of, quorum, conditional, outcome, resource, and reopen semantics belong to signed pack/experiment/resource contracts rather than these engineering dependencies.",
+  "hyperedge_registry_sha256": "bc71611c7512463d2462434f5633a966fd4f42257117f41d732853371aadc755",
+  "hyperedges": [
+    {
+      "id": "PH-H1",
+      "predecessors": ["PH-S5", "PH-S10"],
+      "unlocks": ["PH-S6"],
+      "kind": "blocking",
+      "note": "Physical experiments use opaque artifacts and the generic executed-evidence/verifier substrate."
+    },
+    {
+      "id": "PH-H2",
+      "predecessors": ["PH-S4"],
+      "unlocks": ["PH-P0", "PH-P1"],
+      "kind": "blocking",
+      "note": "The provider ABI enables the independent mock and the concrete provider decision in parallel."
+    },
+    {
+      "id": "PH-H3",
+      "predecessors": ["PH-S4", "PH-P0"],
+      "unlocks": ["PH-S7"],
+      "kind": "blocking",
+      "note": "Lease and cleanup semantics are proved against the broker-independent mock before broker construction."
+    },
+    {
+      "id": "PH-H4",
+      "predecessors": ["PH-S2", "PH-S8"],
+      "unlocks": ["PH-IP1"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H5",
+      "predecessors": ["PH-S1", "PH-S2", "PH-S6", "PH-S8"],
+      "unlocks": ["PH-S9"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H6",
+      "predecessors": ["PH-S5", "PH-S6"],
+      "unlocks": ["PH-IP2"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H7",
+      "predecessors": ["PH-S1", "PH-S2", "PH-S4", "PH-S7", "PH-P0"],
+      "unlocks": ["PH-S3"],
+      "kind": "blocking",
+      "note": "The broker integrates the already-conformant mock; same-UID mode remains mock-only."
+    },
+    {
+      "id": "PH-H8",
+      "predecessors": ["PH-S3", "PH-S5", "PH-S10"],
+      "unlocks": ["PH-IP3"],
+      "kind": "blocking",
+      "note": "Signed broker receipt references extend Bob's existing audit/evidence substrate rather than creating another run ledger."
+    },
+    {
+      "id": "PH-H9",
+      "predecessors": ["PH-S4", "PH-P0", "PH-IP3"],
+      "unlocks": ["PH-I1"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H10",
+      "predecessors": ["PH-S8", "PH-IP1"],
+      "unlocks": ["PH-I2"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H11",
+      "predecessors": ["PH-S9", "PH-S12", "PH-I1", "PH-I2"],
+      "unlocks": ["PH-I3"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H12",
+      "predecessors": ["PH-S6", "PH-IP2", "PH-IP3"],
+      "unlocks": ["PH-I4"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H13",
+      "predecessors": ["PH-S8", "PH-I2", "PH-I4", "PH-C8"],
+      "unlocks": ["PH-I5"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H14",
+      "predecessors": ["PH-P1", "PH-S4"],
+      "unlocks": ["PH-P2"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H15",
+      "predecessors": ["PH-S3", "PH-S7", "PH-P2"],
+      "unlocks": ["PH-P3"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H16",
+      "predecessors": ["PH-S1", "PH-S4", "PH-P1"],
+      "unlocks": ["PH-P8"],
+      "kind": "blocking",
+      "note": "A minimal read-only bootstrap manifest is completed independently of the full provider surface."
+    },
+    {
+      "id": "PH-H17",
+      "predecessors": ["PH-P8"],
+      "unlocks": ["PH-P4"],
+      "kind": "blocking",
+      "note": "The full static semantic manifest extends the bootstrap allowlist but does not gate the first read-only inventory."
+    },
+    {
+      "id": "PH-H18",
+      "predecessors": ["PH-P3", "PH-P8", "PH-IP3", "PH-X2"],
+      "unlocks": ["PH-P7"],
+      "kind": "blocking",
+      "note": "PH-P7 is the sole first real-device operation and is instrument-local read-only."
+    },
+    {
+      "id": "PH-H19",
+      "predecessors": ["PH-S5", "PH-S7", "PH-P3", "PH-P4", "PH-P7"],
+      "unlocks": ["PH-P5"],
+      "kind": "blocking",
+      "note": "Workspace inspection and no-op restoration occur only after read-only inventory and with RF inhibited."
+    },
+    {
+      "id": "PH-H20",
+      "predecessors": ["PH-S3", "PH-S7", "PH-P2", "PH-P4", "PH-P7"],
+      "unlocks": ["PH-P6"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H21",
+      "predecessors": ["PH-S6", "PH-S10", "PH-IP2", "PH-I4", "PH-P0"],
+      "unlocks": ["PH-C8"],
+      "kind": "blocking",
+      "note": "The physical verifier is registered and proved against deterministic mock evidence before active hardware admission."
+    },
+    {
+      "id": "PH-H22",
+      "predecessors": ["PH-S9", "PH-I3"],
+      "unlocks": ["PH-X1"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H23",
+      "predecessors": ["PH-S1", "PH-S5", "PH-IP3"],
+      "unlocks": ["PH-X2"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H24",
+      "predecessors": ["PH-P3", "PH-P4", "PH-X1", "PH-X2"],
+      "unlocks": ["PH-X3"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H25",
+      "predecessors": ["PH-S4", "PH-S9", "PH-S11", "PH-P0", "PH-C8", "PH-C9", "PH-C10", "PH-I5", "PH-X3"],
+      "unlocks": ["PH-X4"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H26",
+      "predecessors": ["PH-P5", "PH-C8", "PH-IP1", "PH-X1", "PH-X2", "PH-S11"],
+      "unlocks": ["PH-X6"],
+      "kind": "blocking",
+      "note": "The active-instrument gate emits no effect and issues only fresh, single-use, exact-effect admission receipts."
+    },
+    {
+      "id": "PH-H27",
+      "predecessors": ["PH-S9", "PH-I2", "PH-I3", "PH-P4", "PH-IP3", "PH-X6", "PH-X7"],
+      "unlocks": ["PH-C1"],
+      "kind": "blocking",
+      "note": "PH-C1 is the first target-facing RF operation after assurance-qualified inventory, workspace safety, verifier readiness, and active admission."
+    },
+    {
+      "id": "PH-H28",
+      "predecessors": ["PH-C1", "PH-S5", "PH-P5", "PH-IP3"],
+      "unlocks": ["PH-C2"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H29",
+      "predecessors": ["PH-C2", "PH-I3", "PH-P4"],
+      "unlocks": ["PH-C3"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H30",
+      "predecessors": ["PH-C2", "PH-S6", "PH-P4", "PH-P5"],
+      "unlocks": ["PH-C4", "PH-C5"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H31",
+      "predecessors": ["PH-C1", "PH-S6", "PH-P4", "PH-P9"],
+      "unlocks": ["PH-C6"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H32",
+      "predecessors": ["PH-C1", "PH-S5", "PH-P4", "PH-IP3"],
+      "unlocks": ["PH-C7"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H33",
+      "predecessors": ["PH-P6", "PH-P7", "PH-P9", "PH-X6", "PH-X7", "PH-C1", "PH-C2", "PH-C3", "PH-C4", "PH-C5", "PH-C6", "PH-C7", "PH-C8"],
+      "unlocks": ["PH-X5"],
+      "kind": "blocking"
+    },
+    {
+      "id": "PH-H34",
+      "predecessors": ["PH-S9", "PH-S10", "PH-I5", "PH-C8"],
+      "unlocks": ["PH-C9"],
+      "kind": "blocking",
+      "note": "Composition consumes generic verified-outcome references rather than source-specific physical rows."
+    },
+    {
+      "id": "PH-H35",
+      "predecessors": [
+        "PH-S10",
+        "PH-S12",
+        "PH-I3",
+        "PH-I4",
+        "PH-I5",
+        "PH-C1",
+        "PH-C2",
+        "PH-C3",
+        "PH-C4",
+        "PH-C5",
+        "PH-C6",
+        "PH-C7",
+        "PH-C8",
+        "PH-C9",
+        "PH-P6",
+        "PH-P7",
+        "PH-P9",
+        "PH-X2",
+        "PH-X5"
+      ],
+      "unlocks": ["PH-C10"],
+      "kind": "blocking",
+      "note": "Report closure fans in applicable technique coverage, evidence, provider conformance, recovery, and privacy controls; the node itself carries no execution surface."
+    },
+    {
+      "id": "PH-H36",
+      "predecessors": ["PH-S5"],
+      "unlocks": ["PH-S10"],
+      "kind": "blocking",
+      "note": "The generic executed-evidence registry builds on opaque artifact indirection while remaining stack-neutral."
+    },
+    {
+      "id": "PH-H37",
+      "predecessors": ["PH-S3", "PH-S4", "PH-S7", "PH-S9", "PH-I3"],
+      "unlocks": ["PH-S11"],
+      "kind": "blocking",
+      "note": "Dimensioned physical cells become dispatchable only after atomic resource bundles, broker reservations, and batching semantics exist."
+    },
+    {
+      "id": "PH-H38",
+      "predecessors": ["PH-S6", "PH-S8", "PH-S10"],
+      "unlocks": ["PH-S12"],
+      "kind": "blocking",
+      "note": "Campaign partitioning preserves one experiment/evidence/graph contract across bounded ledgers and cryptographically linked closure roots."
+    },
+    {
+      "id": "PH-H39",
+      "predecessors": ["PH-S3", "PH-S4", "PH-S7", "PH-S11", "PH-P5", "PH-P7", "PH-C8", "PH-X6"],
+      "unlocks": ["PH-X7"],
+      "kind": "blocking",
+      "note": "No target-facing effect is admitted until durable attempt state, independent containment, and ambiguous-execution recovery pass as an integration gate."
+    },
+    {
+      "id": "PH-H40",
+      "predecessors": ["PH-S12", "PH-C10", "PH-X3", "PH-X4", "PH-X5", "PH-X7"],
+      "unlocks": ["PH-X8"],
+      "kind": "blocking",
+      "note": "One release sink joins coverage, scaling, packaging, orthogonal-provider conformance, HIL recovery, containment, and schema migration."
+    },
+    {
+      "id": "PH-H41",
+      "predecessors": ["PH-S3", "PH-S6", "PH-S11", "PH-P4", "PH-P5", "PH-P7", "PH-C8", "PH-X6", "PH-X7"],
+      "unlocks": ["PH-P9"],
+      "kind": "blocking",
+      "note": "Source-pinned manual button actions become executable only through the same reservation, admission, evidence, containment, and cleanup contracts as electronic provider operations."
+    }
+  ]
+}

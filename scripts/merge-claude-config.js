@@ -10,6 +10,23 @@ const {
 const {
   STALE_HOOK_SCRIPT_NAMES,
 } = require("./lib/package-policy.js");
+const {
+  SESSIONS_ROOT_ENV_VAR,
+  bobMcpServerEntry,
+  pinnedSessionsRootFromMcpConfig,
+  pinnedSessionsRootFromSettings,
+  resolveWorkspaceSessionsRoot,
+} = require("./lib/workspace-sessions-root.js");
+const { TOOLS } = require("../mcp/lib/tool-registry.js");
+
+// Canonical primary tool names this install ships. Drives the upgrade rewrite:
+// a legacy `bounty_<suffix>` permission is migrated to `bob_<suffix>` only when
+// that canonical tool actually exists. A `bounty_*` permission whose `bob_*`
+// twin is absent (e.g. the removed report_written / transition_phase tools)
+// would otherwise be silently rewritten to a dead permission, so the installer
+// fails loud instead. Registry-driven so a future tool removal stays covered
+// without editing a hardcoded list.
+const CANONICAL_TOOL_NAMES = Object.freeze(new Set(TOOLS.map((tool) => tool.name)));
 
 function readJsonIfExists(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
@@ -53,18 +70,16 @@ const LEGACY_HOOK_COMMAND_REWRITES = Object.freeze([
 
 // Permission-string tool-name rewrites applied to merged `.claude/settings.json`
 // so v1.x installs that allow-listed `mcp__hacker-bob__bounty_*` (the legacy
-// tool-suffix from the pre-P.1 rename generation) get their canonical
+// tool-suffix from a prior rename generation) get their canonical
 // `mcp__hacker-bob__bob_*` permission on upgrade. Server-key migration is
 // handled separately by `rewriteLegacyPermissionString` (bountyagent ->
 // hacker-bob); this rewrite is layered on top to also normalize the suffix.
 //
-// Excludes the bona-fide P.1 deprecation-shim tool names — those have their
-// own registry modules and route through their own handler with the legacy
-// argument schema; their permission strings must remain `bounty_*`.
-const PRESERVED_BOUNTY_TOOL_NAMES = Object.freeze([
-  "bounty_transition_phase",
-  "bounty_report_written",
-]);
+// The `bounty_*` tool surface was removed in v2.1.0. A pinned `bounty_<suffix>`
+// permission whose canonical `bob_<suffix>` twin still exists migrates cleanly;
+// one whose twin was removed (e.g. `bounty_report_written`,
+// `bounty_transition_phase`) would rewrite to a dead permission, so the
+// installer fails loud and names the replacement instead of granting nothing.
 const LEGACY_TOOL_NAME_PREFIX = "bounty_";
 const CANONICAL_TOOL_NAME_PREFIX = "bob_";
 const HACKER_BOB_BOUNTY_PERMISSION_PATTERN = new RegExp(
@@ -82,12 +97,59 @@ function rewriteLegacyToolNamePermission(value) {
   const match = HACKER_BOB_BOUNTY_PERMISSION_PATTERN.exec(value);
   if (!match) return value;
   const suffix = match[1];
-  const fullToolName = `${LEGACY_TOOL_NAME_PREFIX}${suffix}`;
-  // Bona-fide P.1 shim tools own their own handler and keep the bounty_
-  // prefix in the permission allow-list because the server still dispatches
-  // them under that exact name (they are not aliases of a bob_ primary).
-  if (PRESERVED_BOUNTY_TOOL_NAMES.includes(fullToolName)) return value;
-  return `${CANONICAL_PERMISSION_PREFIX}${CANONICAL_TOOL_NAME_PREFIX}${suffix}`;
+  const canonicalName = `${CANONICAL_TOOL_NAME_PREFIX}${suffix}`;
+  const canonicalPermission = `${CANONICAL_PERMISSION_PREFIX}${canonicalName}`;
+  if (CANONICAL_TOOL_NAMES.has(canonicalName)) {
+    return canonicalPermission;
+  }
+  throw new Error(
+    `Stale pinned MCP permission '${value}' references the removed bounty_* ` +
+    `tool alias layer (dropped in v2.1.0) and has no canonical replacement ` +
+    `named '${canonicalName}'. Edit .claude/settings.json permissions.allow: ` +
+    `remove '${value}' (e.g. report-written is now covered by ` +
+    `mcp__hacker-bob__bob_finalize_report; transition-phase by ` +
+    `mcp__hacker-bob__bob_advance_session), then re-run the installer.`,
+  );
+}
+
+// PRE-FLIGHT (install atomicity). Collect every legacy bounty_* permission in the operator's
+// existing settings that has NO canonical bob_* twin — exactly the set
+// rewriteLegacyToolNamePermission would THROW on during the settings merge. Returns [] when all
+// migrate cleanly. The merge runs AFTER the installer has copied the runtime/agents/hooks, so a
+// throw there leaves a half-upgraded project; the installer calls assertLegacyToolPermissions-
+// Migratable BEFORE its first file mutation so a doomed upgrade never touches the target.
+function unmigratableLegacyToolPermissions(existing) {
+  const allow = existing && existing.permissions && Array.isArray(existing.permissions.allow)
+    ? existing.permissions.allow
+    : [];
+  const stale = [];
+  for (const permission of allow) {
+    if (typeof permission !== "string") continue;
+    const afterServerKey = rewriteLegacyPermissionString(permission);
+    const match = HACKER_BOB_BOUNTY_PERMISSION_PATTERN.exec(afterServerKey);
+    if (!match) continue;
+    const canonicalName = `${CANONICAL_TOOL_NAME_PREFIX}${match[1]}`;
+    if (!CANONICAL_TOOL_NAMES.has(canonicalName)) {
+      stale.push({ permission, canonical_name: canonicalName });
+    }
+  }
+  return stale;
+}
+
+function assertLegacyToolPermissionsMigratable(existing) {
+  const stale = unmigratableLegacyToolPermissions(existing);
+  if (stale.length === 0) return;
+  const lines = stale
+    .map(({ permission, canonical_name }) => `  - '${permission}' has no canonical replacement named '${canonical_name}'`)
+    .join("\n");
+  throw new Error(
+    `.claude/settings.json pins ${stale.length} stale MCP permission(s) from the removed ` +
+    `bounty_* tool alias layer (dropped in v2.1.0) with no canonical bob_* twin:\n${lines}\n` +
+    `Edit .claude/settings.json permissions.allow and remove them (e.g. report-written is now ` +
+    `covered by mcp__hacker-bob__bob_finalize_report; transition-phase by ` +
+    `mcp__hacker-bob__bob_advance_session), then re-run the installer. Validated PRE-INSTALL, so ` +
+    `no files have been modified yet.`,
+  );
 }
 
 function migrateLegacyMcp(existing) {
@@ -351,7 +413,15 @@ function mergeHooks(existingHooks, bobHooks) {
   return next;
 }
 
-function mergeSettings(existing, bobSettings) {
+// `sessionsRoot` is mirrored into `settings.env` so the HOST-side surfaces
+// resolve the same root as the engine: `.claude/hooks/agent-run-stop.js`
+// requires mcp/lib/paths.js directly, and the session read/write guards resolve
+// the roots they protect from the environment. Without the mirror those would
+// keep pointing at the default root while the engine wrote to the overridden
+// one — handoff validation would read an empty directory and the guards would
+// stop protecting the files that actually exist. Null leaves settings.env
+// untouched.
+function mergeSettings(existing, bobSettings, { sessionsRoot = null } = {}) {
   const permissionsMigrated = migrateLegacySettings(existing).value;
   const hooksMigrated = migrateLegacyHookCommands(permissionsMigrated).value;
   const next = hooksMigrated && typeof hooksMigrated === "object" && !Array.isArray(hooksMigrated)
@@ -370,10 +440,8 @@ function mergeSettings(existing, bobSettings) {
   //      (e.g. browser-driver + pack telemetry) land in the workspace allow-
   //      list even when they are not part of the globally-preapproved default
   //      set, so agents whose brief mentions them can invoke without per-call
-  //      permission churn. Aliases are filtered out by permissionsForAllTools();
-  //      the bona-fide `bounty_transition_phase` and `bounty_report_written`
-  //      shim tools own their own primary registry entries and are surfaced
-  //      here under their canonical (and only) names.
+  //      permission churn. Every tool is surfaced under its canonical bob_*
+  //      name; the bounty_* tool surface was removed in v2.1.0.
   next.permissions = {
     ...existingPermissions,
     allow: uniqueStrings([
@@ -386,6 +454,12 @@ function mergeSettings(existing, bobSettings) {
   const existingHooks = next.hooks && typeof next.hooks === "object" ? next.hooks : {};
   next.hooks = mergeHooks(existingHooks, bobSettings.hooks);
   next.statusLine = bobSettings.statusLine;
+  if (sessionsRoot) {
+    const existingEnv = next.env && typeof next.env === "object" && !Array.isArray(next.env)
+      ? next.env
+      : {};
+    next.env = { ...existingEnv, [SESSIONS_ROOT_ENV_VAR]: sessionsRoot };
+  }
   return next;
 }
 
@@ -395,10 +469,14 @@ function mergeSettings(existing, bobSettings) {
 // contract.
 const BRUTALIST_MCP_SERVER = Object.freeze({
   command: "npx",
-  args: ["-y", "@brutalist/mcp@1.14.7"],
+  args: ["-y", "@brutalist/mcp@1.18.7"],
 });
 
-function mergeMcp(existing, serverPath) {
+// `sessionsRoot` is the per-workspace session root this install configures (see
+// scripts/lib/workspace-sessions-root.js). Null — the default — writes no env
+// block and the entry is byte-identical to pre-override installs. Operator-owned
+// sibling servers and unrelated top-level keys are preserved either way.
+function mergeMcp(existing, serverPath, { sessionsRoot = null } = {}) {
   const migrated = migrateLegacyMcp(existing).value;
   const next = migrated && typeof migrated === "object" && !Array.isArray(migrated)
     ? { ...migrated }
@@ -406,10 +484,7 @@ function mergeMcp(existing, serverPath) {
   next.mcpServers = next.mcpServers && typeof next.mcpServers === "object" && !Array.isArray(next.mcpServers)
     ? { ...next.mcpServers }
     : {};
-  next.mcpServers[CANONICAL_SERVER_KEY] = {
-    command: "node",
-    args: [serverPath],
-  };
+  next.mcpServers[CANONICAL_SERVER_KEY] = bobMcpServerEntry({ serverPath, sessionsRoot });
   next.mcpServers.brutalist = { ...BRUTALIST_MCP_SERVER, args: [...BRUTALIST_MCP_SERVER.args] };
   return next;
 }
@@ -432,11 +507,26 @@ function main() {
     logger: (message) => console.log(message),
   });
 
-  writeJson(mcpPath, mergeMcp(migration.mcp, serverPath));
-  writeJson(settingsPath, mergeSettings(migration.settings, bobSettings));
+  // Same resolution the installer runs. This entry point is invoked directly by
+  // dev-sync.sh AFTER install.sh, so it must land on the same root the install
+  // just configured — the already-written env pin makes that automatic.
+  const { sessionsRoot } = resolveWorkspaceSessionsRoot({
+    targetAbs: target,
+    pinned: [
+      pinnedSessionsRootFromMcpConfig(migration.mcp),
+      pinnedSessionsRootFromSettings(migration.settings),
+    ],
+    previouslyInstalled: !!(migration.mcp
+      && migration.mcp.mcpServers
+      && migration.mcp.mcpServers[CANONICAL_SERVER_KEY]),
+  });
+
+  writeJson(mcpPath, mergeMcp(migration.mcp, serverPath, { sessionsRoot }));
+  writeJson(settingsPath, mergeSettings(migration.settings, bobSettings, { sessionsRoot }));
 
   console.log(`merged ${mcpPath}`);
   console.log(`merged ${settingsPath}`);
+  if (sessionsRoot) console.log(`session root: ${sessionsRoot}`);
 }
 
 if (require.main === module) {
@@ -452,9 +542,10 @@ module.exports = {
   LEGACY_PERMISSION_PREFIX,
   CANONICAL_PERMISSION_PREFIX,
   LEGACY_TOOL_NAME_PREFIX,
-  PRESERVED_BOUNTY_TOOL_NAMES,
   STALE_GLOBAL_MCP_PERMISSIONS,
   STALE_HOOK_SCRIPT_NAMES,
+  assertLegacyToolPermissionsMigratable,
+  unmigratableLegacyToolPermissions,
   hookScriptName,
   mergeMcp,
   mergeHookEntries,

@@ -78,6 +78,7 @@ Always include:
 - Target and phase.
 - Wave state: current wave, pending wave, readiness if known.
 - Findings, verification, evidence status, grade, and report presence.
+- Coverage: when `bob_read_pipeline_analytics` or `bob_read_state_summary` exposes OPEN_FRONTIER cell-floor progress, print `coverage: floor reached` once the frontier has settled to fixpoint, or `coverage: N nodes open` with the count of cells still uncovered. Omit the line when neither read carries frontier/coverage fields.
 - For verification, render the V2 Verification Panel above for v2 sessions; for v1 sessions, include reportable count and the context `next_action` when available.
 - Egress profile summary and geofence warning when visible from analytics.
 - If the update cache says a Bob update is available, include `Update: Hacker Bob <version> available. Run $bob-update.`

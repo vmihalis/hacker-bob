@@ -11,6 +11,8 @@ If a user asks you to install this framework into a project:
 
 Do not assume this cloned repo is the user's active workspace unless they explicitly want that.
 
+Each installed workspace gets its OWN session root — `~/hacker-bob-sessions-<workspace>-<hash>`, derived from the workspace path (stable across re-installs) and written as `BOB_SESSIONS_ROOT` into that workspace's `.mcp.json` server env and `.claude/settings.json` env. Bob elects one engine per session root, so concurrent engines in two workspaces require DISJOINT roots; the root is operator configuration read once at engine boot and frozen there, and no agent or MCP tool can change it. A workspace that was already installed and still has sessions in the shared `~/hacker-bob-sessions/` keeps using it rather than orphaning them — migrate with `mv ~/hacker-bob-sessions/<target-domain> ~/hacker-bob-sessions-<workspace>-<hash>/` (the installer prints the exact path) and re-run the installer. Operator caution: disjoint roots make concurrent ENGINES safe, not concurrent evaluations of the SAME target — rate limits, circuit breakers, and request budgets are per-engine, so two engines on one target double the request volume it sees and neither one knows it.
+
 If the user is developing this framework itself and wants to test changes in a
 local Claude Code workspace:
 
@@ -51,7 +53,7 @@ Maintainer workflow:
   `evaluation_wave`, `explored`, findings summaries, or phase state.
 - Markdown mirrors are human/debug artifacts. Chain evidence is MCP-owned in
   `chain-attempts.jsonl`; `report.md` remains the final human-facing
-  agent-written report.
+  agent-composed (via bob_compose_report) report.
 - Audit-graded session paths are MCP-rendered (Y-P13). `mcp/lib/paths.js`
   exports `AUDIT_GRADED_PATHS` (positive list — `report.md`, `chains.md`,
   `evidence-packs.md`, `grade.md`, verification-round mirrors, wave-handoff

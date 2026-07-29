@@ -4,7 +4,7 @@
 //
 // Asserts:
 //   * STIGMERGIC_PRODUCERS is Object.freeze'd (closed list).
-//   * Exactly 10 canonical producer entries per Y-D19 rev 4.1 + Plane-Delta S12/PR4/I10/I12.
+//   * Exactly 15 canonical producer entries per Y-D19 rev 4.1 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1.
 //   * Every entry carries the required keys (producer_id,
 //     mcp_tool_or_artifact, trace_shape_ref, registered_consumers).
 //   * registered_consumers[] is non-empty for every entry (every
@@ -31,6 +31,7 @@ const REPO_ROOT = path.join(__dirname, "..");
 
 const CANONICAL_PRODUCER_IDS = [
   "technique_pack_scorer",
+  "coverage_cell_floor_dispatch_signals",
   "surface_discovery_ranked_leads",
   "chain_attempts_ledger",
   "verification_round_ledger",
@@ -40,6 +41,20 @@ const CANONICAL_PRODUCER_IDS = [
   "oss_technique_pack_registry",
   "oss_rootcause_family_corpus",
   "static_analysis_index",
+  "belief_scratch_signals",
+  "mechanism_surface_graph_projection",
+  "object_authorization_mechanism_template",
+  "frontier_observation_typed_fact_projection",
+  "belief_window_projection",
+  "belief_factor_graph_samples",
+  "belief_residual_anomaly_diagnostic",
+  "belief_intervention_calculus_ranking",
+  "belief_experiment_hypothesis_proposals",
+  "claim_causal_support_payload",
+  "belief_scheduler_priority_hints",
+  "belief_calibrated_factor_model",
+  "recon_producer_dag_dispatch_signals",
+  "sc_expander_recursion_dispatch_signals",
 ];
 
 test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
@@ -55,8 +70,8 @@ test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
   assert.equal(Object.isFrozen(PRODUCER_IDS), true);
 });
 
-test("STIGMERGIC_PRODUCERS contains exactly the 10 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 entries", () => {
-  assert.equal(STIGMERGIC_PRODUCERS.length, 10);
+test("STIGMERGIC_PRODUCERS contains exactly the 22 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6/CB-B2/CB-B3/CB-C2/CB-C1/CB-B5 entries", () => {
+  assert.equal(STIGMERGIC_PRODUCERS.length, 25);
   const actualIds = STIGMERGIC_PRODUCERS.map((p) => p.producer_id).sort();
   const expectedIds = [...CANONICAL_PRODUCER_IDS].sort();
   assert.deepEqual(

@@ -1,0 +1,28 @@
+{
+  "name": "@hacker-bob/instrument-chameleon-worker-runtime",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Closed transport-neutral Chameleon worker runtime assembled from declared provider-neutral contracts",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "main": "lib/codec.js",
+  "files": [
+    "lib/**/*.js"
+  ],
+  "exports": {
+    ".": "./lib/codec.js",
+    "./codec": "./lib/codec.js",
+    "./compiled-provider-command": "./lib/compiled-provider-command.js",
+    "./hf14a-probe-compiler": "./lib/hf14a-probe-compiler.js",
+    "./rf-off-usb-execution-port": "./lib/rf-off-usb-execution-port.js",
+    "./usb-cdc-custody": "./lib/usb-cdc-custody.js"
+  },
+  "scripts": {
+    "check:syntax": "node --check lib/closed-runtime-contracts.js && node --check lib/codec.js && node --check lib/compiled-provider-command.js && node --check lib/hf14a-probe-compiler.js && node --check lib/rf-off-usb-execution-port.js && node --check lib/usb-cdc-custody.js && node --check test/runtime.test.js && node --check test/rf-off-usb-execution-port.test.js",
+    "test": "npm run check:syntax && node --test test/runtime.test.js test/rf-off-usb-execution-port.test.js"
+  },
+  "dependencies": {}
+}

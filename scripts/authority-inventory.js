@@ -65,10 +65,10 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_cosmwasm_smart_query: "smart_contract_contextual",
   bob_diff_verification_attempts: "initialized_session_read",
   bob_evaluate_capabilities: "global_read",
-  bob_evm_call: "global_preapproval",
+  bob_evm_call: "smart_contract_contextual",
   bob_evm_fetch_source: "smart_contract_contextual",
-  bob_evm_role_table: "global_preapproval",
-  bob_evm_storage_read: "global_preapproval",
+  bob_evm_role_table: "smart_contract_contextual",
+  bob_evm_storage_read: "smart_contract_contextual",
   bob_extract_routes: "initialized_session_read",
   bob_finalize_agent_run: "initialized_session_mutation",
   bob_foundry_run: "smart_contract_contextual",
@@ -81,12 +81,21 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_http_scan: "scoped_http_network",
   bob_http_xss_confirm: "scoped_http_network",
   bob_http_xss_reflect: "scoped_http_network",
+  bob_import_harness: "initialized_session_mutation",
   bob_import_http_traffic: "scoped_http_network",
+  bob_import_seed_corpus: "initialized_session_mutation",
   bob_import_static_artifact: "initialized_session_mutation",
   bob_ingest_audit_report: "initialized_session_mutation",
   bob_ingest_schema_doc: "initialized_session_mutation",
   bob_init_session: "bootstrap_session",
   bob_init_repo_session: "bootstrap_session",
+  // Smart-contract bootstrap sibling of bob_init_session (url axis) /
+  // bob_init_repo_session (repo axis): it CREATES the session from the
+  // contracts axis, so it must route to authorizeBootstrap, not the
+  // session-bound mutation path (which would deadlock on a pre-existing
+  // state.json + a target_domain argument this tool's schema does not carry).
+  bob_init_contract_session: "bootstrap_session",
+  bob_init_physical_session: "bootstrap_session",
   bob_list_auth_profiles: "initialized_session_read",
   bob_list_candidate_claims: "initialized_session_read",
   bob_log_capability_friction: "initialized_session_mutation",
@@ -98,12 +107,33 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // session-authority registration; Y.3 added the server-internal
   // caller bundle for _write-base.js auto-emit.
   bob_emit_runtime_drift: "initialized_session_mutation",
+  // Belief plane (CB-*) + composition experiment/verifier — orchestrator-only,
+  // session-scoped: reads classify as initialized_session_read, writers as
+  // initialized_session_mutation, the network-capable live verifier as
+  // scoped_http_network (mirrors bob_run_auth_differential).
+  bob_elicit_belief: "initialized_session_mutation",
+  bob_plan_belief_experiment: "initialized_session_mutation",
+  bob_plan_recon_angles: "initialized_session_read",
+  bob_query_belief_signals: "initialized_session_read",
+  bob_query_belief_window: "initialized_session_read",
+  bob_query_intervention_calculus: "initialized_session_read",
+  bob_read_belief_model_info: "initialized_session_read",
+  bob_read_belief_signals: "initialized_session_read",
+  bob_run_belief_residual: "initialized_session_mutation",
+  bob_run_belief_sampler: "initialized_session_mutation",
+  bob_train_belief_model: "initialized_session_mutation",
+  bob_read_composition_telemetry: "initialized_session_read",
+  bob_run_path_composition_experiment: "initialized_session_mutation",
+  bob_verify_composition_path: "scoped_http_network",
   bob_merge_wave_handoffs: "initialized_session_read",
   // PR7 nuclei detection scan (mirror of session-authority.js).
   bob_nuclei_scan: "scoped_http_network",
   // PR6 OOB collector (mirror of session-authority.js).
   bob_oob_mint: "scoped_http_network",
   bob_oob_poll: "scoped_http_network",
+  // O3 second-order / stored-effect re-read producer (mirror of session-authority.js).
+  bob_secondorder_mint: "scoped_http_network",
+  bob_secondorder_reread: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   // Plane Y Cycle Y.6 — friction-to-Hypothesis promotion (Y-P6 + Y-P11).
   // Orchestrator-only at the role-bundle layer; threads friction_history
@@ -136,11 +166,14 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_finalize_report: "initialized_session_mutation",
   // Plane Y Cycle Y.3 — Y-D15b / Y-P13 MCP-rendered audit-graded artifacts.
   bob_compose_report: "initialized_session_mutation",
+  // bob_export_security_hub_finding removed from the model-reachable tool
+  // registry -- see mcp/lib/tools/index.js's comment at the same seam.
   bob_amend_report: "initialized_session_mutation",
   bob_write_chain_rollup: "initialized_session_mutation",
   bob_set_friction_scanners: "initialized_session_mutation",
   bob_materialize_frontier: "initialized_session_mutation",
   bob_materialize_task_graph: "initialized_session_mutation",
+  bob_materialize_cell_floor: "initialized_session_mutation",
   bob_read_queue_policy: "initialized_session_read",
   bob_read_task_graph: "initialized_session_read",
   bob_read_session_nucleus: "initialized_session_read",
@@ -150,6 +183,8 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // bob_schedule_tasks (both append to scheduler-decisions.jsonl and
   // mutate session state via downstream tools).
   bob_schedule_graph_nodes: "initialized_session_mutation",
+  bob_materialize_producer_floor: "initialized_session_mutation",
+  bob_schedule_seed_producers: "initialized_session_mutation",
   bob_set_pack_telemetry_config: "initialized_session_mutation",
   bob_set_queue_policy: "initialized_session_mutation",
   bob_read_session_state: "initialized_session_read",
@@ -163,12 +198,30 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_read_verification_context: "initialized_session_read",
   bob_read_verification_round: "initialized_session_read",
   bob_read_wave_handoffs: "initialized_session_read",
+  // PH-S9/PH-X1: report-safe revalidation reads only an initialized physical
+  // session. Its global_preapproval flag is UI metadata, never global authority.
+  bob_verify_physical_verdict: "initialized_session_read",
+  bob_verify_physical_candidate_claim: "initialized_session_read",
+  bob_query_instrument_capabilities: "initialized_session_read",
+  bob_physical_observe: "initialized_session_mutation",
+  bob_credential_acquire: "initialized_session_mutation",
+  bob_credential_recover: "initialized_session_mutation",
+  bob_credential_emulate: "initialized_session_mutation",
+  bob_credential_write: "initialized_session_mutation",
+  bob_protocol_transceive: "initialized_session_mutation",
+  bob_rf_trace: "initialized_session_mutation",
   bob_record_candidate_claim: "initialized_session_mutation",
+  bob_record_physical_candidate_claim: "initialized_session_mutation",
   bob_record_surface_leads: "initialized_session_mutation",
+  bob_register_mechanism_template: "initialized_session_mutation",
   bob_prepare_node: "initialized_session_mutation",
   bob_finalize_node: "initialized_session_mutation",
   bob_repo_check: "initialized_session_mutation",
   bob_repo_docker_run: "initialized_session_mutation",
+  bob_verify_repro_reproduction: "initialized_session_mutation",
+  bob_verify_oracle_differential: "initialized_session_mutation",
+  bob_verify_invariant_differential: "initialized_session_mutation",
+  bob_verify_finding_differential: "initialized_session_mutation",
   bob_repo_inventory: "initialized_session_mutation",
   bob_repo_prepare_env: "initialized_session_mutation",
   // Plane X Cycle X.7: bob_resolve_body is read-only — bodies are
@@ -176,7 +229,6 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // initialized_session_read because the tool reads session-bound
   // artifacts and never mutates session state.
   bob_resolve_body: "initialized_session_read",
-  bounty_report_written: "initialized_session_mutation",
   bob_route_surfaces: "initialized_session_mutation",
   bob_run_auth_differential: "scoped_http_network",
   bob_run_doc_delta: "scoped_http_network",
@@ -184,6 +236,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_select_technique_packs: "initialized_session_read",
   bob_set_operator_note: "initialized_session_mutation",
   bob_signup_detect: "scoped_http_network",
+  bob_stage_verification_round_partial: "initialized_session_mutation",
   bob_start_next_wave: "initialized_session_mutation",
   bob_start_wave: "initialized_session_mutation",
   bob_static_scan: "initialized_session_mutation",
@@ -198,7 +251,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_summarize_diff_impact: "initialized_session_mutation",
   bob_svm_fetch_account: "smart_contract_contextual",
   bob_svm_fetch_program: "smart_contract_contextual",
-  bob_temp_email: "global_preapproval",
+  bob_temp_email: "scoped_http_network",
   bob_wave_handoff_status: "initialized_session_read",
   bob_wave_status: "initialized_session_read",
   bob_write_chain_attempt: "initialized_session_mutation",
@@ -208,22 +261,19 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_write_proof_bundle: "initialized_session_mutation",
   bob_write_verification_round: "initialized_session_mutation",
   bob_write_wave_handoff: "initialized_session_mutation",
+  bob_ws_probe: "scoped_http_network",
 });
 
 const ABSENT_TARGET_CATEGORY_BY_TOOL = Object.freeze({
   bob_evaluate_capabilities: "registry_capability_introspection",
   bob_read_capability_playbook: "registry_capability_introspection",
   bob_suggest_invariants: "local_static_inspection_no_session_write",
-  bob_temp_email: "explicit_no_session_global_network_side_effect",
-  bob_evm_call: "explicit_no_session_global_network_read_n2_006_evm",
-  bob_evm_storage_read: "explicit_no_session_global_network_read_n2_006_evm",
-  bob_evm_role_table: "explicit_no_session_global_network_read_n2_006_evm",
 });
 
 const CHAIN_TRANSPORT_OWNER_BY_TOOL = Object.freeze({
-  bob_evm_call: "N2-006 EVM no-target RPC transport",
-  bob_evm_storage_read: "N2-006 EVM no-target RPC transport",
-  bob_evm_role_table: "N2-006 EVM no-target RPC transport",
+  bob_evm_call: "N2-006 EVM contextual transport",
+  bob_evm_storage_read: "N2-006 EVM contextual transport",
+  bob_evm_role_table: "N2-006 EVM contextual transport",
   bob_evm_fetch_source: "N2-006 EVM contextual transport",
   bob_foundry_run: "N2-006 EVM subprocess/RPC transport",
   bob_halmos_run: "N2-006 EVM symbolic-runner transport",
@@ -483,11 +533,9 @@ function classifyTool(tool) {
 }
 
 function validateExplicitAuthorityMap(registryTools) {
-  // Cycle P.1 aliases inherit authority from their primary, so they don't need
-  // their own entry in EXPLICIT_AUTHORITY_CLASS_BY_TOOL. The runtime resolves
-  // through the alias_of indirection.
-  const primaryTools = registryTools.filter((tool) => !tool.alias_of);
-  const registeredNames = new Set(primaryTools.map((tool) => tool.name));
+  // Every registered tool is its own canonical primary and carries an explicit
+  // authority class in EXPLICIT_AUTHORITY_CLASS_BY_TOOL.
+  const registeredNames = new Set(registryTools.map((tool) => tool.name));
   const mappedNames = new Set(Object.keys(EXPLICIT_AUTHORITY_CLASS_BY_TOOL));
   const missing = [...registeredNames].filter((name) => !mappedNames.has(name)).sort();
   const extra = [...mappedNames].filter((name) => !registeredNames.has(name)).sort();
@@ -538,7 +586,6 @@ function validateExplicitAuthorityMap(registryTools) {
   }
 
   for (const tool of registryTools) {
-    if (tool.alias_of) continue;
     if (hasTargetDomain(tool) && !requiresTargetDomain(tool) && !Object.prototype.hasOwnProperty.call(MODE_RULES, tool.name)) {
       // bootstrap_session tools create the authority record and may accept an
       // optional target_domain (e.g. bob_init_repo_session derives the slug
@@ -697,7 +744,7 @@ function modeSummary(toolName) {
 function buildRows() {
   validateExplicitAuthorityMap(TOOL_REGISTRY);
   const files = toolFileMap();
-  return TOOL_REGISTRY.filter((tool) => !tool.alias_of).map((tool) => {
+  return TOOL_REGISTRY.map((tool) => {
     const authorityClass = classifyTool(tool);
     if (!AUTHORITY_CLASSES.includes(authorityClass)) {
       throw new Error(`unknown authority class for ${tool.name}: ${authorityClass}`);

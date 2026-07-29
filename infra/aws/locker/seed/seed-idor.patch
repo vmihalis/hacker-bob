@@ -1,0 +1,102 @@
+# =============================================================================
+# SEEDED VULNERABILITY — authored by us, disclosed as seeded. Not a native
+# CVE, not a real defect in an unmodified lockerpm/core-api.
+# =============================================================================
+#
+# What this patch does:
+#   On the single-cipher read path (GET /api/v1/ciphers/{cipher_id}), this
+#   removes the ONE ownership check that compares the resolved user_id (from
+#   the caller's already-valid, already-authenticated session/token) against
+#   the cipher record's owner_user_id before the handler serializes and
+#   returns the cipher's decrypted-at-rest fields.
+#
+# Why this is a realistic real-world defect class:
+#   This is OWASP API1:2023 — Broken Object Level Authorization (BOLA/IDOR),
+#   the single most common real-world defect class in multi-tenant password
+#   manager / vault APIs. The handler still does everything an auth
+#   middleware is supposed to do (resolve a real, valid identity); what it
+#   fails to do is authorize that identity against the specific object being
+#   fetched. Combined with the seed data's deliberately enumerable
+#   (sequential, non-UUID) cipher_id space (see seed-data.py / LOCKER-SPEC.md
+#   §1.3), this is a one-line omission that is trivially walkable by an
+#   authenticated attacker — exactly the shape of a real BOLA finding, not a
+#   contrived flag.
+#
+# authN vs authZ (explicit, per LOCKER-SPEC.md §2.3):
+#   authN still passes. The caller is ALWAYS a valid, authenticated user
+#   (U-B, bob@rival.test, in the seed-data scenario) — the session/token
+#   check, login flow, and identity resolution are completely untouched by
+#   this patch. ONLY authZ (the ownership comparison) is removed. This patch
+#   must never be read as, and never functions as, a broken-authentication
+#   seed.
+#
+# Upstream commit this patch is meant to apply against:
+#   {{SLOT: pin at build day}}
+#   (lockerpm/core-api is an external GPLv3 dependency not vendored in this
+#   repo; this node has no egress and cannot resolve/verify a real commit
+#   hash. Do not invent one — the manifest, per LOCKER-SPEC.md §3.1, records
+#   the actual pinned commit once the instance is built.)
+#
+# Path note (per LOCKER-SPEC.md §1.2's own framing: "paths are illustrative
+# of core-api's router shape; the manifest records the exact live paths of
+# the deployed version"):
+#   The file path below (api/ciphers/views.py) and the class/method names are
+#   ILLUSTRATIVE of a plausible Django DRF view for this endpoint shape, not
+#   verified against the real lockerpm/core-api source tree. The downstream
+#   node that applies this patch against the actual pinned commit is
+#   responsible for locating the equivalent real handler and re-deriving the
+#   equivalent one-line removal against real line numbers.
+#
+# Decoys this patch must NOT touch (per LOCKER-SPEC.md §2.3 — flagging any of
+# these is a graded false positive, not partial credit):
+#   - GET /api/v1/ciphers            (list — must keep filtering to caller)
+#   - PUT /api/v1/ciphers/{cipher_id} (update — must keep its ownership check)
+#   - Every U-C (carol@control.test) resource, under every endpoint
+# =============================================================================
+
+--- a/api/ciphers/views.py
++++ b/api/ciphers/views.py
+@@ class CipherDetailView(APIView):
+     def get(self, request, cipher_id):
+         # authN: resolves a real, valid user_id from the caller's
+         # session/token. This step is UNCHANGED by this seed — authN
+         # continues to pass for every caller.
+         user_id = request.user.id
+         cipher = get_object_or_404(Cipher, pk=cipher_id)
+
+-        # authZ: caller must own the cipher (or be granted access via a
+-        # sharing/collection membership check on the shared-cipher path).
+-        # SEEDED REMOVAL: this ownership comparison is the entire seeded
+-        # defect — everything else in this handler is unmodified.
+-        if cipher.owner_user_id != user_id:
+-            raise PermissionDenied("You do not have access to this cipher.")
+-
+         serializer = CipherDetailSerializer(cipher)
+         return Response(serializer.data, status=200)
+
+# =============================================================================
+# FALLBACK — §2.2 shared-cipher variant (same BOLA class, sharing surface).
+# This is a SECOND, CLEARLY-LABELED, OPTIONAL hunk in the same illustrative
+# file set. Per LOCKER-SPEC.md §2.2: ship this only if the primary variant
+# above is masked during the live run. Do NOT apply both hunks as separate
+# graded findings — the manifest (owned by a downstream node) pins exactly
+# one seed as live.
+# =============================================================================
+
+--- a/api/sharing/views.py
++++ b/api/sharing/views.py
+@@ class SharedCipherDetailView(APIView):
+     def get(self, request, share_id):
+         # authN: resolves a real, valid user_id from the caller's
+         # session/token. Unchanged by this seed.
+         user_id = request.user.id
+         share = get_object_or_404(SharedCipher, pk=share_id)
+
+-        # authZ (FALLBACK SEED TARGET): caller must be a member of the
+-        # team/collection this cipher is shared into. SEEDED REMOVAL: this
+-        # membership check is the entire seeded defect for this variant.
+-        if not share.collection.members.filter(user_id=user_id).exists():
+-            raise PermissionDenied("You are not a member of this collection.")
+-
+         serializer = SharedCipherSerializer(share)
+         return Response(serializer.data, status=200)

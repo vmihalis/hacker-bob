@@ -37,6 +37,7 @@ const {
 } = require("../mcp/lib/tool-registry.js");
 const { ADAPTERS, getAdapter } = require("../adapters/index.js");
 const {
+  FANOUT_CHILD_SCOPE_GUARD_MATCHER,
   hackerBobSkillAllowedTools,
   defaultClaudeSettings,
   defaultGlobalMcpPermissions,
@@ -54,8 +55,12 @@ const {
 const {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
+  claudeAllowedToolsForRole,
+  fanoutChildAgentNames,
   renderClaudeRole,
+  spawnCapableAgentNames,
 } = require("../scripts/lib/claude-role-renderer.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
 const {
   CODEX_SKILL_SPECS,
   CODEX_WORKER_CONTRACT_ROLE_IDS,
@@ -74,10 +79,10 @@ const {
   toolsForSpec,
 } = require("../scripts/generate-agent-tools.js");
 const {
-  CAPABILITY_PACKS,
   DEFAULT_CONTEXT_BUDGET,
   EVALUATOR_ROLES,
   SMART_CONTRACT_CONTEXT_BUDGET,
+  dispatchableCapabilityPacks,
   evaluatorAgentNamesForCapabilityPacks,
 } = require("../mcp/lib/capability-packs.js");
 const {
@@ -281,16 +286,13 @@ test("lifecycle tool is registered and orchestrator-only", () => {
 // SECTION 3 — Tool registry hygiene
 // =============================================================================
 
-test("every primary tool name is registered with the canonical bob_ prefix", () => {
-  // Two pre-existing deprecation-shim modules (transition_phase, report_written)
-  // ship under their legacy names because they predate cycle P.1; cycle D.1
-  // deletes them. They are the only allowed exceptions.
-  const allowedLegacy = new Set(["bounty_transition_phase", "bounty_report_written"]);
+test("every tool name is registered with the canonical bob_ prefix", () => {
+  // The v2.1.0 break removed the bounty_* alias layer, so every registered tool
+  // is its own canonical bob_* primary with no exceptions.
   for (const tool of TOOLS) {
-    if (allowedLegacy.has(tool.name)) continue;
     assert.ok(
       tool.name.startsWith("bob_"),
-      `tool ${tool.name} must use the bob_ prefix (only documented legacy shims may keep bounty_)`,
+      `tool ${tool.name} must use the bob_ prefix`,
     );
   }
 });
@@ -328,8 +330,8 @@ test("orchestrator-only mutators never appear in the globally pre-approved permi
 test("checked-in settings, generated settings, and registry agree on global preapproval", () => {
   // Two contracts here:
   //   1. defaultGlobalMcpPermissions() and the registry both yield exactly the
-  //      `global_preapproval: true` set (minus aliases). This is the
-  //      install-time global pre-approval contract.
+  //      `global_preapproval: true` set. This is the install-time global
+  //      pre-approval contract.
   //   2. The checked-in source-tree .claude/settings.json reflects the canonical
   //      merge (defaultClaudeSettings().permissions.allow ∪
   //      permissionsForAllTools(), stale-filtered) — the same output the
@@ -344,7 +346,7 @@ test("checked-in settings, generated settings, and registry agree on global prea
   const generatedAllowed = new Set(defaultGlobalMcpPermissions());
   const expectedAllowed = new Set();
   for (const [name, meta] of Object.entries(TOOL_MANIFEST)) {
-    if (meta.global_preapproval && !meta.alias_of) expectedAllowed.add(permissionForToolName(name));
+    if (meta.global_preapproval) expectedAllowed.add(permissionForToolName(name));
   }
   assert.deepEqual([...generatedAllowed].sort(), [...expectedAllowed].sort());
 });
@@ -353,13 +355,21 @@ test("checked-in settings, generated settings, and registry agree on global prea
 // SECTION 4 — Role-bundle contracts (CandidateClaim handler)
 // =============================================================================
 
-test("evaluator role-bundles include exactly one tool that writes CandidateClaim records", () => {
-  // The evaluator (web) and every per-chain evaluator role have an entry that
-  // mutates claims.jsonl. The role-bundle contract is: exactly one such tool,
-  // with a handler that imports the CandidateClaim writer from claims.js.
+test("evaluator role-bundles use their native finding writer contract", () => {
+  // Web/OSS/SC evaluators retain the generic CandidateClaim writer. Physical
+  // findings use their dedicated writer so an opaque asset plus server-owned
+  // verdict projection can never be squeezed through endpoint/PoC fields.
   const evaluatorRoleIds = ["evaluator", ...Object.values(EVALUATOR_ROLES).map((role) => role.role_id)];
   for (const roleId of evaluatorRoleIds) {
     const claimRecorders = uniqueClaimRecordingToolsForRole(roleId);
+    if (roleId === "evaluator-physical") {
+      assert.deepEqual(claimRecorders, ["bob_record_physical_candidate_claim"]);
+      assert.equal(
+        mcpToolNamesForRole(roleId).includes("bob_record_candidate_claim"),
+        false,
+        "physical evaluator must not inherit the web-shaped CandidateClaim writer",
+      );
+    }
     assert.equal(
       claimRecorders.length,
       1,
@@ -429,6 +439,32 @@ test("reporter prompt renders reachability graded severity when C9 stamps it", (
   assert.match(reporterPrompt, /reachability\.graded_severity/);
   assert.match(reporterPrompt, /public severity/);
   assert.match(reporterPrompt, /reachability disposition/);
+});
+
+test("physical verifier and evidence prompts use only the no-hardware verdict adapter", () => {
+  for (const file of [
+    "prompts/roles/brutalist-verifier.md",
+    "prompts/roles/balanced-verifier.md",
+    "prompts/roles/final-verifier.md",
+    "prompts/roles/evidence.md",
+  ]) {
+    const prompt = readFile(file);
+    assert.match(prompt, /bob_verify_physical_verdict/);
+    assert.match(prompt, /asset_locator/);
+    assert.match(prompt, /verified_verdict_ref/);
+    assert.match(prompt, /never invokes? hardware|never invoke hardware/i);
+  }
+
+  const graderPrompt = readFile("prompts/roles/grader.md");
+  assert.match(
+    graderPrompt,
+    /physical grade binding requires the unavailable durable no-active-effects completion projection/,
+  );
+  const reporterPrompt = readFile("prompts/roles/reporter.md");
+  assert.match(
+    reporterPrompt,
+    /physical report rendering requires the unavailable durable physical grade binding/,
+  );
 });
 
 test("reporter OSS branch carries CWE, server-derived CVSS v3.1, and references guidance", () => {
@@ -599,6 +635,95 @@ test("evaluator prompts require cited reachability assertions for OSS native fin
   }
 });
 
+test("evaluator prompts front-load the id_bearing cross-tenant differential", () => {
+  const surfaces = [
+    "prompts/roles/evaluator.md",
+    ".claude/agents/evaluator-agent.md",
+  ];
+  for (const surface of surfaces) {
+    const body = readFile(surface);
+    // Fires on the id_bearing surface predicate the finalize/grade gate keys on.
+    assert.match(body, /id[_-]bearing/, `${surface} must scope the directive to id_bearing surfaces`);
+    // Proactive / before-closing cue — the whole point is it runs ahead of the gate.
+    assert.match(body, /BEFORE you close anything/, `${surface} must front-load the directive before closing`);
+    assert.match(body, /proactive/, `${surface} must frame the differential as proactive`);
+    // Earned-done bar: run the differential to earn a per-endpoint cross_tenant_flip.
+    assert.match(body, /bob_run_auth_differential/, `${surface} must direct running bob_run_auth_differential`);
+    assert.match(body, /cross_tenant_flip/, `${surface} must name the cross_tenant_flip earned-done bar`);
+    // Second-principal acquisition through already-named provisioning primitives.
+    assert.match(body, /bob_auto_signup/, `${surface} must offer bob_auto_signup as a second-principal path`);
+    assert.match(body, /record->flush/, `${surface} must offer the browser record->flush credential-capture path`);
+    // Crown-reaching primitives.
+    assert.match(body, /bob_browser_session_\*/, `${surface} must point at authenticated browser sessions`);
+    assert.match(body, /UA-settable `bob_ws_probe`/, `${surface} must point at the UA-settable ws_probe`);
+    // Honest, un-fakeable partial fallback when no second principal is obtainable.
+    assert.match(body, /blocked_prereqs\[\]/, `${surface} must require a concrete blocked_prereqs entry`);
+    assert.match(body, /kind `auth_missing`/, `${surface} must name the auth_missing blocker kind`);
+    assert.match(body, /surface_status: partial/, `${surface} must fall to surface_status: partial`);
+    // Never close a crown on unauth recon or a coverage/bypass narrative.
+    assert.match(body, /unauthenticated recon or a coverage\/bypass narrative/, `${surface} must forbid closing on unauth recon or a coverage/bypass narrative`);
+  }
+});
+
+test("nested fanout actuation leaves carry the id_bearing cross-tenant differential stanza", () => {
+  // The nested coverage-fanout root (closes the surface) and its synchronous leaf
+  // (tests one id_bearing cell) must carry the same earned-done directive the flat
+  // evaluator front-loads: an id_bearing crown reaches done only through a real
+  // cross_tenant_flip, and a missing second principal is an honest partial, never a
+  // false complete. Source bodies AND their generated agent files are checked so a
+  // stale regenerate cannot silently drop the directive from the actuated prompt.
+  const fanoutSurfaces = [
+    "prompts/roles/evaluator-fanout.md",
+    ".claude/agents/evaluator-fanout.md",
+    "prompts/roles/evaluator-fanout-child.md",
+    ".claude/agents/evaluator-fanout-child.md",
+  ];
+  for (const surface of fanoutSurfaces) {
+    const body = readFile(surface);
+    // Scoped to the id_bearing predicate the finalize/grade gate keys on.
+    assert.match(body, /id_bearing/, `${surface} must scope the directive to id_bearing surfaces`);
+    // Earned-done bar: run the differential to earn a per-endpoint cross_tenant_flip.
+    assert.match(body, /bob_run_auth_differential/, `${surface} must direct running bob_run_auth_differential`);
+    assert.match(body, /cross_tenant_flip/, `${surface} must name the cross_tenant_flip earned-done bar`);
+    assert.match(body, /negative control flips 2xx/, `${surface} must describe the negative-control flip`);
+    // Second-principal provisioning through the named auth-store promotion.
+    assert.match(body, /bob_auth_store/, `${surface} must offer bob_auth_store second-principal promotion`);
+    // Honest, un-fakeable partial fallback when no second principal is obtainable.
+    assert.match(body, /blocked_prereqs\[\]/, `${surface} must require a concrete blocked_prereqs entry`);
+    assert.match(body, /auth_missing/, `${surface} must name the auth_missing blocker kind`);
+    assert.match(body, /partial/, `${surface} must fall to a partial, not a false complete`);
+    // Never close a crown on unauthenticated recon.
+    assert.match(body, /unauthenticated recon/, `${surface} must forbid closing on unauthenticated recon`);
+  }
+
+  // Root-specific: it owns surface_status and must gate BEFORE writing complete; a
+  // child's BOB_CHILD_CELL_DONE pointer does not earn the flip on its behalf.
+  for (const rootSurface of [
+    "prompts/roles/evaluator-fanout.md",
+    ".claude/agents/evaluator-fanout.md",
+  ]) {
+    const body = readFile(rootSurface);
+    assert.match(body, /BEFORE you write `surface_status: complete`/, `${rootSurface} must gate before writing surface_status: complete`);
+    assert.match(body, /BOB_CHILD_CELL_DONE` pointer does NOT earn it/, `${rootSurface} must reject a child pointer as proof`);
+    assert.match(body, /surface_status: partial/, `${rootSurface} must fall to surface_status: partial`);
+  }
+
+  // Child-specific: it does not own the handoff, so a missing second principal is a
+  // terminal `blocked` coverage row (never `tested`, and never the NON-terminal `needs_auth`
+  // which cannot close a nested leaf), which the root reads to record the blocked_prereqs entry
+  // and keep the surface partial.
+  for (const childSurface of [
+    "prompts/roles/evaluator-fanout-child.md",
+    ".claude/agents/evaluator-fanout-child.md",
+  ]) {
+    const body = readFile(childSurface);
+    assert.match(body, /log this cell `blocked`/, `${childSurface} must log the missing-principal cell as the terminal blocked status`);
+    assert.doesNotMatch(body, /log this cell `needs_auth`/, `${childSurface} must not direct the non-terminal needs_auth status (jams the leaf)`);
+    assert.match(body, /allowed_tools_for_node/, `${childSurface} must gate on the injected cell tool allow-list`);
+    assert.match(body, /NEVER `tested`/, `${childSurface} must forbid a tested row on unearned recon`);
+  }
+});
+
 // NOTE: the roadmap-era "Kimi hunter catalogue routes OSS brief profiles through
 // the generic worker path" test was dropped when Δ1 integrated onto main's Kimi v2
 // adapter (PR #67). Main's Kimi adapter does not yet render OSS brief-profile
@@ -617,56 +742,35 @@ test("Kimi reporter spawn uses structured report composition", () => {
 });
 
 // =============================================================================
-// SECTION 5 — Structural invariance (the P.4 guarantee)
+// SECTION 5 — Structural invariance
 // =============================================================================
 
 test("STRUCTURAL INVARIANCE: changing a tool's description does not break the suite", () => {
-  // Cycle P.4's load-bearing promise. We pick a representative tool, swap its
-  // exported `description` field on a deep clone, and re-run the structural
-  // primitives against the clone. Nothing structural changes.
+  // The contract: structural reference checks key off the registry shape
+  // (primary name, role bundles, artifacts), never description text. We pick a
+  // representative tool and assert the structural primitives against it.
   const sampleName = "bob_record_candidate_claim";
   const meta = TOOL_MANIFEST[sampleName];
   assert.ok(meta, "sample tool must exist");
 
-  const originalAliases = aliasNamesForTool(sampleName);
   const originalRoleBundles = [...meta.role_bundles];
   const originalArtifacts = [...meta.session_artifacts_written];
 
-  // Simulate a description rename by capturing a snapshot of structural data,
-  // then asserting we did not depend on any description text.
   const structuralSnapshot = {
     primary: primaryToolName(sampleName),
-    aliases: originalAliases,
     role_bundles: originalRoleBundles,
     mutating: meta.mutating,
     writes_claims: originalArtifacts.includes("claims.jsonl"),
   };
   assert.equal(structuralSnapshot.primary, sampleName);
-  assert.ok(structuralSnapshot.aliases.length >= 1);
   assert.ok(structuralSnapshot.role_bundles.includes("evaluator-shared"));
   assert.ok(structuralSnapshot.mutating);
   assert.ok(structuralSnapshot.writes_claims);
 
-  // Now prove the inverse: if the registry were to surface a new alias for
-  // this tool, every alias-aware helper would already accept it without code
-  // edits in this test file.
-  const acceptedNames = [structuralSnapshot.primary, ...structuralSnapshot.aliases];
-  for (const name of acceptedNames) {
-    assert.equal(primaryToolName(name), structuralSnapshot.primary);
-  }
-});
-
-test("STRUCTURAL INVARIANCE: alias-aware reference checks accept any registered alias", () => {
-  // Synthesize a document that references each known alias of a sample tool.
-  // The structural assertion helper must accept all of them. This is the
-  // contract that lets cycle P.1/P.3 alias-shims continue to pass tests.
-  const sampleName = "bob_http_scan";
-  const aliases = aliasNamesForTool(sampleName);
-  assert.ok(aliases.length >= 1, "sample tool must carry at least one alias");
-  for (const name of [sampleName, ...aliases]) {
-    const synthetic = `prose mentions ${name} once.`;
-    assertToolReferenced(synthetic, sampleName, `synthetic doc mentioning ${name} must satisfy the structural reference check`);
-  }
+  // Every registered tool is its own primary; the helper resolves its name to
+  // itself with no aliases in play.
+  assert.equal(primaryToolName(sampleName), structuralSnapshot.primary);
+  assert.deepEqual(aliasNamesForTool(sampleName), []);
 });
 
 // =============================================================================
@@ -961,7 +1065,14 @@ test("surface-discovery agents expose only the governance nucleus read and the b
     "bob_log_capability_friction",
     "bob_log_protocol_drift",
   ]);
+  // deep-surface-discovery additionally records ranked leads through the
+  // MCP-owned writer (surface-leads.json is MCP-owned; the agent no longer
+  // writes it directly), so it alone is granted bob_record_surface_leads.
+  const perAgentExtra = {
+    "deep-surface-discovery-agent": new Set(["bob_record_surface_leads"]),
+  };
   for (const agent of ["surface-discovery-agent", "deep-surface-discovery-agent"]) {
+    const allowed = new Set([...allowedPrimaries, ...(perAgentExtra[agent] || [])]);
     const document = readFile(`.claude/agents/${agent}.md`);
     const frontmatterMatch = document.match(/^---\n[\s\S]*?\n---\n/);
     const body = frontmatterMatch ? document.slice(frontmatterMatch[0].length) : document;
@@ -971,7 +1082,7 @@ test("surface-discovery agents expose only the governance nucleus read and the b
     for (const exposure of exposures) {
       const toolName = exposure.replace(MCP_PERMISSION_PREFIX, "");
       assert.ok(
-        allowedPrimaries.has(toolName),
+        allowed.has(toolName),
         `${agent} frontmatter exposes unexpected MCP tool ${exposure}`,
       );
     }
@@ -1043,64 +1154,18 @@ test("/bob-evaluate command loads the runner playbook directly and shares its re
 
 test("orchestrator skill stays bounded and reflects the lifecycle topology", () => {
   const lines = lineCount(".claude/skills/bob-evaluate-runner/SKILL.md");
-  // Cycle O.1 added bob_init_repo_session to the orchestrator bundle, which
-  // appends one line to the auto-generated allowed-tools block in SKILL.md.
-  // Cycle O.2 added bob_repo_inventory to the same bundle (+1 line).
-  // Cycle O.3 added bob_repo_prepare_env (+1 line).
-  // Cycle O.9 wired the orchestrator OSS branch + re-entry reconciliation
-  // contract; the role narrative grew by ~30 lines to cover argument parsing,
-  // target-axis branching, OSS lenses, the SETUP repo-mode sub-flow, and the
-  // explicit O-P8 contract. Cap bumped from 323 → 360.
-  // Plane X Cycle X.11 (Nike fix) added the cross-stack transition proposals
-  // stanza in OPEN_FRONTIER — names bob_propose_transition and the X-D3 closed
-  // transition_kind enum so the orchestrator proposes Transition nodes before
-  // dispatching Surface-node waves when ≥2 stack families share a target
-  // (+2 lines). Cap bumped 360 → 365.
-  // Plane Y Cycle Y.2 added bob_emit_runtime_drift to the orchestrator
-  // bundle (Y-D13 — the orchestrator-facing runtime drift telemetry entry).
-  // Auto-generated allowed-tools block gained one line. Cap bumped 365 → 366.
-  // Plane Y Cycle Y.3 added four MCP tools to the orchestrator bundle
-  // (bob_compose_report, bob_amend_report, bob_write_chain_rollup,
-  // bob_set_friction_scanners — Y-D15b / Y-D15c / D16). Auto-generated
-  // allowed-tools block gained four lines. REPORT-state prose rewritten to
-  // name the new tools (Y-P13 markdown-ownership). Cap bumped 366 → 372.
-  // Plane Y Cycle Y.8 (Y-D7c structural containment) auto-injects
-  // `<!-- @schema_ref: <tool> -->` markers into every STATE block that
-  // names a registered write tool. The REPORT block gains four markers
-  // (bob_compose_report, bob_write_chain_rollup, bob_amend_report,
-  // bob_write_wave_handoff) plus a blank-line separator. Cap bumped
-  // 372 → 380.
-  // Plane Y Cycle Y.11 (rev 4.1 Plane X hypergraph adoption) extended
-  // the OPEN_FRONTIER impact-correlation-drain block with one prose
-  // line routing the chain-builder through the graph apparatus
-  // (bob_propose_hypothesis / bob_propose_transition / bob_attach_contract
-  // / bob_append_chain_node / bob_query_chain_tree) and extended the
-  // REPORT block to name bob_query_chain_tree alongside the existing
-  // bob_write_chain_rollup. Cap bumped 380 → 382.
-  // Plane Y Cycle Y.12 (rev 4.1 defect 1 — producer-side surface-leads
-  // rationale) added the handoff-receipt handler paragraph to the
-  // OPEN_FRONTIER state, naming bob_record_surface_leads as the
-  // producer-side enforcement site and bob_promote_surface_leads as
-  // unchanged (closes the Y.9 stigmergy pair
-  // surface_discovery_ranked_leads ↔
-  // orchestrator_handoff_receipt_record_surface_leads). Cap bumped
-  // 382 → 383.
-  // Plane Y rev 4.1 completion closure — wired four dormant tools into
-  // orchestrator.md prose: bob_emit_runtime_drift (hook_denial Hard Rule
-  // + partial_advance_acknowledged + wrong_mode_tool_call drift
-  // signatures), bob_propose_friction_promotion + bob_scan_transcript_for_friction
-  // (post-merge wave-settlement instructions), bob_set_friction_scanners
-  // (Friction-Scanner Extension subsection between Optional Workflow
-  // Playbooks and STATE: OPEN_FRONTIER). Closes the leverage_audit
-  // gaps_present verdict. Cap bumped 383 → 387.
-  // C14 proof-carrying disclosure adds bob_write_proof_bundle to the
-  // orchestrator bundle (+1 generated allowed-tools line).
-  // IP7 SARIF ingest adds bob_ingest_sarif to the orchestrator bundle
-  // (+1 generated allowed-tools line) while keeping ingestion host-side and
-  // bounded.
-  // I10 adds bob_read_static_analysis_index to the orchestrator bundle
-  // (+1 generated allowed-tools line) for bounded static-index reads.
-  assert.ok(lines <= 390, `bob-evaluate-runner skill is ${lines} lines (cap 390)`);
+  // The ceiling tracks the rendered span of the orchestrator narrative: the six
+  // lifecycle states (SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE ->
+  // REPORT), the multi-axis target grammar (web / OSS repo / contract, with the
+  // O-P6 companion + --rpc binding), the repo-mode SETUP sub-flow, the
+  // recon-angle and recon-producer-floor dispatch stanzas (the rendered
+  // {{PRODUCER_CATALOGUE}} is one line per PRODUCER_PACKS entry plus its
+  // preamble), the cross-stack transition / coverage-cell-closure /
+  // path-traced-chain-composition stanzas, and the auto-generated allowed-tools
+  // block (one line per tool in the orchestrator role bundle). It is registry-
+  // driven: bundle and PRODUCER_PACKS changes move it. Set the cap to the exact
+  // post-regen trimmed line count.
+  assert.ok(lines <= 456, `bob-evaluate-runner skill is ${lines} lines (cap 456)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1131,14 +1196,14 @@ test("status and debug skills are read-only and reject orchestration mutators", 
 // SECTION 9 — Capability-pack registry contracts
 // =============================================================================
 
-test("each capability pack's role_bundles match the routed Claude role's mcp_role_bundles", () => {
+test("each dispatchable capability pack's role_bundles match the routed Claude role's mcp_role_bundles", () => {
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind === "agent" && typeof spec.output_path === "string") {
       agentNameToRoleId[path.basename(spec.output_path).replace(/\.md$/, "")] = roleId;
     }
   }
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
     assert.ok(roleId, `pack ${pack.id} evaluator_agent ${pack.evaluator_agent} has no Claude role spec`);
     const role = roleDefinition(roleId);
@@ -1171,9 +1236,9 @@ test("EVALUATOR_ROLES is the single source of truth across consumers", () => {
   }
 });
 
-test("capability packs expose versioned context budgets and complete spawn metadata", () => {
+test("dispatchable capability packs expose versioned context budgets and complete spawn metadata", () => {
   const { BLOCKED_HARNESS_RUN_KINDS } = require("../mcp/lib/capability-packs-rendering.js");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     assert.equal(pack.capability_pack_version, 1);
     assert.ok(pack.evaluator_agent);
     assert.ok(pack.brief_profile);
@@ -1208,9 +1273,9 @@ test("capability packs expose versioned context budgets and complete spawn metad
   }
 });
 
-test("every capability pack declares replay + evidence runners that resolve to registered tools", () => {
+test("every dispatchable capability pack declares replay + evidence runners that resolve to registered tools", () => {
   const toolNames = new Set(Object.keys(TOOL_MANIFEST));
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     assert.ok(pack.verifier && pack.evidence, `pack ${pack.id} must declare verifier + evidence`);
     assert.ok(toolNames.has(pack.verifier.replay_tool), `pack ${pack.id} replay_tool not registered`);
     assert.ok(toolNames.has(pack.evidence.runner), `pack ${pack.id} evidence.runner not registered`);
@@ -1257,7 +1322,7 @@ test("identifier_hint and bypass_attempt min lengths match between schema and ru
 
 test("rendered orchestrator catalogue lists every smart-contract pack exactly once", () => {
   const rendered = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (pack.spawn.profile !== "smart_contract") continue;
     const escaped = pack.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const lineRegex = new RegExp(
@@ -1326,7 +1391,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // Plane Y Cycle Y.2 adds bob_log_capability_friction +
   // bob_log_protocol_drift to evaluator-shared (Y-D2 voluntary emission
   // entries). Both are summary-grade by shape (Y-P2): closed-prefix
-  // payloads, no body fields, 5-tuple idempotent. Per-evaluator brief
+  // payloads, no body fields, 6-tuple idempotent. Per-evaluator brief
   // tokens unchanged (no brief surfacing); budgets bump by +2 (SC 39→41,
   // web 41→43) to keep parity with the bundle surface.
   // IP7 adds bob_ingest_sarif to evaluator-shared. It reads already-captured
@@ -1335,6 +1400,9 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // I10 adds bob_read_static_analysis_index to evaluator-shared. It is a
   // bounded read-only query over scrubbed static-analysis-index.jsonl rows;
   // budgets bump by +1 (SC 42→43, web 44→45).
+  // bob_ws_probe adds WebSocket scope-gated probing to evaluator-web only,
+  // the final +1 on top of the offensive-tool grants below (web 54→55);
+  // SC budget unchanged.
   // PR3 adds bob_http_confirm to evaluator-web only. It is the trusted
   // read-only NEGATIVE-ONLY differential confirmer: it appends http-audit.jsonl
   // records for its probes (never writes signed offensive-runs rows); web budget
@@ -1370,6 +1438,10 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // the browser-transport broken-auth/BFLA differential signed-row producer — MEDIUM for the
   // authn-vs-anon differential, HIGH when the v2 victim arm proves a cross-principal break);
   // web budget bumps by +1 (web 53→54), SC unchanged.
+  // Second-order producer adds bob_secondorder_mint + bob_secondorder_reread to evaluator-web
+  // ONLY (same narrow grant; mint is a non-signing canary allocator, reread is the MEDIUM-ceiling
+  // stored-effect signed-row producer). Both are opaque-context (server-minted canary/decoy, masked
+  // oracle return, no brief surfacing); web budget bumps by +2 (web 56→58), SC unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
@@ -1377,9 +1449,16 @@ test("evaluator agents stay under their MCP tool budget", () => {
       agentNameToRoleId[path.basename(spec.output_path).replace(/\.md$/, "")] = roleId;
     }
   }
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 54 : EVALUATOR_MCP_TOOL_BUDGET;
+    // web evaluator carries bob_run_auth_differential so it can run the sweep that
+    // the auth-differential completion gate (AD1) requires before surface complete.
+    // It also carries bob_auth_store (evaluator-web only): a minimal-privilege credential
+    // promoter (no network/browser/account-creation) so an evaluator that captured a second
+    // principal in-wave can register it as a named profile and run the differential without an
+    // orchestrator round-trip; the dispatcher seam cannot stamp synthetic provenance, so the
+    // grant cannot widen the provenance-gated producer arm (web 58→59).
+    const budget = pack.spawn.profile === "web" ? 59 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,
@@ -1400,9 +1479,25 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // Cycle O.5 (Plane O) adds bob_repo_check so verifiers can do bounded,
   // read-only file probes (file_exists / file_contains / regex_match)
   // against the bound repo without taking the docker path.
+  // The OSS reproduction gate adds bob_verify_repro_reproduction so a
+  // verification round can re-run the differential PoC replay (vuln tree vs
+  // upstream-fix tree) and confirm the minted verified_pass without a
+  // claim-writing tool. OE4 adds bob_verify_oracle_differential — the
+  // invariant-from-diff sibling that re-runs the vuln-patched vs fix-patched
+  // trees to confirm an ASAN-invisible value_state_confirmed, same audit-graded
+  // ledger, also without a claim-writing tool.
   // PR3 adds bob_http_confirm: read-only against the target and negative-only
   // (never writes signed offensive-runs rows), but it appends http-audit.jsonl
   // records for its probes, so it is a session-artifact writer (mutating).
+  // The web-standalone finding-differential gate adds bob_verify_finding_differential —
+  // the standalone-class sibling of the repro/oracle/invariant verifiers. It binds two
+  // already-executed offensive-runs rows for one finding_id and mints the audit-graded
+  // finding-differential-verified.jsonl on a genuine flip, without a claim-writing tool.
+  // Per-finding round fan-out adds bob_stage_verification_round_partial: a verifier
+  // worker stages ONE finding's validated, attempt/snapshot-bound result; the server
+  // unions the staged partials into the round at commit. It never writes a round
+  // document or a verdict, so it is a session-artifact writer (mutating) but not a
+  // claim-writing tool.
   assert.deepEqual(
     mutating.sort(),
     [
@@ -1411,6 +1506,11 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",
+      "bob_stage_verification_round_partial",
+      "bob_verify_finding_differential",
+      "bob_verify_invariant_differential",
+      "bob_verify_oracle_differential",
+      "bob_verify_repro_reproduction",
       "bob_write_verification_round",
     ].sort(),
   );
@@ -1455,7 +1555,7 @@ test("proof-bundle writer stays limited to orchestrator and final verifier", () 
 
 test("evidence-agent surfaces every SC-pack evidence runner via its role bundle", () => {
   const tools = agentToolsList(".claude/agents/evidence-agent.md");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     assertPermissionReferenced(
       tools,
       pack.evidence.runner,
@@ -1468,7 +1568,7 @@ test("SC role bundles include the evidence bundle for runner re-runs", () => {
   // Every SC pack runner must list `evidence` in its role bundle so the
   // evidence agent can replay across families.
   const familyRunners = new Set();
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (pack.spawn.profile !== "smart_contract") continue;
     familyRunners.add(pack.verifier.replay_tool);
     familyRunners.add(pack.evidence.runner);
@@ -1521,34 +1621,57 @@ test("settings.json registers session guards on Bash, Read, and Write", () => {
   assert.ok(bash.hooks.some((h) => h.command.includes("session-read-guard.sh")));
 });
 
-test("settings hooks register only the write-confirm HITL gate on MCP tools (never a scope/enforcement guard)", () => {
+test("settings MCP hooks are closed to write-confirm and the transcript-bound fanout child guard", () => {
   const settings = JSON.parse(readFile(".claude/settings.json"));
-  // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS the
-  // operator before a target-mutating bob_http_scan (inert unless BOB_HTTP_WRITE_CONFIRM is set) and
-  // does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where a hook edit can't bypass
-  // it. Any other MCP-tool matcher, or a scope/enforcement guard on an MCP tool, remains forbidden.
-  // Anchored exact-command match — a bare substring check would pass on a chained command, weakening
-  // this security contract; the only allowed MCP-tool hook command is exactly the write-confirm gate.
+  // The write-confirm hook is operator HITL for target mutation. The sole
+  // enforcement exception is NS-7's host-context boundary: MCP cannot see
+  // Claude's root-vs-child identity, so the tracked lifecycle hook denies the
+  // two root-only MCP calls before execution. All ordinary target/scope policy
+  // remains server-enforced.
   const isWriteConfirmOnlyCommand = (command) =>
     /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
+  const isFanoutGuardOnlyCommand = (command) =>
+    /^\s*node\s+["'][^"']*\/\.claude\/hooks\/agent-run-stop\.js["']\s*$/.test(String(command || ""));
   const mcpEntries = (settings.hooks.PreToolUse || []).filter((e) => e.matcher.startsWith(MCP_PERMISSION_PREFIX));
+  const expectedMatchers = new Set([
+    "mcp__hacker-bob__bob_http_scan",
+    FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+  ]);
   for (const entry of mcpEntries) {
-    assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", `unexpected MCP-tool matcher ${entry.matcher} in settings`);
-    assert.ok(
-      (entry.hooks || []).every((h) => isWriteConfirmOnlyCommand(h.command)),
-      "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
-    );
+    assert.ok(expectedMatchers.has(entry.matcher), `unexpected MCP-tool matcher ${entry.matcher} in settings`);
+    const commandCheck = entry.matcher === FANOUT_CHILD_SCOPE_GUARD_MATCHER
+      ? isFanoutGuardOnlyCommand
+      : isWriteConfirmOnlyCommand;
+    assert.ok((entry.hooks || []).every((h) => commandCheck(h.command)),
+      `unexpected command for MCP-tool hook ${entry.matcher}`);
   }
+  assert.deepEqual(new Set(mcpEntries.map((entry) => entry.matcher)), expectedMatchers);
 });
 
-test("SubagentStop hooks match every routed capability-pack evaluator", () => {
-  const expected = evaluatorAgentNamesForCapabilityPacks().sort();
+test("SubagentStop hooks match wave evaluators plus transcript-attested fanout children", () => {
+  // The agent-run lifecycle fires for every evaluator that writes a wave handoff
+  // + the BOB_AGENT_RUN_DONE marker, plus the distinct child that emits
+  // BOB_CHILD_CELL_DONE. SubagentStart intentionally remains root-only.
+  const expected = Array.from(
+    new Set([
+      ...evaluatorAgentNamesForCapabilityPacks(),
+      ...spawnCapableAgentNames(),
+      ...fanoutChildAgentNames(),
+    ]),
+  ).sort();
   for (const settings of [defaultClaudeSettings(), JSON.parse(readFile(".claude/settings.json"))]) {
     const configured = (settings.hooks.SubagentStop || [])
       .filter((entry) => (entry.hooks || []).some((hook) => /agent-run-stop\.js/.test(hook.command)))
       .map((entry) => entry.matcher)
       .sort();
     assert.deepEqual(configured, expected);
+    const started = (settings.hooks.SubagentStart || [])
+      .filter((entry) => (entry.hooks || []).some((hook) => /agent-run-start\.js/.test(hook.command)))
+      .map((entry) => entry.matcher);
+    for (const childName of fanoutChildAgentNames()) {
+      assert.equal(started.includes(childName), false,
+        `${childName} must never mutate the shared root AgentRun through SubagentStart`);
+    }
   }
 });
 
@@ -1571,9 +1694,10 @@ test("standard hook test script runs both write and read guards", () => {
 test("Claude adapter config never leaks into the neutral MCP runtime", () => {
   assert.equal(fs.existsSync(path.join(ROOT, "mcp", "lib", "claude-config.js")), false);
   for (const relativePath of allJsFiles("mcp")) {
+    const source = readFile(relativePath);
     assert.doesNotMatch(
-      readFile(relativePath),
-      /claude-config|adapters\/claude/,
+      source,
+      /(?:require\s*\(\s*["'][^"']*(?:claude-config|adapters\/claude)[^"']*["']\s*\)|from\s+["'][^"']*(?:claude-config|adapters\/claude)[^"']*["'])/,
       `${relativePath} imports Claude adapter config`,
     );
   }
@@ -1584,6 +1708,10 @@ test("CLAUDE_PROJECT_DIR appears only in adapter-scoped or compatibility-scoped 
     path.join("mcp", "lib", "runtime-resources.js"),
     path.join("scripts", "lib", "claude-role-renderer.js"),
     path.join("bin", "hacker-bob.js"),
+    // generate-claude-settings.js only emits the literal "${CLAUDE_PROJECT_DIR:-$PWD}"
+    // string into the generated settings.json, same reason bin/hacker-bob.js and
+    // runtime-resources.js are allow-listed above.
+    path.join("scripts", "generate-claude-settings.js"),
   ]);
   for (const root of ["mcp", "scripts", "bin"]) {
     for (const relativePath of allJsFiles(root)) {
@@ -1646,7 +1774,7 @@ test("renderers do not inline per-chain workflow strings (pack.spawn is the only
 
 test("rendered orchestrator catalogue surfaces every SC pack route", () => {
   const rendered = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (pack.spawn.profile !== "smart_contract") continue;
     const escaped = pack.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     assert.match(
@@ -1805,10 +1933,11 @@ test("auth.json is never instructed for direct read in user-facing prompts", () 
   }
 });
 
-test("rendered evaluator agents carry the handoff field limits block", () => {
-  const renderedEvaluators = fs.readdirSync(path.join(ROOT, ".claude/agents"))
-    .filter((name) => name.startsWith("evaluator") && name.endsWith(".md"))
-    .map((name) => `.claude/agents/${name}`);
+test("rendered evaluator roles with handoff authority carry the handoff field limits block", () => {
+  const renderedEvaluators = Object.values(CLAUDE_ROLE_SPECS)
+    .filter((spec) => spec.kind === "agent"
+      && mcpToolNamesForRole(spec.role_id).includes("bob_write_wave_handoff"))
+    .map((spec) => spec.output_path);
   for (const relativePath of renderedEvaluators) {
     const body = readFile(relativePath);
     assert.match(
@@ -1817,6 +1946,76 @@ test("rendered evaluator agents carry the handoff field limits block", () => {
       `${relativePath} missing rendered handoff field limits`,
     );
   }
+});
+
+test("evaluator-fanout body carries the brain-owned actuation contract (CN Step B B1/B2/B4)", () => {
+  const body = readFile("prompts/roles/evaluator-fanout.md");
+  // B1 — actuate the brain plan only, never discretionary children, with the depth gate.
+  assert.match(body, /child_fanout_plan/, "reads the brain-owned plan");
+  assert.match(body, /Do NOT add, merge, split, or invent children/, "forbids discretionary children");
+  assert.match(body, /remaining_depth/, "carries the depth gate");
+  assert.match(body, /subagent_type: "evaluator-fanout-child"/, "spawns the distinct pinned leaf role");
+  assert.match(body, /run_in_background: false/, "uses Claude's supported synchronous child edge");
+  assert.match(body, /Claude Code >=2\.1\.172/, "documents the minimum nested-subagent host version");
+  assert.match(body, /CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1/, "documents the explicit agent-teams runtime gate");
+  assert.match(body, /agent teams are off by default/i, "does not imply the experimental topology is default-on");
+  assert.match(body, /Omit `name` completely/, "does not attempt to add children to the flat teammate roster");
+  assert.match(body, /remaining_depth: 0/, "injects a non-recursive leaf depth");
+  assert.match(body, /planning_key: \[entry\.planning_key\]/, "injects the MCP-issued planning identity into the child prompt");
+  assert.match(body, /BOB_CHILD_CELL_DONE/, "uses the distinct child completion marker consumed by SubagentStop");
+  assert.match(body, /spawn-time tools exclude `Agent`, `Task`, `bob_write_wave_handoff`, and `bob_finalize_agent_run`/,
+    "root documents the distinct child's spawn-time authority boundary");
+  assert.match(body, /spawned_children/, "the root self-reports the direct brain-owned children it actuated");
+  assert.notEqual(CLAUDE_ROLE_SPECS["evaluator-fanout"].background, true,
+    "the renderer must not force synchronous fanout children into background mode");
+  // B2 — coverage reconcile so the parent's next fan-out prunes the cell.
+  assert.match(body, /bob_log_coverage/, "reconciles cell coverage");
+  // B1/HE-6 — transition-blind: pivots reported up, not proposed.
+  assert.match(body, /TRANSITION-BLIND/);
+  assert.match(body, /discovered_pivots\[\]/);
+  assert.match(body, /do not hold `?bob_propose_transition/, "does not hold the propose-transition tool");
+  // B4 — per-cell technique weapon (the depth-3 technique-pack variant).
+  assert.match(body, /technique_pack_ids/, "carries the per-cell technique packs");
+});
+
+test("NS-7 distinct fanout child is spawn-time least-authority and completion-bound", () => {
+  const rootRole = FANOUT_ROLE_REGISTRY.root.role_id;
+  const childRole = FANOUT_ROLE_REGISTRY.child.role_id;
+  const rootTools = new Set(claudeAllowedToolsForRole(rootRole));
+  const childTools = new Set(claudeAllowedToolsForRole(childRole));
+  const childBody = readFile("prompts/roles/evaluator-fanout-child.md");
+
+  assert.deepEqual(fanoutChildAgentNames(), [FANOUT_ROLE_REGISTRY.child.subagent_type]);
+  assert.equal(CLAUDE_ROLE_SPECS[childRole].spawn_capable, undefined);
+  assert.deepEqual(CLAUDE_ROLE_SPECS[childRole].local_tools, []);
+  for (const forbidden of [
+    "Agent",
+    "Task",
+    mcpPermissionForTool("bob_write_wave_handoff"),
+    mcpPermissionForTool("bob_finalize_agent_run"),
+  ]) {
+    assert.equal(childTools.has(forbidden), false, `child leaked ${forbidden}`);
+  }
+  for (const retained of [
+    "bob_read_assignment_brief",
+    "bob_read_technique_pack",
+    "bob_log_technique_attempt",
+    "bob_record_candidate_claim",
+    "bob_log_coverage",
+  ]) {
+    assert.equal(childTools.has(mcpPermissionForTool(retained)), true, `child lost ${retained}`);
+  }
+  const scopedGrant = `Agent(${FANOUT_ROLE_REGISTRY.child.subagent_type})`;
+  assert.equal(rootTools.has(scopedGrant), true, "wave root retains only the child-scoped host spawn primitive");
+  assert.equal(rootTools.has("Agent"), false, "wave root must not receive unrestricted Agent");
+  assert.equal(rootTools.has("Task"), false, "wave root must not receive the unrestricted legacy alias");
+  assert.equal(rootTools.has("Agent(evaluator-agent)"), false, "wave root must not spawn a foreign role");
+  assert.equal(rootTools.has(mcpPermissionForTool("bob_write_wave_handoff")), true);
+  assert.equal(rootTools.has(mcpPermissionForTool("bob_finalize_agent_run")), true);
+  assert.match(childBody, /BOB_CHILD_CELL_DONE/);
+  assert.match(childBody, /remaining_depth: 0/);
+  assert.match(childBody, /Do NOT call `bob_write_wave_handoff`/);
+  assert.match(childBody, /Do NOT call `bob_finalize_agent_run`/);
 });
 
 test("evaluator prompt sources do not hand-code handoff field limits", () => {
@@ -1904,6 +2103,20 @@ test("generated surfaces describe central session authority and target_domain se
   ].map(readFile).join("\n");
   assert.match(surfaces, /`target_domain` selects the session record/);
   assert.match(surfaces, /authority error.*session-integrity blocker/);
+});
+
+test("orchestrator surfaces preserve an attested private URL hostname as target_domain", () => {
+  const surfaces = [
+    ".claude/skills/bob-evaluate-runner/SKILL.md",
+    "adapters/codex/skills/bob-evaluate/SKILL.md",
+    "adapters/kimi/skills/bob-evaluate/SKILL.md",
+  ].map(readFile);
+  for (const surface of surfaces) {
+    assert.match(surface, /target_domain: "127\.0\.0\.1"/);
+    assert.match(surface, /never invent a `localhost-\*` slug or include the port/);
+    assert.match(surface, /call `bob_init_session` through MCP first/);
+    assert.match(surface, /session-read-guard.*is not evidence that MCP is unavailable/);
+  }
 });
 
 test("bob-diff-review skill advances to OPEN_FRONTIER before evaluator waves", () => {

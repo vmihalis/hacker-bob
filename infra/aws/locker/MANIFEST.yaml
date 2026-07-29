@@ -1,0 +1,93 @@
+manifest_version: 1
+target:
+  name: locker
+  private_dns: locker.internal
+  upstream:
+    repository: github.com/lockerpm/core-api
+    license: GPLv3
+    commit: "{{SLOT: pin at build day}}"
+  scope:
+    service: self-hosted in-VPC instance only
+    excludes:
+      - CyStack hosted/cloud Locker
+      - whitehub.net
+      - real user vaults or credentials
+
+seed_artifacts:
+  patch:
+    path: infra/aws/locker/seed/seed-idor.patch
+    sha256: 7978e7c72cd11512856570fc8502fdad547fbdb282e94024c389b546543cd951
+    graded_variant: primary
+    fallback_variant: "LOCKER-SPEC.md section 2.2 is documented but non-graded"
+  seed_data_snapshot:
+    command: python3 infra/aws/locker/seed/seed-data.py
+    sha256: 52336a63e31d5638b25a83b9634b45f1d84010435bd8fb9c821b8341752c192b
+    data_class: synthetic only
+
+endpoints:
+  - method: POST
+    path: /api/v1/sso/auth
+    purpose: Authenticate a tenant user and mint a session/token.
+    vulnerable: false
+    owasp_api_2023: n/a
+    decoy_property: auth endpoint establishes identity only; it is not an authz decoy.
+
+  - method: GET
+    path: /api/v1/ciphers
+    purpose: List the calling user's own vault items.
+    vulnerable: false
+    owasp_api_2023: n/a
+    decoy_property: list-scoped-to-caller; no BOLA on list.
+
+  - method: GET
+    path: /api/v1/ciphers/{cipher_id}
+    purpose: Retrieve a single vault item.
+    vulnerable: true
+    owasp_api_2023: API1:2023 Broken Object Level Authorization
+    weakness: BOLA/IDOR on single-cipher read.
+    seed_mechanism: >
+      The handler authenticates the request but omits the ownership check that
+      compares the resolved user_id against the cipher record's owner_user_id
+      before returning the cipher payload.
+    seed_patch_sha256: 7978e7c72cd11512856570fc8502fdad547fbdb282e94024c389b546543cd951
+    expected_finding: >
+      U-B's authenticated session retrieves U-A's vault ciphers c1001-c1010
+      via GET /api/v1/ciphers/{id} — the read path authenticates the caller
+      but never authorizes the caller against the object's owner, disclosing
+      another tenant's stored secrets
+
+  - method: PUT
+    path: /api/v1/ciphers/{cipher_id}
+    purpose: Update a vault item.
+    vulnerable: false
+    owasp_api_2023: n/a
+    decoy_property: update-keeps-ownership-check; no BOLA on write.
+
+  - method: GET
+    path: /api/v1/sharing/{share_id}
+    purpose: Retrieve a cipher shared into a team/collection.
+    vulnerable: false
+    owasp_api_2023: n/a
+    decoy_property: >
+      sharing-membership-check-remains; section 2.2 shared-cipher fallback is
+      not the graded live seed unless separately pinned before a run.
+
+  - method: GET
+    path: /api/v1/folders/{folder_id}
+    purpose: Retrieve a folder.
+    vulnerable: false
+    owasp_api_2023: n/a
+    decoy_property: folder-read-keeps-owner-check.
+
+  - method: GET
+    path: /api/v1/teams/{team_id}/members
+    purpose: List an organization/team's members.
+    vulnerable: false
+    owasp_api_2023: n/a
+    decoy_property: team-members-list-keeps-member-or-admin-check.
+
+control_invariants:
+  - U-C-always-denies: every probe against U-C resources under every endpoint must deny.
+  - U-B-is-valid-authenticated-caller: authN passes; only object authZ fails on the graded row.
+  - exactly-one-graded-seed: primary GET /api/v1/ciphers/{cipher_id} only.
+  - manifest-precommitted-before-run: never backfill this file from hacker-bob report output.

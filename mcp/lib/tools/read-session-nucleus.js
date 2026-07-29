@@ -31,7 +31,7 @@ module.exports = Object.freeze({
     ]
   },
   handler,
-  role_bundles: ["orchestrator", "evaluator-shared", "reporter"],
+  role_bundles: ["orchestrator", "evaluator-shared", "evaluator-physical", "reporter"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

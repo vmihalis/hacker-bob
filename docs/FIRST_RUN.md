@@ -57,7 +57,7 @@ OK: claude_settings_hooks - .claude/settings.json contains Bob hooks
 OK: claude_settings_permissions - .claude/settings.json contains Bob MCP permissions
 OK: claude_settings_statusline - .claude/settings.json contains Bob statusline
 OK: mcp_server_file - mcp/server.js is installed
-OK: mcp_server_loadable - mcp/server.js loads successfully
+OK: mcp_server_loadable - mcp/server.js matches the runtime manifest and passes static CommonJS syntax validation
 WARN: optional_tool_subfinder - subfinder is missing; related surface-discovery steps will be skipped
 WARN: optional_tool_nuclei - nuclei is missing; related surface-discovery steps will be skipped
 WARN: optional_tool_httpx - httpx is missing; related surface-discovery steps will be skipped
@@ -99,7 +99,7 @@ For Claude, run:
 /bob-status
 ```
 
-For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files. Bob writes session state under `~/hacker-bob-sessions/<target_domain>/`; if a pre-existing `~/bounty-agent-sessions/<target_domain>/` directory remains from before the v2.0 rename, Bob copies (never moves) it into the canonical location on first access and preserves the legacy directory until the v2.1.0 `--purge-legacy-session-root` flag is invoked.
+For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files. Bob writes session state under `~/hacker-bob-sessions/<target_domain>/`; the pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or auto-copied — clean up a leftover legacy root now with `hacker-bob install --purge-legacy-session-root [--yes]`.
 
 For Codex, invoke `$bob-status`. For Kimi, invoke `/skill:bob-status`. For generic MCP hosts, list the `hacker-bob` tools or call a read-only status tool through the host's MCP UI.
 
@@ -145,4 +145,4 @@ SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT
 - `GRADE`: grade verdicts assign final severities and submission readiness.
 - `REPORT`: `ReportSnapshot` records record the final triage-facing report; `REPORT -> OPEN_FRONTIER` is authorized for follow-up discovery.
 
-The MCP tool surface uses the `bob_*` prefix (e.g., `bob_http_scan`, `bob_record_candidate_claim`, `bob_advance_session`). v1.x integrations that hard-coded `bounty_*` names continue to resolve through a one-release alias layer; invoking an alias appends a `governance.tool_deprecated` event to `session-events.jsonl` for visibility, and the alias layer is removed in v2.1.0.
+The MCP tool surface uses the `bob_*` prefix (e.g., `bob_http_scan`, `bob_record_candidate_claim`, `bob_advance_session`). The `bounty_*` alias layer was removed in 2.1.0; calling a `bounty_*` name now returns `UNKNOWN_TOOL` and the `governance.tool_deprecated` event kind is retired, so call the `bob_*` primary directly.

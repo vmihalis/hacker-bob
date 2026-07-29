@@ -37,6 +37,9 @@ const {
   normalizeProofBundlesDocument,
 } = require("../mcp/lib/proof-bundle.js");
 const {
+  verifyReproReproduction,
+} = require("../mcp/lib/repro-replay-verifier.js");
+const {
   proofBundlePaths,
   repoCommandRunsJsonlPath,
   repoRunsDir,
@@ -45,6 +48,9 @@ const {
 const {
   appendJsonlLine,
 } = require("../mcp/lib/storage.js");
+const {
+  persistingRunner,
+} = require("./helpers/repro-run-pair.js");
 const {
   hashCanonicalJson,
 } = require("../mcp/lib/verification-contracts.js");
@@ -264,7 +270,25 @@ function exerciseDifferentialEvidence(domain) {
   };
 }
 
-function exerciseProofBundle(domain) {
+async function exerciseProofBundle(domain) {
+  // REFUTING-ARM (universal): the replay_script bundle requires a VERIFIED_PASS
+  // differential in repro-verified.jsonl bound to finding_id + the replayed command.
+  // Seed it with the real verifier (flip: /src ASAN crash on vuln, clean on fix).
+  let n = 0;
+  const repoDockerRunFn = async ({ checkout }) => {
+    n += 1;
+    if (checkout) return { run_id: `repro-control-${n}`, exit_code: 0, stdout_text: "", stderr_text: "All tests passed\n" };
+    return {
+      run_id: `repro-vuln-${n}`,
+      exit_code: 1,
+      stdout_text: "",
+      stderr_text: "==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511\n    #0 0x4f1c2a in parse() /src/parser.c:1242:10\nSUMMARY: AddressSanitizer: heap-buffer-overflow /src/parser.c:1242:10",
+    };
+  };
+  await verifyReproReproduction(
+    { target_domain: domain, finding_id: "F-1", command: ["sh", "-lc", "./repro.sh"], control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+    { repoDockerRunFn: persistingRunner(domain, repoDockerRunFn) },
+  );
   const document = normalizeProofBundlesDocument({
     version: 1,
     target_domain: domain,
@@ -347,7 +371,7 @@ async function exerciseDeterministicPipelines(domain) {
   });
 
   const c10 = exerciseDifferentialEvidence(domain);
-  const proofBundle = exerciseProofBundle(domain);
+  const proofBundle = await exerciseProofBundle(domain);
   const staticAnalysis = exerciseStaticAnalysisIndex(domain);
   return { docDelta, authDiff, c10, proofBundle, staticAnalysis };
 }

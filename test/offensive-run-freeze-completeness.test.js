@@ -20,7 +20,6 @@ const {
 } = require("../mcp/lib/claim-freeze.js");
 const {
   claimsJsonlPath,
-  handoffSigningKeyPath,
   isAuditGradedPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,
@@ -199,9 +198,10 @@ test("#freeze-verify-gate: non-exploit frozen claims do not require a signing ke
   advance(domain, "CLAIM_FREEZE");
 
   // No buildClaimFreeze here: the gate reads the CANDIDATE claims (claims.jsonl), which exist now —
-  // NOT the freeze snapshot, which the VERIFY bootstrap builds only after this gate passes. This
-  // mirrors production: at CLAIM_FREEZE->VERIFY there is no freeze doc yet and no signing key.
-  assert.equal(fs.existsSync(handoffSigningKeyPath(domain)), false);
+  // NOT the freeze snapshot, which the VERIFY bootstrap builds only after this gate passes. A
+  // NON-exploit claim must not be blocked by exploit-proof signing: regardless of whether a handoff
+  // signing key is present (core provisions one eagerly at session creation, unlike the public lazy
+  // path), the freeze->verify gate has no blockers for a plain finding.
   assert.deepEqual(evaluateFreezeToVerify(domain).blockers, []);
 
   const envelope = advance(domain, "VERIFY");

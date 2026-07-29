@@ -31,6 +31,8 @@ Useful focused checks:
 npm run check:syntax
 npm run test:mcp
 npm run test:prompts
+# Darwin arm64 with Node.js 20 only (native qualification):
+npm run test:native-darwin
 npm run test:install
 npm run test:hooks
 ```
@@ -38,7 +40,7 @@ npm run test:hooks
 ## Project layout
 
 - `adapters/` contains host-specific install, doctor, uninstall, render, and
-  config ownership for Claude, Codex, and generic MCP hosts.
+  config ownership for Claude, Codex, Kimi, and generic MCP hosts.
 - `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and
   `.claude/hooks/` are the generated Claude adapter surface.
 - `prompts/roles/` and `mcp/lib/role-model.js` define shared role contracts
@@ -72,7 +74,10 @@ npm run test:prompts
 - Keep pull requests focused and explain the behavior change.
 - Add or update tests for changes to MCP tools, session state, validation,
   hooks, prompts, install behavior, or security boundaries.
-- Run `npm test` before marking the pull request ready for review.
+- Run `npm test` before marking the pull request ready for review. Changes to
+  installer, lifecycle-custodian, or Darwin-native surfaces must also pass
+  `npm run test:native-darwin` on Darwin arm64 with Node.js 20; the required CI
+  job enforces that qualification separately from portable tests.
 - Update docs when user-facing behavior, install steps, permissions, or safety
   assumptions change.
 - Do not loosen SSRF, path traversal, session-write, secret-redaction, or
@@ -96,8 +101,10 @@ test with them.
 
 - Update `CHANGELOG.md` with a semver section for the release.
 - Confirm `package.json` has the intended canonical package metadata and
-  `packages/hacker-bob-cc/package.json` pins the same version.
-- Run `npm test`.
+  `packages/hacker-bob-cc/package.json`, `packages/hacker-bob-codex/package.json`,
+  and `packages/hacker-bob-kimi/package.json` pin the same version.
+- Run `npm test` for the portable release surface.
+- Run `npm run test:native-darwin` on Darwin arm64 with Node.js 20.
 - Run `npm run release:check` and verify the canonical package includes
   adapter surfaces, neutral resources, `mcp/`, `bin/`, `scripts/`, docs, and
   release metadata without test or cache artifacts.

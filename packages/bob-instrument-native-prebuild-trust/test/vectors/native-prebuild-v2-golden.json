@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "manifest_domain": "hacker-bob/native-prebuild-release-manifest/v2",
+  "attestation_domain": "hacker-bob/native-prebuild-post-exec-attestation-evidence/v2",
+  "manifest_digest": "5ad26bd5c565fc5a4fa988046736f9736fca3068a1886c0f3e9ead1b54eba215",
+  "attestation_digest": "fed40f811a985e917c0ea8f5a6237bfe03b0665a386e2f38c387a22d6109ddaa",
+  "required_component_ids": [
+    "native_ipc_acceptor",
+    "chameleon_cdc_custody",
+    "safety_watchdog",
+    "privileged_launcher",
+    "lifecycle_custodian",
+    "native_dispatch_custodian"
+  ]
+}

@@ -57,6 +57,9 @@ const {
   isPlainObject,
 } = require("./verification-contracts.js");
 const {
+  normalizePhysicalResourceBundleBinding,
+} = require("./physical-resource-contract.js");
+const {
   normalizeOptionalObject,
 } = require("./fabric-common.js");
 const {
@@ -422,6 +425,35 @@ function normalizeProductionPath(raw, index) {
 
 // ─── Top-level Contract normalizer + hash ────────────────────────────────
 
+// Optional cross-stack verification declaration. ADDITIVE: a Contract that
+// declares its node's mechanism is a cross-stack composition path carries
+// `cross_stack_verification: { required: true, path_hash? }`. ABSENT (the
+// universal case) returns undefined, so the field never enters the frozen
+// object for any existing Contract and the contract_hash is byte-identical
+// (the hashable below never references this field). The finalize-node
+// cross-stack gate reads `required === true` as the explicit "this transition
+// CLAIMS a cross-stack mechanism" marker and binds the declared path_hash to
+// the audit-graded composition-verified.jsonl ledger. The marker is a
+// DECLARATION of obligation, never a grant of trust — the bound verified_pass
+// is the only thing that satisfies it.
+function normalizeCrossStackVerification(raw) {
+  if (raw == null) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new Error("cross_stack_verification must be an object { required, path_hash? } when present");
+  }
+  if (typeof raw.required !== "boolean") {
+    throw new Error("cross_stack_verification.required must be a boolean");
+  }
+  const out = { required: raw.required };
+  if (raw.path_hash != null) {
+    if (typeof raw.path_hash !== "string" || !/^[0-9a-f]{64}$/.test(raw.path_hash)) {
+      throw new Error("cross_stack_verification.path_hash must be a 64-hex composition path_hash when present");
+    }
+    out.path_hash = raw.path_hash;
+  }
+  return Object.freeze(out);
+}
+
 function normalizeContract(input) {
   if (!isPlainObject(input)) {
     throw new Error("contract must be an object");
@@ -488,16 +520,38 @@ function normalizeContract(input) {
       }),
     })),
   };
+  const physicalResourceBundle = input.physical_resource_bundle == null
+    ? undefined
+    : normalizePhysicalResourceBundleBinding(
+      input.physical_resource_bundle,
+      "physical_resource_bundle",
+    );
+  if (physicalResourceBundle !== undefined) {
+    hashable.physical_resource_bundle = physicalResourceBundle;
+  }
   const contractHash = hashCanonicalJson(hashable);
 
-  return Object.freeze({
+  // cross_stack_verification is INTENTIONALLY excluded from `hashable` above so
+  // adding it leaves the contract_hash byte-identical to a Contract that omits
+  // it — it is an out-of-band obligation marker, not part of the verifiable
+  // mechanism the hash binds. Attach it to the frozen object only when present.
+  const crossStackVerification = normalizeCrossStackVerification(input.cross_stack_verification);
+
+  const out = {
     contract_id: contractId,
     contract_hash: contractHash,
     severity_floor: severityFloor,
     invariants: Object.freeze(invariants),
     witnesses: Object.freeze(witnesses),
     production_paths: Object.freeze(productionPaths),
-  });
+  };
+  if (crossStackVerification !== undefined) {
+    out.cross_stack_verification = crossStackVerification;
+  }
+  if (physicalResourceBundle !== undefined) {
+    out.physical_resource_bundle = physicalResourceBundle;
+  }
+  return Object.freeze(out);
 }
 
 // ─── Satisfiability gate (X-D11) ─────────────────────────────────────────

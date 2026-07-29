@@ -35,11 +35,16 @@ const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
 } = require("../mcp/lib/claims.js");
-const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+const {
+  mintSensitiveShapeSafeToken,
+  sensitiveShapesPresent,
+} = require("../mcp/lib/offensive-http-common.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -161,6 +166,23 @@ async function run(domain, { fetch_fn, args } = {}) {
 
 // ───────────────────────── pure-helper unit tests ──────────────────────────
 
+test("canary mint rejects a random hex value that accidentally looks like card PII", () => {
+  const accidentalCard = "a4111111111111111aaaaaaaaaaaaaaa";
+  const safeHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  assert.equal(accidentalCard.length, 32);
+  assert.equal(sensitiveShapesPresent(`bxr${accidentalCard}`), true);
+  let calls = 0;
+  const token = mintSensitiveShapeSafeToken("bxr", {
+    randomBytes() {
+      calls += 1;
+      return Buffer.from(calls === 1 ? accidentalCard : safeHex, "hex");
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(token, `bxr${safeHex}`);
+  assert.equal(sensitiveShapesPresent(token), false);
+});
+
 test("htmlContextAt classifies executable vs safe reflection contexts (fail-closed)", () => {
   const cases = [
     ["<p>here:NONCE</p>", "text_node"],
@@ -241,9 +263,9 @@ test("positive: metachars survive unescaped in a text node → signed MEDIUM row
   // value-blind target: query stripped to origin+path.
   assert.equal(row.target, `https://${domain}/search`);
   assert.equal(row.target, canonicalizeExploitTarget(`https://${domain}/search?${LOCUS}=x`));
-  // well-formed + MAC-valid.
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
-  assert.equal(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), true, "row MAC must verify");
+  // well-formed + MAC-valid. Producer-minted rows are ed25519 (v2).
+  assert.equal(row.row_mac.version, 2);
+  assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)), true, "row MAC must verify");
   for (const h of ["command_hash", "stdout_hash", "stderr_hash"]) {
     assert.match(result[h], /^[0-9a-f]{64}$/);
     assert.equal(result[h], row[h]);

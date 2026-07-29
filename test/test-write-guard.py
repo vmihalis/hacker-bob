@@ -279,6 +279,199 @@ TESTS = [
     ("Write under audit-graded verification-attempts/ → block",
      {"tool_input": {"file_path": f"{SESSION}/verification-attempts/round-1.json", "content": "x"}},
      2),
+
+    # --- Heredoc bodies must not trip the shlex fail-closed guard. ---
+    # The discovery scripts' canonical step-6 JS-analysis heredoc embeds
+    # r'https?://[^\s"\'<>]+...', whose \' unbalances shlex's quote counter and
+    # used to fail-closed-block the framework's OWN shipped script. A heredoc
+    # whose body breaks shlex but writes ONLY scratch files must be ALLOWED —
+    # the body is inert stdin and carries no shell-level write target.
+    ("heredoc w/ quote-breaking regex, writes scratch .txt → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', open('/tmp/c').read())\n"
+        f"open('{SESSION}/subdomains.txt','w').write('ok')\n"
+        "PY"}},
+     0),
+    # The heredoc strip must not open a hole: an inline write to an MCP-owned
+    # file from inside such a heredoc is still caught by the full-command regex.
+    ("heredoc w/ quote-breaking regex, inline-writes MCP-owned grade.json → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', 'x')\n"
+        f"open('{SESSION}/grade.json','w').write('x')\n"
+        "PY"}},
+     2),
+
+    # --- Command-aware payload separation: data is not a write. ---
+    # A write-call STRING echoed/heredoc'd to a data consumer is inert -> ALLOW.
+    ("echo of an open(...,'w') string is data, not a write → allow",
+     {"tool_input": {"command": f"echo \"open('{SESSION}/grade.md','w')\""}},
+     0),
+    ("cat heredoc body containing an open(...,'w') string is data → allow",
+     {"tool_input": {"command": f"cat <<'EOF'\nopen('{SESSION}/grade.json','w').write('x')\nEOF"}},
+     0),
+    # A read-mode open of a session file is not a write -> ALLOW (precision).
+    ("read-mode open of a session file is not a write → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', 'x')\n"
+        f"data = open('{SESSION}/grade.md').read()\n"
+        "PY"}},
+     0),
+    # A genuine rm inside a SHELL heredoc body is re-analyzed recursively → block.
+    ("bash heredoc body that rm's a blocked file → block (shell recursion)",
+     {"tool_input": {"command": f"bash <<'EOF'\nrm {SESSION}/findings.jsonl\nEOF"}},
+     2),
+    # A '>' that appears only as DATA inside -c interpreter source → allow.
+    ("redirect-looking text inside python3 -c is data → allow",
+     {"tool_input": {"command": f"python3 -c \"print('a > {SESSION}/grade.md')\""}},
+     0),
+
+    # --- Hardening: naive shell write primitives beyond rm/mv/cp. ---
+    ("truncate of MCP-owned state.json → block",
+     {"tool_input": {"command": f"truncate -s 0 {SESSION}/state.json"}},
+     2),
+    ("dd of= MCP-owned state.json → block",
+     {"tool_input": {"command": f"dd if=/tmp/src of={SESSION}/state.json"}},
+     2),
+    ("sed -i of MCP-owned state.json → block",
+     {"tool_input": {"command": f"sed -i.bak 's/a/b/' {SESSION}/state.json"}},
+     2),
+    ("install over audit-graded report.md → block",
+     {"tool_input": {"command": f"install /tmp/src {SESSION}/report.md"}},
+     2),
+    ("ln -sf over MCP-owned state.json → block",
+     {"tool_input": {"command": f"ln -sf /tmp/src {SESSION}/state.json"}},
+     2),
+    ("truncate of agent-writable scratch .txt → allow",
+     {"tool_input": {"command": f"truncate -s 0 {SESSION}/subdomains.txt"}},
+     0),
+    # --- Hardening: interpreter write idioms beyond open(...,'w'). ---
+    ("python os.system shell-redirect to grade.md → block (recursed as shell)",
+     {"tool_input": {"command": f"python3 -c \"import os; os.system('echo x > {SESSION}/grade.md')\""}},
+     2),
+    ("python shutil.copy onto audit-graded report.md → block",
+     {"tool_input": {"command": f"python3 -c \"import shutil; shutil.copy('/tmp/s','{SESSION}/report.md')\""}},
+     2),
+    ("python os.replace onto MCP-owned state.json → block",
+     {"tool_input": {"command": f"python3 -c \"import os; os.replace('/tmp/s','{SESSION}/state.json')\""}},
+     2),
+    ("ruby File.write of MCP-owned state.json → block",
+     {"tool_input": {"command": f"ruby -e \"File.write('{SESSION}/state.json','x')\""}},
+     2),
+    # --- Hardening: a shell interpreter's -c body is recursed as shell. ---
+    ("sh -c with a nested redirect to state.json → block",
+     {"tool_input": {"command": f"sh -c 'echo x > {SESSION}/state.json'"}},
+     2),
+    # --- FP fix: a command-substitution redirect target is dynamic, not a
+    # captured fragment, so a timestamped scratch .txt is allowed. ---
+    ("redirect to a $(date)-timestamped scratch .txt → allow",
+     {"tool_input": {"command": f"echo x > \"{SESSION}/probe-$(date +%s).txt\""}},
+     0),
+
+    # --- pathlib variable-join writes: `(session / "name").write_text(...)`. ---
+    # The leaking idiom: a literal-path WRITE_OP_RE matched a `write_text` but NOT
+    # the variable-join form the discovery prompt actually uses. The join EXPR is
+    # runtime-dynamic; the joined string LITERAL is session-RELATIVE and is resolved
+    # against SESSIONS_ROOT, so MCP-owned basenames BLOCK and agent-writable ALLOW.
+    ("variable-join (session / surface-leads.json).write_text → block (the leaking form)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"surface-leads.json\").write_text('{}')\n"
+        "PY"}},
+     2),
+    ("variable-join (session / surface-leads.json).write_bytes → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"surface-leads.json\").write_bytes(b'x')\n"
+        "PY"}},
+     2),
+    ("assigned-then-write p = session / state.json; p.write_text → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "p = session / \"state.json\"\n"
+        "p.write_text('{}')\n"
+        "PY"}},
+     2),
+    # NEAR-MISS: agent-writable basename via the same join form must still ALLOW
+    # (proves the fix is not over-broad — check_file's is_agent_allowed runs first).
+    ("variable-join (session / deep-summary.json).write_text → allow (agent-writable)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"deep-summary.json\").write_text('{}')\n"
+        "PY"}},
+     0),
+    ("variable-join (session / subdomains.txt).write_text → allow (matches ^.*\\.txt$)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"subdomains.txt\").write_text('x')\n"
+        "PY"}},
+     0),
+    # NEAR-MISS: read-side join must ALLOW — the verb anchor excludes read_text.
+    ("variable-join read-side (session / surface-leads.json).read_text → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "data = (session / \"surface-leads.json\").read_text()\n"
+        "PY"}},
+     0),
+    # NEAR-MISS: the shipped cname read-then-write idiom (agent-writable .txt
+    # basename, read on the same join expr) must ALLOW.
+    ("variable-join cname_records.txt read-then-write idiom → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"cname_records.txt\").write_text(\"\\n\".join(sorted(set((session / \"cname_records.txt\").read_text().splitlines()))) + \"\\n\")\n"
+        "PY"}},
+     0),
+    # --- NON-SESSION join base must ALLOW (the false-positive fix). ---
+    # The THREAT is writing an MCP-owned basename to the SESSION dir. A join whose
+    # BASE is a LITERAL / non-session path resolves to its REAL location (outside any
+    # session root), so an MCP-owned-LOOKING basename there is NOT a session write.
+    # (a) literal base Path('/tmp') joined with an MCP-owned basename → allow.
+    ("variable-join (Path('/tmp') / findings.jsonl).write_text → allow (non-session base)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "tmp = pathlib.Path('/tmp')\n"
+        "(tmp / \"findings.jsonl\").write_text('x')\n"
+        "PY"}},
+     0),
+    # (b) assigned-then-write with a non-session base var → allow.
+    ("assigned-then-write p = tmp / findings.jsonl (non-session base) → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "tmp = pathlib.Path('/tmp')\n"
+        "p = tmp / \"findings.jsonl\"\n"
+        "p.write_text('x')\n"
+        "PY"}},
+     0),
+    # (c) relative literal base Path('reports') joined with audit-graded report.md → allow.
+    ("variable-join (Path('reports') / report.md).write_text → allow (relative non-session base)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "out = pathlib.Path('reports')\n"
+        "(out / \"report.md\").write_text('x')\n"
+        "PY"}},
+     0),
 ]
 
 
@@ -312,6 +505,41 @@ def main():
             )
             record(result.returncode == expected, f"[{adapter}] {desc}",
                    expected, result.returncode, result.stderr)
+
+        # Session-root config fence. Each workspace gets its own BOB_SESSIONS_ROOT,
+        # which the guard discovers from the workspace host config — so those files
+        # decide WHICH roots get fenced. An agent that could rewrite them would drop
+        # the configured root and silently un-fence the engine's real session dir
+        # (the default root stays guarded, so the loss of coverage is invisible).
+        # They are therefore fenced themselves, without over-blocking the same
+        # basename outside the project.
+        with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as other:
+            os.makedirs(os.path.join(ws, ".kimi"), exist_ok=True)
+            cfg = {"mcpServers": {"hacker-bob": {"command": "node", "args": ["x"],
+                   "env": {"BOB_SESSIONS_ROOT": os.path.join(ws, "root")}}}}
+            for rel in (".mcp.json", os.path.join(".kimi", "mcp.json")):
+                with open(os.path.join(ws, rel), "w", encoding="utf-8") as fh:
+                    json.dump(cfg, fh)
+            ws_env = dict(os.environ, CLAUDE_PROJECT_DIR=ws)
+            root_cases = [
+                ("in-project .mcp.json -> block (root-config fence)",
+                 {"tool_input": {"file_path": os.path.join(ws, ".mcp.json"), "content": "x"}}, 2),
+                ("in-project .kimi/mcp.json -> block (root-config fence)",
+                 {"tool_input": {"file_path": os.path.join(ws, ".kimi", "mcp.json"), "content": "x"}}, 2),
+                ("bash redirect to in-project .mcp.json -> block",
+                 {"tool_input": {"command": "printf x > " + os.path.join(ws, ".mcp.json")}}, 2),
+                (".mcp.json OUTSIDE the project -> allow (no over-block)",
+                 {"tool_input": {"file_path": os.path.join(other, ".mcp.json"), "content": "x"}}, 0),
+                ("ordinary in-project file -> allow",
+                 {"tool_input": {"file_path": os.path.join(ws, "notes.md"), "content": "x"}}, 0),
+            ]
+            for desc, payload, expected in root_cases:
+                live = subprocess.run(
+                    ["bash", hook], input=json.dumps(payload),
+                    capture_output=True, text=True, env=ws_env,
+                )
+                record(live.returncode == expected, f"[{adapter}] {desc}",
+                       expected, live.returncode, live.stderr)
 
         # Liveness 1: a missing/unreadable manifest must FAIL CLOSED (block). The
         # hook sets WRITE_GUARD_TABLES_FILE to "$(dirname "$0")/write-guard-tables.json",

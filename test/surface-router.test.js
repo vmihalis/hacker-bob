@@ -11,15 +11,26 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  buildSurfaceRoutesDocument,
   readSurfaceRoutesStrict,
+  routeSurfaces,
   routeSurfacesInternal,
   validateSurfaceRoute,
+  isUnroutableRoute,
+  countRoutesByCapabilityPack,
+  deriveUnroutableSurfacesFromRoutes,
   SURFACE_ROUTES_VERSION,
   SURFACE_ROUTE_VERSION,
 } = require("../mcp/lib/surface-router.js");
 const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
 const { findRoutedSurface } = require("../mcp/lib/offensive-http-common.js");
-const { surfaceRoutesPath } = require("../mcp/lib/paths.js");
+// S1 detector is injected into routing by the tool handler; tests inject it too.
+const {
+  surfaceExposesIdBearingCollection: idBearingDetector,
+  surfaceIdBearingEndpoints: idBearingEndpoints,
+} = require("../mcp/lib/offensive-idor-producer.js");
+const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
   const prev = process.env.HOME;
@@ -119,6 +130,63 @@ test("validateSurfaceRoute signals DATA failures with a PLAIN Error (premise of 
   }
 });
 
+test("buildSurfaceRoutesDocument marks id-bearing routable surfaces when multiple auth profiles exist", () => {
+  const domain = "router-auth-diff-id.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:item", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/1"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector });
+  assert.equal(doc.routes.length, 1);
+  assert.equal(doc.routes[0].auth_differential_required, true);
+});
+
+test("buildSurfaceRoutesDocument accepts route-parameter item endpoints for auth-differential routing", () => {
+  const domain = "router-auth-diff-param.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:param", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/{id}"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector });
+  assert.equal(doc.routes[0].auth_differential_required, true);
+});
+
+test("buildSurfaceRoutesDocument keeps id-bearing surfaces vacuous with one auth profile", () => {
+  const domain = "router-auth-diff-one-profile.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:item", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/1"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 1, idBearingDetector });
+  assert.equal(doc.routes[0].auth_differential_required, false);
+});
+
+test("buildSurfaceRoutesDocument keeps collection-only surfaces vacuous with multiple auth profiles", () => {
+  const domain = "router-auth-diff-collection.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:collection", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector });
+  assert.equal(doc.routes[0].auth_differential_required, false);
+});
+
+test("buildSurfaceRoutesDocument defaults auth-differential routing to false on clean legacy-shaped input", () => {
+  const domain = "router-auth-diff-default.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "legacy:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo });
+  assert.equal(doc.routes[0].auth_differential_required, false);
+});
+
+test("validateSurfaceRoute round-trips auth_differential_required and rejects non-boolean values", () => {
+  const route = { ...validWebRoute("s1"), auth_differential_required: true };
+  const normalized = validateSurfaceRoute(route, 0, "routes.json");
+  assert.equal(normalized.auth_differential_required, true);
+
+  assert.throws(
+    () => validateSurfaceRoute({ ...route, auth_differential_required: "true" }, 0, "routes.json"),
+    /auth_differential_required must be a boolean/,
+  );
+});
+
 test("findRoutedSurface rejects a surface whose route was quarantined even if a valid duplicate exists (no split authority)", () => withTempHome(() => {
   const domain = "router-splitauth.example.test";
   // surface:api appears twice: a valid route + a stale (hunter_agent) duplicate. The reader keeps
@@ -154,4 +222,379 @@ test("happy path: routeSurfacesInternal writes valid routes that read back clean
   const read = readSurfaceRoutesStrict(domain);
   assert.equal(read.document.routes.length, 2);
   assert.equal(read.malformed_routes, undefined, "a clean file carries no malformed_routes");
+}));
+
+test("persists chain_family + confidence for a resolved EVM smart-contract route", () => withTempHome(() => {
+  const domain = "router-sc-evm.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const surface = { id: "sc-evm", surface_type: "smart_contract", chain_family: "evm", address: "0xabc" };
+  const expected = classifySurfaceCapability(surface);
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  routeSurfacesInternal(domain, { attackSurfaceInfo });
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.malformed_routes, undefined, "a resolved SC route reads back clean");
+  const route = read.document.routes.find((r) => r.surface_id === "sc-evm");
+  assert.ok(route, "the evm route reads back in document.routes");
+  assert.equal(route.chain_family, expected.chain_family, "chain_family is persisted from the classifier (closes the always-null read)");
+  assert.equal(route.chain_family, "evm");
+  assert.ok(route.confidence, "confidence is truthy");
+  assert.equal(route.confidence, expected.confidence);
+}));
+
+test("records an unroutable disposition for an unknown-chain_family smart-contract surface (never web-routed, no throw)", () => withTempHome(() => {
+  const domain = "router-sc-unknown.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const webPackId = classifySurfaceCapability({ id: "w", surface_type: "web" }).capability_pack;
+  const cases = [
+    { id: "sc-unknown", surface_type: "smart_contract", chain_family: "quantum" },
+    { id: "sc-nofam", surface_type: "smart_contract" },
+  ];
+  for (const surface of cases) {
+    const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+    assert.doesNotThrow(() => routeSurfacesInternal(domain, { attackSurfaceInfo }), "an unroutable SC surface never halts routing");
+    const read = readSurfaceRoutesStrict(domain);
+    assert.equal(read.malformed_routes, undefined, "an unroutable route reads back in document.routes, not malformed_routes");
+    const route = read.document.routes.find((r) => r.surface_id === surface.id);
+    assert.ok(route, "the unroutable route is present in document.routes");
+    assert.equal(route.disposition, "unroutable");
+    assert.equal(typeof route.reason, "string");
+    assert.ok(route.reason.length > 0, "the unroutable route carries an evidenced reason");
+    assert.equal(route.capability_pack, undefined, "an ambiguous smart_contract is never web-routed");
+    assert.notEqual(route.capability_pack, webPackId);
+  }
+}));
+
+test("a resolved SC route and an unroutable SC route read back cleanly together (no quarantine)", () => withTempHome(() => {
+  const domain = "router-sc-mixed.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "sc-evm", surface_type: "smart_contract", chain_family: "evm", address: "0xabc" },
+    { id: "sc-unknown", surface_type: "smart_contract", chain_family: "quantum" },
+    { id: "w1", surface_type: "web", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] },
+  ] } };
+  routeSurfacesInternal(domain, { attackSurfaceInfo });
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.malformed_routes, undefined, "the mixed file has no quarantined routes");
+  assert.equal(read.document.routes.length, 3);
+}));
+
+// A capability_friction_observed frontier event scoped to one surface_id
+// (mirrors the frictionEvent(...) shape in frontier-friction-predicate.test.js).
+function frictionEvent(surfaceId, frictionKind, extra = {}) {
+  return {
+    kind: "observation.recorded",
+    payload: {
+      observation_kind: "capability_friction_observed",
+      surface_id: surfaceId,
+      friction_kind: frictionKind,
+      ...extra,
+    },
+  };
+}
+
+// The confidence ordinal ladder, mirrored from capability-packs.js, so the
+// caller-seam tests derive the demoted step from the classifier rather than
+// hardcoding a level a pack edit could break.
+const ROUTER_CONFIDENCE_LADDER = ["high", "medium", "low"];
+
+test("buildSurfaceRoutesDocument: no frictionEvents keeps the classifier confidence (back-compat)", () => {
+  const domain = "router-friction-none.example.test";
+  // surface_type "api" is a known web type => classifier confidence "high".
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  assert.equal(classification.routable, true);
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo });
+  assert.equal(doc.routes.length, 1);
+  assert.equal(doc.routes[0].confidence, classification.confidence);
+});
+
+test("buildSurfaceRoutesDocument: >=3 tool_inadequate events for a surface demote its route confidence one step", () => {
+  const domain = "router-friction-demote.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  const baseIdx = ROUTER_CONFIDENCE_LADDER.indexOf(classification.confidence);
+  assert.ok(baseIdx >= 0, "classifier confidence is on the ladder");
+  assert.ok(baseIdx < ROUTER_CONFIDENCE_LADDER.length - 1, "base has room to demote one step (guards the assertion)");
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  const frictionEvents = [
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+    // an unrelated surface's friction and a non-matching kind must not count
+    frictionEvent("other", "tool_inadequate"),
+    frictionEvent("w1", "tool_absent"),
+  ];
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, frictionEvents });
+  assert.equal(doc.routes.length, 1);
+  assert.equal(doc.routes[0].confidence, ROUTER_CONFIDENCE_LADDER[baseIdx + 1], "one full threshold demotes exactly one step");
+});
+
+test("buildSurfaceRoutesDocument: an unroutable smart_contract is byte-identical with and without friction", () => {
+  const domain = "router-friction-unroutable.example.test";
+  const surface = { id: "sc-none", surface_type: "smart_contract" };
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  const frictionEvents = [
+    frictionEvent("sc-none", "tool_inadequate"),
+    frictionEvent("sc-none", "tool_inadequate"),
+    frictionEvent("sc-none", "tool_inadequate"),
+    frictionEvent("sc-none", "tool_inadequate"),
+  ];
+  const without = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo });
+  const withFriction = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, frictionEvents });
+  assert.equal(without.routes[0].disposition, "unroutable");
+  assert.equal(withFriction.routes[0].disposition, "unroutable");
+  // demotion never touches routability: the unroutable route is identical.
+  assert.deepEqual(withFriction.routes[0], without.routes[0]);
+});
+
+// Friction threaded through the routeSurfacesInternal / routeSurfaces caller
+// seam so confidence demotion fires on the live bob_route_surfaces path.
+
+// Write a legacy attack_surface.json under the current temp HOME so the live
+// routeSurfaces path (which passes no attackSurfaceInfo and reads via
+// currentSurfaces) has a surface source to route.
+function writeAttackSurface(domain, surfaces) {
+  const p = attackSurfacePath(domain);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, `${JSON.stringify({ surfaces }, null, 2)}\n`);
+  return p;
+}
+
+test("routeSurfacesInternal: frictionEvents param demotes the route one ladder step vs no friction", () => withTempHome(() => {
+  const domain = "router-internal-friction.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  const baseIdx = ROUTER_CONFIDENCE_LADDER.indexOf(classification.confidence);
+  assert.ok(baseIdx >= 0, "classifier confidence is on the ladder");
+  assert.ok(baseIdx < ROUTER_CONFIDENCE_LADDER.length - 1, "base has room to demote one step");
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+
+  // No frictionEvents => base confidence, byte-identical to today (fail-open default).
+  const noFriction = routeSurfacesInternal(domain, { attackSurfaceInfo });
+  assert.equal(noFriction.document.routes[0].confidence, classification.confidence);
+
+  // >= threshold tool_inadequate events for the surface => demote exactly one step.
+  const frictionEvents = [
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+  ];
+  const demoted = routeSurfacesInternal(domain, { attackSurfaceInfo, frictionEvents });
+  assert.equal(demoted.document.routes[0].confidence, ROUTER_CONFIDENCE_LADDER[baseIdx + 1], "one full threshold demotes exactly one step");
+}));
+
+test("routeSurfaces (live): heavy friction on frontier-events.jsonl demotes the persisted route confidence", () => withTempHome(() => {
+  const domain = "router-live-friction.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  const baseIdx = ROUTER_CONFIDENCE_LADDER.indexOf(classification.confidence);
+  assert.ok(baseIdx < ROUTER_CONFIDENCE_LADDER.length - 1, "base has room to demote one step");
+  writeAttackSurface(domain, [surface]);
+
+  // >= HEAVY_FRICTION_DEMOTION_THRESHOLD (3) tool_inadequate observations for w1.
+  for (let i = 0; i < 3; i += 1) {
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "observation.recorded",
+      payload: { observation_kind: "capability_friction_observed", surface_id: "w1", friction_kind: "tool_inadequate" },
+    });
+  }
+
+  const raw = routeSurfaces({ target_domain: domain });
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.routed, true);
+  // The persisted surface-routes.json carries the demoted confidence.
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.document.routes.length, 1);
+  assert.equal(read.document.routes[0].confidence, ROUTER_CONFIDENCE_LADDER[baseIdx + 1], "live route demoted one step by heavy friction");
+}));
+
+test("routeSurfaces (live): no frontier-events.jsonl fails open to base confidence and never throws", () => withTempHome(() => {
+  const domain = "router-live-nofriction.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  writeAttackSurface(domain, [surface]);
+  // No frontier-events.jsonl written at all.
+  assert.equal(fs.existsSync(surfaceRoutesPath(domain)), false);
+
+  let raw;
+  assert.doesNotThrow(() => { raw = routeSurfaces({ target_domain: domain }); }, "a missing friction ledger never breaks routing");
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.routed, true);
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.document.routes.length, 1);
+  // Fail-open: base classification confidence, byte-identical to today.
+  assert.equal(read.document.routes[0].confidence, classification.confidence);
+}));
+
+// One canonical unroutable predicate (isUnroutableRoute) shared by the validator,
+// the wave partition, the analytics derivation, and technique-pack selection.
+// The write side pairs disposition:"unroutable" with a null pack, so on fresh data
+// the two conditions agree; keying every consumer on their UNION closes the
+// SC+null-pack wave-halt a cross-version route (one field without the other) opens.
+test("isUnroutableRoute: disposition marker OR null pack — the two agree on fresh data, union catches drift", () => {
+  // Fresh unroutable route (both conditions true).
+  assert.equal(isUnroutableRoute({ surface_id: "s", disposition: "unroutable", reason: "x" }), true);
+  // Cross-version drift: null pack WITHOUT the disposition marker — the narrow
+  // `disposition === "unroutable"` check would have MISSED this and minted a
+  // routable assignment for a pack-less route; the union catches it.
+  assert.equal(isUnroutableRoute({ surface_id: "s", reason: "x" }), true);
+  assert.equal(isUnroutableRoute({ surface_id: "s", capability_pack: null }), true);
+  // Marker WITHOUT null pack (a stray pack survived) — still unroutable.
+  assert.equal(isUnroutableRoute({ surface_id: "s", disposition: "unroutable", capability_pack: "web" }), true);
+  // A routable web route is NOT unroutable.
+  assert.equal(isUnroutableRoute({ surface_id: "s", capability_pack: "web", capability_pack_version: 1 }), false);
+  // Defensive: null / non-object.
+  assert.equal(isUnroutableRoute(null), false);
+  assert.equal(isUnroutableRoute("nope"), false);
+});
+
+test("countRoutesByCapabilityPack uses the canonical predicate — a stray-pack unroutable (drift) route makes no bucket", () => {
+  const counts = countRoutesByCapabilityPack([
+    { surface_id: "a", capability_pack: "web" },
+    { surface_id: "b", capability_pack: "web" },
+    // A drift route: marked unroutable but a stray pack survived. The old inline
+    // `capability_pack == null` check would have counted it into a "solana" bucket;
+    // the canonical isUnroutableRoute skips it (unroutable contributes no bucket).
+    { surface_id: "c", disposition: "unroutable", reason: "x", capability_pack: "solana" },
+    // A normal pack-less unroutable route is skipped either way.
+    { surface_id: "d", disposition: "unroutable", reason: "x" },
+  ]);
+  assert.deepEqual(counts, { web: 2 }, "only routable routes bucket; the drift route contributes nothing");
+});
+
+test("deriveUnroutableSurfacesFromRoutes classifies a drift row (null pack, no disposition marker) as unroutable", () => withTempHome(() => {
+  const domain = "unroutable-drift-row.example.test";
+  const routesPath = surfaceRoutesPath(domain);
+  fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+  // A cross-version route: pack-less (capability_pack absent) with a reason but
+  // NO disposition marker. Under the old narrow predicate this surface would be
+  // treated as routable everywhere the wave path read it.
+  fs.writeFileSync(routesPath, JSON.stringify({
+    version: SURFACE_ROUTES_VERSION,
+    route_version: SURFACE_ROUTE_VERSION,
+    routes: [
+      { surface_id: "drift:sc", surface_type: "smart_contract", reason: "unknown chain_family" },
+      { surface_id: "ok:api", surface_type: "api", capability_pack: "web", capability_pack_version: 1, evaluator_agent: "evaluator-agent", brief_profile: "web" },
+    ],
+  }));
+
+  const result = deriveUnroutableSurfacesFromRoutes(domain);
+  assert.equal(result.error, null, "a well-formed drift row is not a corruption error");
+  assert.deepEqual(Array.from(result.surfaceIds), ["drift:sc"], "the pack-less drift row is parked unroutable");
+  assert.equal(result.surfaces[0].unroutable_reason, "unknown chain_family");
+}));
+
+// Monotonic id-bearing guard: a surface a PRIOR sanctioned route recorded as
+// id_bearing:true cannot be silently DOWNGRADED to id_bearing:false by a re-derive
+// that reads an agent-stripped attack_surface.json (the KEY-FREE downgrade — no
+// signing key needed, MAC-binding does not help because the re-derive re-signs).
+
+test("routeSurfacesInternal: a prior id_bearing:true surface cannot be downgraded to false on re-route (KEY-FREE downgrade blocked)", () => withTempHome(() => {
+  const domain = "router-monotonic-downgrade.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+
+  // First (honest) route: the crown surface exposes an id-bearing item endpoint.
+  const idBearingSurface = {
+    id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/{id}"],
+  };
+  const first = routeSurfacesInternal(domain, {
+    attackSurfaceInfo: { source: "test", document: { surfaces: [idBearingSurface] } },
+    authProfileCount: 2, idBearingDetector, idBearingEndpoints,
+  });
+  const firstRoute = first.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(firstRoute.id_bearing, true, "the crown is id-bearing on the honest first route");
+  assert.ok(Array.isArray(firstRoute.id_bearing_endpoints) && firstRoute.id_bearing_endpoints.length > 0,
+    "the honest route freezes the id-bearing endpoint templates");
+  const frozenEndpoints = firstRoute.id_bearing_endpoints;
+
+  // Attacker edits the agent-writable attack_surface.json to strip the id marker:
+  // the SAME surface_id now looks like a bare collection (detector would derive false).
+  const strippedSurface = {
+    id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"],
+  };
+  // Sanity: the detector genuinely no longer flags the stripped surface.
+  assert.equal(idBearingDetector(strippedSurface), false, "the stripped surface derives id_bearing:false in isolation");
+
+  const second = routeSurfacesInternal(domain, {
+    attackSurfaceInfo: { source: "test", document: { surfaces: [strippedSurface] } },
+    authProfileCount: 2, idBearingDetector, idBearingEndpoints,
+  });
+  const secondRoute = second.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(secondRoute.id_bearing, true, "a surface that was EVER id-bearing stays id_bearing:true (no silent downgrade)");
+  assert.deepEqual(secondRoute.id_bearing_endpoints, frozenEndpoints, "the frozen prior id_bearing_endpoints are preserved");
+  assert.equal(secondRoute.auth_differential_required, true, "the flip obligation is re-derived from the now-true id_bearing and the live principal count");
+
+  // The persisted file reads back with the crown still id-bearing.
+  const read = readSurfaceRoutesStrict(domain);
+  const persisted = read.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(persisted.id_bearing, true, "the persisted re-route keeps the crown id-bearing");
+  assert.deepEqual(persisted.id_bearing_endpoints, frozenEndpoints);
+}));
+
+test("routeSurfacesInternal: monotonic guard does NOT fabricate id_bearing for a surface that was never id-bearing (genuine false unaffected)", () => withTempHome(() => {
+  const domain = "router-monotonic-neverid.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const collectionSurface = {
+    id: "plain:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"],
+  };
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [collectionSurface] } };
+
+  const first = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  assert.equal(first.document.routes[0].id_bearing, false, "a collection-only surface is genuinely not id-bearing");
+
+  // Re-route with the same non-id-bearing surface: the guard must not fabricate a floor.
+  const second = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  assert.equal(second.document.routes[0].id_bearing, false, "no prior true => genuine first-time false is unaffected");
+  assert.equal(second.document.routes[0].auth_differential_required, false);
+}));
+
+test("routeSurfacesInternal: monotonic guard is a no-op on first run and preserves a legit true->true re-route", () => withTempHome(() => {
+  const domain = "router-monotonic-firstrun.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const idBearingSurface = {
+    id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/orders/{id}"],
+  };
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [idBearingSurface] } };
+
+  // First run (no prior surface-routes.json) must not throw and derives id_bearing normally.
+  let first;
+  assert.doesNotThrow(() => {
+    first = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  }, "first run tolerates the missing prior routes file");
+  assert.equal(first.document.routes[0].id_bearing, true);
+  const firstEndpoints = first.document.routes[0].id_bearing_endpoints;
+
+  // A legit true->true re-route (surface still id-bearing) is byte-identical for id_bearing.
+  const second = routeSurfacesInternal(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector, idBearingEndpoints });
+  assert.equal(second.document.routes[0].id_bearing, true);
+  assert.deepEqual(second.document.routes[0].id_bearing_endpoints, firstEndpoints);
+}));
+
+test("routeSurfaces (live): a prior id_bearing:true surface stays id-bearing when attack_surface.json is later stripped", () => withTempHome(() => {
+  const domain = "router-monotonic-live.example.test";
+  // Honest discovery: an id-bearing item endpoint. The live path injects the detector
+  // + endpoints via the tool handler, so route through routeSurfaces with them injected.
+  writeAttackSurface(domain, [
+    { id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/accounts/{id}"] },
+  ]);
+  const firstRaw = routeSurfaces({ target_domain: domain }, { idBearingDetector, idBearingEndpoints });
+  assert.equal(JSON.parse(firstRaw).routed, true);
+  const firstRead = readSurfaceRoutesStrict(domain);
+  const firstRoute = firstRead.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(firstRoute.id_bearing, true, "crown is id-bearing after honest discovery");
+  const frozen = firstRoute.id_bearing_endpoints;
+  assert.ok(Array.isArray(frozen) && frozen.length > 0);
+
+  // Attacker rewrites the agent-writable attack_surface.json to strip the id marker.
+  writeAttackSurface(domain, [
+    { id: "crown:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/accounts"] },
+  ]);
+  const secondRaw = routeSurfaces({ target_domain: domain }, { idBearingDetector, idBearingEndpoints });
+  assert.equal(JSON.parse(secondRaw).routed, true);
+  const secondRead = readSurfaceRoutesStrict(domain);
+  const secondRoute = secondRead.document.routes.find((r) => r.surface_id === "crown:api");
+  assert.equal(secondRoute.id_bearing, true, "the live re-derive cannot silently downgrade the crown");
+  assert.deepEqual(secondRoute.id_bearing_endpoints, frozen, "frozen endpoints survive the live re-route");
 }));

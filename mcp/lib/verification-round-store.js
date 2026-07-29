@@ -1,6 +1,8 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const {
   SEVERITY_VALUES,
   VERIFICATION_CONFIDENCE_REASON_VALUES,
@@ -20,9 +22,11 @@ const {
 const {
   statePath,
   verificationRoundPaths,
+  verificationRoundPartialDir,
 } = require("./paths.js");
 const {
   loadJsonDocumentStrict,
+  readJsonFile,
   withSessionLock,
   writeFileAtomic,
   writeMarkdownMirror,
@@ -52,7 +56,7 @@ const {
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("./claims.js");
 const {
-  readHandoffSigningKey,
+  resolveRowVerifierSafely,
 } = require("./handoff-signing-key.js");
 const {
   sessionNucleusFromState,
@@ -120,66 +124,92 @@ const REASON_ARRAY_FIELDS = Object.freeze([
 // array is serialized into the persisted round document by the caller (hence
 // the explicit "InPlace" name).
 //
-// SCOPE: this is an anti-inflation guard for WEB-SCOPED sessions
-// (scope_policy.target_url set), applied UNIFORMLY to every finding in such a
-// session. We deliberately do NOT carve out smart-contract findings. The
-// web/smart_contract axis is per-finding, but every per-finding and
-// per-session SC signal available before VERIFY is agent-influenced — claim
-// surface_ids / payload (agent-recorded), and even surface routes (an evaluator
-// can inject a synthetic smart-contract surface.observed via
-// bob_append_frontier_event that routing then classifies). A spoofable SC
-// exemption is strictly worse than none: it is an inflation bypass. The only
-// trusted, non-agent signal is the init-time session scope, so the guard keys
-// off that alone. Consequence: in a cross-stack web+SC session a smart-contract
-// finding is also held to its FROZEN (evaluator-recorded) severity unless
-// exploit-proven — the evaluator's assessment is the trusted baseline, and an
-// unproven verification-time raise above it is clamped, exactly as for web.
-// (Pure smart-contract engagements are repo-scoped — no target_url — and are
-// untouched by this guard.)
-function clampResultSeveritiesInPlace(domain, results) {
+// SCOPE: this is an anti-inflation guard applied to EVERY scope (web sessions
+// with scope_policy.target_url AND repo/smart-contract sessions with
+// scope_policy.target_repo), uniformly to every finding in the session. We
+// deliberately do NOT carve out smart-contract findings. The web/smart_contract
+// axis is per-finding, but every per-finding and per-session SC signal available
+// before VERIFY is agent-influenced — claim surface_ids / payload
+// (agent-recorded), and even surface routes (an evaluator can inject a synthetic
+// smart-contract surface.observed via bob_append_frontier_event that routing then
+// classifies). A spoofable SC exemption is strictly worse than none: it is an
+// inflation bypass. The only trusted, non-agent signal is the init-time session
+// scope. Consequence: a smart-contract finding is held to its FROZEN
+// (evaluator-recorded) severity — the evaluator's assessment is the trusted
+// baseline, and an unproven verification-time raise above it is clamped.
+//
+// The exploit-row allow-path (the only way a rise above baseline survives) is
+// WEB-ONLY. It validates a rise to a SPECIFIC asserted rank against a
+// MAC-covered, tiered demonstrated_severity carried on an offensive run row.
+// The smart-contract executed-evidence ledger (invariant-verified.jsonl, read by
+// readInvariantVerifiedSummary) is BOOLEAN per finding (VERIFIED_PASS / not) with
+// no demonstrated-severity tier, so it cannot answer "was a rise to critical
+// SPECIFICALLY proven?". Wiring it in as a boolean "rise unlocked" switch would
+// be unsound — a verified-low FV pass would unlock a critical rise — so it is
+// deliberately NOT consulted in the rise decision. A repo/SC rise therefore has
+// no allow-path and ALWAYS clamps to the frozen baseline: a genuinely-critical SC
+// finding must be FROZEN critical at record time, never raised at VERIFY,
+// consistent with the discipline that severity follows demonstrated impact at
+// claim time. (A session is exactly one of web/repo — normalizeScopePolicy keeps
+// target_url and target_repo mutually exclusive — so a cross-stack web+SC session
+// is a web session whose SC-typed findings clamp uniformly today, unchanged.)
+// reclampSeveritiesAgainstFreeze — the PURE, read-safe core of the severity
+// clamp. Returns a Map<finding_id, { severity, provenRise }> where `severity` is
+// the WITHIN-BAND clamped target for each result: the frozen-claim baseline when a
+// result's on-disk severity rises above the baseline WITHOUT a MAC-demonstrated
+// proven rise, otherwise the result's own on-disk severity (this only LOWERS an
+// above-baseline-unproven severity; it never raises). `provenRise` records whether
+// the rise was MAC-validated (so the write-time wrapper can keep / strip the
+// exploit-proof reason). It performs NO mutation and NO reason stripping.
+//
+// READ-TIME RE-CLAMP (Y): the same baseline+proven-rise logic the write path
+// applies is re-applied at the compose + grade READ sites against a result set
+// parsed from the on-disk final round, so a runtime-indirection rewrite of
+// verification-final.json that bumps a finding above its demonstrated baseline
+// re-reads as the baseline. Forging an inflated public/grade severity then requires
+// re-forging the audit-graded, agent-Write-blocked claim-freeze.json baseline (or a
+// MAC-valid demonstrated-severity offensive row), not just the keyless final round.
+//
+// FAIL-CLOSED identically to the in-place mutator: a corrupt session state or a
+// corrupt freeze throws STATE_CONFLICT; a missing freeze / non-web-or-repo scope
+// returns an empty Map (no clamp), matching today's pass-through.
+function reclampSeveritiesAgainstFreeze(domain, results) {
+  const out = new Map();
   let nucleus;
   let sessionState;
   try {
-    // Derive web-scope from the VALIDATED session state (the write tool authority
-    // validates state.json before this handler), NOT from session-nucleus.json.
-    // The nucleus file is not write-guarded, so reading it would let a corrupt
-    // or semantically-drifted nucleus (target_url removed / swapped for
-    // target_repo) silently disable the guard on a session whose state still
-    // authorizes a web target. State is the trustworthy scope authority here.
     sessionState = readSessionStateStrict(domain).state;
     nucleus = sessionNucleusFromState(sessionState);
   } catch (error) {
-    // Distinguish "no state file yet" (a partially-seeded / pre-state session:
-    // pass through, nothing to guard) from a state file that EXISTS but is
-    // unreadable/corrupt (transient I/O, partial write, parse error: fail closed
-    // rather than silently skip the guard). In production neither occurs — the
-    // write tool authority validates state.json before this handler runs.
     if (fs.existsSync(statePath(domain))) {
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,
         `severity-rise guard could not read session state: ${error.message || String(error)}`,
       );
     }
-    return [];
+    return out;
   }
-  if (!nucleus || nucleus.scope_policy == null || nucleus.scope_policy.target_url == null) return [];
+  if (!nucleus || nucleus.scope_policy == null) return out;
+  const isWebScope = nucleus.scope_policy.target_url != null;
+  const isRepoScope = nucleus.scope_policy.target_repo != null;
+  if (!isWebScope && !isRepoScope) return out;
 
   let freeze;
   try {
     freeze = readCurrentClaimFreeze(domain);
   } catch (error) {
-    // Defense-in-depth: a corrupt freeze is already rejected upstream of this
-    // guard (v1 via findingIdSetForVerificationContext; v2 via the snapshot
-    // freshness check assertSnapshotMatchesFreeze), so this branch is not the
-    // first reader. If it is ever reached, fail closed rather than skip the
-    // guard. A missing freeze returns null (handled below) — only a corrupt
-    // one throws.
+    // readCurrentClaimFreeze now RE-THROWS on a present-but-INVALID freeze_mac (a
+    // tampered/forged/cross-context freeze). Converting that throw into a
+    // STATE_CONFLICT halt is the MEDIUM-A close: a tampered freeze HALTS the severity
+    // clamp instead of returning an empty Map that would silently un-clamp inflated
+    // severities. A genuinely-absent freeze (or a torn/corrupt one) returns null below,
+    // never reaching this catch.
     throw new ToolError(
       ERROR_CODES.STATE_CONFLICT,
       `severity-rise guard could not read claim freeze: ${error.message || String(error)}`,
     );
   }
-  if (!freeze || !Array.isArray(freeze.claims)) return [];
+  if (!freeze || !Array.isArray(freeze.claims)) return out;
 
   const exploitRunClaimIds = new Map();
   for (const claim of freeze.claims) {
@@ -209,22 +239,6 @@ function clampResultSeveritiesInPlace(domain, results) {
     const findingIds = refs
       .filter((ref) => ref && ref.kind === "finding" && typeof ref.finding_id === "string")
       .map((ref) => ref.finding_id);
-    // Bind exploit_run refs to a finding ONLY when the claim references exactly
-    // one finding. Cross-finding row binding is server-enforced at record time
-    // via run_id single-use. As a defense-in-depth backstop, if a forged/corrupt
-    // freeze contains the same run_id on multiple claims, drop it from all.
-    //
-    // Surface binding (issue #111): mirror the record-time gate. Capture the OWNING
-    // claim's single surface_id alongside each exploit_run ref so the row-eligibility
-    // loop below can require row.surface_id === that surface (a higher-severity row
-    // produced for a different surface can never unlock a rise). Compute it INSIDE
-    // this per-claim loop (NOT hoisted) because a finding can accumulate refs from
-    // multiple claims; null when the (possibly forged) freeze claim does not carry
-    // exactly one surface, which makes the row ineligible and clamps to baseline.
-    // Trim and treat an empty/whitespace single surface as null (no surface),
-    // symmetric with the record gate (which trims the row side and fail-closes on
-    // an empty surface) so a degenerate/forged freeze cannot let an empty claim
-    // surface match an (also empty) row's surface_id.
     const claimSurfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
     const rawClaimSurfaceId = claimSurfaceIds.length === 1 ? claimSurfaceIds[0] : null;
     const claimSurfaceId = typeof rawClaimSurfaceId === "string" && rawClaimSurfaceId.trim() !== ""
@@ -252,9 +266,8 @@ function clampResultSeveritiesInPlace(domain, results) {
     }
   }
 
-  const clamps = [];
   let runRows = null;
-  let signingKey = null;
+  let verifier = null;
   for (const result of results) {
     if (!result || typeof result.severity !== "string") continue;
 
@@ -264,30 +277,19 @@ function clampResultSeveritiesInPlace(domain, results) {
 
     const base = byFinding.get(result.finding_id);
     let maxDemonstratedRank = 0;
-    if (base && base.exploitRunRefs.length > 0) {
+    if (isWebScope && base && base.exploitRunRefs.length > 0) {
       if (runRows === null) runRows = readOffensiveRunRecords(domain);
       if (runRows.length > 0) {
-        if (signingKey === null) signingKey = readHandoffSigningKey(domain);
+        if (verifier === null) verifier = resolveRowVerifierSafely(domain);
         for (const { ref, surfaceId } of base.exploitRunRefs) {
           for (const row of runRows) {
             if (
-              offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey)
+              offensiveRunRowSatisfiesEvidence(row, ref, domain, verifier)
               && rowAttemptFreshForState(row, sessionState)
-              // Surface binding (issue #111): mirror the record gate. The row's
-              // surface_id must equal the owning claim's single surface. surfaceId
-              // === null (claim not exactly-1-surface, OR an empty/whitespace
-              // surface — both fail closed above) drops the row → maxDemonstratedRank
-              // stays 0 → provenRise false → clamp to baseline. Purely subtractive.
               && surfaceId !== null
               && typeof row.surface_id === "string"
               && row.surface_id.trim() === surfaceId
             ) {
-              // Per-tool demonstrated_severity ceiling (PR-A), applied HERE too so the cap is a true
-              // system invariant — enforced at the record gate, the CLAIM_FREEZE->VERIFY gate, AND
-              // this verify-time severity-rise path. Cap the row's demonstrated rank at its tool's
-              // ceiling before it can unlock a rise: a forged/over-ceiling row, or a session advanced
-              // past the gate with operator_force, cannot raise severity above the tool's ceiling. An
-              // unknown/forged tool_id fail-closes to "info" (lowest tier).
               const toolCeilRank = verifySeverityRank(
                 OFFENSIVE_TOOL_DEMONSTRATED_CEILING[row.tool_id] ?? "info",
               );
@@ -298,42 +300,39 @@ function clampResultSeveritiesInPlace(domain, results) {
         }
       }
     }
+    let clampedSeverity = result.severity;
     if (base && base.maxRank > 0 && verifySeverityRank(result.severity) > base.maxRank) {
-      // A rise above the frozen baseline. The exploit-backed allow-path requires
-      // proof bound to the ASSERTED severity, not merely that some exploit row
-      // exists. A matching, MAC-signed row must carry a `demonstrated_severity`
-      // (the impact tier the safe exploit actually demonstrated, MAC-covered so
-      // it can't be forged) that meets or exceeds `result.severity` — a
-      // low-severity row (e.g. PR3's read-only synthetic-id confirmer) can never
-      // unlock a critical rise. The allow-path is now live for rows produced by
-      // trusted MCP code, with run_id single-use enforced at record time and
-      // stale non-null verification attempts rejected here. Null attempts are
-      // evaluate-time rows and fall back to the freeze's content-hash binding.
       const assertedRank = verifySeverityRank(result.severity);
       if (hasExploitReplaySignal && base.exploitRunRefs.length > 0) {
         provenRise = maxDemonstratedRank >= assertedRank;
       }
       if (!provenRise) {
-        const from = result.severity;
         const to = toRoundSeverity(base.maxSeverity);
-        if (to !== from) {
-          result.severity = to;
-          clamps.push({ finding_id: result.finding_id, from, to });
-        }
+        if (to !== result.severity) clampedSeverity = to;
       }
     }
+    out.set(result.finding_id, { severity: clampedSeverity, provenRise });
+  }
+  return out;
+}
 
-    // NOTE: there is intentionally NO unconditional "clamp to the exploit row's
-    // demonstrated_severity" here. The record gate (assertExploitedClaimHasProof)
-    // already forbids an exploited_safely claim from being frozen above its cited
-    // rows' demonstrated tier, so an exploit-backed claim can never carry an
-    // unproven-high baseline. Clamping unconditionally would instead corrupt a
-    // finding whose higher baseline comes from a SEPARATE non-exploit claim (e.g.
-    // a medium static-analysis finding alongside a low synthetic-id confirm),
-    // lowering a legitimate medium to low on the strength of unrelated proof. The
-    // rise-guard above (provenRise) is the only place the demonstrated ceiling
-    // applies — to the exploit-backed rise it is actually validating.
-
+function clampResultSeveritiesInPlace(domain, results) {
+  // Delegate the baseline + proven-rise computation to the pure helper, then apply
+  // the WRITE-TIME side effects: mutate result.severity DOWN to the clamped target
+  // and strip the exploit-proof reason on an unproven/non rise. The read-time
+  // re-clamp at compose/grade reuses the SAME helper, so write and read agree by
+  // construction.
+  const decisions = reclampSeveritiesAgainstFreeze(domain, results);
+  const clamps = [];
+  for (const result of results) {
+    if (!result || typeof result.severity !== "string") continue;
+    const decision = decisions.get(result.finding_id);
+    if (!decision) continue;
+    if (decision.severity !== result.severity) {
+      const from = result.severity;
+      result.severity = decision.severity;
+      clamps.push({ finding_id: result.finding_id, from, to: decision.severity });
+    }
     // `exploit_replay_confirmed` is a proof claim. Keep it ONLY when it backed a
     // validated severity rise; on a non-rise, an unproven (clamped) rise, or a
     // finding with no frozen baseline, strip it from ALL THREE persisted reason
@@ -343,7 +342,7 @@ function clampResultSeveritiesInPlace(domain, results) {
     const exploitReasonAnywhere = REASON_ARRAY_FIELDS.some((field) => (
       Array.isArray(result[field]) && result[field].includes("exploit_replay_confirmed")
     ));
-    if (exploitReasonAnywhere && !provenRise) {
+    if (exploitReasonAnywhere && !decision.provenRise) {
       for (const field of REASON_ARRAY_FIELDS) {
         if (Array.isArray(result[field])) {
           result[field] = result[field].filter((reason) => reason !== "exploit_replay_confirmed");
@@ -601,6 +600,22 @@ function renderVerificationRoundMarkdown(document) {
 
 function writeVerificationRound(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  // Union-commit signal: a v2 round writer invoked WITHOUT a `results` array
+  // commits the staged per-finding partials. The orchestrator triggers this once
+  // every per-finding worker has staged its result; the server reads the
+  // fresh-bound partials, unions them in snapshot order, and routes the SAME
+  // finalize (exact-coverage assert + severity clamp + final hash + adjudication)
+  // so the committed round is byte-identical to a single-shot write over the same
+  // union. The legacy single-attempt batch path (a `results` array is supplied)
+  // is untouched, and commitVerificationRoundFromPartials always supplies
+  // `results`, so this routing never recurses.
+  if (args.results === undefined) {
+    const schemaVersion = verificationLib().selectVerificationWriteSchemaVersion(domain);
+    if (schemaVersion !== 2) {
+      throw new Error("results must be an array");
+    }
+    return commitVerificationRoundFromPartials(args);
+  }
   return withSessionLock(domain, () => {
   const round = assertEnumValue(args.round, VERIFICATION_ROUND_VALUES, "round");
   const notes = normalizeOptionalText(args.notes, "notes");
@@ -747,6 +762,225 @@ function writeVerificationRound(args) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Finding-keyed verification-round partials.
+//
+// Per-finding verification workers each produce a PARTIAL round covering ONE
+// finding_id. A worker submits its single result to the staging area below; the
+// SERVER unions all staged partials into ONE round document at commit time and
+// runs the unchanged writeVerificationRound finalization (exact-coverage assert,
+// deterministic sort, anti-inflation severity clamp, v2 final hash, adjudication
+// binding). This is faithful to the single-document-per-round schema:
+// final_verification_hash, adjudication.input_round_hashes, evidence binding,
+// and loadCurrentV2Round all assume exactly one artifact per round. Per-finding
+// round documents would shatter every one of those bindings, so partials are
+// UNIONED into the existing round artifact rather than persisted per-finding.
+//
+// Non-forgeability is preserved: no worker writes a round document or a verdict;
+// each worker stages one finding's submission, and the exact-coverage gate
+// asserts the UNION covers EXACTLY snapshot.finding_ids at commit. A worker that
+// over-reports (an extra finding_id) is rejected by the same `extra` leg, and a
+// missing finding stops-and-names the coverage gap (the union never silently
+// drops a finding). The committed round is the ONLY audit-graded artifact.
+// ---------------------------------------------------------------------------
+
+function partialFileName(round, findingId) {
+  return `${crypto.createHash("sha256").update(`${round}:${findingId}`).digest("hex")}.json`;
+}
+
+function partialFilePath(domain, round, findingId) {
+  return path.join(verificationRoundPartialDir(domain, round), partialFileName(round, findingId));
+}
+
+function readVerificationRoundPartial(filePath) {
+  try {
+    return readJsonFile(filePath, { label: path.basename(filePath) });
+  } catch {
+    return null;
+  }
+}
+
+// List the staged partials for a round whose binding matches the CURRENT v2
+// VERIFY attempt/snapshot. Stale-bound partials (a prior attempt or a superseded
+// snapshot) are pruned so they can never leak into a fresh round's union.
+function listCurrentRoundPartials(domain, round, { state }) {
+  const dir = verificationRoundPartialDir(domain, round);
+  if (!fs.existsSync(dir)) return [];
+  const partials = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const filePath = path.join(dir, entry.name);
+    const partial = readVerificationRoundPartial(filePath);
+    const fresh = partial
+      && partial.round === round
+      && partial.verification_attempt_id === state.verification_attempt_id
+      && partial.verification_snapshot_hash === state.verification_snapshot_hash
+      && partial.result
+      && typeof partial.result === "object"
+      && !Array.isArray(partial.result);
+    if (!fresh) {
+      try { fs.rmSync(filePath, { force: true }); } catch {}
+      continue;
+    }
+    partials.push({ filePath, partial });
+  }
+  return partials;
+}
+
+// Stage ONE finding's verification result for a round. Called by a per-finding
+// worker. Validates the v2 VERIFY binding and that finding_id ∈ snapshot, then
+// validates the single result through the SAME normalizer the round writer uses
+// (so an invalid submission is rejected here, not at commit). The RAW result is
+// persisted (repro_steps/evidence_refs and the other write-tool inputSchema
+// fields are carried through unchanged) so the committed round is byte-identical
+// to a single-shot writeVerificationRound over the same union. Re-staging the
+// same finding_id overwrites (idempotent worker retry).
+function stageVerificationRoundPartial(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  return withSessionLock(domain, () => {
+    const round = assertEnumValue(args.round, VERIFICATION_ROUND_VALUES, "round");
+    const schemaVersion = verificationLib().selectVerificationWriteSchemaVersion(domain);
+    if (schemaVersion !== 2) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        "per-finding verification partials require a v2 VERIFY attempt",
+      );
+    }
+    const { state, snapshot } = verificationLib().currentV2RoundInput(domain, args);
+    if (args.result == null || typeof args.result !== "object" || Array.isArray(args.result)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "result must be a single verification result object");
+    }
+    const findingIdSet = new Set(snapshot.finding_ids);
+    // Normalize for validation only (and to learn the canonical finding_id); the
+    // RAW result is what we persist so the union round is byte-identical to a
+    // single-shot write. Anti-inflation clamping is applied by the round writer
+    // at commit (uniformly across the union), never here.
+    const normalized = normalizeVerificationResult(args.result, findingIdSet, { schemaVersion });
+    const findingId = normalized.finding_id;
+    const notesFragment = normalizeOptionalText(args.notes, "notes");
+
+    const dir = verificationRoundPartialDir(domain, round);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = partialFilePath(domain, round, findingId);
+    const document = {
+      version: 1,
+      target_domain: domain,
+      round,
+      verification_attempt_id: state.verification_attempt_id,
+      verification_snapshot_hash: state.verification_snapshot_hash,
+      finding_id: findingId,
+      result: args.result,
+      notes_fragment: notesFragment,
+      staged_at: new Date().toISOString(),
+    };
+    writeFileAtomic(filePath, `${JSON.stringify(document, null, 2)}\n`);
+
+    const staged = new Set(
+      listCurrentRoundPartials(domain, round, { state }).map(({ partial }) => partial.finding_id),
+    );
+    const remaining = snapshot.finding_ids.filter((id) => !staged.has(id));
+    safeAppendPipelineEventDirect(domain, "verification_partial_staged", {
+      phase: "VERIFY",
+      status: round,
+      source: "verification_round_partial",
+      verification_attempt_id: state.verification_attempt_id,
+      verification_snapshot_hash: state.verification_snapshot_hash,
+      counts: {
+        snapshot_findings: snapshot.finding_ids.length,
+        staged: staged.size,
+        remaining: remaining.length,
+      },
+    }, safeGovernanceContextForDomain(domain));
+
+    return JSON.stringify({
+      round,
+      finding_id: findingId,
+      verification_attempt_id: state.verification_attempt_id,
+      verification_snapshot_hash: state.verification_snapshot_hash,
+      staged_count: staged.size,
+      snapshot_findings: snapshot.finding_ids.length,
+      remaining_finding_ids: remaining,
+      ready_to_commit: remaining.length === 0,
+    });
+  });
+}
+
+// Commit the staged partials for a round into the single round document. The
+// SERVER reads every fresh-bound partial, unions the raw results in snapshot
+// order, and routes through the unchanged writeVerificationRound — so the
+// exact-coverage assertion is the COMMIT gate. A missing finding fails with the
+// existing "must cover exactly the current VERIFY snapshot finding IDs (missing:
+// ...)" error, naming the coverage gap rather than silently dropping it. On
+// success the staged partials are cleared (the committed round is authoritative).
+function commitVerificationRoundFromPartials(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  return withSessionLock(domain, () => {
+    const round = assertEnumValue(args.round, VERIFICATION_ROUND_VALUES, "round");
+    const schemaVersion = verificationLib().selectVerificationWriteSchemaVersion(domain);
+    if (schemaVersion !== 2) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        "per-finding verification partial commit requires a v2 VERIFY attempt",
+      );
+    }
+    const { state, snapshot } = verificationLib().currentV2RoundInput(domain, args);
+    const partials = listCurrentRoundPartials(domain, round, { state });
+    const byFinding = new Map(partials.map(({ partial }) => [partial.finding_id, partial]));
+    // Union in snapshot order. The exact-coverage gate inside writeVerificationRound
+    // re-asserts membership; assembling in snapshot order keeps the union
+    // deterministic and replayable independent of filesystem iteration order.
+    const results = snapshot.finding_ids
+      .filter((id) => byFinding.has(id))
+      .map((id) => byFinding.get(id).result);
+    const noteFragments = partials
+      .map(({ partial }) => (typeof partial.notes_fragment === "string" ? partial.notes_fragment.trim() : ""))
+      .filter((fragment) => fragment.length > 0);
+
+    const writeArgs = {
+      target_domain: domain,
+      round,
+      notes: args.notes != null
+        ? args.notes
+        : (noteFragments.length > 0 ? noteFragments.join("\n") : null),
+      verification_attempt_id: state.verification_attempt_id,
+      verification_snapshot_hash: state.verification_snapshot_hash,
+      round_profile: args.round_profile != null ? args.round_profile : round,
+      results,
+    };
+    if (args.adjudication_plan_hash != null) writeArgs.adjudication_plan_hash = args.adjudication_plan_hash;
+
+    // writeVerificationRound re-takes the session lock; withSessionLock is
+    // re-entrant per the storage contract, so the union commit is atomic against
+    // concurrent stages. The exact-coverage assertion here is the only commit
+    // gate — a missing finding throws before any round document is written.
+    const response = JSON.parse(writeVerificationRound(writeArgs));
+
+    // The committed round document is now authoritative; clear the staging area
+    // so a subsequent attempt/snapshot starts clean. Best-effort: the freshness
+    // filter in listCurrentRoundPartials already excludes stale-bound files.
+    for (const { filePath } of partials) {
+      try { fs.rmSync(filePath, { force: true }); } catch {}
+    }
+    safeAppendPipelineEventDirect(domain, "verification_partials_committed", {
+      phase: "VERIFY",
+      status: round,
+      source: "verification_round_partial",
+      verification_attempt_id: state.verification_attempt_id,
+      verification_snapshot_hash: state.verification_snapshot_hash,
+      counts: {
+        snapshot_findings: snapshot.finding_ids.length,
+        committed_results: results.length,
+      },
+    }, safeGovernanceContextForDomain(domain));
+
+    return JSON.stringify({
+      ...response,
+      committed_from_partials: true,
+      committed_finding_count: results.length,
+    });
+  });
+}
+
 function readVerificationRound(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const paths = verificationRoundPaths(domain, args.round);
@@ -763,6 +997,10 @@ function readVerificationRound(args) {
 }
 
 module.exports = {
+  clampResultSeveritiesInPlace,
+  reclampSeveritiesAgainstFreeze,
+  commitVerificationRoundFromPartials,
+  listCurrentRoundPartials,
   normalizeArtifactHashes,
   normalizeVerificationResult,
   normalizeVerificationRoundDocument,
@@ -770,6 +1008,7 @@ module.exports = {
   renderVerificationRoundMarkdown,
   requirePriorVerificationRound,
   sortVerificationResultsByFindingIds,
+  stageVerificationRoundPartial,
   verifySeverityRank,
   writeVerificationRound,
 };

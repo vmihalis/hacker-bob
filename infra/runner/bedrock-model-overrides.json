@@ -1,0 +1,8 @@
+{
+  "_comment": "Managed Claude Code settings overlay layered onto the generated settings file inside the image. Keys are canonical Anthropic model IDs; alias routing is pinned separately with ANTHROPIC_DEFAULT_OPUS_MODEL and ANTHROPIC_DEFAULT_SONNET_MODEL in the Runtime environment.",
+  "modelOverrides": {
+    "claude-opus-4-8": "us.anthropic.claude-opus-4-8",
+    "claude-sonnet-5": "us.anthropic.claude-sonnet-5"
+  },
+  "_build_day_smoke_test": "Inside the built container, inspect the ANTHROPIC_* model variables, then make one tiny authorized Claude Code print call and confirm CloudTrail records the expected Bedrock inference profile."
+}

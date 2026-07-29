@@ -4,7 +4,6 @@ const { readVerificationRound } = require("../verification-round-store.js");
 
 module.exports = Object.freeze({
   name: "bob_read_verification_round",
-  aliases: ["bounty_read_verification_round"],
   description:
     "Read one verification round JSON document.",
   inputSchema: {

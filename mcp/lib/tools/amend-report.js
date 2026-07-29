@@ -95,6 +95,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_amend_report",
+  writes_audit_graded: true,
   description:
     "Operator-amendment path on report.md (Y-P13a). Appends to report-amendments.jsonl; re-render via bob_compose_report folds the amendment block into the rendered markdown. Hand-edits to report.md are not preserved across renders.",
   inputSchema: {

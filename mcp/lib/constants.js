@@ -5,6 +5,10 @@ const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
+// Trust-degradation marker for a finding whose source could not be
+// signature-verified. An absent (or unparseable, tolerantly dropped) marker is
+// read as signature-verified; the marker is never auto-materialized.
+const SIGNATURE_VERIFICATION_STATUS_VALUES = ["signed", "unsigned"];
 const OFFENSIVE_OUTCOME_VALUES = ["exploited_safely", "blocked_by_defense", "blocked_by_infra"];
 const SAFE_ORACLE_KINDS = [
   "out_of_band_interaction",
@@ -14,6 +18,20 @@ const SAFE_ORACLE_KINDS = [
   "blind_boolean_timing",
   "benign_command_marker",
 ];
+// The oracle_kind values a producer may STAMP into a MAC-covered offensive-runs row.
+// A stamped oracle_kind marks a row whose evidence is NOT a self-contained executed
+// binding — an out-of-band external callback (bob_oob_poll) or a second-order stored-
+// effect re-read (bob_secondorder_reread), both observed through a channel DISTINCT
+// from the injection point. The read-time exploit-run skip (claims.js
+// exploitRunSkipReverifies) keys on membership here to REFUSE self-skip, so such a row
+// must earn a finding-differential verified_pass against a decoy-silent control rather
+// than self-close on a single positive. Self-contained producers (IDOR / reflected-XSS)
+// stamp NO oracle_kind (null). Single source consumed by offensive-capture-writer's
+// stampable-set validator AND the claims read-time skip, so the two can never drift.
+const OFFENSIVE_ROW_ORACLE_KIND_VALUES = [
+  "out_of_band_interaction",
+  "second_order_reread",
+];
 const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
@@ -21,9 +39,15 @@ const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // classification consumed by finding-contracts and the wave-scheduler);
 // SURFACE_KIND_VALUES is the node-kind discriminator persisted in
 // task-graph.json (X.2) and surface-index.json (X-P6: "transition nodes are
-// persisted as kind: \"transition\"" in surface-index). Initially shipped
-// with the 4 X.2 node kinds; growing the set requires a new cycle per X-P8.
-const SURFACE_KIND_VALUES = ["surface", "transition", "hypothesis", "claim"];
+// persisted as kind: \"transition\"" in surface-index). `cell` is the
+// coverage-cell schedulable unit (element x bug_class x auth_role). Growing
+// the set requires a new cycle per X-P8.
+const SURFACE_KIND_VALUES = ["surface", "transition", "hypothesis", "claim", "cell"];
+// TaskGraph node-only kind. A `producer` node is materialized into task-graph.json
+// but is INTENTIONALLY OUTSIDE SURFACE_KIND_VALUES: a producer node is
+// never persisted to surface-index.json (it is not a scannable surface), so it
+// must not appear in the closed surface-index kind discriminator above.
+const PRODUCER_NODE_KIND = "producer";
 const CHAIN_FAMILY_VALUES = ["evm", "svm", "aptos", "sui", "substrate", "cosmwasm"];
 const SVM_CLUSTER_VALUES = ["mainnet-beta", "devnet", "testnet"];
 // Aptos and Sui both identify networks by string name in tooling and RPC URLs.
@@ -76,6 +100,8 @@ const VERIFICATION_CONFIDENCE_REASON_VALUES = [
   "roast_disagreement",
   "disambiguation_failed",
   "agreement_not_replayed",
+  "unruled_confounder",
+  "missing_control",
   "exploit_replay_confirmed",
 ];
 const VERIFICATION_REASONING_DIVERGENCE_VALUES = [
@@ -110,13 +136,39 @@ const STATIC_ARTIFACT_ID_RE = /^SA-([1-9]\d*)$/;
 const STATIC_ARTIFACT_TYPE_VALUES = ["evm_token_contract", "solana_token_contract"];
 const STATIC_ARTIFACT_MAX_CHARS = 200_000;
 const STATIC_ARTIFACT_LOG_MAX_RECORDS = 500;
+// Imported fuzz harnesses (bob_import_harness). Session-owned, MCP-write-only scratch
+// (not audit-graded). One harness is a small source file; the cap matches static imports.
+const HARNESS_ID_RE = /^H-([1-9]\d*)$/;
+const HARNESS_MAX_CHARS = 200_000;
+const HARNESS_LOG_MAX_RECORDS = 200;
+// Imported grammar-generated seed corpora (bob_import_seed_corpus). Session-owned,
+// MCP-write-only scratch (not audit-graded). A batch import is many small fuzz inputs.
+const SEED_CORPUS_ID_RE = /^SC-([1-9]\d*)$/;
+const SEED_CORPUS_IMPORT_MAX_SEEDS = 512;
+const SEED_CORPUS_IMPORT_MAX_SEED_CHARS = 65_536;
+const SEED_CORPUS_IMPORT_MAX_TOTAL_CHARS = 8_000_000;
+const SEED_CORPUS_LOG_MAX_RECORDS = 200;
 const STATIC_SCAN_RESULTS_MAX_RECORDS = 1_000;
 const STATIC_SCAN_FINDING_MAX_ITEMS = 100;
 const STATIC_SCAN_HINT_MAX_ITEMS = 10;
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 
+// OD1 seed-producer governors (consumed by the queue-policy defaults). The
+// per-pass cap and the per-expander linked-address cap are the load-bearing,
+// MCP-enforced, NON-null fan-out bounds; the lifetime total is only a backstop.
+const DEFAULT_MAX_TOTAL_SEED_PRODUCERS = 1024;
+const DEFAULT_SEED_PRODUCER_PER_PASS_CAP = 32;
+const DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP = 16;
+
 const SESSION_LOCK_NAME = ".session.lock";
 const SESSION_LOCK_STALE_MS = 300_000;
+// fx-gate-bypass defense 1 — the process-lifetime, whole-engine singleton lock
+// (mcp/lib/engine-lock.js). Root-level (sessionsRoot(), not per-domain): the
+// engine's target_domain is unknown at process boot, so this cannot key on a
+// single session dir. A live owner is never displaced by a timeout;
+// engine-lock.js may reclaim only an exact same-host lock whose PID the kernel
+// proves absent. Ambiguous and foreign-host ownership still fails closed.
+const ENGINE_LOCK_NAME = ".engine.lock";
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
   "target_url",
@@ -157,6 +209,18 @@ const SESSION_PUBLIC_STATE_FIELDS = [
   "verification_snapshot_hash",
   "verification_entered_at",
   "handoff_provenance_required",
+  // Smart-contract sessions bind a third primary axis: target_contracts (the
+  // in-scope contract addresses) plus an optional chain_authority_hash. Web and
+  // repo sessions leave these at [] / null and the public projection omits them,
+  // so the historical url/repo public-state shape stays byte-stable. An empty
+  // target_contracts is NOT the contracts axis (the exactly-one-primary-axis
+  // normalization treats [] as absent).
+  "target_contracts",
+  "chain_authority_hash",
+  // Compact digest/epoch binding for an authenticated physical-scope import.
+  // Omitted entirely for legacy url/repo/contracts sessions so their public
+  // state projection and canonical hashes remain byte-stable.
+  "physical_scope",
 ];
 
 const VERIFICATION_ROUND_FILE_MAP = {
@@ -180,6 +244,10 @@ module.exports = {
   COVERAGE_STATUS_VALUES,
   COVERAGE_SUMMARY_MAX_ITEMS,
   COVERAGE_UNFINISHED_STATUS_VALUES,
+  DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
+  DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
+  DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  ENGINE_LOCK_NAME,
   FINDING_ID_RE,
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
@@ -187,6 +255,8 @@ module.exports = {
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
   OFFENSIVE_OUTCOME_VALUES,
+  OFFENSIVE_ROW_ORACLE_KIND_VALUES,
+  PRODUCER_NODE_KIND,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,
   SAFE_ORACLE_KINDS,
@@ -194,6 +264,15 @@ module.exports = {
   SESSION_LOCK_STALE_MS,
   SESSION_PUBLIC_STATE_FIELDS,
   SEVERITY_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
+  HARNESS_ID_RE,
+  HARNESS_LOG_MAX_RECORDS,
+  HARNESS_MAX_CHARS,
+  SEED_CORPUS_ID_RE,
+  SEED_CORPUS_IMPORT_MAX_SEEDS,
+  SEED_CORPUS_IMPORT_MAX_SEED_CHARS,
+  SEED_CORPUS_IMPORT_MAX_TOTAL_CHARS,
+  SEED_CORPUS_LOG_MAX_RECORDS,
   STATIC_ARTIFACT_ID_RE,
   STATIC_ARTIFACT_LOG_MAX_RECORDS,
   STATIC_ARTIFACT_MAX_CHARS,

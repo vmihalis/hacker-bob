@@ -127,7 +127,6 @@ function summarizeDiffImpactHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_summarize_diff_impact",
-  aliases: ["bounty_summarize_diff_impact"],
   description:
     "Given a unified diff (or pre-parsed diff_files) and a target's symbol-surface-index, return the surface IDs the diff touches. Pass unified_diff to let the tool parse + intersect in one call, or pass diff_files: [{file, line_ranges?}] when you've already parsed elsewhere. The orchestrator can feed the returned impacted_surface_ids into bob_start_wave for a focused diff-aware regression evaluate.",
   inputSchema: {

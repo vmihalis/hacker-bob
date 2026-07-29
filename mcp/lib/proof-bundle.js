@@ -48,10 +48,27 @@ const {
   classifyFoundryOutcome,
   computeInvariantRunHash,
   invariantFoundryResultHash,
+  readInvariantVerifiedSummary,
+  RESULT_VERIFIED_PASS,
 } = require("./invariant-runner.js");
+const {
+  readReproVerifiedSummary,
+} = require("./repro-replay-verifier.js");
+// Cycle B: verify the keyed invariant-run row_mac at the proof-bundle gate, AFTER the
+// existing content-hash re-derivation. A present-but-invalid MAC rejects the bundle; an
+// old unsigned row is accepted-with-warning (still re-derived). Reuses Cycle A's
+// verify path; does NOT close F3 (the key is still agent-readable — F2 collapses INTO F3).
+const {
+  assertRowMacOrLegacy,
+  INVARIANT_RUN_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  resolveRowVerifierSafely,
+} = require("./handoff-signing-key.js");
 
 const PROOF_BUNDLES_VERSION = 1;
-const PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
+const CALLER_PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
+const PROOF_BUNDLE_KINDS = Object.freeze([...CALLER_PROOF_BUNDLE_KINDS, "capability_pack"]);
 const MAX_REPLAY_COMMAND_TOKENS = 64;
 const MAX_REPLAY_COMMAND_TOKEN_CHARS = 2048;
 const MAX_REPLAY_SUMMARY_CHARS = 2000;
@@ -326,6 +343,39 @@ function stableRepoRunProjection(domain, row, fieldName, findingId) {
   return projection;
 }
 
+// REFUTING-ARM (universal): a replay_script proof bundle no longer mints a
+// "proven by reproduction script" artifact on the strength of a single executed
+// repo-command-run. That lone row has NO control to flip against — an exit-0
+// banner or any over-broad command satisfies it. It must be backed by a
+// VERIFIED_PASS in the MCP-write-only, agent-Write-blocked repro-verified.jsonl
+// (minted ONLY by verifyReproReproduction's two-tree differential: crashes the
+// vuln tree with a /src frame, quiet on the upstream-fix tree). The binding is
+// LEDGER-BY-ID: keyed by finding_id AND the replay row's command, so a bundle
+// cannot pair a real finding's verdict with an unrelated replay command. A lone
+// replay row, a verdict for a different command, or an inconclusive/refuted
+// outcome is REJECTED — the single-run pass is inconclusive at this gate, exactly
+// as the invariant branch above rejects a lone passing invariant run.
+function readReproVerifiedForReplay(domain, findingId, replayCommandHash, fieldName) {
+  let verifiedByFinding = {};
+  try {
+    verifiedByFinding = readReproVerifiedSummary(domain).verified_by_finding || {};
+  } catch {
+    verifiedByFinding = {};
+  }
+  const verified = verifiedByFinding[findingId];
+  if (!verified) {
+    throw new Error(`${fieldName} requires a VERIFIED_PASS differential reproduction in repro-verified.jsonl for finding_id ${findingId}; run bob_verify_repro_reproduction first (a lone replay run has no refuting control to flip against and is no longer accepted)`);
+  }
+  // The verified_pass command_hash is hashCanonicalJson(verifier-run argv); for an
+  // argv array of scalar strings this equals sha256(JSON.stringify(argv)), the same
+  // digest the replay row's replay_command_hash carries. They MUST match so the
+  // verified differential is bound to THIS replay command, not a different one.
+  if (verified.command_hash !== replayCommandHash) {
+    throw new Error(`${fieldName} replay_command does not match the VERIFIED_PASS differential reproduction command for finding_id ${findingId}; the verified_pass must flip on the same command this proof bundle replays`);
+  }
+  return verified;
+}
+
 function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
@@ -333,6 +383,9 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
   const row = readRepoCommandRunRow(repoCommandRunRows, artifact.run_id, `artifacts[${index}].run_id`, findingId);
   const replayCommand = normalizeReplayCommand(artifact.replay_command, row, `artifacts[${index}].replay_command`);
   const runProjection = stableRepoRunProjection(domain, row, `artifacts[${index}].repo_run`, findingId);
+  const reproVerified = readReproVerifiedForReplay(
+    domain, findingId, runProjection.replay_command_hash, `artifacts[${index}]`,
+  );
   const runHash = hashCanonicalJson(runProjection);
   if (artifact.run_hash != null && assertHex64(artifact.run_hash, `artifacts[${index}].run_hash`) !== runHash) {
     throw new Error(`artifacts[${index}].run_hash does not match the repo docker run handle`);
@@ -352,7 +405,17 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
     replay_command_hash: runProjection.replay_command_hash,
     stdout_hash: runProjection.stdout_hash,
     stderr_hash: runProjection.stderr_hash,
+    // LEDGER-BY-ID binding to the MCP-write-only repro-verified differential that
+    // FLIPPED on this exact command (crashes vuln tree, quiet on the fix tree).
+    verdict: RESULT_VERIFIED_PASS,
+    repro_verified_command_hash: reproVerified.command_hash,
   };
+  if (typeof reproVerified.control_ref === "string" && reproVerified.control_ref) {
+    normalized.repro_control_ref = reproVerified.control_ref;
+  }
+  if (typeof reproVerified.crash_class === "string" && reproVerified.crash_class) {
+    normalized.crash_class = reproVerified.crash_class;
+  }
   if (runProjection.work_mount_mode_legacy_assumed) {
     normalized.work_mount_mode_legacy_assumed = true;
   }
@@ -380,7 +443,14 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
   return normalized;
 }
 
-function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
+// Re-validate a single invariant-runs.jsonl row exactly as before: it must be an
+// executed (non-dry-run) row, bound to the finding, with foundry_result_hash,
+// run_hash and outcome all internally consistent. The expectedViolation argument
+// is the run's REQUIRED invariant direction: the positive arm must be test_failed
+// (the safe assertion failed → a counterexample / violation), the control arm must
+// be test_passed (the invariant holds). This is the EXACT INVERSION of the old
+// single-row gate, which accepted a bare test_passed as verified.
+function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId, expectedOutcome, verifier = null) {
   const normalizedRunHash = assertHex64(runHash, fieldName);
   const matchingRows = rows.filter((entry) => entry && entry.run_hash === normalizedRunHash);
   if (matchingRows.length === 0) {
@@ -416,25 +486,72 @@ function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
   if (classifiedOutcome !== row.outcome) {
     throw new Error(`${fieldName} outcome does not match invariant run Foundry result`);
   }
-  if (row.outcome !== "test_passed") {
-    throw new Error(`${fieldName} must reference a reproducing invariant run with outcome test_passed`);
+  if (expectedOutcome && row.outcome !== expectedOutcome) {
+    throw new Error(`${fieldName} must reference an invariant run with outcome ${expectedOutcome}`);
   }
+  // Cycle B keyed layer: AFTER the content-hash/outcome re-derivation, assert the keyed
+  // row_mac. A present-but-invalid (forged/tampered/cross-context) row_mac throws and
+  // rejects the bundle; an absent row_mac is accepted-with-warning (legacy in-flight row,
+  // still re-derived above). The MAC is an ADDED O(1) keyed layer, not a replacement.
+  assertRowMacOrLegacy(INVARIANT_RUN_MAC_CONTEXT, row, verifier);
   return row;
 }
 
-function normalizeInvariantArtifact(artifact, { invariantRunRows, index, findingId }) {
+// REFUTING-ARM (universal): an invariant proof bundle no longer accepts a lone
+// test_passed row. It must carry BOTH a positive_run_hash (the run on the real
+// target — the invariant must FAIL there) and a control_run_hash (the SAME test on
+// a control tree — the invariant must HOLD there), AND the MCP-owned
+// invariant-verified.jsonl must hold a VERIFIED_PASS record for this finding whose
+// positive/control run hashes match (read via readInvariantVerifiedSummary, the
+// MCP-write-only ledger, never a row field). A bundle that references a lone
+// passing row, a non-flipping pair, or only an inconclusive/refuted verdict is
+// REJECTED — the single-run pass is inconclusive at the gate.
+function normalizeInvariantArtifact(artifact, { domain, invariantRunRows, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
   }
-  const row = readInvariantRunRow(invariantRunRows, artifact.run_hash, `artifacts[${index}].run_hash`, findingId);
+  if (artifact.run_hash != null && artifact.positive_run_hash == null) {
+    throw new Error(`artifacts[${index}] must carry positive_run_hash + control_run_hash; a lone run_hash invariant proof is no longer accepted (it has no refuting control to flip against)`);
+  }
+  // Cycle B: resolve the keyed-MAC verifier ONCE for this artifact (the two rows share
+  // it; CONSTRAINT 1: no per-row disk re-read). resolveRowVerifierSafely yields a
+  // public-key-only verifier (hmacKey:null) for a non-offensive ed25519-only session and
+  // null for a pre-keypair session; a signed row with a null verifier fails closed.
+  const invariantRowVerifier = resolveRowVerifierSafely(domain);
+  const positiveRow = readInvariantRunRow(
+    invariantRunRows, artifact.positive_run_hash, `artifacts[${index}].positive_run_hash`, findingId, "test_failed", invariantRowVerifier,
+  );
+  const controlRow = readInvariantRunRow(
+    invariantRunRows, artifact.control_run_hash, `artifacts[${index}].control_run_hash`, findingId, "test_passed", invariantRowVerifier,
+  );
+  // The control MUST be the SAME generated test on a DIFFERENT tree.
+  for (const key of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
+    if ((positiveRow[key] || null) !== (controlRow[key] || null)) {
+      throw new Error(`artifacts[${index}] control_run_hash ${key} must match positive_run_hash (control must be the same test on a different tree)`);
+    }
+  }
+  if (hashCanonicalJson(positiveRow.slot_values || null) !== hashCanonicalJson(controlRow.slot_values || null)) {
+    throw new Error(`artifacts[${index}] control_run_hash slot_values must match positive_run_hash`);
+  }
+  // LEDGER-BY-ID: require the MCP-write-only differential verdict, matched on
+  // finding_id AND both run hashes (closing the "pair a real finding's verdict row
+  // with an unrelated bundle" refactor hazard).
+  const verifiedSummary = readInvariantVerifiedSummary(domain);
+  const verdict = verifiedSummary.verified_by_finding[findingId];
+  if (!verdict || verdict.positive_run_hash !== positiveRow.run_hash || verdict.control_run_hash !== controlRow.run_hash) {
+    throw new Error(`artifacts[${index}] requires a VERIFIED_PASS invariant differential in invariant-verified.jsonl matching finding_id ${findingId} and both run hashes; run bob_verify_invariant_differential first (a lone pass, a non-flipping pair, or an inconclusive/refuted verdict is rejected)`);
+  }
   const normalized = {
     artifact_kind: "invariant",
-    finding_id: row.finding_id,
-    run_hash: assertHex64(row.run_hash, `artifacts[${index}].run_hash`),
-    outcome: assertNonEmptyString(row.outcome || "unknown", `artifacts[${index}].outcome`),
+    finding_id: positiveRow.finding_id,
+    verdict: RESULT_VERIFIED_PASS,
+    positive_run_hash: assertHex64(positiveRow.run_hash, `artifacts[${index}].positive_run_hash`),
+    control_run_hash: assertHex64(controlRow.run_hash, `artifacts[${index}].control_run_hash`),
+    positive_outcome: assertNonEmptyString(positiveRow.outcome || "unknown", `artifacts[${index}].positive_outcome`),
+    control_outcome: assertNonEmptyString(controlRow.outcome || "unknown", `artifacts[${index}].control_outcome`),
   };
   for (const key of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
-    if (row[key] != null) normalized[key] = assertNonEmptyString(row[key], `artifacts[${index}].${key}`);
+    if (positiveRow[key] != null) normalized[key] = assertNonEmptyString(positiveRow[key], `artifacts[${index}].${key}`);
   }
   const snippet = normalizeOptionalBoundedText(artifact.snippet, `artifacts[${index}].snippet`, MAX_SNIPPET_CHARS);
   if (snippet) normalized.snippet = snippet;
@@ -481,6 +598,15 @@ function normalizeDifferentialArtifact(artifact, { domain, index, findingId }) {
   return normalized;
 }
 
+function normalizeCapabilityPackArtifact(artifact, { index }) {
+  if (!isPlainObject(artifact)) {
+    throw new Error(`artifacts[${index}] must be an object`);
+  }
+  const normalized = cloneJsonValue(artifact, `artifacts[${index}]`);
+  validateNoSensitiveMaterial(normalized, `artifacts[${index}]`);
+  return normalized;
+}
+
 function normalizeArtifacts(pack, bundleKind, {
   domain,
   findingId,
@@ -501,10 +627,14 @@ function normalizeArtifacts(pack, bundleKind, {
     }
     if (bundleKind === "invariant") {
       return normalizeInvariantArtifact(artifact, {
+        domain,
         invariantRunRows: invariantRunRows || readInvariantRunRows(domain),
         index,
         findingId,
       });
+    }
+    if (bundleKind === "capability_pack") {
+      return normalizeCapabilityPackArtifact(artifact, { index });
     }
     return normalizeDifferentialArtifact(artifact, { domain, index, findingId });
   });
@@ -649,6 +779,13 @@ function normalizeProofBundlesDocument(document, {
     normalized.packs.push(normalizedPack);
   }
   normalized.packs.sort((a, b) => a.finding_id.localeCompare(b.finding_id));
+  require("./capability-pack-proof-adapters.js")
+    .assertCapabilityPackProofBundlesCurrent(
+      domain,
+      document.packs,
+      normalized.packs,
+      reportableIds,
+    );
   return normalized;
 }
 
@@ -739,17 +876,28 @@ function renderProofBundlesMarkdown(document) {
       if (artifact.artifact_kind === "replay_script") {
         lines.push(`  - Replay Run: ${artifact.run_id}`);
         lines.push(`  - Run Hash: ${artifact.run_hash}`);
+        if (artifact.verdict) lines.push(`  - Verdict: ${artifact.verdict}`);
+        if (artifact.crash_class) lines.push(`  - Crash Class: ${escapeMarkdownText(artifact.crash_class)}`);
         lines.push(`  - Image Tag: ${escapeMarkdownText(artifact.image_tag)}`);
         lines.push(`  - Network: ${artifact.network_mode}`);
         lines.push(`  - Mounts: /src ${artifact.src_mount_mode}; /work ${artifact.work_mount_mode}`);
       } else if (artifact.artifact_kind === "invariant") {
-        lines.push(`  - Invariant Run Hash: ${artifact.run_hash}`);
-        lines.push(`  - Outcome: ${artifact.outcome}`);
+        lines.push(`  - Verdict: ${artifact.verdict}`);
+        lines.push(`  - Positive Run Hash: ${artifact.positive_run_hash} (${artifact.positive_outcome})`);
+        lines.push(`  - Control Run Hash: ${artifact.control_run_hash} (${artifact.control_outcome})`);
         if (artifact.template_id) lines.push(`  - Template: ${artifact.template_id}`);
       } else if (artifact.artifact_kind === "differential") {
         lines.push(`  - Differential: ${artifact.differential.control_kind} / ${artifact.differential.verdict}`);
         lines.push(`  - Vulnerable Run: ${artifact.differential.vuln_run_id}`);
         lines.push(`  - Control Run: ${artifact.differential.control_run_id}`);
+      } else if (artifact.artifact_kind === "capability_pack") {
+        lines.push(`  - Adapter: ${escapeMarkdownText(artifact.proof_adapter)}`);
+        lines.push(`  - Proof Kind: ${escapeMarkdownText(artifact.proof_kind)}`);
+        lines.push(`  - Verified Verdict: ${escapeMarkdownText(artifact.verified_verdict_ref)}`);
+        lines.push(`  - Campaign: ${escapeMarkdownText(artifact.campaign_ref)}`);
+        lines.push(`  - Terminal Cells: ${artifact.terminal_cell_count}`);
+        lines.push(`  - Active Effects: ${artifact.active_effect_count}`);
+        lines.push(`  - Unexplained Residue: ${artifact.residue_cell_count}`);
       }
     }
     lines.push("");
@@ -770,11 +918,33 @@ function writeProofBundles(args) {
       : null;
     const reportableIds = finalReportableIds(finalRound);
     const finalReportableIdSet = new Set(reportableIds);
+    const capabilityPackProjection = require("./capability-pack-proof-adapters.js")
+      .buildCapabilityPackProofBundles(domain, finalReportableIdSet);
+    const packOwnedFindingIds = new Set(capabilityPackProjection.handled_finding_ids);
+    const callerPackOverrides = args.packs
+      .filter((pack) => pack && packOwnedFindingIds.has(pack.finding_id))
+      .map((pack) => pack.finding_id)
+      .sort();
+    if (callerPackOverrides.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `Caller-supplied proof bundles cannot override capability-pack findings: ${callerPackOverrides.join(", ")}`,
+        {
+          code: "capability_pack_proof_override",
+          finding_ids: callerPackOverrides,
+        },
+        {
+          remediation:
+            "Remove the named bundles; Bob generates them from live capability-pack proof projections.",
+        },
+      );
+    }
+    const combinedPacks = [...args.packs, ...capabilityPackProjection.packs];
     const document = normalizeProofBundlesDocument({
       version: PROOF_BUNDLES_VERSION,
       target_domain: domain,
       ...(verificationBinding || {}),
-      packs: args.packs,
+      packs: combinedPacks,
     }, {
       expectedDomain: domain,
       findingIdSet,
@@ -792,6 +962,7 @@ function writeProofBundles(args) {
       bundles_count: document.packs.length,
       reportable_findings: reportableIds.length,
       missing_finding_ids: missingFindingIds,
+      capability_pack_generated_count: capabilityPackProjection.packs.length,
       written_json: paths.json,
     };
     if (verificationBinding) {
@@ -811,6 +982,7 @@ function writeProofBundles(args) {
         bundles: document.packs.length,
         reportable_findings: reportableIds.length,
         missing_findings: missingFindingIds.length,
+        capability_pack_generated: capabilityPackProjection.packs.length,
       },
     }, safeGovernanceContextForDomain(domain));
     if (verificationBinding) verificationLib().refreshVerificationManifest(domain, { throw_on_error: true });
@@ -819,6 +991,7 @@ function writeProofBundles(args) {
 }
 
 module.exports = {
+  CALLER_PROOF_BUNDLE_KINDS,
   PROOF_BUNDLE_KINDS,
   PROOF_BUNDLES_VERSION,
   computeProofBundleHash,

@@ -1,5 +1,5 @@
 
-You are the deep surface-discovery agent. Deliver `[SESSION]/attack_surface.json`, `[SESSION]/deep-summary.json`, and `[SESSION]/surface-leads.json` for `[DOMAIN]`.
+You are the deep surface-discovery agent. Deliver `[SESSION]/attack_surface.json` and `[SESSION]/deep-summary.json`, and record ranked surface leads through `bob_record_surface_leads` (the MCP-owned `surface-leads.json` writer) for `[DOMAIN]`.
 
 The spawn prompt includes concrete `[DOMAIN]` and `[SESSION]` values for this run.
 Replace placeholders before each Bash call. Do not send literal `$DOMAIN` or `$SESSION` to Bash.
@@ -513,6 +513,7 @@ counts = {
     "onchain_contracts": len([s for s in surfaces if s.get("surface_type") == "smart_contract"]),
     "surface_leads": len(leads),
 }
+ranked_leads = sorted(leads, key=lambda x: x["score"], reverse=True)[:25]
 summary = {
     "counts": counts,
     "takeover_candidates": takeovers[:20],
@@ -520,19 +521,24 @@ summary = {
     "lead_titles": [lead["title"] for lead in leads[:12]],
 }
 (session / "deep-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-(session / "surface-leads.json").write_text(json.dumps({"version": 1, "leads": sorted(leads, key=lambda x: x["score"], reverse=True)[:25]}, indent=2) + "\n")
 (session / "attack_surface.json").write_text(json.dumps({"domain": domain, "surfaces": surfaces}, indent=2) + "\n")
+# surface-leads.json is MCP-owned — it is NOT written here. Emit the ranked leads
+# to stdout so the agent can record them through bob_record_surface_leads.
+print("RANKED_LEADS_JSON:" + json.dumps({"leads": ranked_leads}))
 PY
 ```
 
+8. Record ranked leads through the MCP-owned writer.
+- `surface-leads.json` is MCP-owned and must not be written from this agent. After the step-7 block prints `RANKED_LEADS_JSON:{...}`, call `bob_record_surface_leads({ target_domain: "[DOMAIN]", source: "deep-surface-discovery", source_agent: "deep-surface-discovery", leads: [...] })` with the parsed `leads` array (already ranked, deduped, and capped at 25). Each lead carries a non-empty title/evidence and a numeric `score`; if any lead's score is below the queue-policy threshold, include a non-empty `rationale` (≤512 chars) explaining the ranking so the producer-side validator does not reject it. Make no other tool calls after this one.
+
 Final response requirements:
-- Do not make any additional Bash calls.
+- After `bob_record_surface_leads`, do not make any additional Bash calls.
 - Mention only artifact paths and compact counts from `deep-summary.json`.
 - Do not paste raw URL lists, JavaScript bodies, or full scanner output.
 
 Compact artifact requirements:
 - `[SESSION]/deep-summary.json` must include counts, takeover candidates, tech/CVE hints, and lead titles only.
-- `[SESSION]/surface-leads.json` must be `{ "version": 1, "leads": [...] }` with ranked untested leads worth later promotion. Do not duplicate every URL.
+- Surface leads are MCP-owned: they are emitted via `bob_record_surface_leads` (which appends to the session-owned `surface-leads.json` ledger), not written to disk by this agent. Provide ranked untested leads worth later promotion; do not duplicate every URL.
 - `[SESSION]/attack_surface.json` must stay compact and valid for evaluator assignment.
 
 Use this backward-compatible attack surface schema:

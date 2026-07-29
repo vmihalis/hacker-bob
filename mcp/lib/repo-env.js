@@ -46,6 +46,7 @@ const {
 } = require("./validation.js");
 const {
   assertSafeDomain,
+  harnessImportDir,
   repoCommandRunsJsonlPath,
   repoCheckoutDir,
   repoInventoryPath,
@@ -53,6 +54,7 @@ const {
   repoWorkDir,
   sessionDir,
 } = require("./paths.js");
+const { newestSeedCorpusDir } = require("./seed-corpus-store.js");
 const {
   ERROR_CODES,
   ToolError,
@@ -64,13 +66,20 @@ const {
 const {
   appendJsonlLine,
   withSessionLock,
+  writeFileAtomic,
 } = require("./storage.js");
+const {
+  redactStaticArtifactContent,
+} = require("./static-artifacts.js");
 const {
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
 const {
   resolveEgressProfile,
 } = require("./egress-profiles.js");
+const {
+  detectCrash,
+} = require("./sanitizer-report.js");
 const {
   readSessionStateStrict,
 } = require("./session-state-store.js");
@@ -79,6 +88,19 @@ const {
   normalizeHistoryRef,
   readRepoSession,
 } = require("./repo-target.js");
+// Cycle B: KEY the LIVE repo-command-runs.jsonl row with a domain-separated ed25519
+// signature so a forged run row needs the signing key, not just a recomputable content
+// hash. Signed at WRITE inside the producer's withSessionLock; verified at the read-time
+// re-resolution site (repro-replay-verifier.js resolveRepoRunRow). Reuses Cycle A's
+// signRowWithMac (NOT a new MAC). The dry-run PLAN row is NEVER signed — it is never a
+// trust root (resolveRepoRunRow rejects dry_run!==false). Does NOT close F3: the private
+// key is still 0600 at the agent uid (F2 collapses INTO F3; genuine close = Cycle C).
+const {
+  REPO_COMMAND_RUN_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  signRowViaIsolatedSignerOrLocal,
+} = require("./handoff-signing-key.js");
 
 const execFilePromise = promisify(execFile);
 
@@ -131,6 +153,10 @@ const C_DEFAULT_APT_PACKAGES = Object.freeze([
   "clang-18",
   "gdb",
   "valgrind",
+  // git: version/codegen steps in make/cmake builds (git describe, submodule
+  // status) and any in-tree fetch of pinned sources need it; build-essential
+  // does not pull it in.
+  "git",
 ]);
 // Extra packages preloaded when O.2 detected NFS/XDR shape. Mirrors the
 // MVP carry-back: libtirpc/libnfs/libkrb5/libssl give parsers and DVN
@@ -141,19 +167,41 @@ const NFS_EXTRA_APT_PACKAGES = Object.freeze([
   "libtirpc-dev",
 ]);
 const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
+  // compiler-rt provides the ASAN/fuzzer static runtimes the sanitizer-instrumented
+  // harness links against; llvm-18 provides llvm-symbolizer-18 so the crash
+  // backtrace resolves to /src-rooted source:line frames (the reproduction gate
+  // requires a /src root-cause frame — unsymbolized module+offset frames are
+  // refused as unattributable).
   "libclang-rt-18-dev",
+  "llvm-18",
   "pkg-config",
   "autoconf",
   "automake",
   "libtool",
   "unzip",
   "zlib1g-dev",
+  // afl++ provides the strong input-to-state engine (CmpLog/RedQueen substitutes
+  // observed comparison operands directly into the input, solving magic-bytes and
+  // checksum gates that libFuzzer's -use_value_profile can only nibble at) plus
+  // laf-intel split-compares. The bundled libAFLDriver.a consumes the same
+  // LLVMFuzzerTestOneInput harness unchanged, so the cmplog arm reuses the harness
+  // bob already detects. apt ships it built against the distro LLVM; the recipe
+  // probes `command -v afl-clang-fast` and degrades to a no-op when absent, so the
+  // libFuzzer+value_profile floor still runs on hosts where afl++ is unavailable.
+  "afl++",
+  // cbmc: bounded model checker for the verification-adjacent arm (assertion /
+  // memory-safety reachability on the same C/C++ TUs the fuzz arms build). It is
+  // fuzz-only tooling, so it rides the native-fuzz extras rather than the default
+  // C image.
+  "cbmc",
 ]);
 
 const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 240;
-const NATIVE_LIBFUZZER_DEFINITION_PERL = shellQuote(
-  "s{/\\*.*?\\*/}{}gs; s{//[^\\n]*}{}g; s/\"(?:\\\\.|[^\"\\\\])*\"/\"\"/gs; s/'(?:\\\\.|[^'\\\\])*'/''/gs; exit(/\\b(?:extern\\s+(?:\"C\"|\"\"|'C'|'')\\s+)?(?:int|auto)\\s+LLVMFuzzerTestOneInput\\s*\\([^;{}]*\\)\\s*(?:\\{|try\\b)/s ? 0 : 1)",
-);
+// The afl++ CmpLog campaign runs as a SEPARATE recommended command (its own docker
+// run), so it does not share the libFuzzer arm's wall clock. Budget leaves headroom
+// under the default docker run timeout for the two afl-clang-fast builds (base +
+// cmplog) that precede the campaign.
+const NATIVE_FUZZ_AFL_TOTAL_TIME_SECONDS = 180;
 const FUZZ_STATS_NULL = Object.freeze({
   cov: null,
   ft: null,
@@ -170,6 +218,20 @@ const RECOMMENDED_COMMAND_ROLES = Object.freeze([
   "lint",
   "compose",
 ]);
+
+// Container platform for docker build/run. "native" (default) emits NO
+// --platform flag, so the argv is byte-identical to a caller that omits the
+// param (host arch). The explicit linux/* values push --platform onto BOTH
+// the build argv and the run argv so an x86-only target (e.g. Firedancer,
+// which needs AVX2+AES-NI) builds and fuzzes under emulation on Apple Silicon.
+const PLATFORM_VALUES = Object.freeze(["native", "linux/amd64", "linux/arm64"]);
+
+// Single "native ⇒ omit" rule shared by the build and run argv builders so
+// they cannot drift: returns the platform string to hand docker, or null to
+// emit nothing (native / absent).
+function platformFlagValue(platform) {
+  return platform && platform !== "native" ? platform : null;
+}
 
 function dockerfileBobPath(domain) {
   return path.join(sessionDir(domain), "Dockerfile.bob");
@@ -246,6 +308,16 @@ function normalizeRepoRelativePath(raw) {
   return normalized;
 }
 
+// Inline `BOB_HARNESS=<path> ` prefix for the image-baked builder invocation. When
+// an operator supplied harness_override (a repo-relative path already validated in
+// prepareRepoEnv), it is threaded through the recipe so the builder uses that TU
+// verbatim instead of its auto-selection; the builder fails closed if the path does
+// not exist. Empty string when no override, so a non-override recipe stays
+// byte-identical to before (and identical across the differential-repro checkouts).
+function harnessEnvPrefix(harnessOverride) {
+  return harnessOverride ? `BOB_HARNESS=${shellQuote(harnessOverride)} ` : "";
+}
+
 function firstSeedCorpus(seedCorpus) {
   if (!Array.isArray(seedCorpus)) return null;
   for (const entry of seedCorpus) {
@@ -260,7 +332,23 @@ function firstSeedCorpus(seedCorpus) {
   return null;
 }
 
-function cNativeFuzzRecipe(seedCorpusEntry) {
+// The multi-TU fuzz builder is image-baked (see buildDockerfileBob) so it stays off
+// the 2048-char/token recipe budget AND runs byte-identically on the vuln and
+// upstream-fix trees — the differential repro gate re-runs the same command array on
+// both, so the build must be deterministic across checkouts. It builds the project's
+// library with coverage instrumentation via the project's own build system (cmake ->
+// autotools -> make -> compile-all fallback) and links the discovered
+// LLVMFuzzerTestOneInput harness against it, closing the single-TU wall where
+// `clang ... -o h -- "$HARNESS"` could not link a multi-file library (undefined
+// symbols) and instrumented only the harness (no library coverage).
+const BOB_MULTITU_BUILD_SH = fs.readFileSync(
+  path.join(__dirname, "fuzz", "bob-multitu-build.sh"),
+  "utf8",
+);
+const BOB_MULTITU_BUILD_SH_B64 = Buffer.from(BOB_MULTITU_BUILD_SH, "utf8").toString("base64");
+const BOB_MULTITU_BUILD_PATH = "/usr/local/bin/bob-multitu-build.sh";
+
+function cNativeFuzzRecipe(seedCorpusEntry, harnessOverride = null) {
   const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
   const seedIsZip = seedCorpusEntry && seedCorpusEntry.has_zip === true;
   const seedShellPath = seedRel ? `./${seedRel}` : null;
@@ -279,25 +367,37 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "set -eu",
     "rm -rf /work/repo /work/out",
     "mkdir -p /work/repo /work/out/corpus",
-    "cp -a /src/. /work/repo/",
+    "cp -a --no-preserve=ownership /src/. /work/repo/",
+    // Stage a session-imported harness (bob_import_harness) into the tree as a
+    // *_fuzzer.* so the builder's discovery finds it first. /harness is the read-only
+    // mount repoDockerRun attaches only when the session has an imported harness; this
+    // is a no-op (stays deterministic) for repos that already ship their own harness.
+    "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
     "cd /work/repo",
-    "if [ -x ./configure ]; then ./configure; fi",
-    `HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do perl -0ne ${NATIVE_LIBFUZZER_DEFINITION_PERL} -- "$f" && { printf '%s\\n' "$f"; break; }; done)`,
-    "test -n \"$HARNESS\"",
-    "CC=clang-18",
-    "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
+    // The image-baked builder discovers the harness, builds the project library with
+    // coverage instrumentation (fuzzer-no-link), and links the harness with the
+    // libFuzzer driver -> /work/out/h. Multi-TU libraries now link; library coverage
+    // is instrumented. Replaces the old single-TU `clang ... -o h -- "$HARNESS"`.
+    `${harnessEnvPrefix(harnessOverride)}ENGINE=libfuzzer ${BOB_MULTITU_BUILD_PATH}`,
     ...seedSetup,
-    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib -o /work/out/h -- \"$HARNESS\"",
-    `/work/out/h -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
+    // Stage a session-imported grammar-generated seed corpus (the grammar arm) into the
+    // libFuzzer corpus; additive to any discovered seeds, no-op when none mounted.
+    "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
+    // -use_value_profile=1 is the always-on, zero-dependency input-to-state floor:
+    // clang-18/compiler-rt already ship the trace-cmp interceptors, so libFuzzer
+    // rewards partial progress on multi-byte comparisons (climbing magic checks a
+    // byte at a time). It is the weak form of input-to-state; the afl++ CmpLog arm
+    // is the strong form. Fully arch-portable, so it runs on every host.
+    `/work/out/h -use_value_profile=1 -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
 }
 
-function boundedNativeFuzzRecipe(seedEntry) {
+function boundedNativeFuzzRecipe(seedEntry, harnessOverride = null) {
   let effectiveSeedEntry = seedEntry;
-  let recipe = cNativeFuzzRecipe(effectiveSeedEntry);
+  let recipe = cNativeFuzzRecipe(effectiveSeedEntry, harnessOverride);
   if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     effectiveSeedEntry = null;
-    recipe = cNativeFuzzRecipe(null);
+    recipe = cNativeFuzzRecipe(null, harnessOverride);
   }
   if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     throw new Error(`native fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
@@ -305,9 +405,136 @@ function boundedNativeFuzzRecipe(seedEntry) {
   return { seedEntry: effectiveSeedEntry, recipe };
 }
 
+// afl++ CmpLog/RedQueen campaign over the SAME discovered LLVMFuzzerTestOneInput
+// harness. This is the strong input-to-state arm: CmpLog observes concrete
+// comparison operands at run time and substitutes them into the input, cracking
+// magic-byte and checksum gates that -use_value_profile only nibbles at.
+//
+// Portability contract: the recipe probes `command -v afl-clang-fast` and exits 0
+// (clean no-op) when afl++ is absent, so a host without the engine still completes
+// the libFuzzer+value_profile arm. afl-clang-fast (LLVM-pass mode) is chosen over
+// afl-clang-lto so distro/clang LLVM-version skew degrades to trace-pc rather than
+// failing the build. Crashes are NOT trusted from afl directly — each is replayed
+// through the ASAN/libFuzzer-built h_afl binary so the banner is produced by the
+// gate-trusted path (sanitizer-report.js) and routes into the differential repro
+// gate exactly like a libFuzzer crash. No new crash parser is introduced.
+function aflCmplogRecipe(seedCorpusEntry, harnessOverride = null) {
+  const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
+  const seedShellPath = seedRel ? `./${seedRel}` : null;
+  const seedStage = seedRel
+    ? [
+        `SEED=${shellQuote(seedShellPath)}`,
+        "SEED_REAL=$(realpath -m -- \"$SEED\")",
+        "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo seed-escapes-repo >&2; exit 2 ;; esac",
+        "if [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/ 2>/dev/null || true; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
+      ]
+    : [];
+  return [
+    "set -eu",
+    "rm -rf /work/repo /work/out",
+    "mkdir -p /work/repo /work/out/corpus /work/out/afl",
+    "cp -a --no-preserve=ownership /src/. /work/repo/",
+    // Stage a session-imported harness (bob_import_harness) into the tree as a
+    // *_fuzzer.* so the builder's discovery finds it first. /harness is the read-only
+    // mount repoDockerRun attaches only when the session has an imported harness; this
+    // is a no-op (stays deterministic) for repos that already ship their own harness.
+    "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
+    "cd /work/repo",
+    // The image-baked builder discovers the harness, probes afl-clang-fast (echoes
+    // BOB_AFL_UNAVAILABLE + exits 0 when absent), builds the project library twice
+    // (AFL_USE_ASAN -> h_afl, AFL_LLVM_CMPLOG -> h_cmplog) and links the harness +
+    // libAFLDriver.a against each. h_afl is the ASAN-instrumented fuzz/replay binary;
+    // h_cmplog drives RedQueen input-to-state. Multi-TU libraries now link.
+    `${harnessEnvPrefix(harnessOverride)}ENGINE=afl ${BOB_MULTITU_BUILD_PATH}`,
+    // If the builder produced no binaries (afl-clang-fast unavailable), no-op cleanly
+    // — the libFuzzer+value_profile arm remains the floor. Self-contained if/fi so the
+    // exit is scoped, never masking an upstream build failure.
+    "if [ ! -x /work/out/h_afl ] || [ ! -x /work/out/h_cmplog ]; then echo BOB_AFL_SKIPPED >&2; exit 0; fi",
+    "printf bob > /work/out/corpus/s0",
+    // Stage a session-imported grammar-generated seed corpus (the grammar arm); afl
+    // explores from valid grammar-spanning inputs. No-op when none mounted.
+    "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
+    ...seedStage,
+    // Brace-grouped so `|| true` (tolerate afl-fuzz's non-zero exit on timeout or
+    // first crash) stays scoped to afl-fuzz and cannot swallow an upstream build
+    // failure earlier in the && chain.
+    // AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: the host core_pattern is not namespaced,
+    // so afl-fuzz would otherwise refuse to start under --cap-drop ALL when the host
+    // pipes cores to a handler (e.g. apport). ASAN catches the crash in-process, so
+    // afl's external core capture is not relied upon.
+    `{ AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_BENCH_UNTIL_CRASH=1 afl-fuzz -m none -i /work/out/corpus -o /work/out/afl -c /work/out/h_cmplog -V ${NATIVE_FUZZ_AFL_TOTAL_TIME_SECONDS} -- /work/out/h_afl @@ >/dev/null 2>&1 || true; }`,
+    "for c in /work/out/afl/default/crashes/id*; do [ -e \"$c\" ] || continue; echo \"=== BOB_AFL_REPLAY $c ===\"; /work/out/h_afl \"$c\" 2>&1 | head -40; done",
+  ].join(" && ");
+}
+
+function boundedAflCmplogRecipe(seedEntry, harnessOverride = null) {
+  let effectiveSeedEntry = seedEntry;
+  let recipe = aflCmplogRecipe(effectiveSeedEntry, harnessOverride);
+  if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    effectiveSeedEntry = null;
+    recipe = aflCmplogRecipe(null, harnessOverride);
+  }
+  if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    throw new Error(`afl cmplog base recipe (no-seed) exceeds token limit: ${recipe.length}`);
+  }
+  return { seedEntry: effectiveSeedEntry, recipe };
+}
+
+// ThreadSanitizer arm: the SAME discovered LLVMFuzzerTestOneInput harness built with
+// -fsanitize=thread (a separate binary because thread and address instrumentation are
+// mutually exclusive). A data race surfaces as a "WARNING: ThreadSanitizer:" banner,
+// which sanitizer-report.js recognizes and the differential repro gate adjudicates
+// byte-for-byte like an ASAN crash — no new parser, no adjudication change. The recipe
+// is byte-identical across the vuln and upstream-fix trees so the gate's re-run stays
+// deterministic. The builder no-ops nothing here (TSan ships with clang-18), so this
+// arm always builds where the libFuzzer arm builds.
+function cTsanFuzzRecipe(seedCorpusEntry, harnessOverride = null) {
+  const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
+  const seedShellPath = seedRel ? `./${seedRel}` : null;
+  const seedSetup = seedRel
+    ? [
+        `SEED=${shellQuote(seedShellPath)}`,
+        "SEED_REAL=$(realpath -m -- \"$SEED\")",
+        "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo seed-escapes-repo >&2; exit 2 ;; esac",
+        "if [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/ 2>/dev/null || true; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
+      ]
+    : [":"];
+  return [
+    "set -eu",
+    "rm -rf /work/repo /work/out",
+    "mkdir -p /work/repo /work/out/corpus",
+    "cp -a --no-preserve=ownership /src/. /work/repo/",
+    "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
+    "cd /work/repo",
+    `${harnessEnvPrefix(harnessOverride)}ENGINE=tsan ${BOB_MULTITU_BUILD_PATH}`,
+    ...seedSetup,
+    "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
+    `/work/out/h_tsan -use_value_profile=1 -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
+  ].join(" && ");
+}
+
+function boundedTsanFuzzRecipe(seedEntry, harnessOverride = null) {
+  let effectiveSeedEntry = seedEntry;
+  let recipe = cTsanFuzzRecipe(effectiveSeedEntry, harnessOverride);
+  if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    effectiveSeedEntry = null;
+    recipe = cTsanFuzzRecipe(null, harnessOverride);
+  }
+  if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    throw new Error(`tsan fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
+  }
+  return { seedEntry: effectiveSeedEntry, recipe };
+}
+
 function recommendedCommandsFor(
   language,
-  { nfsXdrShape = false, seedCorpus = [], nativeFuzzShape = false, nativeFuzzOnly = false } = {},
+  {
+    nfsXdrShape = false,
+    seedCorpus = [],
+    nativeFuzzShape = false,
+    nativeFuzzOnly = false,
+    harnessOverride = null,
+  } = {},
 ) {
   if (language === "node") {
     return [
@@ -420,7 +647,7 @@ function recommendedCommandsFor(
     // (writable), then cmake+ctest from there. This is the MVP carry-back
     // for read-only-mount staging.
     const staging =
-      "cp -a /src/. /work/repo/ && cd /work/repo && cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure";
+      "cp -a --no-preserve=ownership /src/. /work/repo/ && cd /work/repo && cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure";
     const sanitizerNote = nfsXdrShape ? " (NFS/XDR shape detected — preload libtirpc/libssl/libkrb5)" : "";
     const commands = [];
     if (!nativeFuzzOnly) {
@@ -433,7 +660,7 @@ function recommendedCommandsFor(
     }
     const seedEntry = firstSeedCorpus(seedCorpus);
     if (nativeFuzzShape) {
-      const { seedEntry: effectiveSeedEntry, recipe } = boundedNativeFuzzRecipe(seedEntry);
+      const { seedEntry: effectiveSeedEntry, recipe } = boundedNativeFuzzRecipe(seedEntry, harnessOverride);
       const seedRel = effectiveSeedEntry && effectiveSeedEntry.rel_path;
       const fuzzCommand = {
         id: "fuzz_asan_ubsan",
@@ -443,6 +670,38 @@ function recommendedCommandsFor(
       };
       if (seedRel) fuzzCommand.seed_path = seedRel;
       commands.push(fuzzCommand);
+
+      // Strong input-to-state arm: afl++ CmpLog/RedQueen over the same harness.
+      // Emitted as a separate fuzz command (its own token budget and docker run);
+      // the recipe self-probes afl-clang-fast and no-ops when afl++ is absent, so
+      // hosts without the engine simply skip it while keeping the libFuzzer arm.
+      const { seedEntry: aflSeedEntry, recipe: aflRecipe } = boundedAflCmplogRecipe(seedEntry, harnessOverride);
+      const aflSeedRel = aflSeedEntry && aflSeedEntry.rel_path;
+      const aflCommand = {
+        id: "fuzz_cmplog",
+        description: "Build the same native libFuzzer harness with afl-clang-fast + a CmpLog binary and run an afl++ input-to-state campaign; replay any crashes through the ASAN build so they route into the differential repro gate. No-op when afl++ is unavailable.",
+        command: ["sh", "-lc", aflRecipe],
+        role: "fuzz",
+      };
+      if (aflSeedRel) aflCommand.seed_path = aflSeedRel;
+      commands.push(aflCommand);
+
+      // ThreadSanitizer arm: a separate binary (thread instrumentation cannot coexist
+      // with address), so data races surface as a "WARNING: ThreadSanitizer:" banner
+      // that sanitizer-report.js recognizes and the differential repro gate adjudicates
+      // identically to an ASAN crash. MSan is intentionally NOT an arm — it needs a
+      // fully MSan-instrumented toolchain (instrumented libc++/deps), so it stays
+      // parser-only: an externally MSan-built report still parses + adjudicates.
+      const { seedEntry: tsanSeedEntry, recipe: tsanRecipe } = boundedTsanFuzzRecipe(seedEntry, harnessOverride);
+      const tsanSeedRel = tsanSeedEntry && tsanSeedEntry.rel_path;
+      const tsanCommand = {
+        id: "fuzz_tsan",
+        description: "Build the same native libFuzzer harness with ThreadSanitizer (a separate binary; thread and address instrumentation are mutually exclusive) and run the seeded corpus; a data race emits a ThreadSanitizer banner that routes into the differential repro gate. MSan is parser-only (needs an instrumented toolchain) and is not built here.",
+        command: ["sh", "-lc", tsanRecipe],
+        role: "fuzz",
+      };
+      if (tsanSeedRel) tsanCommand.seed_path = tsanSeedRel;
+      commands.push(tsanCommand);
     } else if (seedEntry) {
       const seedRel = seedEntry.rel_path;
       const quotedSeedRel = shellQuote(seedRel);
@@ -453,7 +712,7 @@ function recommendedCommandsFor(
         command: [
           "sh",
           "-lc",
-          `cp -a /src/. /work/repo/ && cd /work/repo && find -- ${quotedSeedRel} -maxdepth 2 -type f | head -20`,
+          `cp -a --no-preserve=ownership /src/. /work/repo/ && cd /work/repo && find -- ${quotedSeedRel} -maxdepth 2 -type f | head -20`,
         ],
         role: "fuzz",
       });
@@ -521,6 +780,35 @@ function buildDockerfileBob({
       lines.push("RUN apt-get update \\");
       lines.push(`    && apt-get install -y --no-install-recommends ${packages.join(" ")} \\`);
       lines.push("    && rm -rf /var/lib/apt/lists/*");
+      if (nativeFuzzShape) {
+        // AddressSanitizer auto-symbolizes by exec'ing `llvm-symbolizer` from PATH;
+        // the llvm-18 package only ships the versioned `llvm-symbolizer-18`. Expose
+        // the unversioned name so crash frames resolve to source:line without the
+        // harness having to export ASAN_SYMBOLIZER_PATH.
+        lines.push("RUN ln -sf \"$(command -v llvm-symbolizer-18)\" /usr/local/bin/llvm-symbolizer");
+        // afl-clang-fast is built against the distro's afl++ LLVM (clang-17 on
+        // ubuntu:24.04), which differs from the clang-18 used by the libFuzzer arm.
+        // AFL_USE_ASAN then links against that LLVM's compiler-rt, so install the
+        // matching libclang-rt-<v>-dev. The version is DERIVED from afl-clang-fast
+        // (not hardcoded) so it tracks the engine across base images, and the step
+        // is tolerant (`|| :`) so a missing package degrades only the afl arm — the
+        // libFuzzer+value_profile floor and the shared image still build.
+        lines.push(
+          "RUN AFLV=$(afl-clang-fast --version 2>/dev/null | sed -n 's/.*clang version \\([0-9]*\\).*/\\1/p' | head -1) \\",
+        );
+        lines.push(
+          "    && if [ -n \"$AFLV\" ]; then { apt-get update && apt-get install -y --no-install-recommends \"libclang-rt-$AFLV-dev\" && rm -rf /var/lib/apt/lists/*; } || :; fi",
+        );
+        // Bake the multi-TU fuzz builder into the image (base64 so the script's perl
+        // one-liner + nested quotes survive Dockerfile embedding without heredoc/
+        // expansion hazards). It drives the project's build system to produce an
+        // instrumented library and links the discovered harness — what makes the fuzz
+        // arms work on a real multi-file C/C++ library, not just a single-TU harness.
+        lines.push(
+          `RUN printf %s ${shellQuote(BOB_MULTITU_BUILD_SH_B64)} | base64 -d > ${BOB_MULTITU_BUILD_PATH} \\`,
+        );
+        lines.push(`    && chmod 0755 ${BOB_MULTITU_BUILD_PATH}`);
+      }
     } else {
       lines.push(`# apt-get install skipped (allow_network=false). Packages would be: ${packages.join(" ")}`);
     }
@@ -531,6 +819,63 @@ function buildDockerfileBob({
   lines.push("RUN mkdir -p /work/repo /work/out && chown -R 1000:1000 /work");
   lines.push("USER 1000:1000");
   lines.push("WORKDIR /src");
+  lines.push("");
+  return lines.join("\n") + "\n";
+}
+
+// SC-TOOLCHAIN IMAGE CONTRACT (authored; the image build/publish/pin is a
+// follow-on provisioning arc, not built here).
+//
+// The OSS image (buildDockerfileBob, ubuntu:24.04) carries only the C/fuzz
+// toolchain; forge/halmos/anchor/cargo+wasm/aptos/sui are NOT in it. The SC
+// container route (sc-container-exec.js) runs the SC tool inside a SEPARATE
+// image whose tag the operator pins via BOB_SC_TOOLCHAIN_IMAGE (operator-only,
+// out of model reach). The seam NEVER builds the image; it consumes a pinned
+// tag. This function emits the Dockerfile that DOCUMENTS the recommended
+// base+install provisioning so the image arc has one canonical recipe to build
+// and pin.
+//
+// Image contract:
+//  - ONE base+install image (per-family images rejected: 7 images = 7 pin
+//    oracles + 7 publish jobs; one image keeps a single pin).
+//  - Each toolchain is fetched from a PINNED release and sha256-verified,
+//    fail-closed (mirroring the chain-prover provisioning pattern). The
+//    `<pin:...>` placeholders below are the pin slots the image arc fills with
+//    real versions + digests and wires a non-gameable pin-drift oracle for.
+//  - USER 1000:1000 lands LAST so the non-signer, non-root user holds at run
+//    time (the container route relies on this for the key-exclusion close).
+//  - No ENV carries a credential/proxy/RPC token; the run-time env is threaded
+//    via --env by the seam, never baked into the image.
+function buildDockerfileScToolchain({
+  baseImage = "ubuntu:24.04",
+} = {}) {
+  const lines = [];
+  lines.push("# SC-toolchain image contract (consumed via BOB_SC_TOOLCHAIN_IMAGE).");
+  lines.push("# Base+install, pinned releases, sha256-verified fail-closed.");
+  lines.push("# The <pin:...> slots are filled by the SC-toolchain provisioning arc;");
+  lines.push("# that arc also wires the pin-drift oracle. No credential ENV is baked.");
+  lines.push("");
+  lines.push(`FROM ${baseImage}`);
+  lines.push("RUN apt-get update \\");
+  lines.push("    && apt-get install -y --no-install-recommends \\");
+  lines.push("       ca-certificates curl git build-essential pkg-config libssl-dev python3 python3-pip \\");
+  lines.push("    && rm -rf /var/lib/apt/lists/*");
+  lines.push("# foundry (forge) — pinned foundryup release, sha256-verified fail-closed.");
+  lines.push("RUN : install forge <pin:foundry-version> <pin:foundry-sha256>");
+  lines.push("# halmos — pinned pip release.");
+  lines.push("RUN : pip install --no-deps halmos==<pin:halmos-version>");
+  lines.push("# anchor — pinned cargo release (solana/anchor toolchain).");
+  lines.push("RUN : cargo install --locked anchor-cli --version <pin:anchor-version>");
+  lines.push("# cosmwasm/substrate — pinned rust toolchain + wasm32 target.");
+  lines.push("RUN : rustup toolchain install <pin:rust-version> && rustup target add wasm32-unknown-unknown");
+  lines.push("# aptos / sui — pinned release tarballs, sha256-verified.");
+  lines.push("RUN : install aptos <pin:aptos-version> <pin:aptos-sha256>");
+  lines.push("RUN : install sui <pin:sui-version> <pin:sui-sha256>");
+  // Writable staging dir owned by the non-signer user. /work is the per-run
+  // harness mount (RW) the seam binds at run time.
+  lines.push("RUN mkdir -p /work && chown -R 1000:1000 /work");
+  lines.push("USER 1000:1000");
+  lines.push("WORKDIR /work");
   lines.push("");
   return lines.join("\n") + "\n";
 }
@@ -546,9 +891,14 @@ function buildDockerBuildArgv({
   allowNetwork,
   targetDomain,
   egressProfile,
+  platform,
   env = {},
 }) {
   const args = ["build"];
+  // platform: native (or absent) emits nothing so the argv is unchanged from
+  // the pre-platform behavior; a linux/* value pins the built image's arch.
+  const platformValue = platformFlagValue(platform);
+  if (platformValue) args.push("--platform", platformValue);
   args.push("--network", allowNetwork ? "default" : "none");
   args.push("--build-arg", `SESSION_ID=${targetDomain}`);
   if (allowNetwork) {
@@ -606,6 +956,16 @@ function buildImageTag(targetDomain, repoHash) {
   // SessionNucleus. The hash is intentionally already capped to 8-64 hex
   // chars by `initRepoSession`; we trim to 16 for the tag so we stay under
   // docker's 128-char tag limit while still scoping per repo state.
+  if (typeof repoHash !== "string" || !repoHash) {
+    // Defense-in-depth: a missing repo_hash used to surface as a cryptic
+    // "Cannot read properties of null (reading 'slice')" that silently killed
+    // every bob_repo_docker_run. Fail with an actionable message instead.
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `repo session ${targetDomain} has no pinned repo_hash; cannot derive the docker image tag (re-init the repo session)`,
+      { repo_error_code: "repo_hash_unresolved" },
+    );
+  }
   const tag = `bob-oss-${targetDomain}:${repoHash.slice(0, 16)}`;
   return tag;
 }
@@ -624,6 +984,7 @@ function buildRepoEnvDocument({
   recommendedCommands,
   imageTag,
   baseImage,
+  platform,
   buildImage,
   dryRun,
   allowNetwork,
@@ -651,6 +1012,7 @@ function buildRepoEnvDocument({
       seed_corpus_count: normalizedSeedCorpusCount,
     },
     base_image: baseImage,
+    platform,
     image_tag: imageTag,
     dry_run: dryRun,
     build_image: buildImage,
@@ -723,6 +1085,22 @@ function loadNativeFuzzShape(targetDomain) {
   }
 }
 
+// Read the build platform recorded by prepareRepoEnv in repo-env.json so a
+// docker run defaults to the same arch the image was built for. Falls back to
+// "native" when the doc is absent, unreadable, or carries an unknown value —
+// keeping run/image consistent without ever trusting an out-of-enum value.
+function platformFromRepoEnv(targetDomain) {
+  const envPath = repoEnvJsonPath(targetDomain);
+  if (!fs.existsSync(envPath)) return "native";
+  try {
+    const doc = JSON.parse(fs.readFileSync(envPath, "utf8"));
+    if (doc && PLATFORM_VALUES.includes(doc.platform)) return doc.platform;
+    return "native";
+  } catch {
+    return "native";
+  }
+}
+
 async function prepareRepoEnv({
   target_domain: targetDomain,
   base_image: baseImageOverride = null,
@@ -732,7 +1110,9 @@ async function prepareRepoEnv({
   image_tag: imageTagOverride = null,
   timeout_ms: timeoutMsOverride = null,
   egress_profile: egressProfileNameOverride = null,
+  platform = null,
   runtime = null,
+  harness_override: harnessOverrideRaw = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
@@ -748,6 +1128,9 @@ async function prepareRepoEnv({
   const normalizedDryRun = dryRun == null ? true : assertBoolean(dryRun, "dry_run");
   const normalizedBuildImage = buildImage == null ? false : assertBoolean(buildImage, "build_image");
   const normalizedAllowNetwork = allowNetwork == null ? false : assertBoolean(allowNetwork, "allow_network");
+  // Fail-closed enum: an unknown platform throws before any docker exec.
+  // null/absent normalizes to "native", which emits no --platform.
+  const normalizedPlatform = platform == null ? "native" : assertEnumValue(platform, PLATFORM_VALUES, "platform");
   if (normalizedDryRun && normalizedBuildImage) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -757,6 +1140,32 @@ async function prepareRepoEnv({
   const timeoutMs = timeoutMsOverride == null
     ? DEFAULT_DOCKER_BUILD_TIMEOUT_MS
     : assertInteger(timeoutMsOverride, "timeout_ms", { min: 1000, max: MAX_DOCKER_BUILD_TIMEOUT_MS });
+
+  // Optional harness override: a repo-relative path (validated against absolute /
+  // .. escape via normalizeRepoRelativePath, same guard as the seed corpus paths)
+  // that forces the image-baked builder to use that LLVMFuzzerTestOneInput TU
+  // verbatim instead of its auto-selection. The builder fails closed if the path
+  // does not exist in the staged tree.
+  let harnessOverride = null;
+  if (harnessOverrideRaw != null) {
+    const raw = assertNonEmptyString(harnessOverrideRaw, "harness_override");
+    const normalized = normalizeRepoRelativePath(raw);
+    if (!normalized) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "harness_override must be a repo-relative path (no absolute path, no .. escape)",
+        { repo_error_code: "harness_override_invalid" },
+      );
+    }
+    if (normalized.length > 512) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "harness_override path is too long",
+        { repo_error_code: "harness_override_too_long" },
+      );
+    }
+    harnessOverride = normalized;
+  }
 
   const detection = detectLanguageProfile(repoRoot);
   const nfsXdrShape = loadNfsXdrShape(domain);
@@ -773,6 +1182,7 @@ async function prepareRepoEnv({
     seedCorpus,
     nativeFuzzShape,
     nativeFuzzOnly,
+    harnessOverride,
   });
   for (const command of recommendedCommands) {
     assertEnumValue(command.role, RECOMMENDED_COMMAND_ROLES, `recommended_commands[${command.id}].role`);
@@ -834,6 +1244,7 @@ async function prepareRepoEnv({
     recommendedCommands,
     imageTag,
     baseImage,
+    platform: normalizedPlatform,
     buildImage: normalizedBuildImage,
     dryRun: normalizedDryRun,
     allowNetwork: normalizedAllowNetwork,
@@ -883,6 +1294,7 @@ async function prepareRepoEnv({
       allowNetwork: normalizedAllowNetwork,
       targetDomain: domain,
       egressProfile: egressProfileResolved,
+      platform: normalizedPlatform,
     });
     const runner = runtime && typeof runtime.execFile === "function"
       ? runtime.execFile
@@ -906,6 +1318,7 @@ async function prepareRepoEnv({
     repo_env_path: repoEnvPath,
     image_tag: imageTag,
     base_image: baseImage,
+    platform: normalizedPlatform,
     language: envDetection.language,
     nfs_xdr_shape: nfsXdrShape,
     native_fuzz_shape: nativeFuzzShape,
@@ -964,6 +1377,10 @@ const REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS = 300_000;
 const REPO_DOCKER_RUN_MAX_TIMEOUT_MS = 600_000;
 const DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS = 30_000;
 const REPO_DOCKER_RUN_MAX_OUTPUT_BYTES = 16 * 1024 * 1024; // 16 MB per stream
+// OE1: cap on an agent-supplied checkout_patch unified diff. Mirrors the
+// tool inputSchema maxLength so the handler enforces the same ceiling the
+// schema advertises.
+const REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES = 200_000;
 const REPO_DOCKER_RUN_MAX_COMMAND_TOKENS = 64;
 const REPO_DOCKER_RUN_MAX_TOKEN_LENGTH = 2048;
 const REPO_WORK_MOUNT_MODE = "read_write";
@@ -1261,33 +1678,27 @@ async function materializeDifferentialCheckoutTree({
   mkdirDifferentialRunDirectory(checkoutDir, 0o755);
   assertRunScopedPathBoundary(path.resolve(checkoutRoot), checkoutDir);
 
-  if (kind !== "self_patch") {
-    try {
-      await execDifferentialMaterializer(
-        "git",
-        ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, archiveRef],
-        "git archive",
-      );
-      await execDifferentialMaterializer("tar", ["-x", "-f", checkoutTar, "-C", checkoutDir], "tar extract");
-    } finally {
-      fs.rmSync(checkoutTar, { force: true });
-    }
-    return { checkout_path: checkoutDir };
-  }
-
+  // OE1: every checkout kind first git-archives the kind's ref and
+  // tar-extracts it, then applies the Bob-owned /work/patch.diff IF present.
+  // The patch is required for self_patch (the original semantics — archive
+  // the base/vuln ref, then apply) and optional for upstream_fix /
+  // pre_introduction (archive that ref, then apply if a patch was supplied),
+  // enabling instrumented differentials on the fix/pre-introduction side.
   const patchBuffer = readSelfPatchBuffer(workDir, sessionRoot);
   const observedPatchHash = patchBuffer ? sha256Hex(patchBuffer) : null;
-  if (!observedPatchHash) {
+  if (kind === "self_patch" && !observedPatchHash) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       "self_patch checkout requires /work/patch.diff before bob_repo_docker_run",
       { repo_error_code: "missing_differential_patch" },
     );
   }
+  // Patch-hash binding (checkout_patch_hash): the patch must not have changed
+  // between the handler's hash and this materialization.
   if (expectedPatchHash && observedPatchHash !== expectedPatchHash) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      "self_patch checkout patch changed during differential materialization",
+      "differential checkout patch changed during differential materialization",
       { repo_error_code: "differential_patch_changed" },
     );
   }
@@ -1297,14 +1708,18 @@ async function materializeDifferentialCheckoutTree({
   const baseTar = runScopedHostPath(checkoutRoot, sessionRoot, runId, "base.tar");
   fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   try {
-    fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
+    if (patchBuffer) {
+      fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
+    }
     await execDifferentialMaterializer(
       "git",
       ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, archiveRef],
       "git archive",
     );
     await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", checkoutDir], "tar extract");
-    await execDifferentialMaterializer("git", ["-C", checkoutDir, "apply", patchSnapshot], "git apply");
+    if (patchBuffer) {
+      await execDifferentialMaterializer("git", ["-C", checkoutDir, "apply", patchSnapshot], "git apply");
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(baseTar, { force: true });
@@ -1346,11 +1761,19 @@ function buildDockerRunArgv({
   allowNetwork,
   repoMountMode,
   egressProfile,
+  harnessDir,
+  seedsDir,
+  platform,
 }) {
   if (!repoRoot || !workDir || !imageTag || !Array.isArray(command) || command.length === 0) {
     throw new Error("buildDockerRunArgv requires repoRoot, workDir, imageTag, command");
   }
   const args = ["run", "--rm"];
+  // platform must agree with the built image's arch: native (or absent) emits
+  // nothing (unchanged argv); a linux/* value runs the pinned-arch image so
+  // docker does not re-resolve it to the host arch.
+  const platformValue = platformFlagValue(platform);
+  if (platformValue) args.push("--platform", platformValue);
   // Network: --network none by default. When allow_network is true we
   // attach the standard bridge network and pin DNS to 1.1.1.1 so the
   // host's resolver (which may carry secret tokens via /etc/hosts
@@ -1368,12 +1791,39 @@ function buildDockerRunArgv({
   args.push("--memory", "4g");
   args.push("--pids-limit", "1024");
   args.push("--read-only");
-  args.push("--tmpfs", "/tmp:size=512m");
+  // /tmp is an EXEC-capable tmpfs. Docker's tmpfs default is noexec, which
+  // breaks the dominant native-repro idiom (build a sanitizer harness and run
+  // it) the moment a build system, fuzzer, or test runner stages a binary under
+  // $TMPDIR — the run fails with a bare "Permission denied" exit 126 that reads
+  // like a bug in the harness, not a sandbox policy. nosuid+nodev still block
+  // privilege escalation; the code under test already executes from /work, so
+  // exec on the scratch tmpfs removes a portability footgun without widening the
+  // threat model. Sized to bound a runaway write.
+  args.push("--tmpfs", "/tmp:size=512m,exec,nosuid,nodev");
+  // A writable HOME on a read-only-root container. Build tooling (cmake, cargo,
+  // pip, go, ccache) writes to $HOME/.cache, $HOME/.cmake, etc.; with the root
+  // filesystem read-only and no HOME override the default ~ is unwritable and
+  // builds fail far from the real error. /work is the session-scoped writable
+  // mount, so point HOME at it. Set for every run so the offline path is
+  // identical to the networked one.
+  args.push("--env", "HOME=/work");
   // Mounts: /src is the bound repo (read-only by default), /work is
   // session-scoped writable space for build artefacts.
   const mountSuffix = repoMountMode === "read_write" ? "rw" : "ro";
   args.push("-v", `${repoRoot}:/src:${mountSuffix}`);
   args.push("-v", `${workDir}:/work:rw`);
+  // A session-imported harness (bob_import_harness) is mounted read-only at /harness
+  // so the recipe can stage it into /work/repo. Top-level mount (not nested under
+  // /work) to avoid overlay subtleties. Absent for sessions with no import.
+  if (harnessDir) {
+    args.push("-v", `${harnessDir}:/harness:ro`);
+  }
+  // A session-imported grammar-generated seed corpus (bob_import_seed_corpus) is
+  // mounted read-only at /seeds so the fuzz recipe can stage it into the libFuzzer
+  // corpus. Additive to any repo-discovered seed corpus; absent when none imported.
+  if (seedsDir) {
+    args.push("-v", `${seedsDir}:/seeds:ro`);
+  }
   // Proxy: --env (run-time), NEVER ENV in the image. Skipping these
   // when allow_network=false keeps the offline path airtight.
   if (allowNetwork) {
@@ -1645,7 +2095,9 @@ function parseFuzzStatsText(text) {
       if (execPerS != null) stats.exec_per_s = execPerS;
       if (corpusSize != null) stats.corpus_size = corpusSize;
     }
-    const crashSeen = /(?:==\d+==ERROR:\s*(?:AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer)|ERROR:\s*libFuzzer:|Test unit written to|crash-[0-9a-f]{8,}|DEDUP_TOKEN:)/i.test(text);
+    // Shared canon with the OSS reproduction gate (sanitizer-report.js) so the
+    // fuzz-stats path and the proof-contract path never diverge.
+    const crashSeen = detectCrash(text);
     if (sawLibFuzzerProgress || crashSeen) {
       stats.crashes = crashSeen ? 1 : 0;
     }
@@ -1741,6 +2193,8 @@ async function repoDockerRun({
   replay_context: replayContextRaw = null,
   blocked_harness_run_id: blockedHarnessRunIdRaw = null,
   egress_profile: egressProfileNameOverride = null,
+  checkout_patch: checkoutPatchRaw = null,
+  platform = null,
   runtime = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
@@ -1763,6 +2217,57 @@ async function repoDockerRun({
   let checkoutHistory = null;
   if (normalizedCheckout) {
     checkoutHistory = assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
+  }
+
+  // OE1: an agent-supplied unified diff is written to the Bob-owned
+  // /work/patch.diff (the path readSelfPatchBuffer reads) BEFORE any patch
+  // hashing or differential materialization runs. The patch is redacted for
+  // embedded secrets and capped, then materialized atomically into the
+  // boundary-validated repo-work dir so the materializer git-applies it for
+  // ANY checkout kind (self_patch, upstream_fix, pre_introduction).
+  if (checkoutPatchRaw != null) {
+    if (!normalizedCheckout) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "checkout_patch requires a checkout to apply the diff against",
+        { repo_error_code: "checkout_patch_requires_checkout" },
+      );
+    }
+    // A unified diff is newline-sensitive (git reports "corrupt patch" if the
+    // trailing newline is stripped), so we type-check without trimming the
+    // body — only reject a string that is empty or whitespace-only.
+    if (typeof checkoutPatchRaw !== "string" || !checkoutPatchRaw.trim()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "checkout_patch must be a non-empty unified diff string",
+        { repo_error_code: "invalid_checkout_patch" },
+      );
+    }
+    const rawPatch = checkoutPatchRaw;
+    if (rawPatch.length > REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `checkout_patch exceeds the ${REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES}-char cap`,
+        { repo_error_code: "checkout_patch_too_large" },
+      );
+    }
+    const redactedPatch = redactStaticArtifactContent(rawPatch).content;
+    // assertRepoWorkDirBoundary refuses a symlinked repo-work before we
+    // commit the patch bytes to disk; the atomic write keeps the Bob-owned
+    // /work/patch.diff consistent for the hash + materialize stages below.
+    assertRepoWorkDirBoundary(workDir, sessionRoot);
+    fs.mkdirSync(workDir, { recursive: true });
+    writeFileAtomic(path.join(workDir, "patch.diff"), redactedPatch);
+  } else if (normalizedCheckout && normalizedCheckout.kind !== "self_patch") {
+    // OE1 hygiene: OE1 generalized the materializer so upstream_fix/pre_introduction
+    // also git-apply /work/patch.diff when present. That opened a cross-run bleed —
+    // a patchless upstream_fix run silently inheriting a stale diff from a prior
+    // self_patch run on the same session. Clear it so OE1's patch-on-non-self_patch
+    // only ever applies a diff explicitly supplied via checkout_patch THIS run.
+    // self_patch is untouched (its pre-OE1 contract: a patch is mandatory, supplied
+    // via checkout_patch or pre-staged, else materialization fails closed).
+    assertRepoWorkDirBoundary(workDir, sessionRoot);
+    try { fs.rmSync(path.join(workDir, "patch.diff"), { force: true }); } catch { /* absent is fine */ }
   }
   const checkoutSrcRoot = normalizedCheckout
     ? runScopedHostPath(checkoutRoot, sessionRoot, runId, "repo")
@@ -1796,6 +2301,13 @@ async function repoDockerRun({
       min: 1000,
       max: REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
     });
+  // platform default = the build platform recorded in repo-env.json, so an
+  // amd64 image is never accidentally run without --platform linux/amd64. An
+  // explicit arg is validated fail-closed; the repo-env default is trusted
+  // only if it is a known value (prepareRepoEnv validated it on write).
+  const normalizedPlatform = platform == null
+    ? platformFromRepoEnv(domain)
+    : assertEnumValue(platform, PLATFORM_VALUES, "platform");
   const normalizedReplayContext = normalizeReplayContext(replayContextRaw);
   const normalizedBlockedHarnessRunId = blockedHarnessRunIdRaw == null
     ? null
@@ -1851,6 +2363,30 @@ async function repoDockerRun({
       }
     : null;
 
+  // Mount a session-imported harness read-only at /harness when one exists, so the
+  // fuzz recipe can stage it into the build (the repo itself may ship no harness).
+  let harnessDir = null;
+  try {
+    const hDir = harnessImportDir(domain);
+    if (fs.existsSync(hDir) && fs.readdirSync(hDir).some((f) => /\.(c|cc|cpp|cxx)$/.test(f))) {
+      harnessDir = hDir;
+    }
+  } catch {
+    harnessDir = null;
+  }
+
+  // Mount the newest session-imported grammar-generated seed corpus at /seeds when one
+  // exists, so the fuzz recipe stages it into the libFuzzer corpus (the grammar arm).
+  let seedsDir = null;
+  try {
+    const sDir = newestSeedCorpusDir(domain);
+    if (sDir && fs.existsSync(sDir) && fs.readdirSync(sDir).length > 0) {
+      seedsDir = sDir;
+    }
+  } catch {
+    seedsDir = null;
+  }
+
   // Build the argv deterministically before any I/O so dry-run and
   // live-run paths share the exact same flags.
   const argv = buildDockerRunArgv({
@@ -1861,6 +2397,9 @@ async function repoDockerRun({
     allowNetwork: normalizedAllowNetwork,
     repoMountMode: normalizedMountMode,
     egressProfile: egressProfileResolved,
+    harnessDir,
+    seedsDir,
+    platform: normalizedPlatform,
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
   const replayCommandHash = normalizedInputCommand
@@ -1870,10 +2409,14 @@ async function repoDockerRun({
   const runsDir = repoRunsDir(domain);
   const stdoutPath = path.join(runsDir, `${runId}.stdout`);
   const stderrPath = path.join(runsDir, `${runId}.stderr`);
-  if (normalizedCheckout && normalizedCheckout.kind === "self_patch") {
+  // OE1: hash /work/patch.diff for any checkout that carries one. For
+  // self_patch the patch is mandatory; for upstream_fix / pre_introduction it
+  // is optional, so a null hash there simply means "no patch supplied". The
+  // hash binds into the ledger row and is re-verified during materialization.
+  if (normalizedCheckout) {
     assertRepoWorkDirBoundary(workDir, sessionRoot);
   }
-  const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
+  const checkoutPatchHash = normalizedCheckout
     ? hashSelfPatchFile(workDir, sessionRoot)
     : null;
   if (normalizedCheckout && normalizedCheckout.kind === "self_patch" && !checkoutPatchHash) {
@@ -1899,6 +2442,7 @@ async function repoDockerRun({
       command_hash: commandHash,
       argv_hash: argvHash,
       network_mode: networkMode,
+      platform: normalizedPlatform,
       mount_mode: normalizedMountMode,
       work_mount_mode: REPO_WORK_MOUNT_MODE,
       image_tag: imageTag,
@@ -1911,7 +2455,7 @@ async function repoDockerRun({
     if (normalizedCheckout) {
       planRow.checkout_ref = normalizedCheckout.ref;
       planRow.checkout_kind = normalizedCheckout.kind;
-      if (normalizedCheckout.kind === "self_patch") {
+      if (checkoutPatchHash) {
         planRow.checkout_patch_hash = checkoutPatchHash;
       }
       if (checkoutHistory) {
@@ -1937,6 +2481,7 @@ async function repoDockerRun({
       dry_run: true,
       image_tag: imageTag,
       network_mode: networkMode,
+      platform: normalizedPlatform,
       mount_mode: normalizedMountMode,
       work_mount_mode: REPO_WORK_MOUNT_MODE,
       command_hash: commandHash,
@@ -1960,7 +2505,7 @@ async function repoDockerRun({
           checkout_object: checkoutHistory.checkout_object,
           checkout_object_format: checkoutHistory.checkout_object_format,
         } : {}),
-        ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
+        ...(checkoutPatchHash ? { checkout_patch_hash: checkoutPatchHash } : {}),
       } : {}),
     };
   }
@@ -2044,6 +2589,7 @@ async function repoDockerRun({
     command_hash: commandHash,
     argv_hash: argvHash,
     network_mode: networkMode,
+    platform: normalizedPlatform,
     mount_mode: normalizedMountMode,
     work_mount_mode: REPO_WORK_MOUNT_MODE,
     image_tag: imageTag,
@@ -2083,7 +2629,7 @@ async function repoDockerRun({
       liveRow.checkout_object = checkoutHistory.checkout_object;
       liveRow.checkout_object_format = checkoutHistory.checkout_object_format;
     }
-    if (normalizedCheckout.kind === "self_patch") {
+    if (checkoutPatchHash) {
       liveRow.checkout_patch_hash = checkoutPatchHash;
     }
   }
@@ -2096,6 +2642,16 @@ async function repoDockerRun({
   // against future producer slips.
   validateNoSensitiveMaterial(liveRow, "repo_command_runs");
   withSessionLock(domain, () => {
+    // KEY the live row INSIDE the producer's existing write lock (C4), AFTER
+    // validateNoSensitiveMaterial (so the base64 signature is not scanned), BEFORE
+    // append, through the single signing seam. Covers liveRow minus row_mac —
+    // command_hash, argv_hash, stdout_hash, stderr_hash, exit_code, timed_out, dry_run,
+    // run_id, target_domain, the checkout fields — the executed identity runFromRow/
+    // reverifyReproRecord re-check. NOT a re-hash — a keyed signature. The seam isolates
+    // the secret when the server runs under a dedicated signer uid (agent uid then gets
+    // EACCES); on the same-uid box it degrades to a local sign and the verdict-level
+    // attestation gate enforces trust.
+    signRowViaIsolatedSignerOrLocal(domain, REPO_COMMAND_RUN_MAC_CONTEXT, liveRow);
     appendJsonlLine(repoCommandRunsJsonlPath(domain), liveRow);
   });
 
@@ -2106,6 +2662,7 @@ async function repoDockerRun({
     dry_run: false,
     image_tag: imageTag,
     network_mode: networkMode,
+    platform: normalizedPlatform,
     mount_mode: normalizedMountMode,
     work_mount_mode: REPO_WORK_MOUNT_MODE,
     command_hash: commandHash,
@@ -2139,7 +2696,7 @@ async function repoDockerRun({
         checkout_object: checkoutHistory.checkout_object,
         checkout_object_format: checkoutHistory.checkout_object_format,
       } : {}),
-      ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
+      ...(checkoutPatchHash ? { checkout_patch_hash: checkoutPatchHash } : {}),
     } : {}),
   };
 }
@@ -2150,6 +2707,7 @@ module.exports = {
   repoDockerRun,
   // Helpers exposed for cross-module reuse / tests
   buildDockerfileBob,
+  buildDockerfileScToolchain,
   buildDockerBuildArgv,
   buildDifferentialCheckoutCommand,
   buildDockerRunArgv,
@@ -2174,6 +2732,7 @@ module.exports = {
   RECOMMENDED_COMMAND_ROLES,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
   REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS,
+  REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES,
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
   REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
   REPO_DOCKER_RUN_VERSION,

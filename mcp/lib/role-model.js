@@ -6,6 +6,7 @@ const {
   toolNamesForRoleBundle,
 } = require("./tool-registry.js");
 const { evaluatorRoleSpecs } = require("./capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
 
 const ROLE_PROMPT_DIR = path.join("prompts", "roles");
 
@@ -53,7 +54,17 @@ const ROLE_DEFINITIONS = Object.freeze({
     id: "deep-surface-discovery",
     prompt_body: path.join(ROLE_PROMPT_DIR, "deep-surface-discovery.md"),
     mcp_role_bundles: Object.freeze(["deep-surface-discovery"]),
-    mcp_tools: Object.freeze(["bob_read_session_nucleus"]),
+    mcp_tools: Object.freeze(["bob_read_session_nucleus", "bob_record_surface_leads"]),
+  }),
+  // Smart-contract recon expander — a scratch-only producer worker that
+  // resolves proxies/diamonds/role holders/linked addresses per chain and
+  // returns produced_surfaces[]. Read/fetch-only (the sc-recon bundle); it
+  // never holds record/promote/finalize, so surface minting stays server-side
+  // at finalize. Not a spawner and not an evaluator family member.
+  "sc-recon-expander": Object.freeze({
+    id: "sc-recon-expander",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "sc-recon-expander.md"),
+    mcp_role_bundles: Object.freeze(["sc-recon"]),
   }),
   "surface-router": Object.freeze({
     id: "surface-router",
@@ -99,6 +110,38 @@ const ROLE_DEFINITIONS = Object.freeze({
       ...evaluatorRoleSpecs().flatMap((role) => role.role_bundles.filter((b) => b !== "evaluator-shared")),
     ]),
   }),
+  // CN (coverage-nesting) Step B — the spawn-capable per-surface evaluator that
+  // ACTUATES the brain-owned child_fanout_plan (default-off; emitted only when
+  // an operator opts into max_spawn_depth>1 on host==claude). It carries the web
+  // evaluator toolset MINUS bob_propose_transition: a Task-holder must stay
+  // disjoint from the coverage-cell tools (single-spawner G2), and the deny is
+  // the only tool-subtraction primitive (bundle membership is per-tool and
+  // VALID_ROLE_BUNDLES is frozen). Transition-blind by construction — discovered
+  // cross-surface pivots ride discovered_pivots[] up to the orchestrator, which
+  // owns + proposes transitions.
+  [FANOUT_ROLE_REGISTRY.root.role_id]: Object.freeze({
+    id: FANOUT_ROLE_REGISTRY.root.role_id,
+    family: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator-fanout.md"),
+    mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
+    deny_mcp_tools: Object.freeze(["bob_propose_transition"]),
+  }),
+  // NS-7 — the synchronous leaf is a distinct role, not a second execution
+  // mode of the root. Its generated Claude frontmatter therefore lacks the
+  // host spawn primitive and subtracts both root-owned settlement writes at
+  // spawn time. The shared evaluator bundles retain assignment/technique reads,
+  // candidate-claim writes, coverage writes, and bounded web probes.
+  [FANOUT_ROLE_REGISTRY.child.role_id]: Object.freeze({
+    id: FANOUT_ROLE_REGISTRY.child.role_id,
+    family: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator-fanout-child.md"),
+    mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
+    deny_mcp_tools: Object.freeze([
+      "bob_propose_transition",
+      "bob_write_wave_handoff",
+      "bob_finalize_agent_run",
+    ]),
+  }),
   chain: Object.freeze({
     id: "chain",
     prompt_body: path.join(ROLE_PROMPT_DIR, "chain.md"),
@@ -121,7 +164,10 @@ const ROLE_DEFINITIONS = Object.freeze({
     family: "verifier",
     prompt_body: path.join(ROLE_PROMPT_DIR, "final-verifier.md"),
     mcp_role_bundles: Object.freeze(["verifier"]),
-    mcp_tools: Object.freeze(["bob_write_proof_bundle"]),
+    // Per-role grant (the bob_write_proof_bundle precedent): the X.6 verifier
+    // bundle stays tight, while final-verifier alone reads invariant runs to
+    // pick reproducing run_hash rows for the proof bundle.
+    mcp_tools: Object.freeze(["bob_write_proof_bundle", "bob_read_invariant_runs"]),
   }),
   evidence: Object.freeze({
     id: "evidence",
@@ -132,6 +178,10 @@ const ROLE_DEFINITIONS = Object.freeze({
     id: "grader",
     prompt_body: path.join(ROLE_PROMPT_DIR, "grader.md"),
     mcp_role_bundles: Object.freeze(["grader"]),
+    // Per-role grant: the grader reads invariant runs to cross-check
+    // proof_quality where they exist. Rows inform scoring; they never gate the
+    // verdict, so this stays a per-role read grant, not a bundle expansion.
+    mcp_tools: Object.freeze(["bob_read_invariant_runs"]),
   }),
   reporter: Object.freeze({
     id: "reporter",
@@ -168,10 +218,17 @@ function allRoleDefinitions() {
 
 function mcpToolNamesForRole(roleId) {
   const role = roleDefinition(roleId);
+  // A role may DENY specific tools its bundles would otherwise grant. This is
+  // the only tool-subtraction primitive: bundle membership is per-tool and
+  // VALID_ROLE_BUNDLES is frozen, so a spawn-capable role that must stay
+  // disjoint from the coverage-cell tools (single-spawner G2) lists them here
+  // rather than minting a near-duplicate bundle. The deny is applied to the
+  // unioned set so a denied tool is removed no matter which bundle grants it.
+  const denied = new Set(role.deny_mcp_tools || []);
   return uniqueStrings([
     ...role.mcp_role_bundles.flatMap((roleBundle) => toolNamesForRoleBundle(roleBundle)),
     ...(role.mcp_tools || []),
-  ]);
+  ]).filter((toolName) => !denied.has(toolName));
 }
 
 function assertRoleModel() {

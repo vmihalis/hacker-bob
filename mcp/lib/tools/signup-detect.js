@@ -4,7 +4,6 @@ const { signupDetect } = require("../signup.js");
 
 module.exports = Object.freeze({
   name: "bob_signup_detect",
-  aliases: ["bounty_signup_detect"],
   description:
     "Probe a target for registration/signup endpoints and analyze form requirements. Returns detected endpoints, form fields, CAPTCHA presence, and signup feasibility.",
   inputSchema: {
@@ -33,12 +32,14 @@ module.exports = Object.freeze({
   },
   handler: signupDetect,
   role_bundles: ["auth"],
+  capability_id: "S3_stepup_registration", // S3-cap: registry-typed step-up capability so capabilityToolMapFromRegistry can answer "does Bob own a tool for the email-OTP / account-registration step" (M6b ceiling)
   mutating: false,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: true,
   scope_url_fields: ["target_url"],
   sensitive_output: false,
   session_artifacts_written: [],
+  required_session_axes: ["url"],
 });

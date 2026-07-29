@@ -4,7 +4,6 @@ const { buildVerificationAdjudication } = require("../verification.js");
 
 module.exports = Object.freeze({
   name: "bob_build_verification_adjudication",
-  aliases: ["bounty_build_verification_adjudication"],
   description:
     "Build the deterministic v2 verification adjudication plan from current brutalist and balanced rounds.",
   inputSchema: {
