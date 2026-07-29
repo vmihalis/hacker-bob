@@ -56,8 +56,18 @@ function nonce() {
   return crypto.randomBytes(18).toString("base64url");
 }
 
+// Anchored to the repository, not to process.cwd(). A Unix socket path is
+// capped (IPC_MAX_SOCKET_PATH_BYTES = 100) and the caller's working directory
+// decided how much of that budget was already spent, so the same code passed
+// or failed on where it was invoked from: `npm test --prefix <pkg>` runs the
+// script from the repo root under one bundled npm and from the package
+// directory under another, and the deeper cwd pushed every socket path past
+// the cap. Keep it out of os.tmpdir() too — that is a symlink on macOS and
+// the location check requires a path equal to its own realpath.
+const REPOSITORY_ROOT = path.resolve(__dirname, "..", "..", "..");
+
 function secureTempRoot(mode = 0o700) {
-  const root = fs.mkdtempSync(path.join(process.cwd(), ".bob-ipc-test-"));
+  const root = fs.mkdtempSync(path.join(REPOSITORY_ROOT, ".bob-ipc-test-"));
   fs.chmodSync(root, mode);
   return root;
 }
