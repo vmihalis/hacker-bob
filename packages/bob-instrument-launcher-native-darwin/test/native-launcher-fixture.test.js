@@ -73,10 +73,18 @@ function contractDigest(label) {
   return sha256(`darwin-native-fixture-test:${label}`);
 }
 
+// A minimal PATH rather than a wholly empty environment. `xcrun --find
+// codesign` shells out to xcodebuild to resolve a tool outside the toolchain
+// directory, and with environ empty that lookup fails (exit 72) — so the
+// fixture build died on a runner while the developer machines that had already
+// resolved it stayed green. Still hermetic: one absolute, fixed value, nothing
+// inherited from the caller.
+const BUILD_TOOL_ENV = Object.freeze({ PATH: "/usr/bin:/bin" });
+
 function runBuildTool(tool, args) {
   const result = childProcess.spawnSync(tool, args, {
     encoding: "utf8",
-    env: {},
+    env: BUILD_TOOL_ENV,
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
