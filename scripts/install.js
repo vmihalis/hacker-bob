@@ -63,7 +63,14 @@ const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES = 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_FILES = 100_000;
-const MAX_RUNTIME_DEPENDENCY_BYTES = 512 * 1024 * 1024;
+// Sized against the real production tree, not a round number. @anthropic-ai
+// ships the agent SDK as prebuilt per-platform binaries and a host may resolve
+// more than one: Linux installs both the gnu and musl arm64 builds at ~240 MB
+// each, so the tree is ~500 MB there against ~230 MB on macOS, which has a
+// single variant. The former overran a 512 MB bound and made `install` fail on
+// every Linux host. This is a runaway-tree backstop, so leave real headroom for
+// another platform variant rather than tracking today's measurement.
+const MAX_RUNTIME_DEPENDENCY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_DEPTH = 32;
 const MAX_RUNTIME_DEPENDENCY_DIRECTORIES = 4096;
 const MAX_RUNTIME_DEPENDENCY_PACKAGES = 4096;
