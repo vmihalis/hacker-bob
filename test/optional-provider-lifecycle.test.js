@@ -9,7 +9,20 @@ const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const {
   installLifecycleCustodianTestDouble,
+  lifecycleCustodianTestDoubleSupported,
 } = require("./fixtures/lifecycle-custodian-test-port.js");
+
+// Unlike the other install suites, these cases drive the custodian double's
+// controller directly (crash-phase injection, native hooks, result descriptors)
+// and have no meaning without the Darwin/arm64 native fixture. Declare the skip
+// so an unsupported host reports "not run" rather than a silent absence, then
+// stop: `return` at CommonJS module scope leaves the suite undefined.
+if (!lifecycleCustodianTestDoubleSupported()) {
+  test("optional provider lifecycle requires the Darwin/arm64 lifecycle custodian fixture", {
+    skip: `unsupported host ${process.platform}/${process.arch}`,
+  }, () => {});
+  return;
+}
 
 const lifecycleCustodianTest = installLifecycleCustodianTestDouble();
 

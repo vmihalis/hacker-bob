@@ -6,9 +6,13 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   installLifecycleCustodianTestDouble,
+  lifecycleCustodianTestDoubleSupported,
 } = require("./fixtures/lifecycle-custodian-test-port.js");
 
-installLifecycleCustodianTestDouble();
+// Darwin/arm64-only native fixture. Elsewhere leave the real wrapper in place —
+// it reports the custodian unavailable, which is the path the installer takes
+// on those hosts, so these cases still exercise a real install.
+if (lifecycleCustodianTestDoubleSupported()) installLifecycleCustodianTestDouble();
 
 const { installProject } = require("../scripts/install.js");
 const { doctorProject, uninstallProject } = require("../scripts/lifecycle.js");
