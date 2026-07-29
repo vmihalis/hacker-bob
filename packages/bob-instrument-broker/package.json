@@ -1,0 +1,42 @@
+{
+  "name": "@hacker-bob/instrument-broker",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Provider-neutral durable instrument dispatch broker for Hacker Bob",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "lib/**/*.js"
+  ],
+  "main": "lib/broker.js",
+  "exports": {
+    ".": "./lib/broker.js",
+    "./authenticated-durable-exchange": "./lib/authenticated-durable-exchange.js",
+    "./broker": "./lib/broker.js",
+    "./bootstrap-broker": "./lib/bootstrap-broker.js",
+    "./ipc": "./lib/ipc.js",
+    "./ipc-channel-binding": "./lib/ipc-channel-binding.js",
+    "./ipc-channel-binding-contract": "./lib/ipc-channel-binding-contract.js",
+    "./ipc-contract": "./lib/ipc-contract.js",
+    "./ipc-native-peer-credentials": "./lib/ipc-native-peer-credentials.js",
+    "./instrument-lease-store": "./lib/instrument-lease-store.js",
+    "./launch-attestation": "./lib/launch-attestation.js",
+    "./native-dispatch-contract": "./lib/native-dispatch-contract.js",
+    "./physical-execution-transaction-owner": "./lib/physical-execution-transaction-owner.js",
+    "./physical-provider-dispatch": "./lib/physical-provider-dispatch.js",
+    "./provider-worker-vault-composition": "./lib/provider-worker-vault-composition.js",
+    "./provider-contract": "./lib/provider-contract.js",
+    "./resource-arbiter-admission": "./lib/resource-arbiter-admission.js",
+    "./resource-arbiter-store": "./lib/resource-arbiter-store.js",
+    "./resource-request-registry": "./lib/resource-request-registry.js",
+    "./resource-reservation-attestations": "./lib/resource-reservation-attestations.js",
+    "./resource-reservations": "./lib/resource-reservations.js",
+    "./worker-bundle-attestation": "./lib/worker-bundle-attestation.js"
+  },
+  "scripts": {
+    "test": "node --test test/authenticated-durable-exchange.test.js test/bootstrap-broker.test.js test/broker.test.js test/ipc-channel-binding.test.js test/ipc-native-peer-credentials.test.js test/ipc.test.js test/launch-attestation.test.js test/native-dispatch-contract.test.js test/physical-execution-transaction-owner.test.js test/physical-provider-dispatch.test.js test/provider-worker-vault-composition.test.js test/resource-arbiter-admission.test.js test/resource-arbiter-store.test.js test/resource-request-registry.test.js test/resource-reservations.test.js test/worker-bundle-attestation.test.js"
+  }
+}

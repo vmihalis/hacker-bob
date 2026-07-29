@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -59,7 +59,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnHalmos(args, { workdir, timeoutMs }) {
+function spawnHalmos(args, { workdir, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     const stdoutChunks = [];
@@ -71,11 +71,15 @@ function spawnHalmos(args, { workdir, timeoutMs }) {
     try {
       // detached: true lets us kill the process group on timeout — halmos
       // spawns solver subprocesses that would otherwise survive a parent kill.
-      child = spawn("halmos", args, {
+      // The container route mounts ONLY this workdir (never the session tree /
+      // signing key) and runs as a non-signer container user; the degrade route
+      // is a byte-identical direct spawn.
+      child = scSubprocessContainerExec("halmos", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv({}),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({ ok: false, reason: "halmos_spawn_failed", error: error.message || String(error) });
@@ -94,7 +98,15 @@ function spawnHalmos(args, { workdir, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -129,6 +141,15 @@ function spawnHalmos(args, { workdir, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this halmos in a filesystem-namespace container
+        // (true) or degraded to a host spawn AS THE SIGNER (false). The seam sets
+        // child.container_isolated; absence/non-true defaults to false (un-isolated)
+        // so a host-as-signer run can never masquerade as containerized. This is
+        // LOAD-BEARING for halmos: classifyHalmosViolation feeds the invariant-verified
+        // ledger, and runInvariantForFinding lifts foundry_result.container_isolated
+        // (tool-agnostically) into the persisted invariant-runs row, so a containerized
+        // halmos verdict reaches the gate as container_isolated:true and is not over-gated.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -254,6 +275,7 @@ async function runHalmos({
   matchContract,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
   if (!matchTest && !matchContract) {
@@ -286,13 +308,17 @@ async function runHalmos({
     }
   }
 
-  const result = await spawnHalmos(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout });
+  const result = await spawnHalmos(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, targetDomain });
 
   if (!result.ok && (result.reason === "halmos_not_in_path" || result.reason === "halmos_spawn_failed")) {
     return {
       ok: false,
       reason: result.reason,
       error: result.error || null,
+      // A not-in-path / spawn-failed / refused run never executed the SC tool, so it is
+      // by definition not containerized. Surface false explicitly (fail-closed un-isolated
+      // at the gate) so the lift is present on EVERY return shape, not just success.
+      container_isolated: false,
       command: ["halmos", ...baseArgs],
     };
   }
@@ -300,11 +326,23 @@ async function runHalmos({
   const parseResult = parseHalmosOutput(result.stdout || "");
   const summary = parseResult.ok ? summarizeHalmosOutput(parseResult.document) : { tests: [], total: 0, passed: 0, failed: 0 };
 
+  // MINT ≠ CONFIRM. `ok` (summary.failed===0 && summary.total>0) is a SINGLE-RUN
+  // PRIMITIVE — "no counterexample on THIS tree" — NOT a verified verdict. A
+  // verified FV finding requires the executed two-arm flip adjudicated by
+  // invariant-runner.js::verifyInvariantDifferential (classifyHalmosViolation maps
+  // this run to held/violated/degraded; `ok` mints only "held"). runHalmos mints no
+  // verdict and writes no audit-graded ledger.
   return {
     ok: result.ok && parseResult.ok && summary.failed === 0 && summary.total > 0,
     timed_out: result.timed_out === true,
     exit_code: result.exit_code,
     signal: result.signal || null,
+    // TOP-LEVEL containerization signal (NOT inside any hashed sub-object), lifted from
+    // the spawnHalmos result (which read child.container_isolated from the SC seam).
+    // runInvariantForFinding records it as a sibling top-level invariant-runs field
+    // (outside computeInvariantRunHash, so run_hash stays byte-stable) and the verdict
+    // gate consults it; a host-as-signer (degrade) run resolves false.
+    container_isolated: result.container_isolated === true,
     command: ["halmos", ...baseArgs],
     summary: { total: summary.total, passed: summary.passed, failed: summary.failed },
     tests: summary.tests,

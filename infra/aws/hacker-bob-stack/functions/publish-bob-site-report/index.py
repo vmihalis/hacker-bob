@@ -1,0 +1,712 @@
+"""Publish an approved Hacker Bob AWS report into Bob-site's sealed report ingest.
+
+This Lambda is deliberately downstream of verifier approval, Security Hub export,
+and the REPORT-stage AgentCore invocation. It is a bridge, not a second verdict
+path: it takes already-approved AWS output, shapes the Bob-site render model, and
+POSTs to Bob-site's existing /api/reports endpoint.
+
+The AgentCore runtime/model never receives the Bob-site ingest token or the report
+access password. Those secrets are only read here by this Lambda role.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import ipaddress
+import json
+import os
+import re
+from datetime import datetime, timezone
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+
+# Profile-pinned identifiers used by the safety gates (transaction/resolution
+# validation), the WORM receipt, and the resolution/action map. Everything else
+# about the report — prose, section text, severity summary, business dimensions —
+# is now sourced from the committed finding artifact, not hardcoded here.
+LIBHEIF_PROFILE = "libheif-cve-2026-49271"
+LIBHEIF_FINDING_ID = "F-22"
+LIBHEIF_AFFECTED_VERSIONS = "<= 1.22.0"
+LIBHEIF_FIXED_VERSION = "1.22.1"
+LIBHEIF_VULNERABLE_COMMIT = "b12b733d1716595483413ccd7e2dfb73c44a8d69"
+LIBHEIF_EXACT_FIX_COMMIT = "5782bca04a70ebc01c59397205a3cfff22841311"
+LIBHEIF_PATCHED_RELEASE_COMMIT = "2b6d5a62fb6151e09d5f36757a5aa5e12f9c2045"
+LIBHEIF_SOURCE_FRAME = "libheif/codecs/uncompressed/unc_decoder.cc:178"
+LIBHEIF_FIXED_MARKER = "returned error? 1 output=0"
+
+# The canonical finding artifact the publisher builds the report FROM. The same
+# load-and-shape code path serves any conforming artifact (web/repo/oss_library);
+# only the data varies. The env override lets a Lambda package point at the
+# bundled copy; the default resolves the committed in-repo demo artifact.
+LIBHEIF_ARTIFACT_ENV_VAR = "LIBHEIF_FINDING_ARTIFACT_PATH"
+# Packaged alongside index.py inside the Lambda CodeUri dir so it ships in the
+# deployment zip and resolves at runtime (/var/task/finding-artifact.json).
+LIBHEIF_DEFAULT_ARTIFACT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "finding-artifact.json",
+)
+LIBHEIF_VERIFIER_CHECKS = (
+    "target_binding",
+    "exact_s3_version",
+    "object_lock_compliance",
+    "body_sha256",
+    "embedded_grade_hash",
+    "canonical_grade_hash",
+)
+LIBHEIF_CAVEAT = (
+    "The harness constructs parsed-equivalent cmpC/icef decoder objects and exercises the exact "
+    "vulnerable library path; it is not a complete malicious .heif parsed through the public decoder API."
+)
+LIBHEIF_RESOLUTION_SCHEMA_VERSION = 1
+LIBHEIF_RESOLUTION_TYPE = "bedrock_stakeholder_resolution"
+LIBHEIF_FEATURE_REGISTRY = "libheif-impact-v1"
+LIBHEIF_RESOLUTION_FEATURES = {
+    "target_kind": "oss_library",
+    "impact_axis": "availability",
+    "fix_state": "upstream_fixed",
+    "distribution_scope": "downstream_consumers",
+    "reachability": "crafted_file_with_user_interaction",
+    "evidence_confidence": "high_bounded",
+}
+LIBHEIF_READER_LABELS = {
+    "downstream_maintainer": "Downstream maintainers",
+    "release_manager": "Release managers",
+    "product_security_owner": "Product security owners",
+}
+LIBHEIF_FIRST_ACTIONS = {
+    "downstream_maintainer": {"upgrade_or_backport", "map_downstream_exposure"},
+    "release_manager": {"upgrade_or_backport"},
+    "product_security_owner": {"map_downstream_exposure"},
+}
+LIBHEIF_ACTIONS = {
+    "upgrade_or_backport": {
+        "stakeholder": {
+            "audience": "downstream_maintainers",
+            "action": f"Upgrade to libheif {LIBHEIF_FIXED_VERSION} or later, or backport the exact fix.",
+        },
+        "decision": {
+            "title": "Upgrade or backport downstream copies",
+            "effort": "Engineering",
+            "detail": f"Move to libheif {LIBHEIF_FIXED_VERSION} or later, or backport `{LIBHEIF_EXACT_FIX_COMMIT}`.",
+        },
+    },
+    "map_downstream_exposure": {
+        "stakeholder": {
+            "audience": "packagers_and_product_security",
+            "action": (
+                f"Map packages and products still shipping libheif {LIBHEIF_AFFECTED_VERSIONS} "
+                "and align advisory status with backports."
+            ),
+        },
+        "decision": {
+            "title": "Map releases, packages, and advisories",
+            "effort": "Coordination",
+            "detail": (
+                f"Identify products still carrying libheif {LIBHEIF_AFFECTED_VERSIONS} and record "
+                "whether each is upgraded or backported."
+            ),
+        },
+    },
+    "retain_regression_coverage": {
+        "stakeholder": {
+            "audience": "maintainers_and_release_managers",
+            "action": "Keep the vulnerable/fixed sanitizer differential in regression coverage.",
+        },
+        "decision": {
+            "title": "Keep the differential as a regression test",
+            "effort": "Maintainer",
+            "detail": "Preserve the failing vulnerable case and sanitizer-clean fixed case around the range check.",
+        },
+    },
+}
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
+
+
+def _now_date() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _payload(value: Any) -> Any:
+    """Step Functions Lambda integrations wrap function output under Payload."""
+    if isinstance(value, dict) and "Payload" in value:
+        return value["Payload"]
+    return value
+
+
+def _safe(value: Any, fallback: str = "") -> str:
+    return value if isinstance(value, str) and value else fallback
+
+
+def _configured(value: str | None) -> bool:
+    return bool(value and value.strip() and value.strip().lower() not in {"disabled", "none", "null"})
+
+
+def _validate_https_base_url(raw: str) -> str:
+    base = raw.strip().rstrip("/")
+    parsed = urlparse(base)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise ValueError("BOB_SITE_BASE_URL must be an HTTPS origin without userinfo")
+    host = parsed.hostname or ""
+    lowered = host.lower().strip(".")
+    if lowered in {"localhost"} or lowered.endswith(".localhost"):
+        raise ValueError("BOB_SITE_BASE_URL must not point at localhost")
+    try:
+        ip = ipaddress.ip_address(lowered)
+    except ValueError:
+        return base
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        raise ValueError("BOB_SITE_BASE_URL must not point at a private/link-local IP")
+    return base
+
+
+def _secret_string(secrets_client: Any, secret_id: str) -> str:
+    value = secrets_client.get_secret_value(SecretId=secret_id)
+    secret = value.get("SecretString", "")
+    return secret if isinstance(secret, str) else ""
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(f"refusing to publish libheif report: {message}")
+
+
+def _require_sha256(value: Any, field: str) -> str:
+    _require(isinstance(value, str) and bool(SHA256_RE.fullmatch(value)), f"{field} is not a SHA-256 digest")
+    return value
+
+
+def _canonical_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_libheif_resolution(
+    event: dict[str, Any],
+    grade_hash: str,
+    version_id: str,
+    bundle_sha256: str,
+    expected_model_id: str,
+) -> dict[str, Any]:
+    """Accept only the validator's normalized, evidence-bound decision."""
+    resolution = event.get("resolution")
+    _require(isinstance(resolution, dict), "validated report resolution is missing")
+    expected_keys = {
+        "status",
+        "schema_version",
+        "resolution_type",
+        "profile",
+        "target_domain",
+        "grade_verdict_hash",
+        "grade_freeze_bundle_sha256",
+        "grade_freeze_version_id",
+        "feature_registry",
+        "feature_hash",
+        "model_id",
+        "primary_reader",
+        "action_order",
+        "decision_hash",
+    }
+    _require(set(resolution) == expected_keys, "report resolution keys are invalid")
+    _require(resolution.get("status") == "validated", "report resolution is not validated")
+    schema_version = resolution.get("schema_version")
+    _require(
+        type(schema_version) is int and schema_version == LIBHEIF_RESOLUTION_SCHEMA_VERSION,
+        "report resolution schema mismatch",
+    )
+    _require(
+        resolution.get("resolution_type") == LIBHEIF_RESOLUTION_TYPE,
+        "report resolution type mismatch",
+    )
+    _require(resolution.get("profile") == event.get("profile"), "report resolution profile mismatch")
+    _require(
+        resolution.get("target_domain") == event.get("target"),
+        "report resolution target mismatch",
+    )
+    _require(resolution.get("grade_verdict_hash") == grade_hash, "report resolution grade hash mismatch")
+    _require(
+        resolution.get("grade_freeze_bundle_sha256") == bundle_sha256,
+        "report resolution bundle hash mismatch",
+    )
+    _require(
+        resolution.get("grade_freeze_version_id") == version_id,
+        "report resolution VersionId mismatch",
+    )
+    _require(
+        resolution.get("feature_registry") == LIBHEIF_FEATURE_REGISTRY,
+        "report resolution feature registry mismatch",
+    )
+    _require(
+        resolution.get("feature_hash") == _canonical_hash(LIBHEIF_RESOLUTION_FEATURES),
+        "report resolution feature hash mismatch",
+    )
+    model_id = resolution.get("model_id")
+    _require(
+        isinstance(expected_model_id, str) and bool(MODEL_ID_RE.fullmatch(expected_model_id)),
+        "configured report decision model id is invalid",
+    )
+    _require(
+        isinstance(model_id, str) and bool(MODEL_ID_RE.fullmatch(model_id)),
+        "report resolution model id is invalid",
+    )
+    _require(model_id == expected_model_id, "report resolution model id mismatch")
+
+    reader = resolution.get("primary_reader")
+    order = resolution.get("action_order")
+    _require(reader in LIBHEIF_READER_LABELS, "report resolution reader is not allowed")
+    _require(
+        isinstance(order, list)
+        and len(order) == len(LIBHEIF_ACTIONS)
+        and all(isinstance(action, str) for action in order)
+        and set(order) == set(LIBHEIF_ACTIONS),
+        "report resolution action order must be an exact unique permutation",
+    )
+    _require(
+        order[0] in LIBHEIF_FIRST_ACTIONS[reader],
+        "report resolution first action is incompatible with the reader",
+    )
+    decision = {
+        "schema_version": LIBHEIF_RESOLUTION_SCHEMA_VERSION,
+        "resolution_type": LIBHEIF_RESOLUTION_TYPE,
+        "profile": event["profile"],
+        "target_domain": event["target"],
+        "grade_verdict_hash": grade_hash,
+        "grade_freeze_bundle_sha256": bundle_sha256,
+        "grade_freeze_version_id": version_id,
+        "feature_registry": LIBHEIF_FEATURE_REGISTRY,
+        "feature_hash": _canonical_hash(LIBHEIF_RESOLUTION_FEATURES),
+        "model_id": model_id,
+        "primary_reader": reader,
+        "action_order": order,
+    }
+    _require(
+        resolution.get("decision_hash") == _canonical_hash(decision),
+        "report resolution decision hash mismatch",
+    )
+    return resolution
+
+
+def _validate_libheif_transaction(event: dict[str, Any], expected_model_id: str) -> dict[str, Any]:
+    """Fail closed unless every published claim belongs to one approved transaction."""
+    grade = event.get("gradeResult") if isinstance(event.get("gradeResult"), dict) else {}
+    approval = event.get("approval") if isinstance(event.get("approval"), dict) else {}
+    report = event.get("reportResult") if isinstance(event.get("reportResult"), dict) else {}
+    export_result = _payload(event.get("exportResult"))
+    export_result = export_result if isinstance(export_result, dict) else {}
+
+    _require(event.get("profile") == LIBHEIF_PROFILE, "profile is not the pinned libheif fixture")
+    _require(event.get("target") == LIBHEIF_PROFILE, "event target is not the pinned libheif fixture")
+    _require(isinstance(event.get("runtimeSessionId"), str) and bool(event["runtimeSessionId"]), "runtime session is missing")
+
+    _require(grade.get("status") == "awaiting_verifier_gate", "GRADE did not reach the verifier gate")
+    _require(grade.get("target") == LIBHEIF_PROFILE, "GRADE target mismatch")
+    _require(grade.get("target_domain") == LIBHEIF_PROFILE, "GRADE target-domain mismatch")
+    _require(grade.get("fixture_id") == LIBHEIF_PROFILE, "GRADE fixture mismatch")
+    _require(grade.get("claim_mode") == "public_historical_reproduction", "GRADE claim mode mismatch")
+    _require(grade.get("rediscovery") is False, "GRADE must declare rediscovery=false")
+    _require(grade.get("reportable_finding_ids") == [LIBHEIF_FINDING_ID], "GRADE finding set mismatch")
+
+    fixture_receipt = grade.get("fixture_receipt") if isinstance(grade.get("fixture_receipt"), dict) else {}
+    _require(fixture_receipt.get("fixture_id") == LIBHEIF_PROFILE, "fixture receipt id mismatch")
+    _require(fixture_receipt.get("claim_mode") == "public_historical_reproduction", "fixture receipt claim mode mismatch")
+    _require(fixture_receipt.get("rediscovery") is False, "fixture receipt must declare rediscovery=false")
+    _require(fixture_receipt.get("vulnerable_commit") == LIBHEIF_VULNERABLE_COMMIT, "vulnerable commit mismatch")
+    _require(fixture_receipt.get("exact_fix_commit") == LIBHEIF_EXACT_FIX_COMMIT, "exact fix commit mismatch")
+    _require(
+        fixture_receipt.get("patched_release_commit") == LIBHEIF_PATCHED_RELEASE_COMMIT,
+        "patched release commit mismatch",
+    )
+    _require_sha256(fixture_receipt.get("target_lock_sha256"), "fixture_receipt.target_lock_sha256")
+    _require_sha256(fixture_receipt.get("harness_sha256"), "fixture_receipt.harness_sha256")
+    semantic_proof = (
+        fixture_receipt.get("semantic_proof")
+        if isinstance(fixture_receipt.get("semantic_proof"), dict)
+        else {}
+    )
+    expected_semantic_proof = {
+        "bug_type": "heap-buffer-overflow",
+        "access": "READ of size 2",
+        "source_frame": LIBHEIF_SOURCE_FRAME,
+        "vulnerable_signal_confirmed": True,
+        "fixed_marker": LIBHEIF_FIXED_MARKER,
+        "fixed_sanitizer_clean": True,
+    }
+    _require(semantic_proof == expected_semantic_proof, "semantic vulnerable/fixed proof mismatch")
+
+    grade_hash = _require_sha256(grade.get("grade_verdict_hash"), "gradeResult.grade_verdict_hash")
+    version_id = _safe(grade.get("grade_freeze_version_id"))
+    _require(bool(version_id), "GRADE freeze VersionId is missing")
+    bundle_sha256 = _require_sha256(
+        grade.get("grade_freeze_bundle_sha256"),
+        "gradeResult.grade_freeze_bundle_sha256",
+    )
+
+    _require(approval.get("decision") == "approved", "verifier decision is not approved")
+    _require(approval.get("approval_mode") == "verifier_quorum", "approval mode mismatch")
+    _require(approval.get("profile") == LIBHEIF_PROFILE, "approval profile mismatch")
+    _require(approval.get("target") == LIBHEIF_PROFILE, "approval target mismatch")
+    _require(approval.get("grade_verdict_hash") == grade_hash, "approval grade hash mismatch")
+    _require(approval.get("grade_freeze_version_id") == version_id, "approval VersionId mismatch")
+    _require(approval.get("grade_freeze_bundle_sha256") == bundle_sha256, "approval bundle hash mismatch")
+    expected_artifact = f"approvals/{LIBHEIF_PROFILE}/{grade_hash}.approved"
+    _require(approval.get("approval_artifact_key") == expected_artifact, "approval artifact key mismatch")
+    _require(isinstance(approval.get("approved_at"), str) and bool(approval["approved_at"]), "approval timestamp is missing")
+    verifier_checks = approval.get("verifier_quorum")
+    _require(
+        isinstance(verifier_checks, list)
+        and len(verifier_checks) == len(LIBHEIF_VERIFIER_CHECKS)
+        and all(isinstance(check, str) for check in verifier_checks)
+        and set(verifier_checks) == set(LIBHEIF_VERIFIER_CHECKS),
+        "verifier policy did not return the canonical six integrity checks",
+    )
+
+    _require(export_result.get("target_domain") == LIBHEIF_PROFILE, "Security Hub target mismatch")
+    _require(export_result.get("grade_verdict_hash") == grade_hash, "Security Hub grade hash mismatch")
+    _require(export_result.get("grade_freeze_version_id") == version_id, "Security Hub VersionId mismatch")
+    _require(export_result.get("grade_freeze_bundle_sha256") == bundle_sha256, "Security Hub bundle hash mismatch")
+    _require(export_result.get("verdict") == "SUBMIT", "Security Hub export verdict is not SUBMIT")
+    _require(export_result.get("failed") in (None, []), "Security Hub export contains failed findings")
+    exported = export_result.get("exported")
+    expected_asff_id = f"hacker-bob/{LIBHEIF_PROFILE}/{LIBHEIF_FINDING_ID}/{grade_hash[:16]}"
+    _require(
+        isinstance(exported, list)
+        and exported == [
+            {
+                "asff_id": expected_asff_id,
+                "finding_id": LIBHEIF_FINDING_ID,
+                "severity_label": "MEDIUM",
+            }
+        ],
+        "Security Hub export is not the exact approved F-22 record",
+    )
+
+    _require(report.get("status") == "historical_replay_report_ready", "REPORT stage is not ready")
+    _require(report.get("target_domain") == LIBHEIF_PROFILE, "REPORT target mismatch")
+    _require(report.get("fixture_id") == LIBHEIF_PROFILE, "REPORT fixture mismatch")
+    _require(report.get("claim_mode") == "public_historical_reproduction", "REPORT claim mode mismatch")
+    _require(report.get("rediscovery") is False, "REPORT must declare rediscovery=false")
+    _require(report.get("grade_verdict_hash") == grade_hash, "REPORT grade hash mismatch")
+    _require(report.get("findings") == [LIBHEIF_FINDING_ID], "REPORT finding set mismatch")
+    _require(report.get("caveat") == LIBHEIF_CAVEAT, "REPORT caveat mismatch")
+    _require(isinstance(report.get("generated_at"), str) and bool(report["generated_at"]), "REPORT timestamp is missing")
+    resolution = _validate_libheif_resolution(
+        event,
+        grade_hash,
+        version_id,
+        bundle_sha256,
+        expected_model_id,
+    )
+
+    return {
+        "approval": approval,
+        "report": report,
+        "grade": grade,
+        "export": export_result,
+        "grade_hash": grade_hash,
+        "version_id": version_id,
+        "bundle_sha256": bundle_sha256,
+        "resolution": resolution,
+    }
+
+
+def _load_finding_artifact() -> dict[str, Any]:
+    """Load the committed canonical finding artifact the report is built FROM.
+
+    The publisher no longer carries the report prose in Python; it reads a
+    schema-conforming artifact and shapes it. Any web/repo/oss_library artifact
+    flows this same path — only the data differs.
+    """
+    path = os.environ.get(LIBHEIF_ARTIFACT_ENV_VAR, "").strip() or LIBHEIF_DEFAULT_ARTIFACT_PATH
+    try:
+        with open(path, encoding="utf-8") as handle:
+            artifact = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"refusing to publish libheif report: finding artifact is unavailable ({exc})"
+        ) from exc
+    _require(isinstance(artifact, dict), "finding artifact is not an object")
+    _require(artifact.get("schemaVersion") == 1, "finding artifact schema version is unsupported")
+    findings = artifact.get("findings")
+    _require(isinstance(findings, list) and len(findings) >= 1, "finding artifact has no findings")
+    _require(isinstance(artifact.get("brief"), dict), "finding artifact brief is missing")
+    _require(isinstance(artifact.get("business"), dict), "finding artifact business projection is missing")
+    return artifact
+
+
+def _bind_artifact_to_transaction(artifact: dict[str, Any], transaction: dict[str, Any]) -> dict[str, Any]:
+    """Bind the loaded artifact to the already-approved transaction.
+
+    The transaction gates (grade/approval/export/report + resolution + WORM
+    freeze) are authoritative. This ensures the artifact the publisher shapes
+    describes THAT approved finding — a swapped or stale artifact cannot ride the
+    approved receipt to publish a different claim.
+    """
+    findings = artifact["findings"]
+    report_findings = transaction["report"].get("findings")
+    artifact_finding_ids = [f.get("id") for f in findings if isinstance(f, dict)]
+    _require(artifact_finding_ids == report_findings, "artifact finding set does not match the approved report")
+    _require(len(findings) == 1, "libheif artifact must carry exactly the approved finding")
+    finding = findings[0]
+    _require(isinstance(finding, dict), "artifact finding is not an object")
+    _require(finding.get("id") == LIBHEIF_FINDING_ID, "artifact finding id mismatch")
+
+    affected = finding.get("affected") if isinstance(finding.get("affected"), dict) else {}
+    fixed = finding.get("fixed") if isinstance(finding.get("fixed"), dict) else {}
+    evidence = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
+    caveats = finding.get("caveats") if isinstance(finding.get("caveats"), list) else []
+    _require(affected.get("versions") == LIBHEIF_AFFECTED_VERSIONS, "artifact affected range mismatch")
+    _require(affected.get("vulnerableCommit") == LIBHEIF_VULNERABLE_COMMIT, "artifact vulnerable commit mismatch")
+    _require(affected.get("sourceFrame") == LIBHEIF_SOURCE_FRAME, "artifact source frame mismatch")
+    _require(fixed.get("version") == LIBHEIF_FIXED_VERSION, "artifact fixed version mismatch")
+    _require(fixed.get("exactFixCommit") == LIBHEIF_EXACT_FIX_COMMIT, "artifact exact fix commit mismatch")
+    _require(
+        fixed.get("patchedReleaseCommit") == LIBHEIF_PATCHED_RELEASE_COMMIT,
+        "artifact patched release commit mismatch",
+    )
+    _require(evidence.get("sourceFrame") == LIBHEIF_SOURCE_FRAME, "artifact evidence source frame mismatch")
+    _require(evidence.get("fixedMarker") == LIBHEIF_FIXED_MARKER, "artifact evidence fixed marker mismatch")
+    _require(bool(caveats) and caveats[0] == LIBHEIF_CAVEAT, "artifact caveat mismatch")
+    return finding
+
+
+def _build_libheif_model(
+    event: dict[str, Any],
+    expected_model_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    # Authoritative safety gates first: nothing is published unless the whole
+    # approved transaction (grade -> verifier quorum -> export -> report ->
+    # validated resolution) reconciles and the WORM freeze is bound.
+    transaction = _validate_libheif_transaction(event, expected_model_id)
+    grade_hash = transaction["grade_hash"]
+    version_id = transaction["version_id"]
+    bundle_sha256 = transaction["bundle_sha256"]
+    resolution = transaction["resolution"]
+    report = transaction["report"]
+    generated_at = _safe(report.get("generated_at"))
+
+    # Build the report FROM the committed artifact, bound to the approved finding.
+    artifact = _load_finding_artifact()
+    _bind_artifact_to_transaction(artifact, transaction)
+
+    # The validated stakeholder resolution drives ONLY the reorderable, reader-
+    # facing content (which reader, action order). The action/decision copy is the
+    # resolution feature's own map (part of the resolution gate), not report prose.
+    primary_reader = resolution["primary_reader"]
+    action_order = resolution["action_order"]
+    stakeholder_actions = [LIBHEIF_ACTIONS[action]["stakeholder"] for action in action_order]
+    business_decisions = [LIBHEIF_ACTIONS[action]["decision"] for action in action_order]
+    downstream_actions = [action["action"] for action in stakeholder_actions]
+
+    # The WORM/chain-of-custody receipt is derived from the approved transaction,
+    # never from the (static, placeholder-hashed) artifact receipt.
+    receipt: dict[str, Any] = {
+        "evidenceHash": grade_hash,
+        "artifactVersion": version_id,
+        "bundleSha256": bundle_sha256,
+        "verifierStatus": "approved",
+        "integrityChecksPassed": len(LIBHEIF_VERIFIER_CHECKS),
+        # Evidence-integrity provenance (chain of custody). Deliberately excludes
+        # delivery-plane identifiers (execution/runtime/finding ids) per the
+        # no-plumbing-in-the-report rule; these are the checks and pinned sources a
+        # reader can independently reconcile.
+        "verifierChecks": list(LIBHEIF_VERIFIER_CHECKS),
+        "objectLockMode": "COMPLIANCE",
+        "sourceCommit": LIBHEIF_VULNERABLE_COMMIT,
+        "fixedCommit": LIBHEIF_EXACT_FIX_COMMIT,
+        "profile": LIBHEIF_PROFILE,
+        "generatedAt": generated_at,
+    }
+
+    # Generic shaping: static report content passes through from the artifact;
+    # only the resolution-derived overlays and the receipt are applied here.
+    report_resolution = {
+        "status": resolution["status"],
+        "resolutionType": resolution["resolution_type"],
+        "schemaVersion": resolution["schema_version"],
+        "featureRegistry": resolution["feature_registry"],
+        "featureHash": resolution["feature_hash"],
+        "modelId": resolution["model_id"],
+        "primaryReader": primary_reader,
+        "actionOrder": action_order,
+        "decisionHash": resolution["decision_hash"],
+    }
+
+    brief = dict(artifact["brief"])
+    brief.pop("evidenceConfidence", None)
+    brief.update(
+        {
+            "primaryReader": primary_reader,
+            "resolvedFor": LIBHEIF_READER_LABELS[primary_reader],
+            "primaryAction": stakeholder_actions[0]["action"],
+            "stakeholderActions": stakeholder_actions,
+        }
+    )
+
+    findings = copy.deepcopy(artifact["findings"])
+    for finding in findings:
+        remediation = finding.get("remediation")
+        if isinstance(remediation, dict):
+            remediation["downstreamActions"] = downstream_actions
+
+    model = {
+        "domain": artifact["domain"],
+        "targetKind": artifact["targetKind"],
+        "target": artifact["target"],
+        "reportKind": artifact["reportKind"],
+        "disclosure": artifact["disclosure"],
+        "reportResolution": report_resolution,
+        "brief": brief,
+        "severitySummary": artifact["severitySummary"],
+        "findings": findings,
+        "globalSections": artifact.get("globalSections", []),
+        "amendments": artifact.get("amendments", []),
+        "receipt": receipt,
+    }
+
+    business = copy.deepcopy(artifact["business"])
+    business["decisions"] = business_decisions
+    return model, business
+
+
+def _build_payload(
+    event: dict[str, Any],
+    password: str,
+    recipient: str,
+    expected_model_id: str,
+) -> dict[str, Any]:
+    profile = _safe(event.get("profile"))
+    if profile != LIBHEIF_PROFILE:
+        return {
+            "skip": True,
+            "reason": "unsupported_profile",
+            "profile": profile or "unknown",
+        }
+    model, business = _build_libheif_model(event, expected_model_id)
+    publication_key = _canonical_hash(
+        {
+            "schema_version": 1,
+            "profile": profile,
+            "target_domain": event.get("target"),
+            "grade_verdict_hash": model["receipt"]["evidenceHash"],
+            "grade_freeze_version_id": model["receipt"]["artifactVersion"],
+            "resolution_decision_hash": model["reportResolution"]["decisionHash"],
+        }
+    )
+    payload = {
+        "domain": model["domain"],
+        "recipient": recipient or "the program owner",
+        "method": "Hacker Bob · verified differential security assessment",
+        "date": _now_date(),
+        "model": model,
+        "business": business,
+        "consoleVisible": True,
+        "publicationKey": publication_key,
+        "password": password,
+    }
+    payload["publicationFingerprint"] = _canonical_hash(
+        {
+            key: value
+            for key, value in payload.items()
+            if key not in {"password", "publicationKey", "publicationFingerprint"}
+        }
+    )
+    return payload
+
+
+def _post_json(base_url: str, token: str, body: dict[str, Any], opener: Any = urlopen) -> dict[str, Any]:
+    encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    req = Request(
+        f"{base_url}/api/reports",
+        data=encoded,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "hacker-bob-aws-publisher/1",
+        },
+    )
+    try:
+        with opener(req, timeout=15) as resp:
+            status = getattr(resp, "status", 200)
+            data = resp.read()
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        raise RuntimeError(f"Bob-site ingest returned HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Bob-site ingest failed: {exc.reason}") from exc
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"Bob-site ingest returned HTTP {status}")
+    parsed = json.loads(data.decode("utf-8"))
+    if not isinstance(parsed, dict) or not parsed.get("url") or not parsed.get("slug"):
+        raise RuntimeError("Bob-site ingest response did not include url and slug")
+    return parsed
+
+
+def handle(event: dict[str, Any], environ: dict[str, str], secrets_client: Any, opener: Any = urlopen) -> dict[str, Any]:
+    profile = _safe(event.get("profile"))
+    if profile != LIBHEIF_PROFILE:
+        return {
+            "version": 1,
+            "published": False,
+            "reason": "unsupported_profile",
+            "profile": profile or "unknown",
+        }
+
+    base_raw = environ.get("BOB_SITE_BASE_URL", "")
+    token_secret_id = environ.get("INGEST_TOKEN_SECRET_ID", "")
+    password_secret_id = environ.get("REPORT_PASSWORD_SECRET_ID", "")
+    expected_model_id = environ.get("REPORT_DECISION_MODEL_ID", "")
+    recipient = environ.get("REPORT_RECIPIENT", "the program owner")
+
+    _require(
+        _configured(base_raw) and _configured(token_secret_id) and _configured(password_secret_id),
+        "Bob-site publication is not configured",
+    )
+
+    base_url = _validate_https_base_url(base_raw)
+    token = _secret_string(secrets_client, token_secret_id)
+    password = _secret_string(secrets_client, password_secret_id)
+    _require(_configured(token) and _configured(password), "Bob-site publication secrets are not configured")
+    _require(
+        len(password.strip()) >= 16,
+        "report access password must contain at least 16 non-whitespace characters",
+    )
+
+    payload = _build_payload(event, password, recipient, expected_model_id)
+    if payload.get("skip"):
+        return {"version": 1, "published": False, **payload}
+
+    result = _post_json(base_url, token, payload, opener=opener)
+    return {
+        "version": 1,
+        "published": True,
+        "bob_site_url": result["url"],
+        "bob_site_slug": result["slug"],
+        "domain": payload["domain"],
+        "profile": profile,
+    }
+
+
+def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
+    # Import lazily so local unit tests can exercise handle() without a boto3
+    # dependency; boto3 is present in the AWS Python Lambda runtime.
+    import boto3  # type: ignore
+
+    return handle(event, os.environ, boto3.client("secretsmanager"))

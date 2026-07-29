@@ -31,7 +31,8 @@ const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
 } = require("../mcp/lib/claims.js");
-const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
@@ -181,9 +182,9 @@ test("positive: benign marker executes in the browser → signed HIGH row", () =
   // value-blind target: query stripped to origin+path.
   assert.equal(row.target, `https://${domain}/search`);
   assert.equal(row.target, canonicalizeExploitTarget(`https://${domain}/search?${LOCUS}=x`));
-  // well-formed + MAC-valid.
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
-  assert.equal(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), true, "row MAC must verify");
+  // well-formed + MAC-valid. Producer-minted rows are ed25519 (v2).
+  assert.equal(row.row_mac.version, 2);
+  assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)), true, "row MAC must verify");
   for (const h of ["command_hash", "stdout_hash", "stderr_hash"]) {
     assert.match(result[h], /^[0-9a-f]{64}$/);
     assert.equal(result[h], row[h]);

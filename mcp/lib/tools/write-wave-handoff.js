@@ -12,7 +12,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_wave_handoff",
-  aliases: ["bounty_write_wave_handoff"],
+  writes_audit_graded: true,
   description:
     "Evaluator-final writer for one structured wave handoff as markdown plus authoritative JSON.",
   inputSchema: {
@@ -56,6 +56,37 @@ module.exports = wrapWriteTool({
           "minLength": 1,
           "maxLength": 300,
           "x-autoTruncate": true
+        }
+      },
+      "discovered_pivots": {
+        "type": "array",
+        "maxItems": 20,
+        "items": {
+          "type": "object",
+          "required": ["from_surface", "to_surface", "kind", "trust_assumption"],
+          "properties": {
+            "from_surface": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "to_surface": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "trust_assumption": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "evidence_refs": {
+              "type": "array",
+              "maxItems": 10,
+              "items": { "type": "string", "maxLength": 300 }
+            }
+          }
+        }
+      },
+      "spawned_children": {
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+          "type": "object",
+          "required": ["subagent_type", "cell_key"],
+          "properties": {
+            "subagent_type": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "cell_key": { "type": "string", "minLength": 1, "maxLength": 300 }
+          }
         }
       },
       "blocked_harness_runs": {

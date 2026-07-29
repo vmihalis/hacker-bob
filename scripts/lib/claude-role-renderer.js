@@ -13,11 +13,14 @@ const {
   substituteCapabilityPackVerifierTable,
   substituteClaudeEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
 } = require("../../mcp/lib/capability-playbooks.js");
 const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("../../mcp/lib/nested-spawn.js");
 const { TOOL_REGISTRY } = require("../../mcp/lib/tool-registry.js");
 const { parseSkillText } = require("./skill-parser.js");
 
@@ -35,7 +38,7 @@ const { parseSkillText } = require("./skill-parser.js");
 // `scripts/check-skill-protocol-coherence.js` consumes the resulting
 // rendered SKILL.md and asserts the structural-containment predicate.
 const REGISTERED_TOOL_NAMES = new Set(
-  TOOL_REGISTRY.filter((tool) => !tool.alias_of).map((tool) => tool.name),
+  TOOL_REGISTRY.map((tool) => tool.name),
 );
 
 function injectSchemaRefDirectives(document, { filePath = "<orchestrator-render>" } = {}) {
@@ -115,6 +118,11 @@ const CLAUDE_LAUNCH_TEMPLATES = Object.freeze({
     "Agent(subagent_type: \"surface-router-agent\", name: \"surface-router\", prompt: \"Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Confirm attack_surface.json exists and has surfaces, then call bob_route_surfaces({ target_domain: '[domain]' }) and use .data. If routing fails or returns zero surfaces, report the error and stop. Otherwise return route count, capability-pack counts, and surface_routes_path.\")",
     "```",
   ].join("\n"),
+  "{{SPAWN_RECON_ANGLE_AGENT}}": [
+    "```text",
+    "Agent(subagent_type: \"surface-discovery-agent\", name: \"recon-[angle.id]\", run_in_background: true, prompt: \"DOMAIN=[domain] SESSION=~/hacker-bob-sessions/[domain] ANGLE=[angle.id]\")",
+    "```",
+  ].join("\n"),
   "{{SPAWN_EVALUATOR_AGENT}}": [
     "```text",
     "Agent(subagent_type: \"[assignment.evaluator_agent]\", name: \"evaluator-w[wave]-a[agent]\", run_in_background: true, prompt: \"",
@@ -190,7 +198,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     name: "bob-evaluate-runner",
     description: "Hacker Bob orchestrator runtime — invoked by /bob-evaluate. Do not call directly.",
     disable_model_invocation: true,
-    argument_hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
+    argument_hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
     local_tools: Object.freeze(["Task", "Read"]),
   }),
   status: Object.freeze({
@@ -237,7 +245,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     description: "Runs bounded normal surface-discovery \u2014 subdomain enum, live hosts, archived/crawled URLs, nuclei, JS/JWT extraction \u2014 and produces attack_surface.json",
     model: "opus",
     color: "cyan",
-    local_tools: Object.freeze(["Bash", "Read", "Write", "Glob", "Grep"]),
+    local_tools: Object.freeze(["Bash", "Read", "Write", "Edit", "Glob", "Grep"]),
   }),
   "deep-surface-discovery": Object.freeze({
     role_id: "deep-surface-discovery",
@@ -247,7 +255,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     description: "Runs bounded deep surface-discovery and produces compact attack_surface, deep-summary, and surface lead artifacts",
     model: "opus",
     color: "cyan",
-    local_tools: Object.freeze(["Bash", "Read", "Write", "Glob", "Grep"]),
+    local_tools: Object.freeze(["Bash", "Read", "Write", "Edit", "Glob", "Grep"]),
   }),
   "surface-router": Object.freeze({
     role_id: "surface-router",
@@ -259,6 +267,24 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     color: "blue",
     mcp_server: true,
     local_tools: Object.freeze(["Read"]),
+  }),
+  // Smart-contract recon expander — a scratch-only producer worker carrying the
+  // read/fetch-only sc-recon bundle. It resolves proxies/diamonds/role holders/
+  // linked addresses per chain and returns produced_surfaces[]; the server mints
+  // surfaces at finalize, so it holds no record/promote/finalize. Not
+  // spawn_capable, so no host Agent primitive renders into its frontmatter.
+  "sc-recon-expander": Object.freeze({
+    role_id: "sc-recon-expander",
+    kind: "agent",
+    output_path: path.join(".claude", "agents", "sc-recon-expander.md"),
+    name: "sc-recon-expander",
+    description: "Task-less smart-contract recon expander — resolves proxies/diamonds/roles/linked addresses per chain and returns produced_surfaces[]; writes scratch only, never holds record/promote/finalize",
+    model: "opus",
+    color: "cyan",
+    max_turns: 200,
+    background: true,
+    mcp_server: true,
+    local_tools: Object.freeze(["Bash", "Read", "Write", "Grep", "Glob"]),
   }),
   evaluator: Object.freeze({
     role_id: "evaluator",
@@ -292,7 +318,15 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
         max_turns: 99999,
         background: true,
         mcp_server: true,
-        local_tools: Object.freeze(["Bash", "Read", "Write", "Grep", "Glob"]),
+        // Evaluator roles normally receive the local harness toolset.  A role
+        // may narrow it in the evaluator registry; evaluator-physical uses an
+        // empty set so it cannot bypass the broker through a shell or device
+        // path while its pack is being completed.
+        local_tools: Object.freeze(
+          Array.isArray(role.local_tools)
+            ? role.local_tools.slice()
+            : ["Bash", "Read", "Write", "Grep", "Glob"],
+        ),
       }),
     ]),
   ),
@@ -314,6 +348,55 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     background: true,
     mcp_server: true,
     local_tools: Object.freeze(["Bash", "Read", "Write", "Grep", "Glob"]),
+  }),
+  // CN (coverage-nesting) Step B — spawn_capable per-surface evaluator that
+  // actuates the brain-owned child_fanout_plan. spawn_capable:true renders the
+  // a parameterized host Agent(child-type) grant into its frontmatter (the only
+  // registry-driven spawn grant; Y-P8 single-spawner-topology rejects bare or
+  // foreign Agent/Task grants). Its MCP toolset is the web evaluator union MINUS bob_propose_transition
+  // (the deny lives in role-model.js), so it stays disjoint from the coverage-cell
+  // tools (G2). Bash is retained for OSS-style harness work; the spawn ledger is
+  // therefore fenced by the session-write-guard hook (an mcp-owned basename),
+  // not by toolset absence. Deliberately NOT background-forced: the orchestrator
+  // still launches each wave root with run_in_background:true, but Claude's flat
+  // team runtime permits that teammate to spawn a child only as an anonymous,
+  // synchronous subagent. A background:true definition would reject that legal
+  // child invocation before its prompt starts.
+  [FANOUT_ROLE_REGISTRY.root.role_id]: Object.freeze({
+    role_id: FANOUT_ROLE_REGISTRY.root.role_id,
+    kind: "agent",
+    output_path: path.join(".claude", "agents", "evaluator-fanout.md"),
+    name: FANOUT_ROLE_REGISTRY.root.subagent_type,
+    description: "Spawn-capable per-surface evaluator — actuates the brain-owned child_fanout_plan through Claude's one supported teammate-to-subagent edge, one child per (bug_class × auth) cell. Transition-blind: discovered cross-surface pivots ride discovered_pivots[] up to the orchestrator.",
+    model: "opus",
+    color: "yellow",
+    // Turn-cap PARITY with the flat evaluator (99999), not 200: the routing predicate targets
+    // the deepest, highest-value surfaces, and each leaf cell is itself capped by this value —
+    // a 200 cap would truncate exactly the surfaces most worth exhausting. The fan-out's
+    // benefit is cell decomposition with isolated contexts, not shorter per-agent budgets.
+    max_turns: 99999,
+    mcp_server: true,
+    spawn_capable: true,
+    spawn_child_role_id: FANOUT_ROLE_REGISTRY.child.role_id,
+    local_tools: Object.freeze(["Bash", "Read", "Grep", "Glob"]),
+  }),
+  // NS-7 — generated leaf role for the one legal Claude nesting edge. Unlike
+  // the wave root, this spec is not spawn_capable and has no local tools. Its
+  // MCP authority comes from the role model, whose deny list removes handoff,
+  // finalize, and transition writes before this child starts. The transcript
+  // hook remains a defense-in-depth completion/ownership boundary.
+  [FANOUT_ROLE_REGISTRY.child.role_id]: Object.freeze({
+    role_id: FANOUT_ROLE_REGISTRY.child.role_id,
+    kind: "agent",
+    output_path: path.join(".claude", "agents", "evaluator-fanout-child.md"),
+    name: FANOUT_ROLE_REGISTRY.child.subagent_type,
+    description: "Non-recursive evaluator-fanout leaf — tests one MCP-issued (bug_class × auth) cell, writes durable claim/coverage/technique state, and returns only BOB_CHILD_CELL_DONE.",
+    model: "opus",
+    color: "yellow",
+    max_turns: 99999,
+    mcp_server: true,
+    fanout_child: true,
+    local_tools: Object.freeze([]),
   }),
   chain: Object.freeze({
     role_id: "chain",
@@ -424,14 +507,49 @@ function claudeMcpToolsForRole(roleId) {
   return mcpToolNamesForRole(roleId).map(mcpPermissionForTool);
 }
 
+// NS-1 / NS-7 — render the root's host spawn grant from the same role registry that
+// emits child_fanout_plan.subagent_type. A bare Agent/Task grant would allow
+// discretionary foreign children before the detective handoff check runs.
+function claudeSpawnGrantForRole(roleId) {
+  const spec = CLAUDE_ROLE_SPECS[roleId];
+  if (!spec || spec.spawn_capable !== true) return [];
+  const childSpec = CLAUDE_ROLE_SPECS[spec.spawn_child_role_id];
+  if (!childSpec || childSpec.fanout_child !== true) {
+    throw new Error(`Claude spawn-capable role ${roleId} has no registered fanout child role`);
+  }
+  return [`Agent(${childSpec.name})`];
+}
+
 function claudeAllowedToolsForRole(roleId) {
   const spec = CLAUDE_ROLE_SPECS[roleId];
   if (!spec) throw new Error(`Missing Claude role spec for ${roleId}`);
   return uniqueStrings([
     ...(spec.local_tools || []),
+    ...claudeSpawnGrantForRole(roleId),
     ...claudeMcpToolsForRole(roleId),
     ...(spec.extra_mcp_tools || []),
   ]);
+}
+
+// CN (coverage-nesting) — registry-derived allowlist of AGENT names (.md
+// basenames) permitted to carry the parameterized host Agent spawn primitive. The Y-P8
+// single-spawner-topology test consumes this so the gate stays a real
+// allowlist ("only declared spawners may spawn") rather than "exactly one
+// spawner". Skills (orchestrator/status/debug) are excluded — they are not
+// .claude/agents/*.md; the orchestrator skill's own unrestricted Task is separate.
+function spawnCapableAgentNames() {
+  return Object.values(CLAUDE_ROLE_SPECS)
+    .filter((spec) => spec.kind === "agent" && spec.spawn_capable === true)
+    .map((spec) => spec.name);
+}
+
+// NS-7 — registry-derived stop-hook matcher(s) for transcript-bound fanout
+// leaves. Kept separate from spawnCapableAgentNames: adding a child here must
+// never widen the unique Agent(child)-bearing root allowlist.
+function fanoutChildAgentNames() {
+  return Object.values(CLAUDE_ROLE_SPECS)
+    .filter((spec) => spec.kind === "agent" && spec.fanout_child === true)
+    .map((spec) => spec.name);
 }
 
 function renderSkillFrontmatter(spec) {
@@ -504,6 +622,8 @@ function renderClaudePromptBody(roleId, body, { root = DEFAULT_ROOT } = {}) {
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteClaudeEvaluatorPackCatalogue(document);
   document = substituteHandoffFieldLimits(document);
+  document = substituteEvaluatorReframePosture(document);
+  document = substituteProducerCatalogue(document);
   if (roleId === "orchestrator") {
     document += renderCapabilityPlaybookAppendix({ root });
   }
@@ -563,6 +683,9 @@ module.exports = {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
   claudeAllowedToolsForRole,
+  claudeSpawnGrantForRole,
+  fanoutChildAgentNames,
+  spawnCapableAgentNames,
   claudeMcpToolsForRole,
   claudeRoleOutputPath,
   renderClaudePromptBody,

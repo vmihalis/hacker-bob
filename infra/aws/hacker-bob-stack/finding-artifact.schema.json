@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hacker-bob.dev/schemas/finding-artifact.schema.json",
+  "title": "Hacker Bob canonical finding artifact",
+  "description": "ONE canonical structured artifact for every flow: black-box web domain (web), GitHub repository (repo), and OSS-library historical replay (oss_library). A superset of the fields the Bob-site renderer already consumes (tools/report/lib/{render,report-context,parse-report}.mjs) PLUS the Tasco-depth engineering fields (what_it_is, engineering_distinction, code_differential, grade_score, per-finding business_impact) and the chain-of-custody receipt. The SAME shape renders identically for all three targetKind values; only the data varies.",
+  "type": "object",
+  "required": ["schemaVersion", "targetKind", "target", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "description": "Artifact schema version. Bump only on breaking shape changes.",
+      "type": "integer",
+      "const": 1
+    },
+    "targetKind": {
+      "description": "Canonical target class. Drives nothing but selection of the render path (oss_library -> OSS overview; web|repo -> company path). Mirrors target.kind.",
+      "type": "string",
+      "enum": ["web", "repo", "oss_library"]
+    },
+    "domain": {
+      "description": "Display name of the assessed surface (host for web, repo name for repo, library name for oss_library). Renderer masthead fallback when target.name is absent.",
+      "type": "string"
+    },
+    "reportKind": {
+      "type": "string"
+    },
+    "target": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "Must equal the top-level targetKind.",
+          "type": "string",
+          "enum": ["web", "repo", "oss_library"]
+        },
+        "name": { "type": "string" },
+        "repository": {
+          "description": "Source repository URL. Required-in-spirit for repo/oss_library; a bare host or omitted for web.",
+          "type": "string"
+        },
+        "ecosystem": { "type": "string" },
+        "audiences": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "disclosure": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": { "type": "string" },
+        "boundary": { "type": "string" },
+        "freshTargetTesting": { "type": "boolean" }
+      }
+    },
+    "reportResolution": {
+      "description": "Optional validated stakeholder-resolution envelope (publisher-side). Opaque to this schema beyond being an object.",
+      "type": "object"
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": { "type": "string" },
+        "headline": { "type": "string" },
+        "primaryReader": { "type": "string" },
+        "primaryAction": { "type": "string" },
+        "affected": { "$ref": "#/$defs/flexibleContent" },
+        "fixed": { "$ref": "#/$defs/flexibleContent" },
+        "confidence": { "type": "string" },
+        "evidenceConfidence": { "type": "string" },
+        "riskAxes": { "type": "object" },
+        "stakeholderActions": { "type": "array" }
+      }
+    },
+    "severitySummary": {
+      "description": "The leadership one-liner rendered under the masthead (## Severity Summary).",
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "globalSections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/section" }
+    },
+    "amendments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "section_id": { "type": "string" },
+          "rationale": { "type": "string" },
+          "prose": { "type": "string" }
+        }
+      }
+    },
+    "receipt": { "$ref": "#/$defs/receipt" },
+    "business": {
+      "description": "Optional business-language projection (bottomLine, riskLevel, dimensions, decisions, held). Opaque object here; consumed by the business surface.",
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "flexibleContent": {
+      "description": "String, list, or key/value object. renderStructuredValue handles all three uniformly, so any of these fields may be prose, a bullet list, or a fact table.",
+      "type": ["string", "array", "object"]
+    },
+    "section": {
+      "description": "A prose section attached to a finding or the global report. Mirrors the parse-report.mjs section shape.",
+      "type": "object",
+      "required": ["kind", "heading", "prose"],
+      "additionalProperties": false,
+      "properties": {
+        "heading": { "type": "string" },
+        "section_id": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "impact",
+            "evidence",
+            "proof_bundle",
+            "severity",
+            "remediation",
+            "chain_summary",
+            "repro",
+            "provenance"
+          ]
+        },
+        "provenance": { "type": "string" },
+        "prose": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "codeDifferential": {
+      "description": "Tasco-depth engineering distinction: the vulnerable code and its fixed form, with the fix commit. code_differential.fixed is the FIXED SOURCE, distinct from finding.fixed (fixed version/release metadata).",
+      "type": "object",
+      "required": ["vulnerable", "fixed"],
+      "additionalProperties": false,
+      "properties": {
+        "vulnerable": { "type": "string" },
+        "fixed": { "type": "string" },
+        "commit": { "type": "string" },
+        "language": { "type": "string" },
+        "sourceFrame": {
+          "description": "file:line locating the differential (e.g. libheif/codecs/uncompressed/unc_decoder.cc:178).",
+          "type": "string"
+        }
+      }
+    },
+    "businessImpact": {
+      "description": "Per-finding business-language impact (Tasco shape).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string" },
+        "who_is_affected": { "type": "string" },
+        "worst_case": { "type": "string" },
+        "exposure": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "advisory": { "type": "string" },
+        "advisoryUrl": { "type": "string" },
+        "reportedBy": { "type": "string" },
+        "claimMode": { "type": "string" },
+        "rediscovery": { "type": "boolean" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["id", "title", "band"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "band": {
+          "description": "Graded severity band (severity-follows-demonstrated-impact). Renderer normalizes 'informational' -> 'info'.",
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info", "informational"]
+        },
+        "severity": { "type": "string" },
+        "cwe": { "type": "string" },
+        "cvssVector": {
+          "description": "CVSS 3.1 vector string, decoded by the renderer into the severity grid.",
+          "type": "string"
+        },
+        "cvssScore": {
+          "description": "CVSS 3.1 base score as a string (renderer escapes it verbatim).",
+          "type": "string"
+        },
+        "grade_score": {
+          "description": "Tasco-depth: numeric grade from the grading gate (0-100 quality/confidence of the verified finding).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "what_it_is": {
+          "description": "Tasco-depth: the precise mechanism of the finding in plain engineering terms.",
+          "type": "string"
+        },
+        "rootCause": { "$ref": "#/$defs/flexibleContent" },
+        "engineering_distinction": {
+          "description": "Tasco-depth: why this is the class it is, and why the severity lands where it does (the load-bearing teaching).",
+          "type": "string"
+        },
+        "reachability": { "$ref": "#/$defs/flexibleContent" },
+        "affected": {
+          "description": "Affected versions/component/surface. Distinct from code_differential.",
+          "$ref": "#/$defs/flexibleContent"
+        },
+        "fixed": {
+          "description": "Fixed version/release metadata. Distinct from code_differential.fixed (the fixed source).",
+          "$ref": "#/$defs/flexibleContent"
+        },
+        "code_differential": { "$ref": "#/$defs/codeDifferential" },
+        "impact": { "$ref": "#/$defs/flexibleContent" },
+        "business_impact": { "$ref": "#/$defs/businessImpact" },
+        "reproduction": { "$ref": "#/$defs/flexibleContent" },
+        "repro": {
+          "description": "Ordered reproduction steps (company-path renderer consumes this array).",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": { "$ref": "#/$defs/flexibleContent" },
+        "remediation": { "$ref": "#/$defs/flexibleContent" },
+        "caveats": { "$ref": "#/$defs/flexibleContent" },
+        "evidenceConfidence": { "type": "string" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "sections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/section" }
+        }
+      }
+    },
+    "receipt": {
+      "description": "Chain-of-custody receipt (evidence integrity + independent verification). renderEvidenceReceipt reads these; snake_case aliases are tolerated.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["evidenceHash", "verifierStatus"],
+      "properties": {
+        "evidenceHash": {
+          "description": "SHA-256 of the graded verdict (grade hash).",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "gradeHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "gradeSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bundleHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bundleSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "artifactVersion": { "type": "string" },
+        "artifactVersionId": { "type": "string" },
+        "versionId": { "type": "string" },
+        "wormVersionId": { "type": "string" },
+        "verifierStatus": { "type": "string" },
+        "verificationStatus": { "type": "string" },
+        "integrityChecksPassed": { "type": "integer", "minimum": 0 },
+        "verifierChecks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "objectLockMode": {
+          "description": "WORM retention mode, e.g. COMPLIANCE or GOVERNANCE.",
+          "type": "string"
+        },
+        "sourceCommit": { "type": "string" },
+        "fixedCommit": { "type": "string" },
+        "sourceProfile": { "type": "string" },
+        "profile": { "type": "string" },
+        "generatedAt": { "type": "string" },
+        "disclosureBoundary": { "type": "string" }
+      }
+    }
+  }
+}

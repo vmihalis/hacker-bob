@@ -1,11 +1,38 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const {
+  installLifecycleCustodianTestDouble,
+  lifecycleCustodianTestDoubleSupported,
+} = require("./fixtures/lifecycle-custodian-test-port.js");
+
+// Darwin/arm64-only native fixture. Elsewhere leave the real wrapper in place —
+// it reports the custodian unavailable, which is the path the installer takes
+// on those hosts, so these cases still exercise a real install.
+if (lifecycleCustodianTestDoubleSupported()) installLifecycleCustodianTestDouble();
+
 const { getAdapter } = require("../adapters/index.js");
+const {
+  copyRuntimeNodeDependencies,
+  installProject,
+} = require("../scripts/install.js");
+const { doctorProject } = require("../scripts/lifecycle.js");
 const update = require("../mcp/lib/update-check.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+const {
+  CANONICAL_RUNTIME_PACKAGE_ROOTS,
+  canonicalInstalledRuntimeFiles,
+  isCanonicalRuntimePackageFile,
+  sourceTreeFiles,
+} = require("../scripts/lib/package-policy.js");
+const {
+  declaredRuntimeEntrypoints,
+  loadCanonicalRuntimeEntrypoints,
+} = require("./helpers/canonical-runtime-entrypoints.js");
 
 const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
@@ -13,6 +40,729 @@ const PACKAGE_VERSION = require("../package.json").version;
 const CODEX_ADAPTER = getAdapter("codex");
 const KIMI_ADAPTER = getAdapter("kimi");
 const GENERIC_MCP_ADAPTER = getAdapter("generic-mcp");
+const LIFECYCLE_CUSTODIAN_TEST_PRELOAD = path.join(
+  __dirname,
+  "fixtures",
+  "lifecycle-custodian-test-preload.js",
+);
+const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+process.env.NODE_OPTIONS = [
+  `--require=${LIFECYCLE_CUSTODIAN_TEST_PRELOAD}`,
+  ORIGINAL_NODE_OPTIONS,
+].filter(Boolean).join(" ");
+test.after(() => {
+  if (ORIGINAL_NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+  else process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+});
+
+function installWithTestHome(workspace, tempHome) {
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    return installProject(workspace, {
+      sourceRoot: ROOT,
+      installerSource: "install.sh",
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+}
+
+function writeRuntimeFixturePackage(packageRoot, manifest, files = {}) {
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const filePath = path.join(packageRoot, ...relativePath.split("/"));
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, contents, "utf8");
+  }
+}
+
+test("packed npm layout resolves hoisted runtime dependencies without executing them", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-packed-dependency-"));
+  const dependencyRoot = path.join(tempRoot, "dependency");
+  const packageRoot = path.join(tempRoot, "package");
+  const installRoot = path.join(tempRoot, "install");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+  const sentinel = path.join(tempRoot, "dependency-executed");
+  const dependencyName = "bob-runtime-layout-proof-dependency";
+  const packageName = "bob-runtime-layout-proof-package";
+
+  const pack = (root) => {
+    const output = execFileSync("npm", ["pack", "--json", "--ignore-scripts"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return path.join(root, JSON.parse(output)[0].filename);
+  };
+
+  try {
+    fs.mkdirSync(dependencyRoot, { recursive: true });
+    fs.writeFileSync(path.join(dependencyRoot, "package.json"), `${JSON.stringify({
+      name: dependencyName,
+      version: "1.0.0",
+      main: "index.js",
+    })}\n`, "utf8");
+    fs.writeFileSync(
+      path.join(dependencyRoot, "index.js"),
+      `require("node:fs").writeFileSync(${JSON.stringify(sentinel)}, "executed");\nmodule.exports = {};\n`,
+      "utf8",
+    );
+    const dependencyTarball = pack(dependencyRoot);
+
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({
+      name: packageName,
+      version: "1.0.0",
+      main: "index.js",
+      dependencies: {
+        [dependencyName]: `file:${dependencyTarball}`,
+      },
+    })}\n`, "utf8");
+    fs.writeFileSync(path.join(packageRoot, "index.js"), "module.exports = {};\n", "utf8");
+    const packageTarball = pack(packageRoot);
+
+    execFileSync("npm", [
+      "install",
+      "--offline",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      "--prefix",
+      installRoot,
+      packageTarball,
+    ], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const installedPackage = path.join(installRoot, "node_modules", packageName);
+    const hoistedDependency = path.join(installRoot, "node_modules", dependencyName);
+    assert.ok(fs.existsSync(hoistedDependency));
+    assert.ok(!fs.existsSync(path.join(installedPackage, "node_modules", dependencyName)));
+    assert.ok(!fs.existsSync(sentinel), "packing and installing must not execute dependency code");
+
+    const foreignSentinel = path.join(
+      targetMcp,
+      "node_modules",
+      "foreign-package",
+      "sentinel.txt",
+    );
+    const foreignBin = path.join(targetMcp, "node_modules", ".bin", "user-tool");
+    fs.mkdirSync(path.dirname(foreignSentinel), { recursive: true });
+    fs.mkdirSync(path.dirname(foreignBin), { recursive: true });
+    fs.writeFileSync(foreignSentinel, "foreign\n", "utf8");
+    fs.writeFileSync(foreignBin, "user-bin\n", "utf8");
+    const copied = copyRuntimeNodeDependencies(installedPackage, targetMcp);
+    assert.ok(copied.includes(path.join(dependencyName, "package.json")));
+    assert.ok(copied.includes(path.join(dependencyName, "index.js")));
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(
+        targetMcp,
+        "node_modules",
+        dependencyName,
+        "package.json",
+      ), "utf8")).name,
+      dependencyName,
+    );
+    assert.ok(!fs.existsSync(sentinel), "static dependency copying must not execute package code");
+    assert.equal(fs.readFileSync(foreignSentinel, "utf8"), "foreign\n");
+    assert.equal(fs.readFileSync(foreignBin, "utf8"), "user-bin\n");
+
+    const installedDependencyIndex = path.join(
+      targetMcp,
+      "node_modules",
+      dependencyName,
+      "index.js",
+    );
+    fs.writeFileSync(installedDependencyIndex, "previous-complete-package\n", "utf8");
+    const sourceDependencyIndex = path.join(hoistedDependency, "index.js");
+    const originalOpenSync = fs.openSync;
+    const originalReadSync = fs.readSync;
+    let shortReadDescriptor = null;
+    let forcedShortRead = false;
+    fs.openSync = (filePath, ...args) => {
+      const descriptor = Reflect.apply(originalOpenSync, fs, [filePath, ...args]);
+      if (path.resolve(String(filePath)) === path.resolve(sourceDependencyIndex)) {
+        shortReadDescriptor = descriptor;
+      }
+      return descriptor;
+    };
+    fs.readSync = (descriptor, ...args) => {
+      if (!forcedShortRead && descriptor === shortReadDescriptor) {
+        forcedShortRead = true;
+        return 0;
+      }
+      return Reflect.apply(originalReadSync, fs, [descriptor, ...args]);
+    };
+    try {
+      let shortReadError;
+      try {
+        copyRuntimeNodeDependencies(installedPackage, targetMcp);
+      } catch (error) {
+        shortReadError = error;
+      }
+      assert.ok(shortReadError,
+        "a source short read during direct copy must fail with explicit source substitution");
+      assert.equal(shortReadError.code, "runtime_dependency_source_rejected");
+      assert.equal(shortReadError.reason_code, "package_file_substituted");
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.readSync = originalReadSync;
+    }
+    assert.ok(
+      !fs.existsSync(installedDependencyIndex),
+      "direct dependency replacement is explicitly non-atomic after source preflight",
+    );
+    assert.ok(!fs.readdirSync(path.join(targetMcp, "node_modules"))
+      .some((name) => name.startsWith(".bob-runtime-dependency-")));
+    assert.equal(fs.readFileSync(foreignSentinel, "utf8"), "foreign\n");
+    assert.equal(fs.readFileSync(foreignBin, "utf8"), "user-bin\n");
+
+    const linkedTargetMcp = path.join(tempRoot, "linked-target-mcp");
+    const foreignNodeModules = path.join(tempRoot, "foreign-node-modules");
+    fs.mkdirSync(linkedTargetMcp, { recursive: true });
+    fs.mkdirSync(foreignNodeModules, { recursive: true });
+    fs.symlinkSync(foreignNodeModules, path.join(linkedTargetMcp, "node_modules"), "dir");
+    assert.throws(
+      () => copyRuntimeNodeDependencies(installedPackage, linkedTargetMcp),
+      (error) => error && error.code === "runtime_dependency_target_rejected"
+        && error.reason_code === "target_ancestry_unowned_or_nonregular",
+      "a symlinked target node_modules ancestry must fail before any package mutation",
+    );
+    assert.deepEqual(fs.readdirSync(foreignNodeModules), []);
+
+    const unownedRoot = path.join(tempRoot, "unowned-layout");
+    const unownedPackage = path.join(unownedRoot, "package");
+    const unownedDependency = path.join(unownedRoot, "node_modules", dependencyName);
+    fs.mkdirSync(unownedPackage, { recursive: true });
+    fs.cpSync(hoistedDependency, unownedDependency, { recursive: true });
+    fs.writeFileSync(path.join(unownedPackage, "package.json"), `${JSON.stringify({
+      name: packageName,
+      version: "1.0.0",
+      dependencies: { [dependencyName]: "1.0.0" },
+    })}\n`, "utf8");
+    const unownedTarget = path.join(tempRoot, "unowned-target");
+    fs.mkdirSync(unownedTarget, { recursive: true });
+    assert.throws(
+      () => copyRuntimeNodeDependencies(unownedPackage, unownedTarget),
+      /Runtime dependency .* is missing/,
+      "resolution must not walk to an ancestor node_modules outside the package's owned layout",
+    );
+
+    const linkedRoot = path.join(tempRoot, "linked-layout", "node_modules");
+    const linkedPackage = path.join(linkedRoot, packageName);
+    fs.mkdirSync(linkedPackage, { recursive: true });
+    fs.writeFileSync(path.join(linkedPackage, "package.json"), `${JSON.stringify({
+      name: packageName,
+      version: "1.0.0",
+      dependencies: { [dependencyName]: "1.0.0" },
+    })}\n`, "utf8");
+    fs.symlinkSync(hoistedDependency, path.join(linkedRoot, dependencyName), "dir");
+    const linkedSourceTarget = path.join(tempRoot, "linked-source-target");
+    fs.mkdirSync(linkedSourceTarget, { recursive: true });
+    assert.throws(
+      () => copyRuntimeNodeDependencies(linkedPackage, linkedSourceTarget),
+      (error) => error && error.code === "runtime_dependency_source_rejected"
+        && error.reason_code === "source_ancestry_unowned_or_nonregular",
+      "symlinked dependency ancestry must fail closed",
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime dependency graph preserves ancestor hoists and nested package versions", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-dependency-graph-"));
+  const installRoot = path.join(tempRoot, "install");
+  const outerModules = path.join(installRoot, "node_modules");
+  const hostModules = path.join(outerModules, "fixture-host", "node_modules");
+  const sourceRoot = path.join(hostModules, "fixture-root");
+  const alpha = path.join(hostModules, "fixture-alpha");
+  const consumer = path.join(outerModules, "fixture-consumer");
+  const outerShared = path.join(outerModules, "fixture-shared");
+  const nestedShared = path.join(alpha, "node_modules", "fixture-shared");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: {
+        "fixture-alpha": "1.0.0",
+        "fixture-consumer": "1.0.0",
+      },
+    });
+    writeRuntimeFixturePackage(alpha, {
+      name: "fixture-alpha",
+      version: "1.0.0",
+      dependencies: { "fixture-shared": "2.0.0" },
+    }, { "index.js": "module.exports = 'alpha';\n" });
+    writeRuntimeFixturePackage(consumer, {
+      name: "fixture-consumer",
+      version: "1.0.0",
+      dependencies: { "fixture-shared": "1.0.0" },
+    }, { "index.js": "module.exports = 'consumer';\n" });
+    writeRuntimeFixturePackage(outerShared, {
+      name: "fixture-shared",
+      version: "1.0.0",
+    }, { "version.txt": "outer-v1\n" });
+    writeRuntimeFixturePackage(nestedShared, {
+      name: "fixture-shared",
+      version: "2.0.0",
+    }, { "version.txt": "nested-v2\n" });
+    fs.mkdirSync(targetMcp, { recursive: true });
+
+    const copied = copyRuntimeNodeDependencies(sourceRoot, targetMcp);
+    assert.ok(copied.includes(path.join("fixture-alpha", "package.json")));
+    assert.ok(copied.includes(path.join(
+      "fixture-alpha",
+      "node_modules",
+      "fixture-shared",
+      "package.json",
+    )));
+    assert.equal(fs.readFileSync(path.join(
+      targetMcp,
+      "node_modules",
+      "fixture-shared",
+      "version.txt",
+    ), "utf8"), "outer-v1\n");
+    assert.equal(fs.readFileSync(path.join(
+      targetMcp,
+      "node_modules",
+      "fixture-alpha",
+      "node_modules",
+      "fixture-shared",
+      "version.txt",
+    ), "utf8"), "nested-v2\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime dependency graph copies required peers and honors optional peer metadata", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-dependency-peers-"));
+  const modulesRoot = path.join(tempRoot, "install", "node_modules");
+  const sourceRoot = path.join(modulesRoot, "fixture-root");
+  const plugin = path.join(modulesRoot, "fixture-plugin");
+  const peer = path.join(modulesRoot, "fixture-peer");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: { "fixture-plugin": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(plugin, {
+      name: "fixture-plugin",
+      version: "1.0.0",
+      peerDependencies: {
+        "fixture-optional-peer": "^1.0.0",
+        "fixture-peer": "^1.0.0",
+      },
+      peerDependenciesMeta: {
+        "fixture-optional-peer": { optional: true },
+        "fixture-retired-peer": { optional: true },
+      },
+    }, { "index.js": "module.exports = require('fixture-peer');\n" });
+    writeRuntimeFixturePackage(peer, {
+      name: "fixture-peer",
+      version: "1.0.0",
+    }, { "index.js": "module.exports = 'peer';\n" });
+    fs.mkdirSync(targetMcp, { recursive: true });
+
+    const copied = copyRuntimeNodeDependencies(sourceRoot, targetMcp);
+    assert.ok(copied.includes(path.join("fixture-peer", "package.json")));
+    assert.ok(!fs.existsSync(path.join(
+      targetMcp,
+      "node_modules",
+      "fixture-optional-peer",
+    )));
+
+    fs.rmSync(peer, { recursive: true, force: true });
+    const sentinel = path.join(targetMcp, "node_modules", "sentinel.txt");
+    fs.writeFileSync(sentinel, "unchanged\n", "utf8");
+    assert.throws(
+      () => copyRuntimeNodeDependencies(sourceRoot, targetMcp),
+      (error) => error && error.code === "runtime_dependency_source_rejected"
+        && error.reason_code === "required_peer_dependency_missing",
+    );
+    assert.equal(fs.readFileSync(sentinel, "utf8"), "unchanged\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("manifest substitution after graph construction fails before target mutation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-dependency-manifest-"));
+  const modulesRoot = path.join(tempRoot, "install", "node_modules");
+  const sourceRoot = path.join(modulesRoot, "fixture-root");
+  const dependency = path.join(modulesRoot, "fixture-dependency");
+  const dependencyManifest = path.join(dependency, "package.json");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: { "fixture-dependency": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(dependency, {
+      name: "fixture-dependency",
+      version: "1.0.0",
+    }, { "index.js": "module.exports = true;\n" });
+    const sentinel = path.join(targetMcp, "node_modules", "sentinel.txt");
+    fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+    fs.writeFileSync(sentinel, "untouched\n", "utf8");
+
+    const originalOpenSync = fs.openSync;
+    let manifestOpenCount = 0;
+    fs.openSync = (filePath, ...args) => {
+      if (path.resolve(String(filePath)) === path.resolve(dependencyManifest)) {
+        manifestOpenCount += 1;
+        if (manifestOpenCount === 2) {
+          fs.writeFileSync(dependencyManifest, `${JSON.stringify({
+            name: "fixture-dependency",
+            version: "2.0.0",
+          })}\n`, "utf8");
+        }
+      }
+      return Reflect.apply(originalOpenSync, fs, [filePath, ...args]);
+    };
+    try {
+      assert.throws(
+        () => copyRuntimeNodeDependencies(sourceRoot, targetMcp),
+        (error) => error && error.code === "runtime_dependency_source_rejected"
+          && error.reason_code === "package_manifest_substituted",
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+    assert.equal(manifestOpenCount, 2);
+    assert.equal(fs.readFileSync(sentinel, "utf8"), "untouched\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("source and target dependency-tree overlap is rejected before mutation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-dependency-overlap-"));
+  const sourceRoot = path.join(tempRoot, "install", "node_modules", "fixture-root");
+  const dependency = path.join(tempRoot, "install", "node_modules", "fixture-dependency");
+  const targetMcp = path.join(tempRoot, "install");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: { "fixture-dependency": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(dependency, {
+      name: "fixture-dependency",
+      version: "1.0.0",
+    }, { "index.js": "module.exports = true;\n" });
+    const originalManifest = fs.readFileSync(path.join(dependency, "package.json"), "utf8");
+
+    assert.throws(
+      () => copyRuntimeNodeDependencies(sourceRoot, targetMcp),
+      (error) => error && error.code === "runtime_dependency_target_rejected"
+        && error.reason_code === "source_target_overlap",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(dependency, "package.json"), "utf8"),
+      originalManifest,
+    );
+    assert.ok(fs.existsSync(sourceRoot));
+
+    const validProject = path.join(tempRoot, "valid-project");
+    const validModules = path.join(validProject, "node_modules");
+    const validSource = path.join(validModules, "fixture-valid-root");
+    const validDependency = path.join(validModules, "fixture-valid-dependency");
+    const validTargetMcp = path.join(validProject, "mcp");
+    writeRuntimeFixturePackage(validSource, {
+      name: "fixture-valid-root",
+      version: "1.0.0",
+      dependencies: { "fixture-valid-dependency": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(validDependency, {
+      name: "fixture-valid-dependency",
+      version: "1.0.0",
+    }, { "index.js": "module.exports = 'valid';\n" });
+    fs.mkdirSync(validTargetMcp, { recursive: true });
+    assert.doesNotThrow(() => copyRuntimeNodeDependencies(validSource, validTargetMcp));
+    assert.ok(fs.existsSync(path.join(
+      validTargetMcp,
+      "node_modules",
+      "fixture-valid-dependency",
+      "index.js",
+    )));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("installProject rejects an invalid dependency graph before any target mutation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-install-preflight-"));
+  const sourceRoot = path.join(tempRoot, "source");
+  const plugin = path.join(sourceRoot, "node_modules", "fixture-plugin");
+  const workspace = path.join(tempRoot, "workspace");
+  const sentinel = path.join(workspace, "mcp", "server.js");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: { "fixture-plugin": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(plugin, {
+      name: "fixture-plugin",
+      version: "1.0.0",
+      peerDependencies: { "fixture-required-peer": "1.0.0" },
+    });
+    fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+    fs.writeFileSync(sentinel, "operator-owned-before\n", "utf8");
+
+    assert.throws(
+      () => installProject(workspace, {
+        adapter: "generic-mcp",
+        sourceRoot,
+        onAdapterResolution: () => {},
+      }),
+      (error) => error && error.code === "runtime_dependency_source_rejected"
+        && error.reason_code === "required_peer_dependency_missing",
+    );
+    assert.equal(fs.readFileSync(sentinel, "utf8"), "operator-owned-before\n");
+    assert.deepEqual(fs.readdirSync(workspace).sort(), ["mcp"]);
+    assert.deepEqual(fs.readdirSync(path.join(workspace, "mcp")).sort(), ["server.js"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("dependency preflight bounds empty-directory fanout before target mutation", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-directory-bound-"));
+  const modulesRoot = path.join(tempRoot, "install", "node_modules");
+  const sourceRoot = path.join(modulesRoot, "fixture-root");
+  const dependency = path.join(modulesRoot, "fixture-wide-dependency");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+  const sentinel = path.join(targetMcp, "node_modules", "foreign", "sentinel.txt");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: { "fixture-wide-dependency": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(dependency, {
+      name: "fixture-wide-dependency",
+      version: "1.0.0",
+    });
+    for (let index = 0; index < 4097; index += 1) {
+      fs.mkdirSync(path.join(dependency, `empty-${String(index).padStart(4, "0")}`));
+    }
+    fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+    fs.writeFileSync(sentinel, "untouched\n", "utf8");
+
+    assert.throws(
+      () => copyRuntimeNodeDependencies(sourceRoot, targetMcp),
+      (error) => error && error.code === "runtime_dependency_source_rejected"
+        && error.reason_code === "package_tree_directory_bound_exceeded",
+    );
+    assert.equal(fs.readFileSync(sentinel, "utf8"), "untouched\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("core installer and packed runtime start without a lifecycle-custodian preload", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "bob-core-install-no-custodian-"));
+  const workspace = path.join(base, "workspace");
+  const tempHome = path.join(base, "home");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(tempHome);
+  try {
+    const output = execFileSync(process.execPath, [
+      "-e",
+      [
+        "const path = require('node:path');",
+        "const root = process.argv[1];",
+        "const target = process.argv[2];",
+        "const custodian = require(path.join(root, 'scripts/lib/lifecycle-custodian.js'));",
+        "if (custodian.lifecycleCustodianStatus().available !== false) process.exit(61);",
+        "const result = require(path.join(root, 'scripts/install.js')).installProject(target, { sourceRoot: root, adapter: 'generic-mcp', onAdapterResolution() {} });",
+        "const server = require(path.join(target, 'mcp/server.js'));",
+        "const registry = require(path.join(target, 'mcp/lib/tool-registry.js'));",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length < 1) process.exit(62);",
+        "if (JSON.stringify(server.TOOLS.map((tool) => tool.name)) !== JSON.stringify(registry.TOOLS.map((tool) => tool.name))) process.exit(63);",
+        "const removed = require(path.join(root, 'scripts/lifecycle.js')).uninstallProject(target, { sourceRoot: root, adapter: 'generic-mcp', dryRun: false, onAdapterResolution() {} });",
+        "if (!removed.ok || require('node:fs').existsSync(path.join(target, 'mcp/server.js'))) process.exit(64);",
+        "process.stdout.write(JSON.stringify({ version: result.version, tool_count: server.TOOLS.length, uninstalled: true }));",
+      ].join("\n"),
+      ROOT,
+      workspace,
+    ], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome, NODE_OPTIONS: "" },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const result = JSON.parse(output);
+    assert.equal(result.version, PACKAGE_VERSION);
+    assert.ok(result.tool_count > 0);
+    assert.equal(result.uninstalled, true);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("direct streaming aborts an append beyond the preflight size before writing it", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-stream-bound-"));
+  const modulesRoot = path.join(tempRoot, "install", "node_modules");
+  const sourceRoot = path.join(modulesRoot, "fixture-root");
+  const dependency = path.join(modulesRoot, "fixture-stream-dependency");
+  const payload = path.join(dependency, "a.bin");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+  const foreign = path.join(targetMcp, "node_modules", "foreign", "sentinel.txt");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: { "fixture-stream-dependency": "1.0.0" },
+    });
+    writeRuntimeFixturePackage(dependency, {
+      name: "fixture-stream-dependency",
+      version: "1.0.0",
+    }, { "a.bin": "ABCD" });
+    fs.mkdirSync(path.dirname(foreign), { recursive: true });
+    fs.writeFileSync(foreign, "foreign\n", "utf8");
+
+    const originalOpenSync = fs.openSync;
+    const originalReadSync = fs.readSync;
+    let payloadDescriptor = null;
+    let payloadReads = 0;
+    fs.openSync = (filePath, ...args) => {
+      const descriptor = Reflect.apply(originalOpenSync, fs, [filePath, ...args]);
+      if (path.resolve(String(filePath)) === path.resolve(payload)) {
+        payloadDescriptor = descriptor;
+      }
+      return descriptor;
+    };
+    fs.readSync = (descriptor, ...args) => {
+      if (descriptor === payloadDescriptor) {
+        payloadReads += 1;
+        if (payloadReads === 2) fs.appendFileSync(payload, "X", "utf8");
+      }
+      return Reflect.apply(originalReadSync, fs, [descriptor, ...args]);
+    };
+    try {
+      assert.throws(
+        () => copyRuntimeNodeDependencies(sourceRoot, targetMcp),
+        (error) => error && error.code === "runtime_dependency_source_rejected"
+          && error.reason_code === "package_file_bound_exceeded",
+      );
+    } finally {
+      fs.openSync = originalOpenSync;
+      fs.readSync = originalReadSync;
+    }
+    assert.equal(payloadReads, 2);
+    assert.ok(!fs.existsSync(path.join(
+      targetMcp,
+      "node_modules",
+      "fixture-stream-dependency",
+      "a.bin",
+    )));
+    assert.equal(fs.readFileSync(foreign, "utf8"), "foreign\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("all dependency destinations are validated before the first direct removal", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-target-preflight-"));
+  const modulesRoot = path.join(tempRoot, "install", "node_modules");
+  const sourceRoot = path.join(modulesRoot, "fixture-root");
+  const alpha = path.join(modulesRoot, "fixture-alpha");
+  const beta = path.join(modulesRoot, "fixture-beta");
+  const targetMcp = path.join(tempRoot, "target", "mcp");
+  const installedAlpha = path.join(targetMcp, "node_modules", "fixture-alpha");
+  const installedBeta = path.join(targetMcp, "node_modules", "fixture-beta");
+  const alphaSentinel = path.join(installedAlpha, "sentinel.txt");
+  const foreign = path.join(tempRoot, "foreign-beta");
+
+  try {
+    writeRuntimeFixturePackage(sourceRoot, {
+      name: "fixture-root",
+      version: "1.0.0",
+      dependencies: {
+        "fixture-alpha": "1.0.0",
+        "fixture-beta": "1.0.0",
+      },
+    });
+    writeRuntimeFixturePackage(alpha, {
+      name: "fixture-alpha",
+      version: "1.0.0",
+    });
+    writeRuntimeFixturePackage(beta, {
+      name: "fixture-beta",
+      version: "1.0.0",
+    });
+    fs.mkdirSync(installedAlpha, { recursive: true });
+    fs.writeFileSync(alphaSentinel, "must-survive\n", "utf8");
+    fs.mkdirSync(foreign, { recursive: true });
+    fs.symlinkSync(foreign, installedBeta, "dir");
+
+    assert.throws(
+      () => copyRuntimeNodeDependencies(sourceRoot, targetMcp),
+      (error) => error && error.code === "runtime_dependency_target_rejected"
+        && error.reason_code === "target_destination_nonregular",
+    );
+    assert.equal(fs.readFileSync(alphaSentinel, "utf8"), "must-survive\n");
+    assert.deepEqual(fs.readdirSync(foreign), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("PRE-FLIGHT atomicity: a stale bounty_* permission with no canonical twin aborts BEFORE any file is copied", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-preflight-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(path.join(workspace, ".claude"), { recursive: true });
+  // An operator's existing settings pinning a REMOVED bounty_* tool (no bob_* twin). The legacy
+  // permission migration THROWS during the settings merge — which runs AFTER the runtime/agents/
+  // hooks are copied. The pre-flight must catch it BEFORE the first mutation, leaving the target
+  // untouched (no half-upgraded project).
+  const settingsPath = path.join(workspace, ".claude", "settings.json");
+  const original = `${JSON.stringify({
+    permissions: { allow: ["mcp__hacker-bob__bounty_report_written", "Read"] },
+    customSetting: true,
+  }, null, 2)}\n`;
+  fs.writeFileSync(settingsPath, original, "utf8");
+  try {
+    assert.throws(
+      () => installProject(workspace, { adapter: "claude", sourceRoot: ROOT, onAdapterResolution: () => {} }),
+      /stale MCP permission|no canonical replacement|bounty_\* tool alias/i,
+    );
+    // ATOMICITY: nothing Bob-owned was created — the doomed install never touched the target.
+    assert.ok(!fs.existsSync(path.join(workspace, "mcp", "server.js")), "no MCP runtime copied");
+    assert.ok(!fs.existsSync(path.join(workspace, ".hacker-bob")), "no .hacker-bob resources");
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "bob")), "no .claude/bob metadata");
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills")), "no skills copied");
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "agents")), "no agents copied");
+    // The operator's settings.json is left EXACTLY as it was (not migrated/overwritten).
+    assert.equal(fs.readFileSync(settingsPath, "utf8"), original);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("installer copies a require-able complete MCP runtime", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-install-"));
@@ -34,11 +784,7 @@ test("installer copies a require-able complete MCP runtime", () => {
       error: null,
     }, { homeDir: tempHome });
 
-    execFileSync(path.join(ROOT, "install.sh"), [workspace], {
-      cwd: ROOT,
-      env: { ...process.env, HOME: tempHome },
-      stdio: "pipe",
-    });
+    installWithTestHome(workspace, tempHome);
     assert.equal(update.readUpdateCache(workspace, { homeDir: tempHome }), null);
 
     const installedServer = path.join(workspace, "mcp", "server.js");
@@ -69,6 +815,157 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "egress-profiles.js")));
+    for (const relativeRoot of CANONICAL_RUNTIME_PACKAGE_ROOTS) {
+      const expected = sourceTreeFiles(ROOT, relativeRoot)
+        .filter(isCanonicalRuntimePackageFile)
+        .map((file) => file.slice(relativeRoot.length + 1));
+      const installed = sourceTreeFiles(workspace, relativeRoot)
+        .map((file) => file.slice(relativeRoot.length + 1));
+      assert.deepEqual(
+        installed,
+        expected,
+        `${relativeRoot} install surface must exactly mirror the canonical packaged runtime`,
+      );
+    }
+    assert.ok(
+      !fs.existsSync(path.join(workspace, ".hacker-bob", "optional-providers")),
+      "ordinary install must not auto-install or stage optional provider packages",
+    );
+    assert.ok(fs.existsSync(path.join(
+      workspace,
+      "packages",
+      "bob-instrument-broker",
+      "lib",
+      "resource-reservations.js",
+    )));
+    assert.ok(!fs.existsSync(path.join(
+      workspace,
+      "packages",
+      "bob-instrument-broker",
+      "test",
+    )));
+    const runtimeDoctorCheck = () => doctorProject(workspace, {
+      adapter: "claude",
+      onAdapterResolution: () => {},
+      sourceRoot: ROOT,
+    }).checks.find((check) => check.id === "bob_owned_runtime_integrity");
+    const brokerRuntime = path.join(
+      workspace,
+      "packages",
+      "bob-instrument-broker",
+      "lib",
+      "broker.js",
+    );
+    const sourceBrokerRuntime = path.join(
+      ROOT,
+      "packages",
+      "bob-instrument-broker",
+      "lib",
+      "broker.js",
+    );
+    const originalBrokerBytes = fs.readFileSync(brokerRuntime);
+    const originalBrokerMode = fs.statSync(brokerRuntime).mode & 0o777;
+    let runtimeCheck = runtimeDoctorCheck();
+    assert.equal(runtimeCheck.status, "ok");
+    assert.equal(runtimeCheck.detail.coverage, "bob_owned_runtime_only");
+    const installedCompatibilityStore = path.join(
+      workspace,
+      "mcp",
+      "lib",
+      "instrument-lease-store.js",
+    );
+    const installedCanonicalStore = path.join(
+      workspace,
+      "packages",
+      "bob-instrument-broker",
+      "lib",
+      "instrument-lease-store.js",
+    );
+    assert.equal(require(installedCompatibilityStore), require(installedCanonicalStore));
+    assert.ok(fs.statSync(installedCompatibilityStore).size < 256);
+    assert.ok(fs.statSync(installedCanonicalStore).size > 200_000);
+    const expectedInstalledEntrypoints = declaredRuntimeEntrypoints(
+      workspace,
+      CANONICAL_RUNTIME_PACKAGE_ROOTS,
+    );
+    assert.equal(
+      expectedInstalledEntrypoints.length,
+      57,
+      "project-local install must retain every canonical physical package entrypoint",
+    );
+    const installedEntrypoints = loadCanonicalRuntimeEntrypoints({
+      runtimeRoot: workspace,
+      relativeRoots: CANONICAL_RUNTIME_PACKAGE_ROOTS,
+      isolatedHome: path.join(tempHome, "canonical-entrypoint-loader"),
+    });
+    assert.deepEqual(installedEntrypoints.loaded, expectedInstalledEntrypoints);
+    for (const entry of expectedInstalledEntrypoints) {
+      assert.ok(
+        installedEntrypoints.resolved_modules.includes(entry.entrypoint),
+        `${entry.entrypoint} must load from the doctor-qualified project-local runtime`,
+      );
+    }
+
+    fs.writeFileSync(brokerRuntime, "\"use strict\";\nmodule.exports = {};\n", "utf8");
+    runtimeCheck = runtimeDoctorCheck();
+    assert.equal(runtimeCheck.status, "error");
+    assert.ok(runtimeCheck.detail.diagnostics.digest_mismatch.includes(
+      "packages/bob-instrument-broker/lib/broker.js"));
+    fs.writeFileSync(brokerRuntime, originalBrokerBytes);
+    fs.chmodSync(brokerRuntime, originalBrokerMode);
+
+    fs.rmSync(brokerRuntime);
+    runtimeCheck = runtimeDoctorCheck();
+    assert.equal(runtimeCheck.status, "error");
+    assert.ok(runtimeCheck.detail.diagnostics.missing.includes(
+      "packages/bob-instrument-broker/lib/broker.js"));
+    fs.writeFileSync(brokerRuntime, originalBrokerBytes);
+    fs.chmodSync(brokerRuntime, originalBrokerMode);
+
+    const extraRuntime = path.join(path.dirname(brokerRuntime), "undeclared-runtime.js");
+    fs.writeFileSync(extraRuntime, "module.exports = {};\n", "utf8");
+    runtimeCheck = runtimeDoctorCheck();
+    assert.equal(runtimeCheck.status, "error");
+    assert.ok(runtimeCheck.detail.diagnostics.extra.includes(
+      "packages/bob-instrument-broker/lib/undeclared-runtime.js"));
+    fs.rmSync(extraRuntime);
+
+    fs.rmSync(brokerRuntime);
+    fs.symlinkSync(sourceBrokerRuntime, brokerRuntime);
+    runtimeCheck = runtimeDoctorCheck();
+    assert.equal(runtimeCheck.status, "error");
+    assert.ok(runtimeCheck.detail.diagnostics.non_regular.some((issue) => (
+      issue.path === "packages/bob-instrument-broker/lib/broker.js"
+      && issue.observed_type === "symlink"
+    )));
+    fs.rmSync(brokerRuntime);
+    fs.writeFileSync(brokerRuntime, originalBrokerBytes);
+    fs.chmodSync(brokerRuntime, originalBrokerMode);
+
+    fs.chmodSync(brokerRuntime, originalBrokerMode === 0o600 ? 0o644 : 0o600);
+    runtimeCheck = runtimeDoctorCheck();
+    assert.equal(runtimeCheck.status, "error");
+    assert.ok(runtimeCheck.detail.diagnostics.mode_mismatch.some((issue) => (
+      issue.path === "packages/bob-instrument-broker/lib/broker.js"
+    )));
+    fs.chmodSync(brokerRuntime, originalBrokerMode);
+    assert.equal(runtimeDoctorCheck().status, "ok");
+    const dependencyCustodyCheck = doctorProject(workspace, {
+      adapter: "claude",
+      onAdapterResolution: () => {},
+      sourceRoot: ROOT,
+    }).checks.find((check) => check.id === "runtime_dependency_custody");
+    assert.equal(dependencyCustodyCheck.status, "warn");
+    assert.deepEqual(dependencyCustodyCheck.detail, {
+      coverage: "unverified_transitive_dependencies",
+      integrity_verified: false,
+      same_uid_race_qualified: false,
+      crash_atomic: false,
+      descriptor_relative_custody: false,
+      stale_dependency_pruning: false,
+      foreign_package_pruning: false,
+      npm_bin_shims_generated: false,
+    });
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "node_modules", "psl", "dist", "psl.cjs")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "node_modules", "proxy-agent", "dist", "index.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "node_modules", "punycode", "punycode.js")));
@@ -93,6 +990,10 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "agent-run-stop.js")));
+    assert.ok(
+      fs.existsSync(path.join(workspace, ".claude", "agents", `${FANOUT_ROLE_REGISTRY.child.subagent_type}.md`)),
+      "installer must ship the distinct fanout child role",
+    );
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-egress.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-export.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
@@ -126,6 +1027,18 @@ test("installer copies a require-able complete MCP runtime", () => {
       installedRequire.resolve("@anthropic-ai/claude-agent-sdk"),
       "Claude Agent SDK must resolve from <workspace>/mcp/server.js so policy-replay's fallback can find it",
     );
+    for (const requiredRuntime of [
+      "@anthropic-ai/sdk",
+      "@modelcontextprotocol/sdk/client",
+      "@modelcontextprotocol/sdk/server",
+      "zod",
+      "quickjs-wasi",
+    ]) {
+      assert.ok(
+        installedRequire.resolve(requiredRuntime),
+        `${requiredRuntime} must resolve from the installed MCP runtime dependency graph`,
+      );
+    }
 
     const sourceSdkManifestPath = path.join(ROOT, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
     if (fs.existsSync(sourceSdkManifestPath)) {
@@ -169,6 +1082,16 @@ test("installer copies a require-able complete MCP runtime", () => {
     const settingsText = JSON.stringify(settings);
     assert.match(settingsText, /\$\{CLAUDE_PROJECT_DIR:-\$PWD\}/);
     assert.doesNotMatch(settingsText, /\$CLAUDE_PROJECT_DIR(?!:-)/);
+    const childStop = (settings.hooks.SubagentStop || []).filter((entry) => (
+      entry.matcher === FANOUT_ROLE_REGISTRY.child.subagent_type
+      && (entry.hooks || []).some((hook) => /agent-run-stop\.js/.test(hook.command))
+    ));
+    assert.equal(childStop.length, 1, "installed child must be transcript-attested by exactly one SubagentStop hook");
+    assert.equal(
+      (settings.hooks.SubagentStart || []).some((entry) => entry.matcher === FANOUT_ROLE_REGISTRY.child.subagent_type),
+      false,
+      "installed child must never receive the shared-root AgentRun start hook",
+    );
     const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".claude", "bob", "install.json"), "utf8"));
     assert.equal(installMeta.schema_version, 1);
     assert.equal(installMeta.bob_version, PACKAGE_VERSION);
@@ -222,9 +1145,15 @@ test("installer copies a require-able complete MCP runtime", () => {
       [
         "const server = require(process.argv[1]);",
         "const installedRequire = require('module').createRequire(process.argv[1]);",
+        "const installedRegistry = installedRequire('./lib/tool-registry.js');",
         "installedRequire('psl');",
         "installedRequire('proxy-agent');",
-        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 160) process.exit(2);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length < 1) process.exit(2);",
+        "if (JSON.stringify(server.TOOLS.map((tool) => tool.name)) !== JSON.stringify(installedRegistry.TOOLS.map((tool) => tool.name))) process.exit(55);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_init_physical_session')) process.exit(54);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_stage_verification_round_partial')) process.exit(53);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_plan_recon_angles')) process.exit(52);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_register_mechanism_template')) process.exit(51);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_confirm')) process.exit(42);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_cors_confirm')) process.exit(49);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_massread_confirm')) process.exit(50);",
@@ -234,6 +1163,7 @@ test("installer copies a require-able complete MCP runtime", () => {
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_oob_mint')) process.exit(46);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_oob_poll')) process.exit(47);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_nuclei_scan')) process.exit(48);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_import_harness')) process.exit(50);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_ingest_sarif')) process.exit(40);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_read_static_analysis_index')) process.exit(41);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_list_auth_profiles')) process.exit(3);",
@@ -305,18 +1235,51 @@ test("doctor accepts legacy-only resources and uninstall removes legacy resource
       path.join(workspace, ".hacker-bob", "bypass-tables"),
       path.join(workspace, ".claude", "bypass-tables"),
     );
-    fs.rmSync(path.join(workspace, ".hacker-bob"), { recursive: true, force: true });
 
-    const doctorOutput = execFileSync(process.execPath, [CLI, "doctor", workspace, "--json"], {
-      cwd: ROOT,
-      env: { ...process.env, HOME: tempHome },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let doctorOutput;
+    try {
+      doctorOutput = execFileSync(process.execPath, [CLI, "doctor", workspace, "--json"], {
+        cwd: ROOT,
+        env: { ...process.env, HOME: tempHome },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const stdout = typeof error.stdout === "string" ? error.stdout : "";
+      const stderr = typeof error.stderr === "string" ? error.stderr : "";
+      assert.fail(`legacy-resource doctor failed\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+    }
     const doctor = JSON.parse(doctorOutput);
     assert.equal(doctor.ok, true);
     assert.equal(doctor.checks.find((check) => check.id === "resource_knowledge").status, "warn");
     assert.equal(doctor.checks.find((check) => check.id === "resource_bypass_tables").status, "warn");
+
+    const foreignDependency = path.join(
+      workspace,
+      "mcp",
+      "node_modules",
+      "operator-foreign-package",
+      "sentinel.txt",
+    );
+    const operatorBin = path.join(
+      workspace,
+      "mcp",
+      "node_modules",
+      ".bin",
+      "operator-tool",
+    );
+    const installedTransitive = path.join(
+      workspace,
+      "mcp",
+      "node_modules",
+      "psl",
+      "package.json",
+    );
+    fs.mkdirSync(path.dirname(foreignDependency), { recursive: true });
+    fs.mkdirSync(path.dirname(operatorBin), { recursive: true });
+    fs.writeFileSync(foreignDependency, "foreign\n", "utf8");
+    fs.writeFileSync(operatorBin, "operator-bin\n", "utf8");
+    assert.ok(fs.existsSync(installedTransitive));
 
     const uninstallOutput = execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes", "--json"], {
       cwd: ROOT,
@@ -330,6 +1293,9 @@ test("doctor accepts legacy-only resources and uninstall removes legacy resource
     assert.ok(uninstall.actions.some((action) => action.path === path.join(".claude", "bypass-tables", "rest-api.txt")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "knowledge", "evaluator-techniques.json")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "bypass-tables", "rest-api.txt")));
+    assert.equal(fs.readFileSync(foreignDependency, "utf8"), "foreign\n");
+    assert.equal(fs.readFileSync(operatorBin, "utf8"), "operator-bin\n");
+    assert.ok(fs.existsSync(installedTransitive));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -401,11 +1367,7 @@ test("installer merges existing MCP/settings config idempotently", () => {
     }, null, 2)}\n`);
 
     for (let index = 0; index < 2; index += 1) {
-      execFileSync(path.join(ROOT, "install.sh"), [workspace], {
-        cwd: ROOT,
-        env: { ...process.env, HOME: tempHome },
-        stdio: "pipe",
-      });
+      installWithTestHome(workspace, tempHome);
       if (index === 0) {
         fs.writeFileSync(path.join(workspace, ".claude", "bob", "egress-profiles.json"), `${JSON.stringify({
           version: 1,
@@ -446,6 +1408,14 @@ test("installer merges existing MCP/settings config idempotently", () => {
     assert.ok(bashEntry.hooks.some((hook) => hook.command === "echo existing"));
     assert.equal(
       bashEntry.hooks.filter((hook) => /session-write-guard\.sh/.test(hook.command)).length,
+      1,
+    );
+    // Edit/MultiEdit must route through the write guard too — otherwise Edit is
+    // an unguarded write path to MCP-owned/audit-graded session artifacts.
+    const editEntry = settings.hooks.PreToolUse.find((entry) => entry.matcher === "Edit|MultiEdit");
+    assert.ok(editEntry, "Edit|MultiEdit guard matcher must survive the merge");
+    assert.equal(
+      editEntry.hooks.filter((hook) => /session-write-guard\.sh/.test(hook.command)).length,
       1,
     );
     // The write-confirm gate matcher ships in the canonical source settings and merges into an
@@ -513,6 +1483,49 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
       env: { ...process.env, HOME: tempHome },
       stdio: "pipe",
     });
+    for (const authoringSurface of [
+      "mcp/lib/physical-provider-authoring.js",
+      "packages/bob-instrument-deterministic/lib/orthogonal-fixture.js",
+      ".hacker-bob/docs/provider-authoring.md",
+    ]) {
+      assert.ok(
+        fs.existsSync(path.join(workspace, authoringSurface)),
+        `PH-X4 authoring surface ${authoringSurface} must install before doctor`,
+      );
+    }
+    const installedAuthoringGuide = path.join(
+      workspace,
+      ".hacker-bob",
+      "docs",
+      "provider-authoring.md",
+    );
+    fs.writeFileSync(installedAuthoringGuide, "substituted provider guide\n", "utf8");
+    let staleGuideDoctorError = null;
+    try {
+      execFileSync(process.execPath, [CLI, "doctor", workspace], {
+        cwd: ROOT,
+        env: { ...process.env, HOME: tempHome },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      staleGuideDoctorError = error;
+    }
+    assert.ok(staleGuideDoctorError, "doctor must reject a substituted installed authoring guide");
+    assert.match(
+      `${staleGuideDoctorError.stdout || ""}\n${staleGuideDoctorError.stderr || ""}`,
+      /install_support_physical_provider_authoring|missing, substituted, or stale/,
+    );
+    execFileSync(process.execPath, [CLI, "install", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    assert.equal(
+      fs.readFileSync(installedAuthoringGuide, "utf8"),
+      fs.readFileSync(path.join(ROOT, "docs", "provider-authoring.md"), "utf8"),
+      "reinstall must restore the exact packaged authoring guide",
+    );
     execFileSync(process.execPath, [CLI, "doctor", workspace], {
       cwd: ROOT,
       env: { ...process.env, HOME: tempHome },
@@ -532,6 +1545,26 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
     });
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bob-evaluate-runner", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, "mcp", "lib", "physical-provider-authoring.js")));
+    assert.ok(!fs.existsSync(path.join(
+      workspace,
+      "packages",
+      "bob-instrument-deterministic",
+      "lib",
+      "orthogonal-fixture.js",
+    )));
+    assert.ok(!fs.existsSync(path.join(
+      workspace,
+      ".hacker-bob",
+      "docs",
+      "provider-authoring.md",
+    )));
+    for (const relativeRoot of CANONICAL_RUNTIME_PACKAGE_ROOTS) {
+      assert.ok(
+        !fs.existsSync(path.join(workspace, relativeRoot)),
+        `full uninstall must remove Bob-owned nested runtime root ${relativeRoot}`,
+      );
+    }
 
     execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
       cwd: ROOT,
@@ -555,14 +1588,19 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
   }
 });
 
-test("reinstall REFRESHES a stale Bob runtime file but preserves user-owned mcp/ files", () => {
-  // Two contracts at once:
+test("reinstall converges Bob-owned MCP surfaces while preserving mixed-ownership siblings", () => {
+  // Four contracts at once:
   //  - REFRESH (CodeRabbit/glm round-5): the actual bug was a FROZEN browser-driver.js. copyFile
   //    overwrites, so a reinstall must replace a stale driver with the current source — assert the
   //    seeded-stale content is gone, not just that the file exists.
   //  - PRESERVE (Codex/glm round-4): the installer must NEVER delete a top-level mcp/*.js it did not
   //    place — the target is the user's project. (An earlier "converge to the manifest" cleanup deleted
   //    by negation, which would destroy user files; reverted.)
+  //  - CONVERGE: mcp/lib is wholly Bob-owned. v2.0.1 shipped two root migration
+  //    modules that are now intentionally absent; root files and whole directories
+  //    removed from the source must not survive a reinstall.
+  //  - SHARE: mcp/node_modules has separate direct-copy ownership semantics, so a
+  //    foreign dependency remains untouched while Bob's dependency graph refreshes.
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-userfile-"));
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-home-"));
   const workspace = path.join(tempRoot, "workspace");
@@ -576,15 +1614,131 @@ test("reinstall REFRESHES a stale Bob runtime file but preserves user-owned mcp/
     install();
     const userFile = path.join(workspace, "mcp", "my-own-mcp-thing.js");
     fs.writeFileSync(userFile, "// a file the user placed in their own mcp/ dir\n");
+    const ownershipMetadataPath = path.join(workspace, ".hacker-bob", "install.json");
+    const ownershipMetadata = JSON.parse(fs.readFileSync(ownershipMetadataPath, "utf8"));
+    const retiredBobTopLevel = path.join(workspace, "mcp", "retired-bob-runtime.js");
+    const retiredBobBytes = "module.exports = 'retired Bob runtime';\n";
+    fs.writeFileSync(retiredBobTopLevel, retiredBobBytes, "utf8");
+    const modifiedFormerBobTopLevel = path.join(
+      workspace,
+      "mcp",
+      "retired-runtime-with-local-edits.js",
+    );
+    const preEditBobBytes = "module.exports = 'former Bob bytes';\n";
+    fs.writeFileSync(
+      modifiedFormerBobTopLevel,
+      "module.exports = 'operator-owned local replacement';\n",
+      "utf8",
+    );
+    ownershipMetadata.mcp_top_level_runtime_ownership.files.push(
+      {
+        name: path.basename(retiredBobTopLevel),
+        byte_size: Buffer.byteLength(retiredBobBytes),
+        sha256: crypto.createHash("sha256").update(retiredBobBytes).digest("hex"),
+      },
+      {
+        name: path.basename(modifiedFormerBobTopLevel),
+        byte_size: Buffer.byteLength(preEditBobBytes),
+        sha256: crypto.createHash("sha256").update(preEditBobBytes).digest("hex"),
+      },
+    );
+    fs.writeFileSync(
+      ownershipMetadataPath,
+      `${JSON.stringify(ownershipMetadata, null, 2)}\n`,
+      "utf8",
+    );
     const driver = path.join(workspace, "mcp", "browser-driver.js");
     const staleMarker = "// STALE driver from an older install — must be overwritten on reinstall\n";
     fs.writeFileSync(driver, staleMarker);
+    const retiredV201Modules = [
+      "session-root-migration.js",
+      "telemetry-migration.js",
+    ].map((name) => path.join(workspace, "mcp", "lib", name));
+    for (const retired of retiredV201Modules) {
+      fs.writeFileSync(retired, "module.exports = { stale_v201_runtime: true };\n", "utf8");
+    }
+    const removedDirectoryFile = path.join(
+      workspace,
+      "mcp",
+      "lib",
+      "removed-whole-directory",
+      "stale-runtime.js",
+    );
+    fs.mkdirSync(path.dirname(removedDirectoryFile), { recursive: true });
+    fs.writeFileSync(removedDirectoryFile, "module.exports = 'stale';\n", "utf8");
+    const foreignDependency = path.join(
+      workspace,
+      "mcp",
+      "node_modules",
+      "operator-foreign-package",
+      "sentinel.txt",
+    );
+    fs.mkdirSync(path.dirname(foreignDependency), { recursive: true });
+    fs.writeFileSync(foreignDependency, "preserve-foreign-dependency\n", "utf8");
     install(); // reinstall over the existing workspace
     assert.ok(fs.existsSync(userFile), "reinstall must NOT delete a top-level mcp/ file Bob did not place");
+    assert.equal(
+      fs.existsSync(retiredBobTopLevel),
+      false,
+      "a retired top-level runtime with an exact prior Bob ownership receipt must be pruned",
+    );
+    assert.equal(
+      fs.readFileSync(modifiedFormerBobTopLevel, "utf8"),
+      "module.exports = 'operator-owned local replacement';\n",
+      "a locally modified former Bob runtime must be preserved when its receipt digest no longer matches",
+    );
     const refreshed = fs.readFileSync(driver, "utf8");
     assert.notEqual(refreshed, staleMarker, "reinstall must overwrite a stale browser-driver.js (the frozen-driver bug)");
     assert.equal(refreshed, fs.readFileSync(path.join(ROOT, "mcp", "browser-driver.js"), "utf8"),
       "reinstall must refresh browser-driver.js to the current source version");
+    for (const retired of retiredV201Modules) {
+      assert.equal(fs.existsSync(retired), false, `${path.basename(retired)} must be pruned on upgrade`);
+    }
+    assert.equal(
+      fs.existsSync(removedDirectoryFile),
+      false,
+      "a whole Bob-owned directory removed from the source must be pruned on upgrade",
+    );
+    assert.equal(
+      fs.readFileSync(foreignDependency, "utf8"),
+      "preserve-foreign-dependency\n",
+      "reinstall must preserve foreign mcp/node_modules entries",
+    );
+    const expectedLibFiles = canonicalInstalledRuntimeFiles(ROOT)
+      .filter((relativePath) => relativePath.startsWith("mcp/lib/"));
+    assert.deepEqual(
+      sourceTreeFiles(workspace, "mcp/lib"),
+      expectedLibFiles,
+      "installed Bob-owned mcp/lib must exactly match the current canonical runtime manifest",
+    );
+    const refreshedOwnership = JSON.parse(fs.readFileSync(ownershipMetadataPath, "utf8"))
+      .mcp_top_level_runtime_ownership;
+    assert.equal(refreshedOwnership.version, 1);
+    assert.deepEqual(
+      refreshedOwnership.files.map((file) => file.name),
+      [...require("../scripts/install.js").MCP_TOP_LEVEL_RUNTIME_FILES],
+      "the next ownership receipt must contain only the current top-level Bob runtime manifest",
+    );
+    for (const file of refreshedOwnership.files) {
+      assert.equal(
+        file.byte_size,
+        fs.statSync(path.join(ROOT, "mcp", file.name)).size,
+        `ownership receipt size must bind current source mcp/${file.name}`,
+      );
+      assert.equal(
+        file.sha256,
+        crypto.createHash("sha256")
+          .update(fs.readFileSync(path.join(ROOT, "mcp", file.name)))
+          .digest("hex"),
+        `ownership receipt digest must bind current source mcp/${file.name}`,
+      );
+    }
+    const runtimeIntegrity = doctorProject(workspace, {
+      adapter: "claude",
+      onAdapterResolution: () => {},
+      sourceRoot: ROOT,
+    }).checks.find((check) => check.id === "bob_owned_runtime_integrity");
+    assert.equal(runtimeIntegrity.status, "ok");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });

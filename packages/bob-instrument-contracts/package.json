@@ -1,0 +1,27 @@
+{
+  "name": "@hacker-bob/instrument-contracts",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Provider-neutral physical quantity, requested-effect, verification, and instrument ABI contracts for Hacker Bob",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "main": "lib/instrument-provider-contract.js",
+  "files": [
+    "lib/**/*.js"
+  ],
+  "exports": {
+    ".": "./lib/instrument-provider-contract.js",
+    "./instrument-provider-contract": "./lib/instrument-provider-contract.js",
+    "./physical-quantities": "./lib/physical-quantities.js",
+    "./requested-effects": "./lib/requested-effects.js",
+    "./verification-contracts": "./lib/verification-contracts.js"
+  },
+  "scripts": {
+    "check:syntax": "node --check lib/instrument-provider-contract.js && node --check lib/physical-quantities.js && node --check lib/requested-effects.js && node --check lib/verification-contracts.js && node --check lib/provider-profile-catalog.js && node --check test/contracts.test.js && node --check test/provider-profile-catalog.test.js && node --check test/provider-profile-catalog-poisoning.test.js",
+    "test": "npm run check:syntax && node --test test/contracts.test.js test/provider-profile-catalog.test.js test/provider-profile-catalog-poisoning.test.js"
+  },
+  "dependencies": {}
+}

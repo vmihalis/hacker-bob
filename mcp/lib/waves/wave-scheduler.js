@@ -142,6 +142,93 @@ function startWaveLocked(domain, {
       });
     } catch {}
   }
+
+  // The MCP-owned spawn-ledger writer. This is the mutating dispatch step the
+  // read-path width bound was waiting on: for each wave-evaluator root the
+  // orchestrator is about to hand out, reserve its LIFETIME spawn cost against the
+  // session budget. That cost is the root agent itself (always 1) PLUS its
+  // worst-case nested subtree (the descendant count, which is 0 when the root does
+  // not fan out). Counting the root — not only its nested descendants — is what
+  // makes max_total_spawned_agents bind ACROSS waves: a flat per-surface evaluator
+  // costs one lifetime slot even with nesting off, so K waves of roots cannot
+  // silently exceed the operator's lifetime ceiling. Greedy-sequential — each root
+  // is sized against the budget already reserved by prior roots (this wave) and
+  // prior waves — so the cumulative reservation provably stays within
+  // max_total_spawned_agents, and bob_read_assignment_brief reads the same total
+  // (excluding the root's own row) to reproduce that root's allocation. Gated on the
+  // governor being set, so default-off (max_total_spawned_agents=null) writes
+  // nothing and is byte-identical. Best-effort: the ledger is append-only, so a
+  // failed write degrades to the conservative recompute on the next read, never a
+  // budget overrun.
+  try {
+    const policy = loadQueuePolicy(domain);
+    if (Number.isInteger(policy.max_total_spawned_agents)) {
+      const { buildChildFanoutPlanForSurface } = require("../assignment-brief.js");
+      const { buildCoverageSummaryForSurface } = require("../coverage.js");
+      const { appendSpawnLedgerEntry } = require("../spawn-ledger.js");
+      const { worstCaseTreeSize } = require("../nested-spawn.js");
+      let surfaces = [];
+      try { surfaces = readAttackSurfaceStrict(domain).document.surfaces || []; } catch {}
+      const coverageRecords = readCoverageRecordsFromJsonl(domain);
+      for (const assignment of persistedAssignments) {
+        // The root agent always costs one lifetime slot. A nested fan-out plan
+        // adds its worst-case descendant subtree on top; a flat root (nesting off,
+        // or no plan) adds 0 descendants but still reserves itself.
+        let descendants = 0;
+        let planDepth = 0;
+        let planBranching = 0;
+        const surfaceObj = surfaces.find((s) => s && s.id === assignment.surface_id);
+        if (surfaceObj) {
+          let plan;
+          try {
+            plan = buildChildFanoutPlanForSurface({
+              domain,
+              surfaceObj,
+              surfaceId: assignment.surface_id,
+              coverageSummary: buildCoverageSummaryForSurface(coverageRecords, assignment.surface_id),
+              wave: waveLabel,
+            });
+          } catch { plan = null; }
+          if (plan && Array.isArray(plan.children) && plan.children.length > 0 && plan.remaining_depth > 0) {
+            // Reserve the tree the brain actually emitted. plan.max_children is
+            // the policy/budget ceiling and can exceed children.length when the
+            // surface has fewer candidate cells; charging the ceiling would make
+            // later roots reproduce a smaller plan and can overrun the lifetime
+            // cap once their mandatory root slots are appended.
+            // NS-4 — charge the exact emitted descendant width plus the root slot.
+            const issuedBranching = plan.children.length;
+            const worstCase = worstCaseTreeSize(issuedBranching, plan.remaining_depth);
+            if (worstCase > 0) {
+              descendants = worstCase;
+              planDepth = plan.remaining_depth;
+              planBranching = issuedBranching;
+            }
+          }
+        }
+        const rootCount = 1;
+        try {
+          appendSpawnLedgerEntry(domain, {
+            ts: new Date().toISOString(),
+            wave: waveLabel,
+            parent_agent: assignment.agent,
+            surface_id: assignment.surface_id,
+            depth: planDepth,
+            branching: planBranching,
+            root_count: rootCount,
+            descendant_tree: descendants,
+            worst_case_tree: rootCount + descendants,
+          });
+        } catch {}
+      }
+    }
+  } catch {}
+  // Parked, unroutable surfaces from the assignment doc, read ONCE with a single
+  // guard so the wave_started telemetry and the synchronous start response never
+  // diverge (a resume that reads an older assignment doc without the field must
+  // not throw on `.length`). Sourced from the same assignmentsDocument both below.
+  const unroutableSurfaces = Array.isArray(assignmentsDocument.unroutable_surfaces)
+    ? assignmentsDocument.unroutable_surfaces
+    : [];
   safeAppendPipelineEventDirect(domain, "wave_started", {
     lifecycle_state: state.lifecycle_state,
     wave_number: waveNumber,
@@ -150,9 +237,22 @@ function startWaveLocked(domain, {
     started_by: startedBy,
     scheduler_decision_id: schedulerDecisionId || null,
     assignment_batch_id: assignmentBatchId || null,
-    counts: { assignments: assignments.length },
+    counts: {
+      assignments: persistedAssignments.length,
+      unroutable: unroutableSurfaces.length,
+    },
   }, buildGovernanceContext(nextState));
 
+  // Surface the parked, unroutable surfaces on the SYNCHRONOUS start response so a
+  // caller sees the coverage gap without grepping telemetry. Additive fields only —
+  // routable-surface response shape is unchanged.
+  // Honest zero-executable signal. An all-unroutable wave persists zero routable
+  // assignments; it stays STARTED and self-completing (non-halting — we do NOT
+  // reject or throw), but a caller reading `started:true` alone would be misled
+  // into thinking work is in flight. These additive flags name the gap explicitly.
+  // Additive-only: a routable wave carries has_routable_assignments:true /
+  // zero_executable:false, keeping its response shape byte-identical.
+  const hasRoutableAssignments = persistedAssignments.length > 0;
   return {
     wave_number: waveNumber,
     assignments: persistedAssignments.map((assignment) => ({
@@ -167,6 +267,10 @@ function startWaveLocked(domain, {
       budget: assignment.budget,
       handoff_token: assignment.handoff_token,
     })),
+    has_routable_assignments: hasRoutableAssignments,
+    zero_executable: !hasRoutableAssignments,
+    unroutable_count: unroutableSurfaces.length,
+    unroutable_surfaces: unroutableSurfaces,
     assignments_path: assignmentsPath,
     state: compactSessionState(nextState),
   };
@@ -192,6 +296,10 @@ function startWave(args) {
       started: true,
       wave_number: started.wave_number,
       assignments: started.assignments,
+      has_routable_assignments: started.has_routable_assignments,
+      zero_executable: started.zero_executable,
+      unroutable_count: started.unroutable_count,
+      unroutable_surfaces: started.unroutable_surfaces,
       assignments_path: started.assignments_path,
       state: started.state,
     });
@@ -272,12 +380,26 @@ function startNextWave(args) {
         }
       }
 
+      // Feed the binding-breadth governor the spawn-tree size already reserved
+      // (prior waves' nested roots). The wave planner subtracts this from
+      // max_total_spawned_agents to clamp this wave's target/max to the remaining
+      // session budget. Read only when the governor is set; null governor reads
+      // nothing and leaves planning byte-identical (default-off).
+      let reservedSpawnTotal = 0;
+      if (Number.isInteger(queuePolicy.max_total_spawned_agents)) {
+        try {
+          reservedSpawnTotal = require("../spawn-ledger.js").spawnLedgerTotal(domain);
+        } catch {
+          reservedSpawnTotal = 0;
+        }
+      }
       const plan = planNextWave({
         state: planningState,
         surfaces: readRankedSurfacesForPlanning(domain),
         coverageRecords: readCoverageRecordsFromJsonl(domain),
         taskQueueTasks: readQueueTasksForPlanning(domain),
         queuePolicy,
+        reservedSpawnTotal,
       });
 
       if (dryRun || plan.decision !== "start_wave") {

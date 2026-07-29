@@ -80,17 +80,19 @@ function seedSurface(domain, surfaceId, payload = {}) {
 
 test("SURFACE_KIND_VALUES is the closed enum of node + surface kinds", () => {
   assert.deepEqual(SURFACE_KIND_VALUES.slice().sort(), [
+    "cell",
     "claim",
     "hypothesis",
     "surface",
     "transition",
   ]);
   assert.ok(SURFACE_KIND_VALUES.includes("transition"), "X.3 step 1: transition is first-class");
+  assert.ok(SURFACE_KIND_VALUES.includes("cell"), "cell is a first-class coverage-cell kind");
 });
 
 test("X.2 task-graph node-kind enum aliases the X.3 SURFACE_KIND_VALUES SoT", () => {
   // The materializer alias preserves back-compat re-export but the SoT is
-  // SURFACE_KIND_VALUES in constants.js. Both arrays carry the same 4 kinds.
+  // SURFACE_KIND_VALUES in constants.js. Both arrays carry the same kinds.
   assert.deepEqual(
     TASK_GRAPH_NODE_KIND_VALUES.slice().sort(),
     SURFACE_KIND_VALUES.slice().sort(),

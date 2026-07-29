@@ -25,8 +25,11 @@ const os = require("os");
 const path = require("path");
 
 const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
-const reportWrittenTool = require("../mcp/lib/tools/report-written.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const {
+  _setApprovalBackendForTest,
+  _setApprovalHmacKeyForTest,
+} = require("../mcp/lib/approval-store.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
@@ -38,8 +41,14 @@ const {
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
 const {
+  loadGradeVerdictHash,
+} = require("../mcp/lib/report-finalize.js");
+const {
   normalizeProofBundlesDocument,
 } = require("../mcp/lib/proof-bundle.js");
+const {
+  verifyReproReproduction,
+} = require("../mcp/lib/repro-replay-verifier.js");
 const {
   writeVerificationRound,
 } = require("../mcp/lib/verification-round-store.js");
@@ -60,6 +69,7 @@ const {
   statePath,
   verificationRoundPaths,
   claimFreezePath,
+  findingDifferentialVerifiedJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   finalVerificationHash,
@@ -72,15 +82,19 @@ const {
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+const {
+  persistingRunner,
+} = require("./helpers/repro-run-pair.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
-function withTempHome(fn) {
+async function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-report-snapshot-binding-"));
   process.env.HOME = home;
   try {
-    return fn(home);
+    return await fn(home);
   } finally {
     process.env.HOME = previousHome;
     resetMaterializationDebounce();
@@ -88,8 +102,41 @@ function withTempHome(fn) {
   }
 }
 
+// Seed a genuine, re-derivable finding-differential verified_pass arm: a real MAC-signed
+// exploited_safely positive + blocked_by_defense control (high demonstrated severity, same
+// surface, distinct command_hash) + the verdict line binding them. Post-A1 the grade gate
+// re-resolves the verdict against these MAC-covered rows, so a bare ledger line no longer
+// suffices.
+function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface:billing-profile") {
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: surfaceId, source: "offensive_runs",
+    positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+  });
+}
+
 // Mirror of the seedSessionState helper used by mcp-server.test.js. The
-// reportWritten path reads state.json for governance context, and the
 // verification-write path requires a baseline state document so its
 // schema-version probe selects V1 (no verification-input-snapshot.json on
 // disk yet, no V2 marker in state).
@@ -232,12 +279,22 @@ function drivePipelineToReportWritten(domain) {
     target_domain: domain,
     packs: [evidencePackInput("F-1")],
   });
-  writeGradeVerdict({
+  // The web IDOR finding is a standalone executable-flip class; seed its
+  // finding-differential verified_pass arm so the grade-time standalone gate is
+  // satisfied (it stays reportable, NO amputation). Post-A1 the gate re-resolves the
+  // verdict against MAC-covered offensive-runs rows + re-adjudicates the flip, so seed
+  // a real MAC-signed exploited_safely positive + blocked_by_defense control (high
+  // demonstrated severity), then the verdict line binding them.
+  seedFindingDifferentialArm(domain, "F-1", "surface:billing-profile");
+  // The shared pipeline driver grades a verdict-ledger-backed reportable finding
+  // to reach report.md; this helper exercises the snapshot-binding cascade, not
+  // the sandbox posture, so the grade runs under an isolated signer (inert gate).
+  withIsolatedSigner(() => writeGradeVerdict({
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
     findings: [gradeFindingInput("F-1")],
-  });
+  }));
 
   // C.7 requires a V2-shape final round bound to the claim freeze (the
   // final_verification_hash field is only stamped on V2 final rounds). We
@@ -271,7 +328,7 @@ function sha256OfFile(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
-function appendRepoRunFixture(domain) {
+async function appendRepoRunFixture(domain) {
   const runId = "run-proof";
   const replayCommand = ["sh", "-lc", "./repro.sh"];
   const stdout = "proof reproduced\n";
@@ -304,17 +361,36 @@ function appendRepoRunFixture(domain) {
     stdout_truncated: false,
     stderr_truncated: false,
   });
+  // REFUTING-ARM (universal): a replay_script proof bundle now requires a
+  // VERIFIED_PASS differential in repro-verified.jsonl, keyed by finding_id AND the
+  // replayed command. Seed it with the real verifier: an attributable /src ASAN
+  // crash on the vuln tree, clean exit 0 on the upstream-fix tree → a real flip.
+  let n = 0;
+  const repoDockerRunFn = async ({ checkout }) => {
+    n += 1;
+    if (checkout) return { run_id: `repro-control-${n}`, exit_code: 0, stdout_text: "", stderr_text: "All tests passed\n" };
+    return {
+      run_id: `repro-vuln-${n}`,
+      exit_code: 1,
+      stdout_text: "",
+      stderr_text: "==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511\n    #0 0x4f1c2a in parse() /src/parser.c:1242:10\nSUMMARY: AddressSanitizer: heap-buffer-overflow /src/parser.c:1242:10",
+    };
+  };
+  await verifyReproReproduction(
+    { target_domain: domain, finding_id: "F-1", command: replayCommand, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+    { repoDockerRunFn: persistingRunner(domain, repoDockerRunFn) },
+  );
   return { runId, replayCommand };
 }
 
-function writeProofBundleDocument(domain) {
+async function writeProofBundleDocument(domain) {
   const finalRound = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "final").json, "utf8"));
   const binding = {
     verification_attempt_id: finalRound.verification_attempt_id,
     verification_snapshot_hash: finalRound.verification_snapshot_hash,
     final_verification_hash: finalRound.final_verification_hash,
   };
-  const { runId, replayCommand } = appendRepoRunFixture(domain);
+  const { runId, replayCommand } = await appendRepoRunFixture(domain);
   const document = normalizeProofBundlesDocument({
     version: 1,
     target_domain: domain,
@@ -339,8 +415,8 @@ function writeProofBundleDocument(domain) {
   return document;
 }
 
-test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pipeline", () => {
-  withTempHome(() => {
+test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pipeline", async () => {
+  await withTempHome(async () => {
     const domain = "bind.example.com";
     drivePipelineToReportWritten(domain);
 
@@ -385,11 +461,105 @@ test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pi
   });
 });
 
-test("bob_finalize_report binds proof bundles when report cites proof_bundle refs", () => {
-  withTempHome(() => {
+// fx-gate-hardening (P1-3): bob_finalize_report must apply the SAME GRADE -> REPORT
+// human-approval blocker gateGradeToReport enforces at the bob_advance_session transition --
+// a defense-in-depth re-check for the append-only/re-finalizable nature of this tool (its own
+// description: "subsequent calls produce a new row ... re-finalize after a report.md edit").
+// Both branches (blocked when BOB_AGENTCORE=1 with no valid artifact; a complete no-op when
+// BOB_AGENTCORE is unset) are asserted here against the exact same drivePipelineToReportWritten
+// pipeline the unguarded test above already proved succeeds.
+test("bob_finalize_report is blocked by the GRADE -> REPORT approval gate under BOB_AGENTCORE=1 with no valid artifact", async () => {
+  await withTempHome(async () => {
+    const domain = "finalize-approval-blocked.example.com";
+    drivePipelineToReportWritten(domain);
+
+    const previousAgentcore = process.env.BOB_AGENTCORE;
+    process.env.BOB_AGENTCORE = "1";
+    try {
+      let captured = null;
+      try {
+        finalizeReportTool.handler({ target_domain: domain });
+      } catch (error) {
+        captured = error;
+      }
+      assert.ok(captured, "bob_finalize_report must throw when BOB_AGENTCORE=1 and no approval artifact exists");
+      assert.equal(captured.code, "STATE_CONFLICT");
+      assert.equal(captured.details.blocked_by, "external_approval_pending");
+      assert.equal(captured.details.target_domain, domain);
+      // Nothing must have been written -- a blocked finalize is not a partial finalize.
+      assert.equal(readReportSnapshots(domain).length, 0);
+    } finally {
+      if (previousAgentcore === undefined) delete process.env.BOB_AGENTCORE;
+      else process.env.BOB_AGENTCORE = previousAgentcore;
+    }
+  });
+});
+
+test("bob_finalize_report succeeds under BOB_AGENTCORE=1 once a valid, content-bound HMAC-verified artifact exists", async () => {
+  await withTempHome(async () => {
+    const domain = "finalize-approval-admitted.example.com";
+    drivePipelineToReportWritten(domain);
+
+    const previousAgentcore = process.env.BOB_AGENTCORE;
+    process.env.BOB_AGENTCORE = "1";
+    _setApprovalHmacKeyForTest("finalize-approval-test-key");
+    // fx-hmac-content: the artifact must be bound to the CURRENT grade_verdict_hash
+    // (drivePipelineToReportWritten already wrote a real grade.json via writeGradeVerdict), not
+    // just target_domain -- mirrors the production VerifierGateFunction's signing scheme.
+    _setApprovalBackendForTest((targetDomain) => {
+      const gradeVerdictHash = loadGradeVerdictHash(targetDomain);
+      const profile = targetDomain === "libheif-cve-2026-49271" ? targetDomain : "smoke";
+      const bodySha256 = "b".repeat(64);
+      const versionId = "report-snapshot-test-freeze-version-1";
+      const hmac = crypto.createHmac("sha256", "finalize-approval-test-key")
+        .update(JSON.stringify([profile, targetDomain, gradeVerdictHash, bodySha256, versionId]), "utf8")
+        .digest("hex");
+      return JSON.stringify({
+        schema_version: 2,
+        binding_version: "grade-freeze-v2",
+        profile,
+        target_domain: targetDomain,
+        grade_verdict_hash: gradeVerdictHash,
+        grade_freeze_bundle_sha256: bodySha256,
+        grade_freeze_version_id: versionId,
+        hmac,
+      });
+    });
+    try {
+      const response = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
+      assert.equal(response.finalized, true);
+      assert.equal(readReportSnapshots(domain).length, 1);
+    } finally {
+      if (previousAgentcore === undefined) delete process.env.BOB_AGENTCORE;
+      else process.env.BOB_AGENTCORE = previousAgentcore;
+      _setApprovalBackendForTest(null);
+      _setApprovalHmacKeyForTest(null);
+    }
+  });
+});
+
+test("bob_finalize_report approval gate is a complete no-op when BOB_AGENTCORE is unset", async () => {
+  await withTempHome(async () => {
+    const domain = "finalize-approval-inert.example.com";
+    drivePipelineToReportWritten(domain);
+
+    const previousAgentcore = process.env.BOB_AGENTCORE;
+    delete process.env.BOB_AGENTCORE;
+    try {
+      const response = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
+      assert.equal(response.finalized, true);
+    } finally {
+      if (previousAgentcore === undefined) delete process.env.BOB_AGENTCORE;
+      else process.env.BOB_AGENTCORE = previousAgentcore;
+    }
+  });
+});
+
+test("bob_finalize_report binds proof bundles when report cites proof_bundle refs", async () => {
+  await withTempHome(async () => {
     const domain = "bind-proof.example.com";
     drivePipelineToReportWritten(domain);
-    const proofDocument = writeProofBundleDocument(domain);
+    const proofDocument = await writeProofBundleDocument(domain);
     fs.writeFileSync(
       reportMarkdownPath(domain),
       "# Bob Report\n\n## Proof Bundle\n\nEvidence:\n- `proof_bundle:F-1`\n",
@@ -411,11 +581,11 @@ test("bob_finalize_report binds proof bundles when report cites proof_bundle ref
   });
 });
 
-test("bob_finalize_report refuses proof bundle files with unnormalized fields", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses proof bundle files with unnormalized fields", async () => {
+  await withTempHome(async () => {
     const domain = "proof-extra-field.example.com";
     drivePipelineToReportWritten(domain);
-    const proofDocument = writeProofBundleDocument(domain);
+    const proofDocument = await writeProofBundleDocument(domain);
     proofDocument.packs[0].artifacts[0].local_debug_path = "/Users/operator/harness/test/BobInvariant.t.sol";
     fs.writeFileSync(proofBundlePaths(domain).json, `${JSON.stringify(proofDocument, null, 2)}\n`);
     fs.writeFileSync(
@@ -431,8 +601,8 @@ test("bob_finalize_report refuses proof bundle files with unnormalized fields", 
   });
 });
 
-test("bob_finalize_report refuses proof_bundle refs without proof-bundles.json", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses proof_bundle refs without proof-bundles.json", async () => {
+  await withTempHome(async () => {
     const domain = "missing-proof.example.com";
     drivePipelineToReportWritten(domain);
     fs.writeFileSync(
@@ -447,8 +617,8 @@ test("bob_finalize_report refuses proof_bundle refs without proof-bundles.json",
   });
 });
 
-test("bob_finalize_report ignores prose proof_bundle mentions without F-N refs", () => {
-  withTempHome(() => {
+test("bob_finalize_report ignores prose proof_bundle mentions without F-N refs", async () => {
+  await withTempHome(async () => {
     const domain = "loose-proof-prose.example.com";
     drivePipelineToReportWritten(domain);
     fs.writeFileSync(
@@ -463,8 +633,8 @@ test("bob_finalize_report ignores prose proof_bundle mentions without F-N refs",
   });
 });
 
-test("bob_finalize_report refuses proof_bundle refs after proof bundle replacement", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses proof_bundle refs after proof bundle replacement", async () => {
+  await withTempHome(async () => {
     const domain = "replaced-proof.example.com";
     drivePipelineToReportWritten(domain);
     const finalRound = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "final").json, "utf8"));
@@ -489,8 +659,8 @@ test("bob_finalize_report refuses proof_bundle refs after proof bundle replaceme
   });
 });
 
-test("bob_finalize_report refuses proof bundles stale against current final verification", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses proof bundles stale against current final verification", async () => {
+  await withTempHome(async () => {
     const domain = "stale-proof-finalize.example.com";
     drivePipelineToReportWritten(domain);
     fs.writeFileSync(
@@ -514,8 +684,8 @@ test("bob_finalize_report refuses proof bundles stale against current final veri
   });
 });
 
-test("re-finalize after mutating report.md produces a new row with a different report_content_hash", () => {
-  withTempHome(() => {
+test("re-finalize after mutating report.md produces a new row with a different report_content_hash", async () => {
+  await withTempHome(async () => {
     const domain = "remutate.example.com";
     drivePipelineToReportWritten(domain);
 
@@ -553,8 +723,8 @@ test("re-finalize after mutating report.md produces a new row with a different r
   });
 });
 
-test("bob_finalize_report refuses when claim-freeze.json is missing", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses when claim-freeze.json is missing", async () => {
+  await withTempHome(async () => {
     const domain = "no-freeze.example.com";
     drivePipelineToReportWritten(domain);
     // Remove the claim freeze file but leave every other artifact intact.
@@ -569,8 +739,8 @@ test("bob_finalize_report refuses when claim-freeze.json is missing", () => {
   });
 });
 
-test("bob_finalize_report refuses when the final verification round is missing", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses when the final verification round is missing", async () => {
+  await withTempHome(async () => {
     const domain = "no-final.example.com";
     drivePipelineToReportWritten(domain);
     // Remove the final verification round.
@@ -584,8 +754,8 @@ test("bob_finalize_report refuses when the final verification round is missing",
   });
 });
 
-test("bob_finalize_report refuses when the grade verdict is missing", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses when the grade verdict is missing", async () => {
+  await withTempHome(async () => {
     const domain = "no-grade.example.com";
     drivePipelineToReportWritten(domain);
     fs.rmSync(gradeArtifactPaths(domain).json);
@@ -598,8 +768,8 @@ test("bob_finalize_report refuses when the grade verdict is missing", () => {
   });
 });
 
-test("bob_finalize_report refuses when evidence packs are missing", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses when evidence packs are missing", async () => {
+  await withTempHome(async () => {
     const domain = "no-evidence.example.com";
     drivePipelineToReportWritten(domain);
     fs.rmSync(evidencePackPaths(domain).json);
@@ -612,8 +782,8 @@ test("bob_finalize_report refuses when evidence packs are missing", () => {
   });
 });
 
-test("bob_finalize_report refuses when report.md is missing", () => {
-  withTempHome(() => {
+test("bob_finalize_report refuses when report.md is missing", async () => {
+  await withTempHome(async () => {
     const domain = "no-report.example.com";
     drivePipelineToReportWritten(domain);
     fs.rmSync(reportMarkdownPath(domain));
@@ -626,54 +796,7 @@ test("bob_finalize_report refuses when report.md is missing", () => {
   });
 });
 
-test("legacy bounty_report_written dual-writes a ReportSnapshot row when all four upstream hashes resolve", () => {
-  withTempHome(() => {
-    const domain = "legacy-dualwrite.example.com";
-    drivePipelineToReportWritten(domain);
-    // Seed the legacy state so reportWritten's pipeline-event path resolves
-    // governance context; without state.json the legacy tool still works but
-    // skips the event emission. We need at minimum the report.md present —
-    // already created by drivePipelineToReportWritten.
-    // The dual-write should append a ReportSnapshot row regardless of state.
-    const response = JSON.parse(reportWrittenTool.handler({ target_domain: domain }));
-    assert.equal(response.report_written, true);
-
-    const snapshots = readReportSnapshots(domain);
-    assert.equal(snapshots.length, 1, "legacy report-written must dual-write a snapshot row");
-    const row = snapshots[0];
-    assert.match(row.claim_freeze_hash, HASH_HEX_RE);
-    assert.match(row.final_verification_hash, HASH_HEX_RE);
-    assert.match(row.evidence_hash, HASH_HEX_RE);
-    assert.match(row.grade_verdict_hash, HASH_HEX_RE);
-    assert.match(row.report_content_hash, HASH_HEX_RE);
-
-    const events = readFrontierEvents(domain)
-      .filter((event) => event.kind === "claim.report_snapshot.appended");
-    assert.equal(events.length, 1, "legacy dual-write must emit the claim.report_snapshot.appended event");
-    assert.equal(events[0].payload.via_legacy_tool, true);
-  });
-});
-
-test("legacy bounty_report_written stays event-only when the four upstream hashes cannot be resolved", () => {
-  withTempHome(() => {
-    const domain = "legacy-eventonly.example.com";
-    // Skip the freeze/verify/grade/evidence pipeline; only seed state and
-    // create report.md. The legacy tool must succeed (its sole legacy
-    // contract is "emit report_written when report.md exists") while the
-    // dual-write path silently no-ops because no freeze / verification /
-    // evidence / grade exist.
-    seedSessionState(domain);
-    fs.writeFileSync(reportMarkdownPath(domain), "# Bob Report\n");
-
-    const response = JSON.parse(reportWrittenTool.handler({ target_domain: domain }));
-    assert.equal(response.report_written, true);
-    assert.equal(readReportSnapshots(domain).length, 0,
-      "no snapshot row when upstream hashes are unresolved (legacy event-only path preserved)",
-    );
-  });
-});
-
-test("bob_finalize_report descriptor binds to the reporter role bundle", () => {
+test("bob_finalize_report descriptor binds to the reporter role bundle", async () => {
   assert.equal(finalizeReportTool.name, "bob_finalize_report");
   assert.deepEqual(
     finalizeReportTool.role_bundles,
@@ -682,11 +805,4 @@ test("bob_finalize_report descriptor binds to the reporter role bundle", () => {
   );
   assert.equal(finalizeReportTool.mutating, true);
   assert.ok(finalizeReportTool.session_artifacts_written.includes("report-snapshots.jsonl"));
-});
-
-test("legacy bounty_report_written tool descriptor is marked deprecated", () => {
-  assert.equal(reportWrittenTool.name, "bounty_report_written");
-  assert.equal(reportWrittenTool.deprecated, true,
-    "Cycle C.7 marks bounty_report_written deprecated; bob_finalize_report is the canonical path",
-  );
 });

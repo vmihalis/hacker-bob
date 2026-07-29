@@ -358,10 +358,31 @@ function buildDashboardSnapshot(options = {}, context = {}) {
     .filter((session) => !normalized.repo_only || session.repo.is_repo);
   const sessions = matchedSessions.slice(0, normalized.limit);
   const bottlenecks = buildDashboardBottlenecks(matchedSessions).slice(0, normalized.limit);
+  // When the dashboard is bound to a non-loopback host (the warn-only network-exposed posture),
+  // redact absolute filesystem paths from the unauthenticated snapshot — they disclose the
+  // operator's home/checkout layout to any LAN client and are not aggregate analytics. Scrubbed:
+  // sessions_root, each session's repo.root_path, AND repo.inventory.error (a raw fs error string
+  // that on EACCES/ENOTDIR embeds the absolute path being read). The full local view is preserved
+  // on the default loopback bind.
+  const networkExposed = !isLoopbackHost(normalized.host);
+  const snapshotSessions = networkExposed
+    ? sessions.map((session) => {
+      const repo = session.repo;
+      if (!repo || typeof repo !== "object") return session;
+      const leaksPath = typeof repo.root_path === "string"
+        || (repo.inventory && typeof repo.inventory.error === "string");
+      if (!leaksPath) return session;
+      const redacted = { ...repo, root_path: null };
+      if (repo.inventory && typeof repo.inventory.error === "string") {
+        redacted.inventory = { ...repo.inventory, error: "redacted" };
+      }
+      return { ...session, repo: redacted };
+    })
+    : sessions;
   return {
     version: DASHBOARD_VERSION,
     generated_at: new Date().toISOString(),
-    sessions_root: sessionsRoot(),
+    sessions_root: networkExposed ? null : sessionsRoot(),
     filters: {
       repo_only: normalized.repo_only,
       window_days: normalized.window_days,
@@ -370,7 +391,7 @@ function buildDashboardSnapshot(options = {}, context = {}) {
     totals: buildDashboardTotals(matchedSessions),
     bottlenecks,
     next_actions: buildDashboardNextActions(bottlenecks, normalized.limit),
-    sessions,
+    sessions: snapshotSessions,
     analytics_bounds: {
       ...(analytics.analytics_bounds || {}),
       sessions_matched: matchedSessions.length,

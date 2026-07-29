@@ -142,6 +142,8 @@ function assertInvalidArgumentsCode(error, code) {
 
 test("exploit_run extends evidence kind enum without dropping existing kinds", () => {
   assert.ok(EVIDENCE_REFERENCE_KIND_VALUES.includes("exploit_run"));
+  // composition_path is the additive cross-stack composition-path binding kind.
+  assert.ok(EVIDENCE_REFERENCE_KIND_VALUES.includes("composition_path"));
   for (const existing of [
     "finding",
     "verification_round",
@@ -154,7 +156,7 @@ test("exploit_run extends evidence kind enum without dropping existing kinds", (
   ]) {
     assert.ok(EVIDENCE_REFERENCE_KIND_VALUES.includes(existing), `regression: ${existing} removed`);
   }
-  assert.equal(EVIDENCE_REFERENCE_KIND_VALUES.length, 9);
+  assert.equal(EVIDENCE_REFERENCE_KIND_VALUES.length, 10);
   assert.deepEqual(OFFENSIVE_OUTCOME_VALUES, [
     "exploited_safely",
     "blocked_by_defense",

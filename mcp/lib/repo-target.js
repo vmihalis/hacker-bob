@@ -56,6 +56,8 @@ const {
   readSessionStateStrict,
   writeSessionStateDocument,
 } = require("./session-state-store.js");
+const { ensureHandoffSigningKey } = require("./handoff-signing-key.js");
+const { hasAcquiredHarness } = require("./harness-store.js");
 const {
   readSessionNucleus,
 } = require("./governance-store.js");
@@ -580,6 +582,10 @@ function initRepoSession({
           },
         );
       }
+      // Resuming an existing session also provisions the key if absent, so a
+      // session created before init provisioned it gains one on resume
+      // (idempotent: reads the existing key when present, never rotates).
+      ensureHandoffSigningKey(domain);
       return {
         created: false,
         session_dir: dir,
@@ -643,6 +649,10 @@ function initRepoSession({
       repoHash,
     });
     writeSessionStateDocument(domain, {}, state);
+    // Provision the handoff signing key at session creation so every later path
+    // finds it (idempotent; wave assignment still ensures it lazily as a safety
+    // net).
+    ensureHandoffSigningKey(domain);
     safeAppendPipelineEventDirect(domain, "session_started", {
       lifecycle_state: state.lifecycle_state,
       source: "bob_init_repo_session",
@@ -677,10 +687,18 @@ function readRepoSession(targetDomain) {
       `target_domain ${domain} is not a repo session`,
     );
   }
+  // repo_hash is the O-D6 image-tag binding. Prefer the pinned top-level value;
+  // fall back to the bound commit (which is what init derives repo_hash from for a
+  // git session, line ~548) so a nucleus that lost the top-level field across a
+  // rewrite still resolves the SAME hash the image was tagged with, rather than
+  // crashing bob_repo_docker_run on a null slice.
+  const boundCommit = nucleus.scope_policy.target_repo
+    ? nucleus.scope_policy.target_repo.commit
+    : null;
   return {
     target_domain: nucleus.target_domain,
     target_repo: nucleus.scope_policy.target_repo,
-    repo_hash: nucleus.repo_hash || null,
+    repo_hash: nucleus.repo_hash || boundCommit || null,
     nucleus_hash: nucleus.nucleus_hash,
     lifecycle_state: nucleus.lifecycle_state,
   };
@@ -1350,7 +1368,11 @@ function buildInventoryProjection(domain, repoRoot, files) {
   }
 
   const nfsShape = detectNfsXdrShape(repoRoot, files);
-  const nativeFuzzShape = detectNativeFuzzShape(repoRoot, files);
+  // A repo with no in-tree harness still gets the native-fuzz lane when a harness has
+  // been imported for the session via bob_import_harness (harnesses commonly live in
+  // OSS-Fuzz, not the project repo). The recipe stages the imported harness into the
+  // build at run time.
+  const nativeFuzzShape = detectNativeFuzzShape(repoRoot, files) || hasAcquiredHarness(domain);
   const residualHuntTargets = detectResidualHuntTargets(repoRoot, files, modules);
   const seedCorpus = buildSeedCorpusSummary(seedCorpusEntries);
   const seedCorpusCount = seedCorpusEntries.size;

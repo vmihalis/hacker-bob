@@ -1,9 +1,7 @@
 "use strict";
 
-// Cycle C.7 of the frontier-topology realization hypergraph. Concentrates the
-// four-hash binding logic that ReportSnapshot finalization depends on into a
-// single helper so both bob_finalize_report (the new primary tool) and the
-// legacy bounty_report_written shim can dual-write the same hash-bound
+// Concentrates the four-hash binding logic that ReportSnapshot finalization
+// depends on into a single helper so bob_finalize_report appends a hash-bound
 // snapshot. The four upstream hashes are:
 //
 //   1. claim_freeze_hash       — from readCurrentClaimFreeze (Cycle C.3+C.4 chain).
@@ -156,9 +154,8 @@ function loadFinalVerificationDocument(domain) {
       { missing_artifact: "verification round (final)" },
     );
   }
-  // Only V2 final rounds carry the final_verification_hash field. C.7 requires
-  // a freeze-bound V2 final round; a V1 round is allowed during the
-  // deprecation window for legacy tests but the finalize path refuses it.
+  // Only V2 final rounds carry the final_verification_hash field. Finalization
+  // requires a freeze-bound V2 final round and refuses a V1 round.
   const hash = document && typeof document.final_verification_hash === "string"
     ? document.final_verification_hash
     : null;
@@ -181,7 +178,7 @@ function loadFinalVerificationHash(domain) {
   return loadFinalVerificationDocument(domain).final_verification_hash;
 }
 
-function loadEvidencePackHash(domain) {
+function loadEvidencePackHash(domain, finalRound = null) {
   const paths = evidencePackPaths(domain);
   if (!fs.existsSync(paths.json)) {
     // Y.10 (Y-D12 / D15) — STATE_CONFLICT remediation backfill #5 of 6:
@@ -212,12 +209,48 @@ function loadEvidencePackHash(domain) {
       { missing_field: "packs" },
     );
   }
+  let normalized;
+  try {
+    const currentFinal = finalRound || loadFinalVerificationDocument(domain);
+    const bindingFields = [
+      "verification_attempt_id",
+      "verification_snapshot_hash",
+      "final_verification_hash",
+    ];
+    const documentHasBinding = bindingFields.some((field) => document[field] != null);
+    normalized = require("./evidence.js").normalizeEvidencePacksDocument(document, {
+      expectedDomain: domain,
+      ...findingSetsFromFinalRound(currentFinal),
+      // Preserve the historical V1-evidence/V2-final upgrade path for legacy
+      // packs.  Capability-pack evidence independently refuses an unbound
+      // document in normalizeEvidencePacksDocument.
+      verificationBinding: documentHasBinding
+        ? proofBundleBindingFromFinalRound(currentFinal)
+        : null,
+    });
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `evidence packs at ${paths.json} do not validate against the current final verification: ${error.message || String(error)}`,
+      { missing_artifact: "evidence-packs.json" },
+      { remediation: "call bob_write_evidence_packs for the current final-reportable findings, then re-invoke bob_finalize_report" },
+    );
+  }
+  if (hashCanonicalJson(document) !== hashCanonicalJson(normalized)) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `evidence packs at ${paths.json} contain fields outside their normalized live projection; rewrite evidence packs before finalization`,
+      { missing_artifact: "evidence-packs.json" },
+      { remediation: "call bob_write_evidence_packs for the current final-reportable findings, then re-invoke bob_finalize_report" },
+    );
+  }
   // The evidence_hash is computed over the canonical JSON of the packs[]
   // manifest. Including only packs[] makes the binding stable across
   // verification-attempt-id renames or schema-version bumps that touch only
   // top-level metadata; what we are binding the report to is the actual
   // evidence content captured for each reportable claim.
-  return hashCanonicalJson(document.packs);
+  return hashCanonicalJson(normalized.packs);
 }
 
 function reportContentCitesProofBundle(contentBuffer) {
@@ -371,7 +404,7 @@ function resolveReportFinalizationHashes(targetDomain) {
   const claimFreeze = loadClaimFreezeHash(domain);
   const finalVerification = loadFinalVerificationDocument(domain);
   const finalVerificationHash = finalVerification.final_verification_hash;
-  const evidenceHash = loadEvidencePackHash(domain);
+  const evidenceHash = loadEvidencePackHash(domain, finalVerification);
   const gradeVerdictHash = loadGradeVerdictHash(domain);
   const reportContentHash = sha256Hex(reportFile.content_buffer);
   const proofBundleHash = reportContentCitesProofBundle(reportFile.content_buffer)
@@ -397,9 +430,7 @@ function resolveReportFinalizationHashes(targetDomain) {
 }
 
 // Same as resolveReportFinalizationHashes but never throws: returns null when
-// any upstream hash cannot be resolved. Used by the legacy report_written
-// shim so its dual-write path stays best-effort and never regresses the
-// existing pipeline-event emission.
+// any upstream hash cannot be resolved.
 function tryResolveReportFinalizationHashes(targetDomain) {
   try {
     return resolveReportFinalizationHashes(targetDomain);

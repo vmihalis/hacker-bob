@@ -11,6 +11,8 @@ const {
 const {
   substituteCapabilityPackVerifierTable,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -43,6 +45,9 @@ const KIMI_WORKER_CONTRACT_ROLE_IDS = Object.freeze([
   // per-chain evaluator contracts so the appendix groups all evaluator family
   // contracts together before the cross-cutting roles (mirrors Codex).
   "evaluator-spawn",
+  // Smart-contract recon expander — a scratch-only producer worker grouped with
+  // the evaluator/producer-family contracts (mirrors Codex).
+  "sc-recon-expander",
   ...KIMI_CROSS_CUTTING_ROLE_IDS.slice(4),
 ]);
 
@@ -82,9 +87,14 @@ function kimiLaunchTemplates() {
       `Agent(subagent_type="coder", prompt: "Bob role: surface-router-agent. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Confirm attack_surface.json exists and has surfaces, then call bob_route_surfaces({ target_domain: '[domain]' }) and use .data. If routing fails or returns zero surfaces, report the error and stop. Otherwise return route count, capability-pack counts, and surface_routes_path. Emit BOB_AGENT_RUN_DONE when finished.")`,
       "```",
     ].join("\n"),
+    "{{SPAWN_RECON_ANGLE_AGENT}}": [
+      "```text",
+      `Agent(subagent_type="coder", prompt: "Bob role: surface-discovery-agent. DOMAIN=[domain] SESSION=~/hacker-bob-sessions/[domain]. Kimi has no subagent pool to drain a recon fan-out, so bob_plan_recon_angles returns mode=sequential here: run ALL surface-discovery steps (no ANGLE var) and produce attack_surface.json. Use Bash, Read, Write, Glob, Grep. Emit BOB_AGENT_RUN_DONE when finished.")`,
+      "```",
+    ].join("\n"),
     "{{SPAWN_EVALUATOR_AGENT}}": [
       "```text",
-      `For each assignment, spawn an Agent(subagent_type="coder") for the evaluator family chosen by the MCP capability router (assignment.evaluator_agent from wave-start result.data.assignments[] — one of evaluator-agent or any of the per-pack evaluators listed in the smart-contract pack catalogue: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}).`,
+      `For each assignment, spawn an Agent(subagent_type="coder") for the evaluator family chosen by the MCP capability router (assignment.evaluator_agent from wave-start result.data.assignments[] — one of evaluator-agent or a registered evaluator role: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}). A registered role is not dispatch authority: spawn it only when the assignment came from a dispatchable capability pack.`,
       "- prompt: include the compact run header below plus the full contract for assignment.evaluator_agent from Kimi Worker Role Contracts.",
       "- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Evaluator agent: [assignment.evaluator_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].",
       "- First action inside the worker: call bob_read_assignment_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data.run_context.context_budget plus .data.technique_packs.selected when present.",
@@ -204,8 +214,10 @@ function kimiRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
       "",
       `### ${roleId}`,
       `BEGIN ${roleId} CONTRACT`,
-      substituteHandoffFieldLimits(
-        substituteCapabilityPackVerifierTable(applyKimiHostText(roleBody(roleId, { root })).trimEnd()),
+      substituteEvaluatorReframePosture(
+        substituteHandoffFieldLimits(
+          substituteCapabilityPackVerifierTable(applyKimiHostText(roleBody(roleId, { root })).trimEnd()),
+        ),
       ),
       `END ${roleId} CONTRACT`,
     );
@@ -253,6 +265,8 @@ function renderKimiPromptBody(roleId, body, options = {}) {
   document = replaceLaunchTemplates(document);
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteHandoffFieldLimits(document);
+  document = substituteEvaluatorReframePosture(document);
+  document = substituteProducerCatalogue(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${kimiOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${kimiRoleContractAppendix(options)}\n`;

@@ -37,5 +37,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: true,
   sensitive_output: true,
-  session_artifacts_written: ["offensive-runs.jsonl", "offensive-runs/", "http-audit.jsonl"],
+ session_artifacts_written: ["offensive-runs.jsonl", "offensive-runs/", "http-audit.jsonl"],
+  required_session_axes: ["url"],
 });

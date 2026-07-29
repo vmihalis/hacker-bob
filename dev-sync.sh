@@ -98,13 +98,11 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/browser-driver.js" "$TARGET_ABS/mcp/"
-  cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
-  rm -rf "$TARGET_ABS/mcp/lib/tools"
-  mkdir -p "$TARGET_ABS/mcp/lib/tools"
-  cp "$SCRIPT_DIR/mcp/lib/tools/"*.js "$TARGET_ABS/mcp/lib/tools/"
-  rm -rf "$TARGET_ABS/mcp/lib/waves"
-  mkdir -p "$TARGET_ABS/mcp/lib/waves"
-  cp "$SCRIPT_DIR/mcp/lib/waves/"*.js "$TARGET_ABS/mcp/lib/waves/"
+  # Mirror the entire dev mcp/lib tree so every split-module subdir lands
+  # (tools/, waves/, body-resolvers/, belief/, future). A per-subdir copy list
+  # silently drops new dirs and crashes server.js with "Cannot find module".
+  rm -rf "$TARGET_ABS/mcp/lib"
+  cp -R "$SCRIPT_DIR/mcp/lib" "$TARGET_ABS/mcp/lib"
   chmod +x "$TARGET_ABS/mcp/server.js"
 }
 
@@ -182,6 +180,19 @@ if adapter_includes "claude"; then
   echo "  $CLAUDE_DIR/settings.json"
 fi
 
+# Per-workspace session root. Bob elects one engine per root, so a dev workspace
+# and any other installed workspace can run engines concurrently only while
+# their roots stay disjoint. Surfaced here because dev-sync silences the
+# installer/merge output that would otherwise name it.
+if [[ -f "$TARGET_ABS/.mcp.json" ]]; then
+  SESSIONS_ROOT="$(node -e 'const j=require(process.argv[1]); const e=j.mcpServers && j.mcpServers["hacker-bob"]; process.stdout.write((e && e.env && e.env.BOB_SESSIONS_ROOT) || "")' "$TARGET_ABS/.mcp.json")"
+  if [[ -n "$SESSIONS_ROOT" ]]; then
+    echo "  session root: $SESSIONS_ROOT"
+  else
+    echo "  session root: shared default (~/hacker-bob-sessions) — no BOB_SESSIONS_ROOT configured"
+  fi
+fi
+
 if [[ $RUN_HEALTH_CHECK -eq 1 ]]; then
   echo ""
   echo "Running MCP runtime load check..."
@@ -202,7 +213,7 @@ echo "Next:"
 if adapter_includes "claude"; then
   echo "  1. Fully restart Claude Code in $TARGET_ABS"
   echo "  2. Run /mcp"
-  echo "  3. Smoke test with bounty_http_scan using target_domain: \"example.com\" against https://example.com"
+  echo "  3. Smoke test with bob_http_scan using target_domain: \"example.com\" against https://example.com"
 elif adapter_includes "codex"; then
   echo "  1. Restart Codex in $TARGET_ABS"
   echo "  2. Confirm the hacker-bob plugin is available"

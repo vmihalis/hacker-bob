@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -60,7 +60,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnSui(args, { workdir, env, timeoutMs }) {
+function spawnSui(args, { workdir, env, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     const stdoutChunks = [];
@@ -70,11 +70,15 @@ function spawnSui(args, { workdir, env, timeoutMs }) {
 
     let child;
     try {
-      child = spawn("sui", args, {
+      // The container route mounts ONLY this workdir (never the session tree /
+      // signing key) and runs as a non-signer container user; the degrade route
+      // is a byte-identical direct spawn.
+      child = scSubprocessContainerExec("sui", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({
@@ -96,7 +100,15 @@ function spawnSui(args, { workdir, env, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -135,6 +147,12 @@ function spawnSui(args, { workdir, env, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this sui in a filesystem-namespace container (true)
+        // or degraded to a host spawn AS THE SIGNER (false). absence/non-true defaults
+        // to false. Sui Move backs findings via candidate-claims/verification-rounds, not
+        // a keyed invariant-runs-style ledger, so the gate does not inspect this row
+        // today; lifted for symmetry across all seven families.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -197,6 +215,7 @@ async function runSuiTest({
   forkUrls,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
   if (!matchTest) {
@@ -251,14 +270,14 @@ async function runSuiTest({
         fork_attempts: [],
       };
     }
-    const result = await spawnSui(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnSui(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkCheckpoint, fork_used: null, rpcPolicyRejections });
   }
 
   let lastResult = null;
   for (const url of candidateForkUrls) {
     const env = { BOB_SUI_FORK_URL: url, BOB_SUI_NETWORK: network || "" };
-    const result = await spawnSui(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env });
+    const result = await spawnSui(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),
@@ -288,6 +307,10 @@ function finalizeRun({ result, args, forkAttempts, forkCheckpoint, fork_used, rp
       ok: false,
       reason: result && result.reason ? result.reason : "spawn_failed",
       error: result && result.error ? result.error : null,
+      // A not-in-path / spawn-failed / refused run never executed the SC tool, so it is
+      // by definition not containerized. Surface false explicitly (fail-closed un-isolated)
+      // so the lift is present on EVERY return shape, not just success.
+      container_isolated: false,
       command: ["sui", ...redactRpcEndpointArgs(args)],
       rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
       fork_attempts: forkAttempts,
@@ -323,6 +346,9 @@ function finalizeRun({ result, args, forkAttempts, forkCheckpoint, fork_used, rp
     timed_out: result.timed_out === true,
     exit_code: result.exit_code,
     signal: result.signal || null,
+    // TOP-LEVEL containerization signal lifted from the spawnSui result. Symmetry
+    // with the keyed-ledger families; a host-as-signer (degrade) run resolves false.
+    container_isolated: result.container_isolated === true,
     fork_used,
     fork_checkpoint: forkCheckpoint || null,
     fork_checkpoint_used: forkCheckpointUsed,

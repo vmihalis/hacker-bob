@@ -61,6 +61,10 @@ const {
 const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
+const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("./handoff-signing-key.js");
+const {
+  recordSandboxIsolationAttestation,
+} = require("./sandbox-isolation-attest.js");
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,
@@ -287,6 +291,11 @@ function initSession(args) {
         operator_constraint_hash: hashCanonicalJson(sessionNucleus.operator_constraint),
       },
     });
+    // bob_init_session is the URL primary axis. It leaves the smart-contract
+    // axis fields at their builder defaults (target_contracts: [],
+    // chain_authority_hash: null); an empty target_contracts is not the
+    // contracts axis, so this stays a single-axis (url) session under the
+    // exactly-one-primary-axis normalization in normalizeSessionStateDocument.
     const state = buildInitialSessionState(sessionNucleus.target_domain, sessionNucleus.scope_policy.target_url, {
       deepMode,
       egressProfile,
@@ -299,6 +308,23 @@ function initSession(args) {
     if (labAuthorization) {
       recordLabAuthorization(domain, labAuthorization);
     }
+    // Provision the handoff signing key at session creation so every later path
+    // (wave assignment, handoff validation, the SubagentStop attestation hook)
+    // finds it. Idempotent: creates it exclusively-atomically if absent, reads
+    // it otherwise. Wave assignment still ensures it lazily as a safety net.
+    ensureHandoffSigningKey(domain);
+    // Provision the ed25519 keypair alongside the symmetric key (same lock). New
+    // offensive rows sign with the private key; verifiers hold only the public key.
+    // The private key is still 0600 at the agent uid (no custody close) — the split
+    // is the structural prerequisite, not the close.
+    ensureHandoffKeypair(domain);
+    // Record, audit-graded, whether the agent uid is OS-excluded from the
+    // signer's key (Mechanism A). Runs AFTER ensureHandoffSigningKey because the
+    // probe lstats the key file itself (the inverse ordering from
+    // recordLabAuthorization, which records before the key exists). INERT:
+    // nothing reads this to gate a verdict; on the same-uid box it honestly
+    // records attested:false.
+    const sandboxIsolation = recordSandboxIsolationAttestation(domain);
     safeAppendPipelineEventDirect(domain, "session_started", {
       lifecycle_state: state.lifecycle_state,
       source: "bob_init_session",
@@ -309,6 +335,10 @@ function initSession(args) {
       // Audit trail: record whether this session was operator-authorized to
       // scope a private (loopback/RFC1918) target past the public-DNS gate.
       lab_authorized: labAuthorization ? true : false,
+      // Audit trail: record whether the server's signing key is isolated from
+      // the agent uid. Forensic only — no path gates on it (false on the
+      // same-uid dev box).
+      sandbox_isolation_attested: sandboxIsolation.attested,
       ...egressFields,
     }, buildGovernanceContextFromNucleus(sessionNucleus));
 
@@ -417,6 +447,11 @@ function applyOperatorConstraintUpdate(domain, transform) {
     auth_context: priorNucleus.auth_context,
     operator_constraint: operatorConstraint,
     lifecycle_state: priorNucleus.lifecycle_state,
+    physical_scope: priorNucleus.physical_scope,
+    // Preserve the repo session's pinned repo_hash across nucleus rewrites; it is
+    // the O-D6 docker image-tag binding and dropping it makes bob_repo_docker_run
+    // crash (readRepoSession -> null repo_hash -> buildImageTag null.slice).
+    repo_hash: priorNucleus.repo_hash,
   });
   writeJsonDocument(sessionNucleusPath(domain), nextNucleus);
   const updatedEvent = appendSessionEvent({
@@ -616,6 +651,15 @@ function advanceSession(args) {
       `override must be null or "operator_force"; got ${JSON.stringify(override)}`,
     );
   }
+  if (
+    override === "operator_force"
+    && (typeof args.override_reason !== "string" || !args.override_reason.trim())
+  ) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "override_reason must be a non-empty string when override is operator_force",
+    );
+  }
   const overrideReason = args.override_reason == null
     ? null
     : assertNonEmptyString(args.override_reason, "override_reason");
@@ -654,8 +698,25 @@ function advanceSession(args) {
       nucleus: priorNucleus,
     });
 
-    if (evaluation.blockers.length > 0 && override !== "operator_force") {
-      const first = evaluation.blockers[0];
+    // External approval and the signed physical inventory checkpoint are
+    // NON-bypassable by operator_force. For AgentCore, external_approval_pending
+    // (gradeToReportApprovalBlocker in lifecycle-gates.js) is also the rail-b
+    // human gate in the headless
+    // --dangerously-skip-permissions deploy the MODEL is the sole caller of this tool, so
+    // letting operator_force wave through the GRADE->REPORT human-approval gate would let the
+    // model self-approve. This carve-out is scoped to ONLY the operator_force branch (a caller
+    // with no override is already blocked below unconditionally) and keys off each blocker's
+    // own blocked_by code. The physical inventory sentinel remains fail-closed until a future
+    // signed, current inventory checkpoint is implemented and verified.
+    const bypassAttempted = override === "operator_force";
+    const nonBypassable = bypassAttempted
+      ? evaluation.blockers.find((b) => [
+        "external_approval_pending",
+        "physical_inventory_required",
+      ].includes(b.blocked_by))
+      : null;
+    if (evaluation.blockers.length > 0 && (!bypassAttempted || nonBypassable)) {
+      const first = nonBypassable || evaluation.blockers[0];
       // Y.10 (Y-D12 / Y-P12) — propagate the blocker's structured
       // remediation string through the ToolError so MCP callers see it
       // verbatim in the response envelope (mcp/lib/envelope.js).
@@ -714,6 +775,11 @@ function advanceSession(args) {
       auth_context: nextAuthContext,
       operator_constraint: priorNucleus.operator_constraint,
       lifecycle_state: toState,
+      physical_scope: priorNucleus.physical_scope,
+      // Preserve the repo session's pinned repo_hash across the lifecycle advance;
+      // without it the nucleus loses repo_hash on the first transition and every
+      // bob_repo_docker_run then crashes (null repo_hash -> buildImageTag null.slice).
+      repo_hash: priorNucleus.repo_hash,
     });
 
     // Single-source-of-truth lifecycle write (Step 4). The two durable
@@ -1108,33 +1174,6 @@ function clearTerminalBlock(args) {
   });
 }
 
-function reportWritten(args) {
-  const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  const reportPath = require("./paths.js").reportMarkdownPath(domain);
-  if (!fs.existsSync(reportPath)) {
-    throw new ToolError(
-      ERROR_CODES.STATE_CONFLICT,
-      `report.md is not present at ${reportPath}; call bounty_report_written only after writing the report`,
-    );
-  }
-  const stats = fs.statSync(reportPath);
-  const { state } = readSessionStateStrict(domain);
-  safeAppendPipelineEventDirect(domain, "report_written", {
-    status: "written",
-    source: "bounty_report_written",
-    counts: {
-      report_size_bytes: stats.size,
-    },
-  }, buildGovernanceContext(state));
-  return JSON.stringify({
-    version: 1,
-    report_written: true,
-    path: reportPath,
-    size_bytes: stats.size,
-    mtime: stats.mtime.toISOString(),
-  });
-}
-
 module.exports = {
   advanceSession,
   assertBlockInternalHostsCompatibleWithEgress,
@@ -1142,7 +1181,6 @@ module.exports = {
   clearTerminalBlock,
   deriveAdvanceAuthContext,
   initSession,
-  reportWritten,
   resolveAndAssertSessionEgressIdentity,
   setOperatorNote,
   readSessionState,

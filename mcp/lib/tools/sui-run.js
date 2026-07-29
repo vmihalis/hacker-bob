@@ -12,13 +12,15 @@ async function handler(args) {
     forkUrls: Array.isArray(args.fork_urls) ? args.fork_urls : null,
     extraArgs: Array.isArray(args.extra_args) ? args.extra_args : [],
     timeoutMs: args.timeout_ms || DEFAULT_TIMEOUT_MS,
+    // Lets the SC seam probe signer isolation to refuse a host-as-signer degrade
+    // on an isolated box (HIGH-1).
+    targetDomain: typeof args.target_domain === "string" ? args.target_domain : null,
   });
   return JSON.stringify(result);
 }
 
 module.exports = Object.freeze({
   name: "bob_sui_run",
-  aliases: ["bounty_sui_run"],
   description: "Run sui move test on a local Sui Move package, optionally pinned to a Sui network for harnesses that opt into checkpoint-clone fixtures via BOB_SUI_FORK_URL. Forks use direct public HTTPS JSON-RPC endpoints from explicit fork_urls, env overrides, or the supplied network ladder; DNS-private/private endpoints and egress_profile proxy routing are unsupported by default, and localnet RPC has no default endpoint. Endpoint filtering is preflight-only handoff; Bob does not DNS-pin the downstream Sui CLI socket. On RPC failure the result reports reason: rpc_unreachable or a no_fork_endpoints* reason plus redacted fork_attempts[]/rpc_policy_rejections[] so the evaluator can record blocked_harness_runs[] and set surface_status: partial. Returns structured per-test pass/fail parsed from the Move unit test output ([ PASS ]/[ FAIL ]/[ TIMEOUT ]). Requires `sui` CLI in PATH on the user's machine; if absent, returns reason: sui_not_in_path. Subprocess hard-killed at timeout (default 90s, max 600s).",
   inputSchema: {
     "type": "object",
@@ -44,5 +46,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: [],
+ session_artifacts_written: [],
+  required_session_axes: ["contracts"],
 });

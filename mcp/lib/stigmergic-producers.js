@@ -35,6 +35,20 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
     ]),
   }),
   Object.freeze({
+    // Coverage-cell wavefront: each finalized cell deposits a coverage row
+    // (logCellCoverage) and each producer sweep deposits cell_proposed events.
+    // The next dispatch layer is read off these deposits — already-covered
+    // cells prune away, newly-discovered transition-cells fold in — so the
+    // stigmergic wavefront's READ side has a manifested consumer.
+    producer_id: "coverage_cell_floor_dispatch_signals",
+    mcp_tool_or_artifact:
+      "bob_materialize_cell_floor cell_proposed events + bob_finalize_node logCellCoverage coverage.jsonl",
+    trace_shape_ref: "mcp/lib/coverage.js#logCellCoverage",
+    registered_consumers: Object.freeze([
+      "cell_floor_coverage_prune_gate",
+    ]),
+  }),
+  Object.freeze({
     producer_id: "surface_discovery_ranked_leads",
     mcp_tool_or_artifact:
       "deep-surface-discovery handoff summary ranked_leads[] OR bob_record_surface_leads invocation",
@@ -110,6 +124,135 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
     trace_shape_ref: "mcp/lib/static-analysis-index.js#indexStaticResults",
     registered_consumers: Object.freeze([
       "c11_static_analysis_brief_slice",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_scratch_signals",
+    mcp_tool_or_artifact: "belief-scratch/belief-signals.jsonl",
+    trace_shape_ref: "mcp/lib/belief/authority.js#writeBeliefSignalScratch",
+    registered_consumers: Object.freeze([
+      "belief_signal_read_query_tools",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "mechanism_surface_graph_projection",
+    mcp_tool_or_artifact: "bob_build_surface_graph / surface-graph.jsonl",
+    trace_shape_ref: "mcp/lib/surface-graph-builder.js#edgesFromAuthDifferentialResults",
+    registered_consumers: Object.freeze([
+      "surface_graph_mechanism_query_mode",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "object_authorization_mechanism_template",
+    mcp_tool_or_artifact:
+      "OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE / MECHANISM_TEMPLATES",
+    trace_shape_ref:
+      "mcp/lib/invariant-template-corpus.js#OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE",
+    registered_consumers: Object.freeze([
+      "mechanism_template_loader_object_authorization",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "frontier_observation_typed_fact_projection",
+    mcp_tool_or_artifact: "frontier-events.jsonl observation.recorded",
+    trace_shape_ref: "mcp/lib/belief/frontier-facts.js#queryFrontierTypedFacts",
+    registered_consumers: Object.freeze([
+      "belief_frontier_fact_projection_reader",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_window_projection",
+    mcp_tool_or_artifact: "bob_query_belief_window",
+    trace_shape_ref: "mcp/lib/belief/belief-window.js#buildBeliefWindow",
+    registered_consumers: Object.freeze([
+      "belief_window_query_tool",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_factor_graph_samples",
+    mcp_tool_or_artifact: "belief-scratch/belief-samples.jsonl",
+    trace_shape_ref: "mcp/lib/belief/factor-graph.js#runBeliefSampler",
+    registered_consumers: Object.freeze([
+      "belief_sample_scratch_reader",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_residual_anomaly_diagnostic",
+    mcp_tool_or_artifact: "belief-scratch/belief-signals.jsonl residual_anomaly",
+    trace_shape_ref: "mcp/lib/belief/residual.js#runBeliefResidual",
+    registered_consumers: Object.freeze([
+      "belief_residual_diagnostic_reader",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_intervention_calculus_ranking",
+    mcp_tool_or_artifact: "bob_query_intervention_calculus",
+    trace_shape_ref: "mcp/lib/belief/intervention-calculus.js#rankInterventions",
+    registered_consumers: Object.freeze([
+      "belief_intervention_query_tool",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_experiment_hypothesis_proposals",
+    mcp_tool_or_artifact: "frontier-events.jsonl hypothesis_proposed",
+    trace_shape_ref: "mcp/lib/belief/experiment-loop.js#planBeliefExperiment",
+    registered_consumers: Object.freeze([
+      "belief_experiment_loop_reader",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "claim_causal_support_payload",
+    mcp_tool_or_artifact: "claims.jsonl payload.causal_support",
+    trace_shape_ref: "mcp/lib/tools/record-candidate-claim.js#normalizeCausalSupport",
+    registered_consumers: Object.freeze([
+      "verification_adjudication_causal_reason_reader",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_scheduler_priority_hints",
+    mcp_tool_or_artifact: "planNextWave belief_assisted_priority metadata",
+    trace_shape_ref: "mcp/lib/belief/scheduler-priority.js#applyBeliefSchedulerPriority",
+    registered_consumers: Object.freeze([
+      "wave_planner_belief_priority_bridge",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "belief_calibrated_factor_model",
+    mcp_tool_or_artifact: "belief-scratch/belief-model-info.json",
+    trace_shape_ref: "mcp/lib/belief/model.js#trainBeliefModel",
+    registered_consumers: Object.freeze([
+      "belief_model_info_reader",
+    ]),
+  }),
+  Object.freeze({
+    // Recon producer-DAG dispatch deposits. bob_materialize_producer_floor
+    // sweeps the whole PRODUCER_PACKS recon DAG and deposits one
+    // producer_proposed event per producer; the dispatch reader folds those
+    // deposits into the next scheduler layer. Aggregate (dispatch-granular)
+    // producer covering the recon DAG, mirroring the cell-floor dispatch
+    // signal — not one entry per web producer.
+    producer_id: "recon_producer_dag_dispatch_signals",
+    mcp_tool_or_artifact:
+      "bob_materialize_producer_floor producer_proposed events over the PRODUCER_PACKS recon DAG",
+    trace_shape_ref: "mcp/lib/producer-packs.js#PRODUCER_PACKS",
+    registered_consumers: Object.freeze([
+      "recon_producer_floor_dispatch_reader",
+    ]),
+  }),
+  Object.freeze({
+    // SC-plane expander dispatch deposits. bob_materialize_producer_floor
+    // sweeps the live smart_contract surface inventory and deposits one
+    // sc_address_expander proposal per instance; the floor dispatch reader
+    // folds those deposits into the next chain-expansion layer. Aggregate
+    // (dispatch-granular) producer covering the recursion — not one entry per
+    // minted contract — mirroring the recon-DAG dispatch signal.
+    producer_id: "sc_expander_recursion_dispatch_signals",
+    mcp_tool_or_artifact:
+      "bob_materialize_producer_floor sc_expander_instances[] proposals over the live smart_contract surface inventory",
+    trace_shape_ref:
+      "mcp/lib/producer-packs.js#SC_ADDRESS_EXPANDER_PRODUCER_PACK",
+    registered_consumers: Object.freeze([
+      "sc_expander_floor_dispatch_reader",
     ]),
   }),
 ]);

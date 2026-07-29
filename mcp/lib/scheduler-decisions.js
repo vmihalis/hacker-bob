@@ -27,6 +27,7 @@ const {
   normalizeTaskLens,
 } = require("./task-lenses.js");
 const {
+  CLAMP_CEILING,
   compareQueuedTasks,
   normalizeQueuePolicy,
   normalizeTaskPriority,
@@ -253,7 +254,7 @@ function scheduleTasksFromQueue(targetDomain, {
   const policy = normalizeQueuePolicy(queue.policy || {});
   const limit = normalizePositiveInteger(maxAssignments, "max_assignments", {
     defaultValue: policy.max_parallel_tasks,
-    max: 128,
+    max: CLAMP_CEILING,
   });
   const runnable = (Array.isArray(queue.tasks) ? queue.tasks : [])
     .filter((task) => task && task.status === "queued")
@@ -446,7 +447,7 @@ function normalizeGraphSchedulerDecision(input, { targetDomain = null, now = new
   const capacityLimit = normalizePositiveInteger(
     input.capacity_limit,
     "capacity_limit",
-    { defaultValue: policy.max_parallel_tasks, max: 128 },
+    { defaultValue: policy.max_parallel_tasks, max: CLAMP_CEILING },
   );
   // capacity_used and considered_count CAN be zero (empty selections
   // are a useful telemetry signal — the scheduler ran and found nothing

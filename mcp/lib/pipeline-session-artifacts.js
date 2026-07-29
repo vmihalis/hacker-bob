@@ -1090,9 +1090,26 @@ function readSessionArtifactSummary(targetDomain, { validateAuthority = false } 
   };
 }
 
+// Recorded chain work that must yield a terminal structured chain attempt
+// before CLAIM_FREEZE: two or more findings, or any wave-handoff chain note.
+// The single source of truth shared by the pipeline-analytics
+// `chain_phase_no_attempts` issue and the `chain_work_terminal` scheduler
+// precondition, so the observed signal and the hard gate cannot diverge.
+function chainWorkRequired(artifacts) {
+  const findingsTotal = artifacts && artifacts.findings && Number.isInteger(artifacts.findings.total)
+    ? artifacts.findings.total
+    : 0;
+  const chainNotesCount = artifacts && artifacts.chain_handoffs
+    && Number.isInteger(artifacts.chain_handoffs.chain_notes_count)
+    ? artifacts.chain_handoffs.chain_notes_count
+    : 0;
+  return findingsTotal >= 2 || chainNotesCount > 0;
+}
+
 module.exports = {
   HANDOFF_ANALYTICS_MAX_FILES,
   WAVE_READINESS_MAX_ASSIGNMENT_FILES,
   readSessionArtifactSummary,
+  chainWorkRequired,
   recordedBlockerPartialSurfaceIdSet,
 };

@@ -283,6 +283,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_chain_rollup",
+  writes_audit_graded: true,
   description:
     "Render chains.md from a structured chain rollup (Y-D15c / Y-P13 / Y-P14b). Validates chain_id against chain-attempts.jsonl; renders chains.md alongside the JSONL ledger; agents no longer Write chains.md directly. Bounded narrative cap (≤4096ch) per Y-P13b; finding_refs[] limited to frontier_event:/verification_round: prefixes; evidence_refs[] limited to bob_import_http_traffic:/bob_resolve_body:/bob_static_scan: handle prefixes OR literal evidence/<path> within LARGE_BODY_THRESHOLD_BYTES.",
   inputSchema: {

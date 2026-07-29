@@ -39,7 +39,6 @@ function extractRoutesHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_extract_routes",
-  aliases: ["bounty_extract_routes"],
   description:
     "Run regex-based HTTP route extraction across one or more source files. Supports Express, Koa, Fastify, NestJS (JS/TS), Flask, Django (Python), and Spring (Java/Kotlin). Each emitted route carries (framework, method, path, file, line, handler_hint, edge_kind). Output sorted deterministically; tuple-deduped. Pass to bob_build_symbol_surface_index to derive the file:line -> surface index.",
   inputSchema: {

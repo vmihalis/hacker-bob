@@ -212,6 +212,48 @@ test("dashboard snapshot filters repo sessions and keeps compact repo metadata",
   });
 });
 
+test("dashboard snapshot redacts absolute filesystem paths when bound to a non-loopback host", () => {
+  withTempHome((home) => {
+    const repoPath = path.join(home, "repo");
+    fs.mkdirSync(repoPath, { recursive: true });
+    seedRepoSession("repo-dashboard.example", repoPath);
+
+    // Loopback (default): the trusted local view keeps absolute paths.
+    const local = buildDashboardSnapshot({ repo_only: true, window_days: 30, limit: 10 });
+    assert.ok(typeof local.sessions_root === "string" && local.sessions_root.length > 0);
+    assert.equal(local.sessions[0].repo.root_path, repoPath);
+
+    // Non-loopback (the warn-only network-exposed posture): sessions_root and per-session
+    // repo.root_path are redacted so a LAN client cannot harvest the operator's home/checkout
+    // layout — the non-path analytics still flow as the shareable view.
+    const exposed = buildDashboardSnapshot({ host: "0.0.0.0", repo_only: true, window_days: 30, limit: 10 });
+    assert.equal(exposed.sessions_root, null);
+    assert.equal(exposed.sessions[0].repo.root_path, null);
+    assert.equal(exposed.sessions[0].target_domain, "repo-dashboard.example");
+    assert.equal(exposed.sessions[0].repo.is_repo, true);
+  });
+});
+
+test("dashboard snapshot redacts a path-bearing inventory read error when network-exposed", () => {
+  withTempHome((home) => {
+    const repoPath = path.join(home, "repo");
+    fs.mkdirSync(repoPath, { recursive: true });
+    seedRepoSession("repo-invfail.example", repoPath);
+    // Force a filesystem read error: replace the inventory FILE with a DIRECTORY so the
+    // safe read yields a non-null error string (the kind that can embed an absolute path).
+    const invPath = repoInventoryPath("repo-invfail.example");
+    fs.rmSync(invPath, { force: true });
+    fs.mkdirSync(invPath, { recursive: true });
+
+    const local = buildDashboardSnapshot({ repo_only: true, window_days: 30, limit: 10 });
+    assert.equal(typeof local.sessions[0].repo.inventory.error, "string");
+    assert.ok(local.sessions[0].repo.inventory.error.length > 0, "loopback keeps the raw error");
+
+    const exposed = buildDashboardSnapshot({ host: "0.0.0.0", repo_only: true, window_days: 30, limit: 10 });
+    assert.equal(exposed.sessions[0].repo.inventory.error, "redacted");
+  });
+});
+
 test("dashboard snapshot totals use all matched sessions before display limit", () => {
   withTempHome((home) => {
     const firstRepoPath = path.join(home, "repo-one");

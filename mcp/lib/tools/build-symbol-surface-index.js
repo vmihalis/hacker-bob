@@ -12,7 +12,6 @@ function buildSymbolSurfaceIndexHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_build_symbol_surface_index",
-  aliases: ["bounty_build_symbol_surface_index"],
   description:
     "Persist a per-target symbol-surface index from bob_extract_routes output and (optionally) attack_surface.json surfaces. Produces three lookup maps (by_file_line, by_file, by_surface) plus a content-addressed index_hash. The index drives bob_summarize_diff_impact for diff-aware regression evaluating.",
   inputSchema: {

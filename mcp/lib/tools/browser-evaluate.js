@@ -61,5 +61,6 @@ module.exports = Object.freeze({
   browser_access: true,
   scope_required: true,
   sensitive_output: true,
-  session_artifacts_written: [],
+ session_artifacts_written: [],
+  required_session_axes: ["url"],
 });

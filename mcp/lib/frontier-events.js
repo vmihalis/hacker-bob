@@ -51,6 +51,42 @@ const FRONTIER_EVENT_KINDS = Object.freeze([
   "node.transitioned",
 ]);
 
+// `node.transitioned` is part of the durable frontier vocabulary, but it is
+// not a generic append capability.  The TaskGraph state machine has a single
+// writer (`appendNodeTransition`) that validates the live node head while the
+// session lock is held.  Keeping a separate public/direct set prevents the
+// model-facing append tool from minting state transitions with an arbitrary
+// payload while preserving the full vocabulary for readers and predicates.
+const DIRECT_FRONTIER_EVENT_KINDS = Object.freeze(
+  FRONTIER_EVENT_KINDS.filter((kind) => kind !== "node.transitioned"),
+);
+
+// Producer observation subtypes. These are observation_kind VALUES that ride
+// INSIDE observation.recorded payloads — they are NOT new top-level
+// FRONTIER_EVENT_KINDS, so the frozen FRONTIER_EVENT_KINDS array above is
+// byte-unchanged (// X-P8: no new top-level kind; the producer subtypes are
+// observation.recorded payload discriminators only). They are SIBLINGS of the
+// OSS kinds (repo-target.js OSS_OBSERVATION_KIND_VALUES) and the capability
+// kinds (capability-observations.js CAPABILITY_OBSERVATION_KIND_VALUES), and
+// follow the T.5 jwt_observed precedent — all of which register at the same
+// observation.recorded dispatch point. Per OD6 there is intentionally NO
+// materialized-seed-artifact subtype, and the coverage floor is NOT wired
+// here; producer emission, projection/materializer folding, and floor logic
+// live in their own modules (separate nodes). The discriminator field is
+// payload.observation_kind — the field the projection reader prefers
+// (frontier-projections.js:256 reads payload.observation_kind first) — so
+// producers stamp these on observation_kind, but wiring those call-sites is a
+// separate node.
+const PRODUCER_OBSERVATION_SUBTYPES = Object.freeze([
+  "producer_proposed",
+  "producer_run",
+]);
+
+function isProducerObservationSubtype(value) {
+  return typeof value === "string"
+    && PRODUCER_OBSERVATION_SUBTYPES.includes(value);
+}
+
 function generatedFrontierEventId(fields) {
   return `FE-${hashCanonicalJson(fields).slice(0, 24)}`;
 }
@@ -135,14 +171,53 @@ function normalizeFrontierEvent(input, { targetDomain = null, now = new Date() }
   return withDocumentHash(event, "event_hash");
 }
 
-function appendFrontierEvent(input, options = {}) {
-  const event = normalizeFrontierEvent(input, options);
+function appendNormalizedFrontierEvent(event, options = {}, beforeAppend = null) {
   return withSessionLock(event.target_domain, () => {
+    if (beforeAppend != null) {
+      if (typeof beforeAppend !== "function") {
+        throw new Error("frontier append validator must be a function");
+      }
+      // Read under the same lock as the append.  This makes a transition's
+      // current-state check and ledger write one compare-and-append operation;
+      // two writers cannot both validate the same state head.
+      beforeAppend({
+        event,
+        existing_events: readFrontierEvents(event.target_domain),
+      });
+    }
     appendJsonlLine(frontierEventsJsonlPath(event.target_domain), event, {
       maxRecords: options.maxRecords == null ? FRONTIER_EVENTS_MAX_RECORDS : options.maxRecords,
     });
     return event;
   });
+}
+
+function appendFrontierEvent(input, options = {}) {
+  const event = normalizeFrontierEvent(input, options);
+  if (event.kind === "node.transitioned") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "node.transitioned is TaskGraph state authority and cannot be appended generically; use the sanctioned TaskGraph transition writer",
+      { kind: event.kind },
+    );
+  }
+  return appendNormalizedFrontierEvent(event, options);
+}
+
+// Internal TaskGraph append funnel.  The event vocabulary remains owned by
+// this module, while task-graph-events.js supplies the state-machine validator
+// so this low-level ledger module does not acquire a materializer dependency.
+// Callers cannot omit the validator, and the public MCP tool never calls this
+// function.
+function appendTaskGraphTransitionEvent(input, validateCurrentState, options = {}) {
+  const event = normalizeFrontierEvent(input, options);
+  if (event.kind !== "node.transitioned") {
+    throw new Error("appendTaskGraphTransitionEvent accepts only node.transitioned");
+  }
+  if (typeof validateCurrentState !== "function") {
+    throw new Error("appendTaskGraphTransitionEvent requires a live-state validator");
+  }
+  return appendNormalizedFrontierEvent(event, options, validateCurrentState);
 }
 
 function readFrontierEvents(targetDomain) {
@@ -158,13 +233,91 @@ function frontierEventContentHash(event) {
   return hashDocumentExcluding(event, ["event_hash"]);
 }
 
+function isPlainFrontierObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Single home for the capability_friction event predicate. A capability_friction
+// observation rides inside an observation.recorded event as
+// { kind: "observation.recorded", payload: { observation_kind:
+// "capability_friction_observed", surface_id, friction_kind, ... } }. Pure and
+// deterministic: it operates only on the in-memory `events` array (no fs, no IO),
+// so filesystem reads stay caller-side. Returns the matching payload objects in
+// array order. `surfaceId`, when a non-empty string, scopes to that surface;
+// omitted means global (no surface filter). `frictionKinds`, when a non-empty
+// array, gates payload.friction_kind to that set; omitted means no friction-kind
+// filter — the analytics caller passes FRICTION_KIND_VALUES and stays the sole
+// authority for its own gate, so no queue-policy dependency is required here.
+function capabilityFrictionPayloads(events, { surfaceId = null, frictionKinds = null } = {}) {
+  if (!Array.isArray(events)) return [];
+  const scopeSurface = typeof surfaceId === "string" && surfaceId.length > 0;
+  const gateFrictionKind = Array.isArray(frictionKinds) && frictionKinds.length > 0;
+  const out = [];
+  for (const event of events) {
+    if (!isPlainFrontierObject(event)) continue;
+    if (event.kind !== "observation.recorded") continue;
+    const payload = isPlainFrontierObject(event.payload) ? event.payload : null;
+    if (!payload) continue;
+    if (payload.observation_kind !== "capability_friction_observed") continue;
+    if (scopeSurface && payload.surface_id !== surfaceId) continue;
+    if (gateFrictionKind && !frictionKinds.includes(payload.friction_kind)) continue;
+    out.push(payload);
+  }
+  return out;
+}
+
+// Group capability_friction payloads by (capability_pack, wanted_tool) across
+// all surfaces so systematic pack deficiencies surface ("pack X chronically
+// lacks tool Y for surfaces {A,B,C}"). Friction payloads carry surface_id and
+// wanted_tool but NOT capability_pack; the pack is resolved by joining
+// surface_id -> pack through the caller-supplied `surfaceIdToPack` map (a plain
+// object or a Map). Operates ONLY on the capabilityFrictionPayloads output —
+// never re-walks events — and reuses isPlainFrontierObject for payload guards.
+// Pure and deterministic: no fs/IO, no input mutation. Counts every payload as
+// given (friction records are idempotent at append time), but dedupes
+// surface_ids within a single (pack, wanted_tool) bucket in first-seen order.
+// Exhaustive: every (pack, wanted_tool, surface) triple is counted and listed;
+// downstream consumers rank, so nothing is truncated or capped here.
+function aggregateFrictionByPack(frictionPayloads, surfaceIdToPack) {
+  if (!Array.isArray(frictionPayloads)) return {};
+  const isMap = surfaceIdToPack instanceof Map;
+  if (!isMap && !isPlainFrontierObject(surfaceIdToPack)) return {};
+  const lookup = isMap
+    ? (id) => surfaceIdToPack.get(id)
+    : (id) => surfaceIdToPack[id];
+
+  const out = {};
+  for (const payload of frictionPayloads) {
+    if (!isPlainFrontierObject(payload)) continue;
+    const surfaceId = typeof payload.surface_id === "string" ? payload.surface_id : null;
+    const wantedTool = typeof payload.wanted_tool === "string" ? payload.wanted_tool : null;
+    if (!surfaceId || !wantedTool) continue;
+    const pack = lookup(surfaceId);
+    if (typeof pack !== "string" || pack.length === 0) continue;
+
+    const packBucket = out[pack] || (out[pack] = {});
+    const toolBucket = packBucket[wantedTool] || (packBucket[wantedTool] = { count: 0, surface_ids: [] });
+    toolBucket.count += 1;
+    if (!toolBucket.surface_ids.includes(surfaceId)) {
+      toolBucket.surface_ids.push(surfaceId);
+    }
+  }
+  return out;
+}
+
 module.exports = {
   FRONTIER_EVENTS_MAX_RECORDS,
   FRONTIER_EVENT_KINDS,
   FRONTIER_EVENT_VERSION,
+  DIRECT_FRONTIER_EVENT_KINDS,
+  PRODUCER_OBSERVATION_SUBTYPES,
+  aggregateFrictionByPack,
   appendFrontierEvent,
+  appendTaskGraphTransitionEvent,
+  capabilityFrictionPayloads,
   frontierEventContentHash,
   generatedFrontierEventId,
+  isProducerObservationSubtype,
   normalizeFrontierEvent,
   readFrontierEvents,
 };

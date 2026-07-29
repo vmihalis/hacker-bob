@@ -2,9 +2,18 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
 const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
+const {
+  MCP_TOP_LEVEL_RUNTIME_FILES,
+} = require("../../scripts/lib/package-policy.js");
+const {
+  inspectMcpServerStatically,
+} = require("../../scripts/lib/static-runtime-inspection.js");
 const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
+const {
+  bobMcpServerEntry,
+  isBobManagedMcpServerEntry,
+} = require("../../scripts/lib/workspace-sessions-root.js");
 
 const id = "generic-mcp";
 const PROMPT_SOURCE_DIR = path.join("adapters", "generic-mcp", "prompts");
@@ -38,13 +47,13 @@ function dirExists(dirPath) {
   }
 }
 
-function mergeConfig({ serverPath }) {
+// This adapter writes the SAME `.mcp.json` as the Claude adapter, so it must
+// stamp the same per-workspace session root — otherwise installing both
+// adapters would silently strip the env block the Claude pass just wrote.
+function mergeConfig({ serverPath, sessionsRoot = null }) {
   return {
     mcpServers: {
-      "hacker-bob": {
-        command: "node",
-        args: [serverPath],
-      },
+      "hacker-bob": bobMcpServerEntry({ serverPath, sessionsRoot }),
       brutalist: { ...BRUTALIST_MCP_SERVER, args: [...BRUTALIST_MCP_SERVER.args] },
     },
   };
@@ -77,7 +86,7 @@ function copyPromptDocs(sourceRoot, targetAbs, installFs) {
   return copied;
 }
 
-function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists, installFs }) {
+function install({ sourceRoot, targetAbs, serverPath, sessionsRoot = null, readJsonIfExists, installFs }) {
   const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
   const safeReadJsonIfExists = readJsonIfExists || ((filePath, fallback) => safeFs.readJsonIfExists(filePath, fallback, {
     kind: "config file",
@@ -89,7 +98,7 @@ function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists, installF
     ...existing,
     mcpServers: {
       ...((existing && existing.mcpServers) || {}),
-      ...mergeConfig({ serverPath }).mcpServers,
+      ...mergeConfig({ serverPath, sessionsRoot }).mcpServers,
     },
   };
   safeFs.writeJson(mcpPath, next, {
@@ -109,27 +118,17 @@ function addCheck(checks, status, checkId, message, detail) {
   return check;
 }
 
-function loadServerCheck(serverPath) {
-  const script = [
-    "const server = require(process.argv[1]);",
-    "if (!Array.isArray(server.TOOLS) || server.TOOLS.length === 0) process.exit(2);",
-  ].join(" ");
-  return spawnSync(process.execPath, ["-e", script, serverPath], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function doctor({ targetAbs }) {
+function doctor({ targetAbs, sourceRoot = path.join(__dirname, "..", "..") }) {
   const checks = [];
-  const expected = mergeConfig({ serverPath: path.join(targetAbs, "mcp", "server.js") });
   const mcpPath = path.join(targetAbs, ".mcp.json");
   if (!fileExists(mcpPath)) {
     addCheck(checks, "error", "generic_mcp_config", ".mcp.json is missing");
   } else {
     try {
       const mcp = readJson(mcpPath);
-      if (JSON.stringify(mcp.mcpServers && mcp.mcpServers["hacker-bob"]) === JSON.stringify(expected.mcpServers["hacker-bob"])) {
+      if (isBobManagedMcpServerEntry(mcp.mcpServers && mcp.mcpServers["hacker-bob"], {
+        serverPath: path.join(targetAbs, "mcp", "server.js"),
+      })) {
         addCheck(checks, "ok", "generic_mcp_config", ".mcp.json points hacker-bob at this project's mcp/server.js");
       } else {
         addCheck(checks, "error", "generic_mcp_config", ".mcp.json is missing the Bob-managed hacker-bob server entry");
@@ -152,14 +151,27 @@ function doctor({ targetAbs }) {
   if (!fileExists(serverPath)) {
     addCheck(checks, "error", "generic_mcp_server", "mcp/server.js is missing");
   } else {
-    const loaded = loadServerCheck(serverPath);
-    if (loaded.status === 0) {
-      addCheck(checks, "ok", "generic_mcp_server", "mcp/server.js loads and exposes MCP tools");
+    const inspection = inspectMcpServerStatically({
+      sourceRoot,
+      serverPath,
+      runtimeManifest: MCP_TOP_LEVEL_RUNTIME_FILES,
+    });
+    if (inspection.ok) {
+      addCheck(
+        checks,
+        "ok",
+        "generic_mcp_server",
+        "mcp/server.js matches the runtime manifest and passes static CommonJS syntax validation",
+        inspection,
+      );
     } else {
-      addCheck(checks, "error", "generic_mcp_server", "mcp/server.js failed to load", {
-        exit_status: loaded.status,
-        stderr: (loaded.stderr || "").trim(),
-      });
+      addCheck(
+        checks,
+        "error",
+        "generic_mcp_server",
+        "mcp/server.js failed static manifest, digest, or syntax validation",
+        inspection,
+      );
     }
   }
 
@@ -210,7 +222,7 @@ function removeMcpConfig(targetAbs, result) {
     result.skipped.push({ type: "config", path: ".mcp.json", reason: `invalid JSON: ${error.message || String(error)}` });
     return;
   }
-  const expected = mergeConfig({ serverPath: path.join(targetAbs, "mcp", "server.js") });
+  const serverPath = path.join(targetAbs, "mcp", "server.js");
   if (!mcp || !mcp.mcpServers) return;
   // Uninstall must handle both the canonical `hacker-bob` server key and the
   // legacy `bountyagent` key from v1.x installs that bypassed the migration
@@ -218,7 +230,7 @@ function removeMcpConfig(targetAbs, result) {
   const candidates = ["hacker-bob", "bountyagent"].filter((key) => key in mcp.mcpServers);
   if (candidates.length === 0) return;
   const mismatched = candidates.filter((key) => (
-    JSON.stringify(mcp.mcpServers[key]) !== JSON.stringify(expected.mcpServers["hacker-bob"])
+    !isBobManagedMcpServerEntry(mcp.mcpServers[key], { serverPath })
   ));
   if (mismatched.length === candidates.length) {
     result.skipped.push({ type: "config", path: ".mcp.json", reason: `${mismatched.join(", ")} server entry is not Bob-managed` });
@@ -226,7 +238,7 @@ function removeMcpConfig(targetAbs, result) {
   }
   const next = { ...mcp, mcpServers: { ...mcp.mcpServers } };
   for (const key of candidates) {
-    if (JSON.stringify(mcp.mcpServers[key]) === JSON.stringify(expected.mcpServers["hacker-bob"])) {
+    if (isBobManagedMcpServerEntry(mcp.mcpServers[key], { serverPath })) {
       delete next.mcpServers[key];
     }
   }

@@ -58,10 +58,12 @@ const advanceSessionTool = require("../mcp/lib/tools/advance-session.js");
 const recordSurfaceLeadsTool = require("../mcp/lib/tools/record-surface-leads.js");
 const promoteSurfaceLeadsTool = require("../mcp/lib/tools/promote-surface-leads.js");
 const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const { writeChainAttempt } = require("../mcp/lib/chain-attempts.js");
 const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
 const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
 const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
 
 const {
@@ -96,7 +98,9 @@ const {
   surfaceIndexPath,
   taskQueuePath,
   verificationRoundPaths,
+  findingDifferentialVerifiedJsonlPath,
 } = require("../mcp/lib/paths.js");
+const { appendJsonlLine: appendFindingDifferentialRow } = require("../mcp/lib/storage.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -243,6 +247,19 @@ function driveRealizationFlow(domain) {
   const findingIds = [claimAResponse.finding_id, claimBResponse.finding_id];
   assert.equal(findingIds.length, 2);
 
+  // Recorded chain work (two findings) must reach a terminal structured chain
+  // attempt before CLAIM_FREEZE. The two findings are independent surfaces with
+  // no credible cross-surface pivot, so the terminal outcome is not_applicable.
+  JSON.parse(writeChainAttempt({
+    target_domain: domain,
+    finding_ids: findingIds,
+    surface_ids: [],
+    hypothesis: "The two recorded findings compose into no credible cross-surface pivot.",
+    steps: ["Relate the CORS read and the mass-assignment write; they share no principal or object pivot."],
+    outcome: "not_applicable",
+    evidence_summary: "Terminal chain outcome for the recorded chain work.",
+  }));
+
   // Step 7 — bob_advance_session(CLAIM_FREEZE), then materialize claim-freeze
   // explicitly. The lifecycle nucleus advances to CLAIM_FREEZE but does not
   // auto-write the immutable freeze artifact — that is the documented role of
@@ -338,7 +355,44 @@ function driveRealizationFlow(domain) {
   //   - the document total_score must equal the MAX per-finding total_score
   //   - the verdict must match the document total_score against
   //     GRADE_SUBMIT_MIN_SCORE / GRADE_HOLD_MIN_SCORE
-  callTool(writeGradeVerdictTool, {
+  // Both findings are standalone web (IDOR / mass-assignment) executable-flip classes;
+  // seed each one's finding-differential verified_pass arm so the grade-time standalone
+  // gate is satisfied (NO amputation). Post-A1 the gate re-resolves the verdict against
+  // MAC-covered offensive-runs rows + re-adjudicates the flip, so seed a real signed
+  // exploited_safely positive + blocked_by_defense control (demonstrated severity >= the
+  // finding's), then the verdict line binding them.
+  {
+    const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+    const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+    const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+    const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+    for (const findingId of findingIds) {
+      const demonstratedSeverity = findingId === findingIds[0] ? "high" : "medium";
+      const mkRow = (suffix, outcome, ch) => {
+        const row = {
+          version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+          target: canonicalizeExploitTarget(`https://${domain}/api/x/${findingId}`),
+          offensive_outcome: outcome, dry_run: false, timed_out: false,
+          command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+          demonstrated_severity: demonstratedSeverity, surface_id: promotedSurfaceId,
+        };
+        signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+        fs.mkdirSync(sessionDir(domain), { recursive: true });
+        fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+        return row;
+      };
+      const positive = mkRow("pos", "exploited_safely", `${findingId === findingIds[0] ? "1" : "3"}`.repeat(64));
+      const control = mkRow("ctl", "blocked_by_defense", `${findingId === findingIds[0] ? "2" : "4"}`.repeat(64));
+      appendFindingDifferentialRow(findingDifferentialVerifiedJsonlPath(domain), {
+        version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+        reason: "executed_finding_differential_flip", surface_id: promotedSurfaceId,
+        source: "offensive_runs", positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+        control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+      });
+    }
+  }
+  withIsolatedSigner(() => callTool(writeGradeVerdictTool, {
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
@@ -353,7 +407,7 @@ function driveRealizationFlow(domain) {
       feedback: "Clear, reproducible, and reportable.",
     })),
     feedback: "Both findings are submission-ready.",
-  });
+  }));
   assert.ok(fs.existsSync(gradeArtifactPaths(domain).json), "grade.json must be written");
 
   // Step 13 — bob_advance_session(REPORT). The GRADE -> REPORT gate re-runs

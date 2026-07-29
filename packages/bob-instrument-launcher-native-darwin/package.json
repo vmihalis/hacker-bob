@@ -1,0 +1,46 @@
+{
+  "name": "@hacker-bob/instrument-launcher-native-darwin",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Darwin privileged-launcher and post-exec capability-release source contracts plus a non-activating verifier fixture for Hacker Bob instrument workers",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "gypfile": false,
+  "main": "lib/privileged-launcher-boundary.js",
+  "bin": {
+    "bob-darwin-launcher-fixture": "dist/bob-darwin-launcher-fixture"
+  },
+  "files": [
+    "lib/privileged-launcher-boundary.js",
+    "lib/native-fixture-record.js",
+    "lib/native-binary-symbol-contract.js",
+    "native/darwin-launcher-fixture.c",
+    "native/darwin-privileged-launch-executor.source.c",
+    "native/darwin-post-exec-capability-release.source.c",
+    "scripts/build-native-fixture.js",
+    "scripts/check-native-fixture.js",
+    "dist/bob-darwin-launcher-fixture",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/privileged-launcher-boundary.js",
+    "./privileged-launcher-boundary": "./lib/privileged-launcher-boundary.js",
+    "./native-fixture-record": "./lib/native-fixture-record.js"
+  },
+  "scripts": {
+    "build:native": "node scripts/build-native-fixture.js",
+    "check:native": "node scripts/check-native-fixture.js",
+    "check:syntax": "node --check lib/privileged-launcher-boundary.js && node --check lib/native-fixture-record.js && node --check lib/native-binary-symbol-contract.js && node --check scripts/build-native-fixture.js && node --check scripts/check-native-fixture.js && node --check test/privileged-launcher-boundary.test.js && node --check test/native-launcher-fixture.test.js && node --check test/native-privileged-launch-executor.test.js && node --check test/native-post-exec-capability-release.test.js",
+    "prepack": "npm run build:native && npm run check:native",
+    "test": "npm run build:native && npm run check:native && node --test test/privileged-launcher-boundary.test.js test/native-launcher-fixture.test.js test/native-privileged-launch-executor.test.js test/native-post-exec-capability-release.test.js"
+  }
+}

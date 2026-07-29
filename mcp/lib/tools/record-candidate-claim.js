@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const { StringDecoder } = require("string_decoder");
 const {
@@ -43,7 +44,7 @@ const {
 const { appendFrontierEvent } = require("../frontier-events.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
 const { hashCanonicalJson } = require("../verification-contracts.js");
-const { isKnownCwe } = require("../cwe-catalog.js");
+const { isKnownCwe, canonicalizeCwe } = require("../cwe-catalog.js");
 const { CVSS_INPUT_KEYS, CVSS_INPUT_ENUMS, deriveCvss31 } = require("../cvss31.js");
 
 // Registry-driven schema for the optional structured CVSS v3.1 base inputs. The
@@ -104,6 +105,45 @@ const SECRET_DETECTION_BYPASS_FIELDS = Object.freeze(new Set([
 ]));
 const SECRET_DETECTION_BYPASS_RATIONALE_MAX = 512;
 const SECRET_DETECTION_BYPASS_MAX_ENTRIES = SECRET_DETECTION_BYPASS_FIELDS.size;
+const LEAKED_IDENTIFIER_FIELDS = Object.freeze([
+  "title",
+  "description",
+  "impact",
+  "endpoint",
+  "proof_of_concept",
+  "response_evidence",
+]);
+const LEAKED_IDENTIFIER_PATTERNS = Object.freeze([
+  /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g,
+  /\b[0-9a-fA-F]{24}\b/g,
+]);
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+
+function extractLeakedIdentifiers(finding) {
+  if (!finding || typeof finding !== "object") return [];
+  const byFingerprint = new Map();
+  for (const field of LEAKED_IDENTIFIER_FIELDS) {
+    if (typeof finding[field] !== "string") continue;
+    for (const pattern of LEAKED_IDENTIFIER_PATTERNS) {
+      pattern.lastIndex = 0;
+      for (const match of finding[field].matchAll(pattern)) {
+        const raw = match && typeof match[0] === "string" ? match[0] : "";
+        if (!raw) continue;
+        const identifierFingerprint = sha256Hex(raw);
+        if (!byFingerprint.has(identifierFingerprint)) {
+          byFingerprint.set(identifierFingerprint, {
+            identifier_class: "object_id",
+            identifier_fingerprint: identifierFingerprint,
+          });
+        }
+      }
+    }
+  }
+  return Array.from(byFingerprint.values());
+}
 
 function normalizeSecretDetectionBypass(raw) {
   if (raw == null) return new Map();
@@ -220,6 +260,33 @@ function validateClaimForPersistence(finding, secretBypass = new Map()) {
   }
 }
 
+// True when the finding cites an EXECUTED differential as proof: a shape-valid
+// offensive exploit_run evidence ref (its offensive-runs.jsonl row is
+// cross-checked downstream), or a structured smart-contract re-run handle the
+// verifier can replay. A free-text PoC or a reachability assertion is NOT an
+// executed differential. This is the non-negotiable floor for a finding whose
+// mechanism label is outside the curated catalog: the vocabulary opened, the
+// confirm contract did not.
+function citesExecutedDifferential(args) {
+  if (args && args.sc_evidence != null && typeof args.sc_evidence === "object") {
+    return true;
+  }
+  if (args && Array.isArray(args.evidence_refs)) {
+    return args.evidence_refs.some(
+      (ref) => ref && typeof ref === "object" && ref.kind === "exploit_run",
+    );
+  }
+  return false;
+}
+
+// Membership in the curated CWE catalog is an ANNOTATION, not a drop-gate. A
+// medium+ finding must still NAME some mechanism (a label is required), but a
+// CWE-shaped label outside the catalog now records at the demonstrated severity
+// AS LONG AS the finding is backed by an executed differential. Without an
+// executed differential, a novel-mechanism medium+ finding cannot reach
+// reportable severity. Catalog membership is mirrored onto the finding as a
+// cwe_in_catalog flag (annotate, never gate); the existing class-specific
+// executed gates downstream are unchanged for catalog findings.
 function assertReportableCweOnWrite(args, surfaceType) {
   const severity = args && args.severity;
   if (severity !== "critical" && severity !== "high" && severity !== "medium") return;
@@ -227,13 +294,22 @@ function assertReportableCweOnWrite(args, surfaceType) {
   if (cweEmpty) {
     const examples = EXAMPLE_CWES_BY_CLASS[surfaceType] || EXAMPLE_CWES_BY_CLASS.web;
     throw new Error(
-      `cwe is required for ${severity} findings and must be a catalog id from mcp/lib/cwe-catalog.js (examples: ${examples})`,
+      `cwe is required for ${severity} findings: name the mechanism with a CWE id (a curated catalog id from mcp/lib/cwe-catalog.js is preferred; a CWE-shaped novel id is accepted when backed by an executed differential) (examples: ${examples})`,
     );
   }
-  if (!isKnownCwe(args.cwe)) {
+  if (canonicalizeCwe(args.cwe) == null) {
     const examples = EXAMPLE_CWES_BY_CLASS[surfaceType] || EXAMPLE_CWES_BY_CLASS.web;
     throw new Error(
-      `cwe ${JSON.stringify(args.cwe)} is not in the curated CWE catalog (mcp/lib/cwe-catalog.js); use a catalog id (examples: ${examples})`,
+      `cwe ${JSON.stringify(args.cwe)} must be a CWE identifier like "CWE-79" (examples: ${examples})`,
+    );
+  }
+  // A novel (non-catalog) but CWE-shaped mechanism records at its demonstrated
+  // severity only when an executed differential backs it. This preserves the
+  // executed-proof floor while letting the vocabulary open past the curated set.
+  if (!isKnownCwe(args.cwe) && !citesExecutedDifferential(args)) {
+    const examples = EXAMPLE_CWES_BY_CLASS[surfaceType] || EXAMPLE_CWES_BY_CLASS.web;
+    throw new Error(
+      `cwe ${JSON.stringify(args.cwe)} is outside the curated CWE catalog (mcp/lib/cwe-catalog.js); a novel-mechanism ${severity} finding must cite an executed differential (an evidence_refs[] item with kind="exploit_run" backed by an offensive-runs.jsonl row, or an sc_evidence re-run handle) to record at this severity. Record it at low/info, or use a catalog id (examples: ${examples})`,
     );
   }
 }
@@ -306,6 +382,7 @@ function buildFindingPayloadRecord(args, context, findingId, { requireCwe = fals
     affected_package: args.affected_package,
     affected_version_range: args.affected_version_range,
     repro_command: args.repro_command,
+    repro_command_argv: args.repro_command_argv,
     description: args.description,
     proof_of_concept: args.proof_of_concept,
     response_evidence: args.response_evidence,
@@ -348,6 +425,80 @@ function deriveAttackClass(finding) {
   return null;
 }
 
+function normalizeBoundedText(value, fieldName, { maxLength = 2000, required = false } = {}) {
+  if (value == null) {
+    if (required) throw new Error(`${fieldName} is required`);
+    return null;
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+  if (value.length > maxLength) {
+    throw new Error(`${fieldName} must be at most ${maxLength} chars`);
+  }
+  return value;
+}
+
+function normalizeCausalSupport(args) {
+  const hasAny = [
+    "mechanism_id",
+    "hypothesis_statement",
+    "intervention",
+    "expected_effect",
+    "controls_run",
+    "confounders_ruled_out",
+  ].some((key) => args && args[key] != null);
+  if (!hasAny) return null;
+
+  const support = {};
+  const mechanismId = normalizeBoundedText(args.mechanism_id, "mechanism_id", { maxLength: 160 });
+  if (mechanismId) support.mechanism_id = mechanismId;
+  const hypothesis = normalizeBoundedText(args.hypothesis_statement, "hypothesis_statement", { maxLength: 2000 });
+  if (hypothesis) support.hypothesis_statement = hypothesis;
+  const intervention = normalizeBoundedText(args.intervention, "intervention", { maxLength: 1000 });
+  if (intervention) support.intervention = intervention;
+  const expectedEffect = normalizeBoundedText(args.expected_effect, "expected_effect", { maxLength: 1000 });
+  if (expectedEffect) support.expected_effect = expectedEffect;
+
+  if (args.controls_run != null) {
+    if (!Array.isArray(args.controls_run)) throw new Error("controls_run must be an array");
+    if (args.controls_run.length > 20) throw new Error("controls_run must contain at most 20 entries");
+    support.controls_run = args.controls_run.map((entry, index) => {
+      if (typeof entry === "string") {
+        return { control: normalizeBoundedText(entry, `controls_run[${index}]`, { maxLength: 1000, required: true }) };
+      }
+      if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error(`controls_run[${index}] must be a string or object`);
+      }
+      const normalized = {
+        control: normalizeBoundedText(entry.control, `controls_run[${index}].control`, {
+          maxLength: 1000,
+          required: true,
+        }),
+      };
+      for (const key of ["expected_effect", "observed_effect", "evidence_ref"]) {
+        const value = normalizeBoundedText(entry[key], `controls_run[${index}].${key}`, { maxLength: 1000 });
+        if (value) normalized[key] = value;
+      }
+      return normalized;
+    });
+  }
+
+  if (args.confounders_ruled_out != null) {
+    if (!Array.isArray(args.confounders_ruled_out)) {
+      throw new Error("confounders_ruled_out must be an array");
+    }
+    if (args.confounders_ruled_out.length > 20) {
+      throw new Error("confounders_ruled_out must contain at most 20 entries");
+    }
+    support.confounders_ruled_out = args.confounders_ruled_out.map((entry, index) => (
+      normalizeBoundedText(entry, `confounders_ruled_out[${index}]`, { maxLength: 500, required: true })
+    ));
+  }
+
+  return Object.keys(support).length > 0 ? support : null;
+}
+
 function severityForClaim(severity) {
   if (severity === "info") return "informational";
   return severity;
@@ -377,6 +528,15 @@ function buildSecretEvidenceBypassRows(secretBypass) {
   return rows;
 }
 
+// The evidence_ref kinds the public record-candidate-claim input path accepts.
+// exploit_run is the offensive proof handle; composition_path is the ADDITIVE
+// cross-stack composition-path binding (kind="composition_path" carrying a
+// path_hash into the audit-graded composition-verified.jsonl). Both are deep-
+// shape-validated by normalizeEvidenceReferenceShape. Any other kind is refused
+// here (the finding-derived kind="finding" ref is appended internally, never
+// taken from caller input).
+const CLAIM_INPUT_EVIDENCE_REF_KINDS = Object.freeze(new Set(["exploit_run", "composition_path"]));
+
 function normalizeExploitRunEvidenceRefs(rawRefs) {
   if (rawRefs == null) return [];
   if (!Array.isArray(rawRefs)) {
@@ -386,12 +546,13 @@ function normalizeExploitRunEvidenceRefs(rawRefs) {
     if (ref == null || typeof ref !== "object" || Array.isArray(ref)) {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}] must be an object`, { code: "evidence_ref_not_object" });
     }
-    if (ref.kind !== "exploit_run") {
-      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}].kind must be exploit_run`, { code: "evidence_ref_kind_invalid" });
+    if (!CLAIM_INPUT_EVIDENCE_REF_KINDS.has(ref.kind)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}].kind must be one of [${[...CLAIM_INPUT_EVIDENCE_REF_KINDS].join(", ")}]`, { code: "evidence_ref_kind_invalid" });
     }
     // normalizeEvidenceReferenceShape does the DEEP shape checks (e.g. absolute
-    // target URL); it throws a bare Error, which would surface as INTERNAL_ERROR.
-    // Rethrow as INVALID_ARGUMENTS so malformed caller input is a client fault.
+    // target URL for exploit_run, 64-hex path_hash for composition_path); it
+    // throws a bare Error, which would surface as INTERNAL_ERROR. Rethrow as
+    // INVALID_ARGUMENTS so malformed caller input is a client fault.
     try {
       return normalizeEvidenceReferenceShape({ ...ref }, `evidence_refs[${index}]`);
     } catch (error) {
@@ -403,6 +564,8 @@ function normalizeExploitRunEvidenceRefs(rawRefs) {
 
 function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretBypass = new Map()) {
   const payload = {};
+  const causalSupport = normalizeCausalSupport(args || {});
+  if (causalSupport) payload.causal_support = causalSupport;
   const subjectId = deriveSubjectId(finding);
   if (subjectId) payload.subject_id = subjectId;
   const attackClass = deriveAttackClass(finding);
@@ -438,6 +601,7 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
     "affected_package",
     "affected_version_range",
     "repro_command",
+    "repro_command_argv",
     "description",
     "proof_of_concept",
     "response_evidence",
@@ -582,12 +746,35 @@ function recordCandidateClaimHandler(args) {
 
     const counter = scan.maxNumber + 1;
     assertReportableCweOnWrite(args, surfaceType);
-    const finding = buildFindingPayloadRecord(args, context, `F-${counter}`, { requireCwe: true });
+    // Catalog membership is an annotation, not a drop-gate. A catalog CWE keeps
+    // the strict normalization path (the loader canonicalizes + catalog-checks
+    // it). A novel-but-CWE-shaped mechanism (already proven executed-backed by
+    // assertReportableCweOnWrite) is normalized with the tolerant CWE path so it
+    // is not rejected, then its canonical free-form label is restored onto the
+    // embedded finding alongside the cwe_in_catalog flag. CVSS sufficiency is
+    // asserted separately below, so it stays enforced for both paths.
+    const canonicalCwe = canonicalizeCwe(args.cwe);
+    const cweInCatalog = isKnownCwe(args.cwe);
+    const finding = buildFindingPayloadRecord(args, context, `F-${counter}`, {
+      requireCwe: cweInCatalog,
+    });
+    if (!cweInCatalog && canonicalCwe != null) {
+      // The tolerant loader degraded the novel CWE to null; restore the
+      // canonical free-form label so the finding still names its mechanism.
+      finding.cwe = canonicalCwe;
+    }
     assertReportableCvssInputsOnWrite(finding);
     validateClaimForPersistence(finding, secretBypass);
 
     const findingContentHash = hashCanonicalJson(finding);
     const claimInput = buildClaimPayloadFromFinding(finding, findingContentHash, args || {}, secretBypass);
+    // Annotate catalog membership on the embedded finding (annotate, never gate).
+    // A novel-mechanism label records at its demonstrated severity because an
+    // executed differential backed it; the flag preserves that it is outside the
+    // curated catalog without dropping the finding.
+    if (canonicalCwe != null && claimInput.payload && claimInput.payload.finding) {
+      claimInput.payload.finding.cwe_in_catalog = cweInCatalog;
+    }
     // Y.0 hotfix 1 (O2): expand the per-field bypass into the exact deep paths
     // the claims-layer validator will see, via the same helper that builds the
     // persisted secret_evidence_bypass rows so write-time and read-time honor
@@ -616,6 +803,26 @@ function recordCandidateClaimHandler(args) {
       claim_id: claim.claim_id,
       source: { artifact: "claims.jsonl", tool: "bob_record_candidate_claim" },
     });
+    const leakedIdentifierSurfaceId = typeof finding.surface_id === "string" ? finding.surface_id.trim() : "";
+    if (leakedIdentifierSurfaceId) {
+      for (const identifier of extractLeakedIdentifiers(finding)) {
+        appendFrontierEvent({
+          target_domain: domain,
+          kind: "observation.recorded",
+          payload: {
+            observation_kind: "leaked_identifier",
+            identifier_class: identifier.identifier_class,
+            identifier_fingerprint: identifier.identifier_fingerprint,
+            surface_id: leakedIdentifierSurfaceId,
+            claim_id: claim.claim_id,
+          },
+          surface_id: leakedIdentifierSurfaceId,
+          claim_id: claim.claim_id,
+          source: { artifact: "claims.jsonl", tool: "bob_record_candidate_claim" },
+          actor: "orchestrator",
+        });
+      }
+    }
     scheduleMaterialization(domain);
 
     const response = {
@@ -665,9 +872,36 @@ function findingPayloadsFromClaims(domain) {
     .filter((entry) => entry != null);
 }
 
+// Trust-degradation projection. Returns the set of finding ids whose
+// signature_verification_status === "unsigned" marker is present on
+// payload.finding (re-normalized by findingPayloadsFromClaims). The three audit
+// writers (compose-report, write-evidence-packs, write-grade-verdict) fail
+// closed on any finding in this set so a degraded finding can never be laundered
+// into an audit-graded artifact. Single source of truth — no writer recomputes
+// the marker.
+//
+// PREVENTIVE CONTROL: this set is empty for every current session because no
+// production path sets the marker — a finding sourced from an unverifiable
+// handoff cannot reach claims.jsonl, since a forged/unsigned/absent handoff is
+// rejected upstream by the handoff-provenance invariant. The gate is therefore a
+// reserved guardrail that activates only if a finding is ever introduced from a
+// source whose signature could not be verified.
+function degradedReportableFindingIds(domain) {
+  const degraded = new Set();
+  for (const finding of findingPayloadsFromClaims(domain)) {
+    if (
+      finding &&
+      typeof finding.id === "string" &&
+      finding.signature_verification_status === "unsigned"
+    ) {
+      degraded.add(finding.id);
+    }
+  }
+  return degraded;
+}
+
 module.exports = Object.freeze({
   name: "bob_record_candidate_claim",
-  aliases: ["bob_record_finding", "bounty_record_finding"],
   description:
     "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Survives context rotation.",
   inputSchema: {
@@ -719,6 +953,11 @@ module.exports = Object.freeze({
         "type": "string",
         "description": "OSS mode: bounded local command that reproduces or verifies the issue when known. High/critical native-code claims must additionally cite the run as an evidence_refs[] entry of kind \"repo_command_run\" backed by a non-dry-run row in repo-command-runs.jsonl."
       },
+      "repro_command_argv": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "OSS native-code mode: the machine-runnable PoC as a token array (e.g. [\"sh\",\"-lc\",\"build the ASAN harness && run the crashing input\"]). Required for high/critical C/C++/Rust-unsafe/asm findings: the reproduction verifier (bob_verify_repro_reproduction) re-runs this VERBATIM on the vulnerable tree AND the upstream-fix tree, and a verified_pass is minted only on a genuine sanitizer flip (crashes vuln, quiet on fix). A printf'd banner fires on both trees and is refuted."
+      },
       "description": {
         "type": "string"
       },
@@ -733,6 +972,74 @@ module.exports = Object.freeze({
       },
       "auth_profile": {
         "type": "string"
+      },
+      "mechanism_id": {
+        "type": "string",
+        "maxLength": 160,
+        "description": "Optional causal-support mechanism identifier bound into the CandidateClaim payload, for example a CWE id or OSS-FAM id. This is advisory support, not a claim writer override."
+      },
+      "hypothesis_statement": {
+        "type": "string",
+        "maxLength": 2000,
+        "description": "Optional hypothesis statement from the belief or evaluator path, persisted under payload.causal_support and folded into claim_hash."
+      },
+      "intervention": {
+        "type": "string",
+        "maxLength": 1000,
+        "description": "Optional intervention that should explain the claim's causal support; cite supporting artifacts through the existing evidence_refs[] path rather than a second evidence home."
+      },
+      "expected_effect": {
+        "type": "string",
+        "maxLength": 1000,
+        "description": "Optional expected effect for the intervention, persisted under payload.causal_support and folded into claim_hash."
+      },
+      "controls_run": {
+        "type": "array",
+        "maxItems": 20,
+        "description": "Optional controls already run for this claim. Entries may be strings or objects with control plus optional expected_effect, observed_effect, and evidence_ref metadata; raw evidence still belongs in evidence_refs[].",
+        "items": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            {
+              "type": "object",
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "expected_effect": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "observed_effect": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              },
+              "required": ["control"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "confounders_ruled_out": {
+        "type": "array",
+        "maxItems": 20,
+        "description": "Optional causal confounders ruled out by the evaluator or belief-proposed experiment; persisted under payload.causal_support and folded into claim_hash.",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
       },
       "exploit_outcome": {
         "type": "object",
@@ -766,23 +1073,37 @@ module.exports = Object.freeze({
       },
       "evidence_refs": {
         "type": "array",
-        "description": "Optional exploit proof references. bob_record_candidate_claim only accepts kind=\"exploit_run\" here; it always adds the finding ref itself.",
+        "description": "Optional proof references. bob_record_candidate_claim accepts kind=\"exploit_run\" (offensive proof) or kind=\"composition_path\" (cross-stack composition-path binding, carrying the path_hash minted to the audit-graded composition-verified.jsonl); it always adds the finding ref itself.",
         "items": {
-          "type": "object",
-          "properties": {
-            "kind": { "type": "string", "enum": ["exploit_run"] },
-            "run_id": { "type": "string" },
-            "tool_id": { "type": "string" },
-            "target": { "type": "string" },
-            "offensive_outcome": { "type": "string", "enum": ["exploited_safely", "blocked_by_defense", "blocked_by_infra"] },
-            "command_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "exit_code": { "type": ["integer", "null"] },
-            "stdout_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "stderr_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "source_run_id": { "type": "string" }
-          },
-          "required": ["kind", "run_id", "tool_id", "target", "offensive_outcome", "command_hash", "exit_code", "stdout_hash", "stderr_hash"],
-          "additionalProperties": false
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "enum": ["exploit_run"] },
+                "run_id": { "type": "string" },
+                "tool_id": { "type": "string" },
+                "target": { "type": "string" },
+                "offensive_outcome": { "type": "string", "enum": ["exploited_safely", "blocked_by_defense", "blocked_by_infra"] },
+                "command_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "exit_code": { "type": ["integer", "null"] },
+                "stdout_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "stderr_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "source_run_id": { "type": "string" }
+              },
+              "required": ["kind", "run_id", "tool_id", "target", "offensive_outcome", "command_hash", "exit_code", "stdout_hash", "stderr_hash"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "enum": ["composition_path"] },
+                "path_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "source_run_id": { "type": "string" }
+              },
+              "required": ["kind", "path_hash"],
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "surface_id": {
@@ -928,7 +1249,9 @@ module.exports = Object.freeze({
   sensitive_output: false,
   session_artifacts_written: ["claims.jsonl","frontier-events.jsonl"],
   findingPayloadsFromClaims,
+  degradedReportableFindingIds,
   computeFindingDedupeKey,
+  scanExistingFindingFootprint,
   CLAIM_TEXT_LIMITS,
   SECRET_DETECTION_BYPASS_FIELDS,
 });

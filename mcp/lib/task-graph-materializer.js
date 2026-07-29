@@ -47,13 +47,27 @@ const {
   hashCanonicalJson,
 } = require("./verification-contracts.js");
 const {
-  TASK_GRAPH_NODE_ID_PREFIX,
+  normalizePhysicalResourceBundleBinding,
+} = require("./physical-resource-contract.js");
+const {
+  normalizePhysicalResourceDispatchBinding,
 } = require("./task-graph-events.js");
+const {
+  NODE_STATE_VALUES,
+  TASK_GRAPH_NODE_ID_PREFIX,
+  cellNodeId,
+  claimNodeId,
+  hypothesisNodeId,
+  isAllowedNodeTransition,
+  producerNodeId,
+  surfaceNodeId,
+  transitionNodeId,
+} = require("./task-graph-state-machine.js");
 // X.3 / X-P6: the SURFACE_KIND_VALUES enum is the canonical SoT for the
 // closed set of TaskGraph node kinds AND the kind discriminator persisted
 // in surface-index.json. The X.2 materializer alias TASK_GRAPH_NODE_KIND_VALUES
 // is preserved for back-compat re-export; both point at the same frozen array.
-const { SURFACE_KIND_VALUES } = require("./constants.js");
+const { SURFACE_KIND_VALUES, PRODUCER_NODE_KIND } = require("./constants.js");
 
 // Ledger-pressure thresholds. Public for tests + downstream cycles that may
 // surface them in summaries.
@@ -93,39 +107,6 @@ const TASK_GRAPH_EDGE_KIND_VALUES = Object.freeze([
 // "medium" default for unattributed tasks.
 const DEFAULT_NODE_PRIORITY = "medium";
 
-function shortHash(input) {
-  return hashCanonicalJson({ v: String(input) }).slice(0, 16);
-}
-
-// Mint a deterministic TG- node id for a Surface. Surface_ids contain colons
-// (e.g. "surface:billing"); the TG_NODE_ID_PATTERN allows those, so we keep
-// the surface_id verbatim with an `S-` discriminator. The discriminator keeps
-// hypothesis / transition / claim node ids in separate sub-namespaces so a
-// surface called "hypothesis" doesn't collide with a TG-H-* hypothesis.
-function surfaceNodeId(surfaceId) {
-  if (typeof surfaceId !== "string" || !surfaceId.trim()) return null;
-  return `${TASK_GRAPH_NODE_ID_PREFIX}S-${surfaceId.trim()}`;
-}
-
-function hypothesisNodeId({ proposalId, eventId }) {
-  if (typeof proposalId === "string" && proposalId.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}H-${proposalId.trim()}`;
-  }
-  return `${TASK_GRAPH_NODE_ID_PREFIX}H-${shortHash(eventId)}`;
-}
-
-function transitionNodeId({ proposalId, eventId }) {
-  if (typeof proposalId === "string" && proposalId.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}T-${proposalId.trim()}`;
-  }
-  return `${TASK_GRAPH_NODE_ID_PREFIX}T-${shortHash(eventId)}`;
-}
-
-function claimNodeId(claimId) {
-  if (typeof claimId !== "string" || !claimId.trim()) return null;
-  return `${TASK_GRAPH_NODE_ID_PREFIX}C-${claimId.trim()}`;
-}
-
 function ensureNode(nodesById, nodeId, kind, ts) {
   if (!nodesById.has(nodeId)) {
     nodesById.set(nodeId, {
@@ -145,6 +126,8 @@ function ensureNode(nodesById, nodeId, kind, ts) {
       // from the raw fold so it stays bounded — only the most recent failure
       // is retained per node.
       _last_failure_reason: null,
+      _physical_resource_bundle: null,
+      _physical_resource_dispatch: null,
     });
   } else {
     const existing = nodesById.get(nodeId);
@@ -238,6 +221,31 @@ function foldEvent(event, { nodesById, edgesByKey }) {
       for (const ref of surfaceRefs) addSurfaceRef(node, ref);
       return;
     }
+    if (payload.kind === "cell_proposed") {
+      const nodeId = cellNodeId({
+        cellKey: payload.cell_key,
+        proposalId: payload.proposal_id,
+        eventId: event.event_id,
+      });
+      const node = ensureNode(nodesById, nodeId, "cell", ts);
+      addSourceEvent(node, event.event_id);
+      // A cell is a leaf coverage obligation grounded in its parent surface(s) —
+      // surface_ref(s), no bridge edges. The cell's (bug_class, auth_profile,
+      // cell_key, technique_pack_ids) stay in the proposal payload and are
+      // recovered at prepare/reconcile time. A transition-cell (A2) is grounded
+      // in its EDGE — both endpoint surfaces; a surface-cell keeps its single ref.
+      if (typeof payload.from_surface === "string" && payload.from_surface
+        && typeof payload.to_surface === "string" && payload.to_surface) {
+        addSurfaceRef(node, payload.from_surface);
+        addSurfaceRef(node, payload.to_surface);
+      } else if (typeof payload.surface_id === "string") {
+        addSurfaceRef(node, payload.surface_id);
+      }
+      // Depth-tier marker: a residual-flagged depth re-probe (E2) carries tier=2
+      // so the scheduler dispatches it after all Tier-1 breadth. Absent → Tier-1.
+      if (Number.isInteger(payload.tier)) node.tier = payload.tier;
+      return;
+    }
     if (payload.kind === "transition_proposed") {
       const nodeId = transitionNodeId({
         proposalId: payload.proposal_id,
@@ -274,6 +282,30 @@ function foldEvent(event, { nodesById, edgesByKey }) {
       }
       return;
     }
+    // ─── Producer nodes ─────────────────────────────────────────
+    // A producer is a TaskGraph-only node (never persisted as a surface). The
+    // subtype discriminator is read observation_kind-first then kind-fallback,
+    // mirroring the canonical reader in frontier-projections.js, so the fold
+    // matches `producer_proposed` regardless of which field the emitter stamps.
+    const obsKind = (typeof payload.observation_kind === "string" && payload.observation_kind.trim())
+      ? payload.observation_kind.trim()
+      : (typeof payload.kind === "string" ? payload.kind.trim() : "");
+    if (obsKind === "producer_proposed") {
+      const nodeId = producerNodeId({
+        producerKey: payload.producer_key || payload.producer_id,
+        proposalId: payload.proposal_id,
+        eventId: event.event_id,
+      });
+      const node = ensureNode(nodesById, nodeId, PRODUCER_NODE_KIND, ts);
+      addSourceEvent(node, event.event_id);
+      // Optional explicit grounding: fold surface_refs[] only when it is an
+      // array of strings (defensive, mirrors the hypothesis branch). A producer
+      // adds NO bridge/claim/unblocks edges — dispatch wiring is a later node.
+      if (Array.isArray(payload.surface_refs)) {
+        for (const ref of payload.surface_refs) addSurfaceRef(node, ref);
+      }
+      return;
+    }
     return;
   }
 
@@ -282,27 +314,48 @@ function foldEvent(event, { nodesById, edgesByKey }) {
     const payload = event.payload;
     const nodeId = typeof payload.node_id === "string" ? payload.node_id : null;
     if (!nodeId) return;
-    // The materializer only folds states onto an existing node — node ids
-    // arrive via the proposal event (hypothesis_proposed / transition_proposed)
-    // before the first node.transitioned for that node. If the node hasn't
-    // been seen yet, ensureNode creates a synthetic shell with kind
-    // "hypothesis" or "transition" based on the id prefix; that keeps the
-    // graph well-formed even when the proposal event is missing.
-    let inferredKind = "hypothesis";
-    if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}T-`)) inferredKind = "transition";
-    else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}S-`)) inferredKind = "surface";
-    else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}C-`)) inferredKind = "claim";
-    const node = ensureNode(nodesById, nodeId, inferredKind, ts);
-    addSourceEvent(node, event.event_id);
-    // The to_state replaces any prior state because the state machine is
-    // monotonic forward per the X.1 frozen transition table; appendNodeTransition
-    // refuses out-of-order transitions at write time so the fold can trust
-    // them in append order.
-    if (typeof payload.to_state === "string" && payload.to_state.trim()) {
-      node.state = payload.to_state.trim();
+    // A transition cannot create a node.  Proposal/observation events are the
+    // sole node-establishment authority.  This also makes replay fail closed
+    // for legacy ledgers that contain a raw or forged transition: an orphan,
+    // stale, or invalid edge is ignored instead of synthesizing a dispatchable
+    // node or replacing its current state.
+    const node = nodesById.get(nodeId);
+    if (!node) return;
+    const fromState = typeof payload.from_state === "string"
+      ? payload.from_state.trim()
+      : "";
+    const toState = typeof payload.to_state === "string"
+      ? payload.to_state.trim()
+      : "";
+    if (!NODE_STATE_VALUES.includes(fromState)
+        || !NODE_STATE_VALUES.includes(toState)
+        || node.state !== fromState
+        || !isAllowedNodeTransition(fromState, toState)) {
+      return;
     }
+    addSourceEvent(node, event.event_id);
+    node.state = toState;
+    if (Date.parse(ts) < Date.parse(node.ts_first)) node.ts_first = ts;
+    if (Date.parse(ts) > Date.parse(node.ts_last)) node.ts_last = ts;
     if (typeof payload.contract_hash === "string" && payload.contract_hash.trim()) {
       node.contract_hash = payload.contract_hash.trim();
+    }
+    if (payload.to_state === "contracted" && payload.contract && typeof payload.contract === "object") {
+      node._physical_resource_bundle = payload.contract.physical_resource_bundle == null
+        ? null
+        : normalizePhysicalResourceBundleBinding(
+          payload.contract.physical_resource_bundle,
+          "node.transitioned.contract.physical_resource_bundle",
+        );
+      // A re-contract after a failed attempt begins a new dispatch epoch. Do
+      // not let the prior attempt's reservation proof masquerade as current.
+      node._physical_resource_dispatch = null;
+    }
+    if (payload.to_state === "dispatched" && payload.physical_resource_dispatch != null) {
+      node._physical_resource_dispatch = normalizePhysicalResourceDispatchBinding(
+        payload.physical_resource_dispatch,
+        "node.transitioned.physical_resource_dispatch",
+      );
     }
     if (typeof payload.severity_floor === "string" && payload.severity_floor.trim()) {
       node.severity_floor = payload.severity_floor.trim();
@@ -364,11 +417,28 @@ function finalizeNode(node) {
     ts_last: node.ts_last,
     source_events: node.source_events.slice().sort(),
   };
+  // Depth tier: persist only a non-default depth tier (an E2 Tier-2 re-probe),
+  // so the graph-scheduler projection can sort it after Tier-1 breadth. Omitted
+  // for every Tier-1 node, keeping the canonical nodes[] hash byte-identical for
+  // sessions with no depth re-probe.
+  if (Number.isInteger(node.tier) && node.tier > 1) out.tier = node.tier;
+  if (node._physical_resource_bundle != null) {
+    out.physical_resource_bundle = node._physical_resource_bundle;
+  }
+  if (node._physical_resource_dispatch != null) {
+    out.physical_resource_dispatch = node._physical_resource_dispatch;
+  }
   return out;
 }
 
-function materializeTaskGraphDocument(domain, { now = new Date() } = {}) {
-  const events = readFrontierEvents(domain);
+function materializeTaskGraphEvents(domain, events, { now = new Date() } = {}) {
+  if (!Array.isArray(events)) throw new Error("TaskGraph event fold input must be an array");
+  for (const event of events) {
+    if (!event || typeof event !== "object" || Array.isArray(event)
+        || event.target_domain !== domain) {
+      throw new Error("TaskGraph event fold input must contain events bound to target_domain");
+    }
+  }
   const eventCount = events.length;
 
   // Ledger-pressure refusal (Do step 5). Surfaced as a structured error
@@ -451,6 +521,10 @@ function materializeTaskGraphDocument(domain, { now = new Date() } = {}) {
     ledgerPressureWarning,
     eventCount,
   };
+}
+
+function materializeTaskGraphDocument(domain, { now = new Date() } = {}) {
+  return materializeTaskGraphEvents(domain, readFrontierEvents(domain), { now });
 }
 
 function materializeTaskGraph(targetDomain, options = {}) {
@@ -558,6 +632,28 @@ function summarizeTaskGraph(targetDomain, options = {}) {
   });
   crossStackTransitions.sort((a, b) => a.node_id.localeCompare(b.node_id));
 
+  // Composition telemetry: how far the graph moved past flat surface
+  // enumeration. A graph that never proposes a hypothesis or a transition has
+  // composed === false (the failure mode this measures); the per-node rates
+  // quantify the hypothesis and transition layers. Summary-only: derived from
+  // the read-only counts, never written into the hash-bound graph document.
+  const compositionSurfaces = kindCounts.surface || 0;
+  const compositionHypotheses = kindCounts.hypothesis || 0;
+  const compositionTransitions = kindCounts.transition || 0;
+  const ratio = (numerator, denominator) => (denominator > 0
+    ? Math.round((numerator / denominator) * 1000) / 1000
+    : 0);
+  const composition = {
+    surfaces: compositionSurfaces,
+    hypotheses: compositionHypotheses,
+    transitions: compositionTransitions,
+    claims: kindCounts.claim || 0,
+    edges: document.edge_count,
+    hypotheses_per_surface: ratio(compositionHypotheses, compositionSurfaces),
+    transitions_per_hypothesis: ratio(compositionTransitions, compositionHypotheses),
+    composed: compositionHypotheses > 0 || compositionTransitions > 0,
+  };
+
   return {
     version: 1,
     target_domain: document.target_domain,
@@ -568,6 +664,7 @@ function summarizeTaskGraph(targetDomain, options = {}) {
     hashes: document.hashes,
     state_counts: stateCounts,
     kind_counts: kindCounts,
+    composition,
     ready_nodes: readyNodes.slice(0, SUMMARY_TOP_N),
     open_hypotheses: openHypotheses.slice(0, SUMMARY_TOP_N),
     recent_finalizations: recentFinalizations.slice(0, SUMMARY_TOP_N),
@@ -616,9 +713,12 @@ module.exports = {
   LEDGER_PRESSURE_WARN_THRESHOLD,
   TASK_GRAPH_EDGE_KIND_VALUES,
   TASK_GRAPH_NODE_KIND_VALUES,
+  cellNodeId,
   claimNodeId,
   hypothesisNodeId,
   materializeTaskGraph,
+  materializeTaskGraphEvents,
+  producerNodeId,
   readTaskGraph,
   summarizeTaskGraph,
   surfaceNodeId,

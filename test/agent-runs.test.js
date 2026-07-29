@@ -6,7 +6,10 @@ const path = require("path");
 
 const {
   appendAgentRun,
+  appendWaveAssignmentAgentRun,
   latestAgentRunForWaveAgent,
+  markAgentRunStartedIdempotent,
+  markAgentRunTerminal,
   readAgentRuns,
   settleAgentRunFromHandoff,
   syntheticTaskIdForWaveAssignment,
@@ -124,5 +127,104 @@ test("duplicate settled rows are idempotent at the reader and a later failed row
 
     const afterLateFailed = latestAgentRunForWaveAgent(targetDomain, { wave, agent, surfaceId });
     assert.equal(afterLateFailed.status, "settled");
+  });
+});
+
+// markAgentRunStartedIdempotent — the universal MCP-side start recorder. It
+// transitions assigned -> running exactly once, keyed by
+// (target_domain, wave, agent, surface_id), and is a no-op on any further call
+// or on a run that has already moved past `assigned`.
+function runningCount(domain, agent) {
+  return readAgentRuns(domain).filter((r) => r.agent_id === agent && r.status === "running").length;
+}
+
+test("markAgentRunStartedIdempotent appends running only when latest is absent or assigned", () => {
+  withTempHome(() => {
+    const domain = "started-idem.example.com";
+    const surfaceId = "surface:m";
+
+    // null latest -> appends running (the degraded path where the assigned
+    // write was lost still records start, keyed to the caller-supplied tuple).
+    let row = markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId });
+    assert.ok(row && row.status === "running");
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: "a1", surfaceId }).status, "running");
+    assert.equal(runningCount(domain, "a1"), 1);
+
+    // already running -> no-op.
+    assert.equal(markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId }), null);
+    assert.equal(runningCount(domain, "a1"), 1);
+
+    // assigned latest -> appends running.
+    appendWaveAssignmentAgentRun({ targetDomain: domain, wave: "w1", agent: "a2", surfaceId });
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: "a2", surfaceId }).status, "assigned");
+    row = markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent: "a2", surfaceId });
+    assert.ok(row && row.status === "running");
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: "a2", surfaceId }).status, "running");
+  });
+});
+
+test("markAgentRunStartedIdempotent is a no-op for completed/failed/abandoned/settled runs", () => {
+  withTempHome(() => {
+    const domain = "started-idem-terminal.example.com";
+    for (const [agent, status] of [["a1", "completed"], ["a2", "failed"], ["a3", "abandoned"]]) {
+      const surfaceId = `surface:${agent}`;
+      markAgentRunTerminal({ targetDomain: domain, wave: "w1", agent, surfaceId, status });
+      assert.equal(markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent, surfaceId }), null);
+      assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent, surfaceId }).status, status);
+      assert.equal(runningCount(domain, agent), 0);
+    }
+
+    // settled run: a stray start record must not unsettle or add a running row.
+    const settledAgent = "a4";
+    const settledSurface = "surface:a4";
+    const { assignment, handoff, signingKey } = signedInput();
+    settleAgentRunFromHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: settledAgent,
+      surface_id: settledSurface,
+      task_id: syntheticTaskIdForWaveAssignment({ targetDomain: domain, wave: "w1", agent: settledAgent, surfaceId: settledSurface }),
+      assignment: { ...assignment, agent: settledAgent, surface_id: settledSurface },
+      handoff: signHandoffProvenance({
+        target_domain: domain,
+        wave: "w1",
+        agent: settledAgent,
+        surface_id: settledSurface,
+        surface_status: "complete",
+        provenance: "verified",
+        summary: "Completed the assigned boundary check.",
+      }, signingKey, { assignment: { ...assignment, agent: settledAgent, surface_id: settledSurface } }),
+      signing_key: signingKey,
+    }, { write: true });
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: settledAgent, surfaceId: settledSurface }).status, "settled");
+    assert.equal(markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent: settledAgent, surfaceId: settledSurface }), null);
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: settledAgent, surfaceId: settledSurface }).status, "settled");
+    assert.equal(runningCount(domain, settledAgent), 0);
+  });
+});
+
+test("markAgentRunStartedIdempotent disambiguates two agents on the SAME surface_id", () => {
+  withTempHome(() => {
+    const domain = "started-idem-multi.example.com";
+    const surfaceId = "surface:shared";
+    // Two agents share a surface (e.g. a nested-spawn fan-out). The `agent`
+    // label keys the run, so each gets its own running row; neither is
+    // mis-attributed to the other.
+    appendWaveAssignmentAgentRun({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId });
+    appendWaveAssignmentAgentRun({ targetDomain: domain, wave: "w1", agent: "a2", surfaceId });
+
+    markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId });
+    // a1 running; a2 untouched (still assigned).
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: "a1", surfaceId }).status, "running");
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: "a2", surfaceId }).status, "assigned");
+
+    markAgentRunStartedIdempotent({ targetDomain: domain, wave: "w1", agent: "a2", surfaceId });
+    assert.equal(latestAgentRunForWaveAgent(domain, { wave: "w1", agent: "a2", surfaceId }).status, "running");
+
+    const a1 = readAgentRuns(domain).filter((r) => r.agent_id === "a1" && r.status === "running");
+    const a2 = readAgentRuns(domain).filter((r) => r.agent_id === "a2" && r.status === "running");
+    assert.equal(a1.length, 1);
+    assert.equal(a2.length, 1);
+    assert.notEqual(a1[0].task_id, a2[0].task_id);
   });
 });

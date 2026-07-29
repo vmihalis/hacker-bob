@@ -25,7 +25,8 @@ const {
 const { OFFENSIVE_TOOL_DEMONSTRATED_CEILING, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
 const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
 
 const SURFACE_ID = "surface:api";
@@ -155,7 +156,8 @@ test("positive: arbitrary-origin reflection + credentials mints EXACTLY ONE sign
   assert.equal(row.demonstrated_severity, "medium");
   assert.equal(row.surface_id, SURFACE_ID);
   assert.equal(row.target, canonicalizeExploitTarget(`https://${domain}${ENDPOINT}`));
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
+  assert.equal(row.row_mac.version, 2, "producer-minted rows are the v2 ed25519 envelope");
+  assert.ok(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)), "row must be MAC-signed");
   for (const h of ["command_hash", "stdout_hash", "stderr_hash"]) {
     assert.match(result[h], /^[0-9a-f]{64}$/);
     assert.equal(result[h], row[h]);

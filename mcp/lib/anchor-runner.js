@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -64,7 +64,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnAnchor(args, { workdir, env, timeoutMs }) {
+function spawnAnchor(args, { workdir, env, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     let stdoutChunks = [];
@@ -76,12 +76,16 @@ function spawnAnchor(args, { workdir, env, timeoutMs }) {
     try {
       // detached: true so we can kill the process group on timeout. Anchor
       // spawns solana-test-validator + cargo + npm/yarn subprocesses; a
-      // parent-only kill leaves them running.
-      child = spawn("anchor", args, {
+      // parent-only kill leaves them running. The container route mounts ONLY
+      // this workdir (never the session tree / signing key) and runs as a
+      // non-signer container user; the degrade route is a byte-identical direct
+      // spawn.
+      child = scSubprocessContainerExec("anchor", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({
@@ -103,7 +107,15 @@ function spawnAnchor(args, { workdir, env, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -142,6 +154,13 @@ function spawnAnchor(args, { workdir, env, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this anchor in a filesystem-namespace container
+        // (true) or degraded to a host spawn AS THE SIGNER (false). absence/non-true
+        // defaults to false (un-isolated). Anchor backs findings via candidate-claims
+        // /verification-rounds, not a keyed invariant-runs-style ledger, so the gate's
+        // scBackingUnIsolatedFindingIds does not inspect this row today; it is lifted for
+        // symmetry across all seven families so a future keyed-ledger path is correct.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -230,6 +249,7 @@ async function runAnchorTest({
   forkUrls,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
   if (!matchTest) {
@@ -298,7 +318,7 @@ async function runAnchorTest({
     }
     // No cluster supplied — run with whatever Anchor.toml configures. Covers
     // pure-localnet harnesses that don't depend on cloning.
-    const result = await spawnAnchor(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnAnchor(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkSlot, fork_used: null, rpcPolicyRejections });
   }
 
@@ -308,7 +328,7 @@ async function runAnchorTest({
     // to fork at runtime (validator clone via solana-test-validator --url).
     // We don't pass a CLI flag to anchor itself — anchor doesn't accept one.
     const env = { BOB_SVM_FORK_URL: url, BOB_SVM_CLUSTER: cluster || "" };
-    const result = await spawnAnchor(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env });
+    const result = await spawnAnchor(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),
@@ -384,6 +404,10 @@ function finalizeRun({ result, args, forkAttempts, forkSlot, fork_used, rpcPolic
       ok: false,
       reason: result && result.reason ? result.reason : "spawn_failed",
       error: result && result.error ? result.error : null,
+      // A not-in-path / spawn-failed / refused run never executed the SC tool, so it is
+      // by definition not containerized. Surface false explicitly (fail-closed un-isolated)
+      // so the lift is present on EVERY return shape, not just success.
+      container_isolated: false,
       command: ["anchor", ...redactRpcEndpointArgs(args)],
       rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
       fork_attempts: forkAttempts,
@@ -434,6 +458,10 @@ function finalizeRun({ result, args, forkAttempts, forkSlot, fork_used, rpcPolic
     timed_out: result.timed_out === true,
     exit_code: result.exit_code,
     signal: result.signal || null,
+    // TOP-LEVEL containerization signal lifted from the spawnAnchor result. Symmetry
+    // with the keyed-ledger families (foundry/halmos); a host-as-signer (degrade) run
+    // resolves false.
+    container_isolated: result.container_isolated === true,
     fork_used,
     fork_slot: forkSlot || null,
     fork_slot_used: forkSlotUsed,

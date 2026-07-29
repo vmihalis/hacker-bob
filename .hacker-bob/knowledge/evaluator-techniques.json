@@ -201,6 +201,30 @@
       ]
     },
     {
+      "id": "second-order-stored-effect",
+      "title": "Second-order stored-effect (inject-here, surfaces-there) re-read",
+      "capability_packs": ["web"],
+      "match": {
+        "tech": ["stored", "profile", "comment", "message", "template", "webhook", "import", "notification", "render"],
+        "endpoints": ["/profile", "/comment", "/comments", "/message", "/messages", "/note", "/notes", "/bio", "/display_name", "/settings", "/import", "/preview", "/render", "/export", "/feed", "/activity"],
+        "params": ["name", "display_name", "bio", "note", "comment", "message", "body", "content", "description", "title", "template"],
+        "hints": ["stored", "second order", "second-order", "stored xss", "persisted", "reflected later", "admin panel", "moderation queue", "audit log"]
+      },
+      "techniques": [
+        "A value you write at one endpoint that surfaces at a DISTINCT read endpoint (profile->admin panel, comment->moderation queue, import->preview/render) is a second-order candidate. A 200 on the write is a lead, not impact.",
+        "bob_secondorder_mint({ target_domain, surface_id, oracle_kind: \"second_order_reread\", injection_locus, observation_locus }) server-mints a 256-bit canary + silent decoy on distinct in-scope endpoints; inject the returned canary_payload.",
+        "bob_secondorder_reread({ target_domain, token_handle, expect: \"interaction\" }): Bob re-reads the bound endpoint via safeFetch, signing only when the exact canary is a parsed LEAF and the decoy is absent. Masked oracle, HARD MEDIUM ceiling.",
+        "Decoy-silent control: mint a SEPARATE binding you do NOT inject, call expect:\"silence\" (signs blocked_by_defense), pair via bob_verify_finding_differential. The flip earns the verified_pass; if the canary EXECUTES use bob_http_xss_confirm.",
+        "Severity is stamped server-side (never agent-supplied): a stored-effect surfacing caps at MEDIUM unless the effect ITSELF is the impact. The re-read channel is Bob-controlled, so there is no OOB self-hit weakness."
+      ],
+      "payload_hints": [
+        "profile/display_name -> admin user list, moderation queue, mention autocomplete render",
+        "comment/review body -> moderator dashboard, notification email preview, activity feed",
+        "imported/webhook-saved field -> later fetched by a preview/PDF/render/export processor (also a second-order SSRF locus)",
+        "canary + decoy are server-minted; you pass only surface_id + two integer loci, never a canary, endpoint, or severity"
+      ]
+    },
+    {
       "id": "oss-dependency-supply-chain",
       "title": "OSS dependency and supply-chain review",
       "capability_packs": ["oss_dependency"],
@@ -236,7 +260,8 @@
         "Review length-prefixed buffers, opaque fields, arrays, strings, and allocation-size math for signed/unsigned truncation, wraparound, and missing bounds checks.",
         "For protocol clients, treat malicious server replies as attacker-controlled; for servers, treat client requests and exported paths as attacker-controlled.",
         "Check ownership/lifetime around async callbacks, PDU queues, reference counters, and cleanup paths for use-after-free, double-free, and stale pointer use.",
-        "Prefer ASAN/UBSAN, existing unit tests, or a minimal harness command; if repro is blocked, record the exact build or input blocker instead of overstating proof."
+        "Prefer ASAN/UBSAN, existing unit tests, or a minimal harness command; if repro is blocked, record the exact build or input blocker instead of overstating proof.",
+        "Invariant-from-diff oracle (known-fix / regression targets ONLY): read both the vuln source and the upstream-fix source, identify the invariant the fix enforces (e.g. a top-only guard becoming a check-all loop => 'every value-stack entry is a float'), then craft two minimal unified diffs that insert the SAME invariant check at the semantically-equivalent result site in each tree (vuln-anchored + fix-anchored). On a violation the check must trigger a REAL ASAN fault rooted in the repo source — use a heap OOB (malloc(1) then write well past it), which reliably faults at -O1, NOT a small stack-array OOB (often optimized away) and NOT a bare abort()/custom marker (the regex matches the ASAN banner, not abort); the verdict requires a repo-attributable /src frame. Supply each patch via the OE1 checkout_patch param. Out of scope: inferring an invariant for an unknown bug with no fix diff."
       ],
       "payload_hints": [
         "Large XDR length: 0xffffffff or 0x80000000 against string/opaque/array fields",

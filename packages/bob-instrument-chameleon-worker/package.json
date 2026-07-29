@@ -1,0 +1,26 @@
+{
+  "name": "@hacker-bob/instrument-chameleon-worker",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Optional privilege-separated native USB CDC worker for the Hacker Bob Chameleon provider",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "main": "lib/serialport-usb-cdc-driver.js",
+  "files": [
+    "lib/**/*.js",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/serialport-usb-cdc-driver.js",
+    "./serialport-usb-cdc-driver": "./lib/serialport-usb-cdc-driver.js"
+  },
+  "scripts": {
+    "test": "node --test test/serialport-usb-cdc-driver.test.js"
+  },
+  "dependencies": {
+    "@hacker-bob/instrument-chameleon-worker-runtime": "0.0.0-development"
+  }
+}

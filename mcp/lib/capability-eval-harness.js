@@ -29,13 +29,10 @@ function uniqueDomain(prefix) {
 }
 
 function cleanupDomain(domain) {
-  // Cycle P.2: clean fixtures from both canonical and legacy session roots so
-  // a stale legacy directory from before the migration cannot poison reruns.
+  // Clean fixtures from the canonical session root so a stale directory cannot
+  // poison reruns.
   const canonicalDir = path.join(os.homedir(), "hacker-bob-sessions", domain);
-  const legacyDir = path.join(os.homedir(), "bounty-agent-sessions", domain);
-  for (const dir of [canonicalDir, legacyDir]) {
-    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
-  }
+  if (fs.existsSync(canonicalDir)) fs.rmSync(canonicalDir, { recursive: true, force: true });
 }
 
 async function withFixtureDomain(prefix, fn) {

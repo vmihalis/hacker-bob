@@ -3,6 +3,15 @@
 const {
   redactTextSensitiveValues: redactTextSensitiveValuesImpl,
 } = require("../redaction.js");
+const {
+  LABELED_PHYSICAL_VALUE_PATTERNS,
+  PHYSICAL_SENSITIVE_FIELD_RE,
+  assertPackageSafePhysicalDesignDocument,
+  budgetPhysicalPublicOutput,
+  redactPhysicalSensitiveValues,
+  redactPhysicalStructuredOutput,
+  validateNoPhysicalSensitiveMaterial,
+} = require("./physical-sensitive-material.js");
 
 const DEFAULT_MAX_TEXT_CHARS = 4000;
 
@@ -118,13 +127,20 @@ function validateNoSensitiveMaterial(
 // canonical "sensitive material" surface for callers that want both the
 // structured validator AND the text-level redactor at the same import site.
 function redactTextSensitiveValues(value) {
-  return redactTextSensitiveValuesImpl(value);
+  return redactPhysicalSensitiveValues(redactTextSensitiveValuesImpl(value));
 }
 
 module.exports = {
   DEFAULT_MAX_TEXT_CHARS,
+  LABELED_PHYSICAL_VALUE_PATTERNS,
+  PHYSICAL_SENSITIVE_FIELD_RE,
   SENSITIVE_KEY_RE,
   SENSITIVE_VALUE_RE,
+  assertPackageSafePhysicalDesignDocument,
+  budgetPhysicalPublicOutput,
+  redactPhysicalSensitiveValues,
+  redactPhysicalStructuredOutput,
   redactTextSensitiveValues,
+  validateNoPhysicalSensitiveMaterial,
   validateNoSensitiveMaterial,
 };

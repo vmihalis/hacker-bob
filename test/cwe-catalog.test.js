@@ -91,7 +91,10 @@ test("cweTitle returns a title for known ids and null otherwise", () => {
 // CWE-0 is not a real id: the /CWE-[0-9]+/ sweep matches the literal "CWE-0"
 // inside the regex /^CWE-0?22$/ in static-analysis-index.test.js (an optional
 // leading zero on CWE-22). Treat it as a scan artifact, not a seedable id.
-const NEGATIVE_CWE_FIXTURES = new Set(["CWE-0", "CWE-602", "CWE-999999"]);
+// CWE-9999 is a shape-valid but non-catalog id used as a negative fixture for the
+// annotate-not-gate relaxation (a CWE-shaped label loads with cwe_in_catalog:false
+// rather than being rejected); it is referenced precisely because it is unseeded.
+const NEGATIVE_CWE_FIXTURES = new Set(["CWE-0", "CWE-602", "CWE-999999", "CWE-9999"]);
 
 function collectReferencedCwes(dir) {
   const ids = new Set();

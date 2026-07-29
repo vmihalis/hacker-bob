@@ -17,6 +17,9 @@ const {
   enforceToolPolicy,
 } = require("./tool-policy.js");
 const {
+  assertEnforcementLiveness,
+} = require("./enforcement-attest.js");
+const {
   safeRecordToolTelemetry,
 } = require("./tool-telemetry.js");
 const {
@@ -59,10 +62,35 @@ async function executeTool(name, args) {
 
   try {
     validateToolArguments(name, safeArgs);
+    // Enforcement-liveness self-attestation. If the authority kernel is in
+    // shadow mode without operator-ack, refuse mutating calls loudly here
+    // (read-only calls fall through to the kernel, which fails loud on its own
+    // because authorityMode() reports "enforce" without an ack).
+    assertEnforcementLiveness(tool);
     authority = enforceToolPolicy(tool, safeArgs);
   } catch (error) {
     if (error && error.authority) {
       authority = error.authority;
+    }
+    if (error && error.enforcement_liveness && error.enforcement_liveness.degraded_unacked) {
+      // Best-effort loud drift record so the degraded posture is auditable even
+      // when stderr is discarded. Never throws; idempotent on (run_id, sig, tool).
+      try {
+        const driftTool = getRegisteredTool("bob_emit_runtime_drift");
+        if (driftTool && typeof safeArgs.target_domain === "string" && safeArgs.target_domain.trim()) {
+          await driftTool.handler({
+            target_domain: safeArgs.target_domain,
+            run_id: typeof safeArgs.run_id === "string" && safeArgs.run_id.trim()
+              ? safeArgs.run_id
+              : "enforcement-liveness",
+            drift_signature: "wrong_mode_tool_call",
+            rationale: "Session-authority enforcement in shadow mode without operator-ack; mutating call refused.",
+            details: { tool: name, session_mode: "shadow_unacked" },
+          });
+        }
+      } catch {
+        // Best-effort only — the refusal envelope below is the load-bearing signal.
+      }
     }
     return finish(errorEnvelope(
       name,

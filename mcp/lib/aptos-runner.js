@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -59,7 +59,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnAptos(args, { workdir, env, timeoutMs }) {
+function spawnAptos(args, { workdir, env, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     const stdoutChunks = [];
@@ -69,11 +69,15 @@ function spawnAptos(args, { workdir, env, timeoutMs }) {
 
     let child;
     try {
-      child = spawn("aptos", args, {
+      // The container route mounts ONLY this workdir (never the session tree /
+      // signing key) and runs as a non-signer container user; the degrade route
+      // is a byte-identical direct spawn.
+      child = scSubprocessContainerExec("aptos", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({
@@ -95,7 +99,15 @@ function spawnAptos(args, { workdir, env, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -134,6 +146,12 @@ function spawnAptos(args, { workdir, env, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this aptos in a filesystem-namespace container (true)
+        // or degraded to a host spawn AS THE SIGNER (false). absence/non-true defaults
+        // to false. Aptos Move backs findings via candidate-claims/verification-rounds,
+        // not a keyed invariant-runs-style ledger, so the gate does not inspect this row
+        // today; lifted for symmetry across all seven families.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -207,6 +225,7 @@ async function runAptosTest({
   forkUrls,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
   if (!matchTest) {
@@ -256,7 +275,7 @@ async function runAptosTest({
     // Local-only run (no network or localnet). Move tests are pure-VM and
     // don't require external state, so this is the default for sandboxed test
     // harnesses.
-    const result = await spawnAptos(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnAptos(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkVersion, fork_used: null, rpcPolicyRejections });
   }
 
@@ -266,7 +285,7 @@ async function runAptosTest({
     // env for harnesses that opt into mainnet-clone test fixtures (rare). Most
     // harnesses ignore it.
     const env = { BOB_APTOS_FORK_URL: url, BOB_APTOS_NETWORK: network || "" };
-    const result = await spawnAptos(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env });
+    const result = await spawnAptos(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),
@@ -298,6 +317,10 @@ function finalizeRun({ result, args, forkAttempts, forkVersion, fork_used, rpcPo
       ok: false,
       reason: result && result.reason ? result.reason : "spawn_failed",
       error: result && result.error ? result.error : null,
+      // A not-in-path / spawn-failed / refused run never executed the SC tool, so it is
+      // by definition not containerized. Surface false explicitly (fail-closed un-isolated)
+      // so the lift is present on EVERY return shape, not just success.
+      container_isolated: false,
       command: ["aptos", ...redactRpcEndpointArgs(args)],
       rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
       fork_attempts: forkAttempts,
@@ -333,6 +356,9 @@ function finalizeRun({ result, args, forkAttempts, forkVersion, fork_used, rpcPo
     timed_out: result.timed_out === true,
     exit_code: result.exit_code,
     signal: result.signal || null,
+    // TOP-LEVEL containerization signal lifted from the spawnAptos result. Symmetry
+    // with the keyed-ledger families; a host-as-signer (degrade) run resolves false.
+    container_isolated: result.container_isolated === true,
     fork_used,
     fork_version: forkVersion || null,
     fork_version_used: forkVersionUsed,

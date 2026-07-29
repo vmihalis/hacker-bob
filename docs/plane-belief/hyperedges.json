@@ -1,0 +1,122 @@
+{
+ "version": "v1 (2026-06-13)",
+ "note": "Hyperedges for Plane-B (causal belief). Mirrors docs/causal-belief-hypergraph.md H1-H10.",
+ "hyperedges": [
+  {
+   "id": "H1",
+   "predecessors": [
+    "CB-S1",
+    "CB-S2"
+   ],
+   "unlocks": [
+    "CB-1"
+   ],
+   "kind": "substrate",
+   "note": "projection needs authority separation and provenance"
+  },
+  {
+   "id": "H2",
+   "predecessors": [
+    "CB-1",
+    "CB-2",
+    "CB-3"
+   ],
+   "unlocks": [
+    "CB-B1"
+   ],
+   "kind": "engine",
+   "note": "the belief window needs typed facts, a template, and intake"
+  },
+  {
+   "id": "H3",
+   "predecessors": [
+    "CB-B1",
+    "CB-B4"
+   ],
+   "unlocks": [
+    "CB-B2"
+   ],
+   "kind": "engine",
+   "note": "the intervention calculus needs a belief state and an inference engine"
+  },
+  {
+   "id": "H4",
+   "predecessors": [
+    "CB-B2"
+   ],
+   "unlocks": [
+    "CB-B3"
+   ],
+   "kind": "engine",
+   "note": "the experiment loop runs on information-gain-ranked interventions"
+  },
+  {
+   "id": "H5",
+   "predecessors": [
+    "CB-B3"
+   ],
+   "unlocks": [
+    "CB-C2"
+   ],
+   "kind": "coupling",
+   "note": "causal support and confounder verdicts come from run interventions"
+  },
+  {
+   "id": "H6",
+   "predecessors": [
+    "CB-B3",
+    "CB-C1"
+   ],
+   "unlocks": [
+    "field-AB"
+   ],
+   "kind": "field",
+   "note": "scheduler lift needs the loop feeding the one gate"
+  },
+  {
+   "id": "H7",
+   "predecessors": [
+    "CB-C2"
+   ],
+   "unlocks": [
+    "CB-B5"
+   ],
+   "kind": "engine",
+   "note": "training labels come from verification/claim outcomes"
+  },
+  {
+   "id": "H8",
+   "predecessors": [
+    "CB-B4"
+   ],
+   "unlocks": [
+    "composition"
+   ],
+   "kind": "internal",
+   "note": "the joint sampler yields cross-mechanism chains within the prior"
+  },
+  {
+   "id": "H9",
+   "predecessors": [
+    "CB-B4"
+   ],
+   "unlocks": [
+    "CB-B6"
+   ],
+   "kind": "engine",
+   "note": "the residual is the negative-log marginal from the sampler"
+  },
+  {
+   "id": "H10",
+   "predecessors": [
+    "CB-B6"
+   ],
+   "unlocks": [
+    "CB-C1",
+    "human-router"
+   ],
+   "kind": "coupling",
+   "note": "residual routes to a human and re-ranks existing scheduling"
+  }
+ ]
+}

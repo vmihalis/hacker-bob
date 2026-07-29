@@ -207,10 +207,13 @@ test("set_auth_cookies marks the session credentialed (session-wide log suppress
   assert.match(DRIVER_SRC, /this\.credentialedSession = true;/);
 });
 
-test("authed_fetch rejects credential headers (auth must flow via set_auth_cookies, not the page world)", () => {
-  // round-7: the headers param lives in the page world (in-page fetch init), so a credential
-  // header could be read by a page-overridden fetch. Reject Authorization/Cookie/Proxy-Auth.
-  assert.match(DRIVER_SRC, /lower === "authorization" \|\| lower === "cookie" \|\| lower === "proxy-authorization"/);
+test("authed_fetch allowlists benign headers and rejects everything else (auth must flow via set_auth_cookies, not the page world)", () => {
+  // The headers param lives in the page world (in-page fetch init), so a credential header could
+  // be read by a page-overridden fetch. Fail-closed ALLOWLIST — only benign non-credential headers
+  // pass; ANY other (Authorization, Cookie, X-Api-Key, a bearer under a custom name) is rejected,
+  // closing the gap where a 3-name denylist let custom-header auth leak into the page world.
+  assert.match(DRIVER_SRC, /ALLOWED_AUTHED_FETCH_HEADERS/);
+  assert.match(DRIVER_SRC, /the \$\{hname\} header is not allowed/);
   assert.match(DRIVER_SRC, /use set_auth_cookies for credentials/);
 });
 
@@ -225,6 +228,34 @@ test("authed_fetch does NOT install a context.route interceptor (transport must 
 test("authed_fetch scope-checks the URL and guards origin drift", () => {
   assert.match(DRIVER_SRC, /assertSafeResolvedRequestUrl\(url, this\.targetDomain/);
   assert.match(DRIVER_SRC, /authed_fetch_origin_drift/);
+});
+
+test("authed_fetch scope-checks the FULL priming redirect chain, not just the landed origin", () => {
+  // SSRF/scope-bypass regression: page.goto follows 3xx while ALREADY credentialed. Checking
+  // only the LANDED origin lets a bounce (origin -> attacker -> origin) pass — a credentialed
+  // request already reached `attacker`. The op must walk the whole chain via redirectedFrom()
+  // (the final request back to the first) and scope-check EVERY hop, fail-closed on any that
+  // is off-scope. The landed-origin check stays as a first-line guard.
+  assert.match(DRIVER_SRC, /navResp\.request\(\)/, "the chain walk starts from the nav response's request");
+  assert.match(DRIVER_SRC, /\.redirectedFrom\(\)/, "the redirect chain is walked via redirectedFrom()");
+  // Every collected hop is validated with the same resolved-scope predicate the fetch URL uses,
+  // honoring the block_internal_hosts policy threaded into runAuthedFetchOp.
+  assert.match(
+    DRIVER_SRC,
+    /for \(const hopUrl of hopUrls\)[\s\S]*?assertSafeResolvedRequestUrl\(hopUrl, this\.targetDomain, \{ blockInternalHosts \}\)/,
+    "each redirect hop must be scope-checked, not only the landed origin",
+  );
+  assert.match(
+    DRIVER_SRC,
+    /runAuthedFetchOp\(\{[^}]*blockInternalHosts[^}]*\}\)/,
+    "the block_internal_hosts policy must be threaded into the redirect-chain check",
+  );
+  // An off-scope hop fails closed with a structured origin-drift error that names the hop.
+  assert.match(DRIVER_SRC, /authed_fetch_origin_drift: priming redirect hop \$\{hopUrl\} is off-scope/);
+  // The landed-origin check is preserved (it is not replaced by the chain walk).
+  assert.match(DRIVER_SRC, /authed_fetch_origin_drift: landed on \$\{landedOrigin\} not \$\{origin\}/);
+  // The fix must NOT reach for the forbidden catch-all route interceptor.
+  assert.doesNotMatch(DRIVER_SRC, /context\.route\s*\(\s*["'`]\*\*\/\*["'`]/);
 });
 
 test("authed_fetch races a wall-clock timeout (no session pin) and caps the body", () => {

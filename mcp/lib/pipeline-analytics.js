@@ -31,7 +31,20 @@ const {
   HANDOFF_ANALYTICS_MAX_FILES,
   WAVE_READINESS_MAX_ASSIGNMENT_FILES,
   readSessionArtifactSummary,
+  chainWorkRequired,
 } = require("./pipeline-session-artifacts.js");
+const {
+  readSurfaceRoutesStrict,
+  isUnroutableRoute,
+} = require("./surface-router.js");
+const {
+  readFrontierEvents,
+  capabilityFrictionPayloads,
+  aggregateFrictionByPack,
+} = require("./frontier-events.js");
+const {
+  FRICTION_KIND_VALUES,
+} = require("./queue-policy.js");
 const PIPELINE_ANALYTICS_VERSION = 1;
 const PIPELINE_EVENT_READ_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_WINDOW_DAYS = 30;
@@ -597,6 +610,71 @@ function issue(code, severity, message, evidence = {}) {
   return { code, severity, message, evidence };
 }
 
+// Pure read-time count of the ambiguous routing tail: medium-confidence routes
+// (the classifier was unsure), unroutable dispositions (D1 recorded a
+// disposition-only route, never laundered into a pack), and the deduped union
+// of medium routes plus surfaces that emitted capability_friction — both signals
+// say "the routed tools were probably wrong for this surface". No IO here; the
+// caller reads routes/friction and passes plain arrays.
+function deriveRoutingTail(routes, frictionPayloads) {
+  const routeList = Array.isArray(routes) ? routes : [];
+  const frictionList = Array.isArray(frictionPayloads) ? frictionPayloads : [];
+
+  let mediumConfidenceCount = 0;
+  const unroutableIds = new Set();
+  const misrouteIds = new Set();
+
+  for (const route of routeList) {
+    if (route == null || typeof route !== "object") continue;
+    const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
+    if (route.confidence === "medium") {
+      mediumConfidenceCount += 1;
+      if (surfaceId) misrouteIds.add(surfaceId);
+    }
+    // An unroutable surface is a disposition-only / null-pack route
+    // (surface-router.js isUnroutableRoute); dedupe by surface_id so one surface
+    // counts once.
+    if (isUnroutableRoute(route) && surfaceId) {
+      unroutableIds.add(surfaceId);
+    }
+  }
+
+  for (const payload of frictionList) {
+    if (payload == null || typeof payload !== "object") continue;
+    const surfaceId = typeof payload.surface_id === "string" ? payload.surface_id : null;
+    if (surfaceId) misrouteIds.add(surfaceId);
+  }
+
+  return {
+    medium_confidence_count: mediumConfidenceCount,
+    unroutable_count: unroutableIds.size,
+    likely_misroute_count: misrouteIds.size,
+  };
+}
+
+// Pure caller-side join map: surface_id -> capability_pack, built from the
+// persisted surface routes. A routable route carries both a string surface_id
+// and a non-empty string capability_pack; an unroutable route has no pack and
+// is skipped (an unknown surface contributes no pack bucket downstream). No IO;
+// the caller reads the routes and passes the plain array.
+function deriveSurfaceIdToPack(routes) {
+  const routeList = Array.isArray(routes) ? routes : [];
+  const map = {};
+  for (const route of routeList) {
+    if (route == null || typeof route !== "object" || Array.isArray(route)) continue;
+    // An unroutable route (disposition marker OR no pack) contributes no pack
+    // bucket even if a stray capability_pack survives in a corrupted row.
+    if (isUnroutableRoute(route)) continue;
+    const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
+    const pack = typeof route.capability_pack === "string" && route.capability_pack.length > 0
+      ? route.capability_pack
+      : null;
+    if (!surfaceId || !pack) continue;
+    map[surfaceId] = pack;
+  }
+  return map;
+}
+
 function analyzeSession(targetDomain, {
   cutoffMs = null,
   limit = DEFAULT_LIMIT,
@@ -785,10 +863,9 @@ function analyzeSession(targetDomain, {
     ));
   }
 
-  const chainWorkRequired = artifacts.findings.total >= 2 || artifacts.chain_handoffs.chain_notes_count > 0;
   if (
     lifecycleAtLeast(lifecycleState, "CLAIM_FREEZE") &&
-    chainWorkRequired &&
+    chainWorkRequired(artifacts) &&
     artifacts.chain_attempts.terminal_total === 0
   ) {
     issues.push(issue("chain_phase_no_attempts", "blocked", "CLAIM_FREEZE lifecycle requires terminal structured chain attempts when chain work is recorded.", {
@@ -850,6 +927,38 @@ function analyzeSession(targetDomain, {
       ? "needs_attention"
       : "healthy";
 
+  // Routing tail (summary-only, derived from persisted surface routes + frontier
+  // friction; never persisted). Every read fails open to [] so a session with no
+  // surface-routes.json or frontier log still yields a valid analytics payload.
+  let routingTailRoutes = [];
+  try {
+    routingTailRoutes = readSurfaceRoutesStrict(targetDomain).document.routes;
+  } catch {
+    routingTailRoutes = [];
+  }
+  let frictionPayloads = [];
+  try {
+    // readFrontierEvents returns a bare array of normalized events (jsonl-strict).
+    // The shared capabilityFrictionPayloads predicate selects the global
+    // capability_friction payloads (no surface scope), gated to the actionable
+    // friction kinds. The gate is FRICTION_KIND_VALUES itself (the single
+    // authority for the allowed set), so a future kind is counted without editing
+    // this call site.
+    const frontierEvents = readFrontierEvents(targetDomain);
+    frictionPayloads = capabilityFrictionPayloads(frontierEvents, {
+      frictionKinds: FRICTION_KIND_VALUES,
+    });
+  } catch {
+    frictionPayloads = [];
+  }
+  const routingTail = deriveRoutingTail(routingTailRoutes, frictionPayloads);
+  // Pack-level friction: reuses the already-read routes + gated frictionPayloads
+  // (no new fs reads). aggregateFrictionByPack returns {} on empty inputs, so a
+  // session missing routes or a frontier log fails open to {}. Because the row is
+  // shared by the single-session and cross-session paths, the summary also
+  // appears in mode:"cross_session".
+  const packFrictionSummary = aggregateFrictionByPack(frictionPayloads, deriveSurfaceIdToPack(routingTailRoutes));
+
   const row = {
     target_domain: targetDomain,
     lifecycle_state: lifecycleState,
@@ -892,6 +1001,8 @@ function analyzeSession(targetDomain, {
       pack_count: artifacts.technique_pack_reads.pack_count,
     },
     lead_promotion: leadPromotion,
+    routing_tail: routingTail,
+    pack_friction_summary: packFrictionSummary,
     claim_freeze_duration_ms: computeClaimFreezeLifecycleDurationMs(allEvents),
     final_verification_count: artifacts.verification.final_results_count,
     final_reportable_count: artifacts.verification.final_reportable_count,
@@ -922,6 +1033,17 @@ function analyzeSession(targetDomain, {
     },
   };
 
+  // Composition telemetry (summary-only, derived from the read-only task-graph
+  // summary; never persisted). Defensive: a missing or pressure-refused graph
+  // must not break session analytics.
+  let composition = null;
+  try {
+    const { summarizeTaskGraph } = require("./task-graph-materializer.js");
+    composition = summarizeTaskGraph(targetDomain).composition || null;
+  } catch {
+    composition = null;
+  }
+
   return {
     target_domain: targetDomain,
     row,
@@ -931,6 +1053,7 @@ function analyzeSession(targetDomain, {
     issues,
     tool_health: toolHealth,
     evaluator_health: evaluatorHealth,
+    composition,
   };
 }
 
@@ -1034,7 +1157,7 @@ function actionForBottleneck(bottleneck) {
     missing_evidence: "Run the evidence agent and validate evidence packs before grading or reporting.",
     missing_grade: "Write a valid grade verdict before report completion.",
     missing_report: "Write report.md or move the session out of REPORT if report writing is still pending.",
-    report_pending_canonical_path: "Write or move the consolidated report to the canonical session report.md path, then call bounty_report_written.",
+    report_pending_canonical_path: "Write or move the consolidated report to the canonical session report.md path, then call bob_finalize_report.",
     stale_pending_wave: "Re-enter resume flow for the stale pending wave and settle handoffs.",
     delayed_wave_reconciliation: "Audit and tighten the resume flow after evaluator completion so wave reconciliation runs promptly.",
   };
@@ -1136,6 +1259,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
       next_actions: buildNextActions(bottlenecks, options.limit),
       tool_health: analysis.tool_health,
       evaluator_health: analysis.evaluator_health,
+      composition: analysis.composition,
       event_log: {
         enabled: analysis.event_read.enabled,
         path: analysis.event_read.events_path,
@@ -1234,6 +1358,7 @@ module.exports = {
   readPipelineAnalytics,
   readPipelineEvents,
   readSessionArtifactSummary,
+  deriveSurfaceIdToPack,
   // Re-exported from ./pipeline-events.js for backwards compatibility. Prefer
   // importing these from pipeline-events.js directly in new code.
   appendPipelineEventDirect,

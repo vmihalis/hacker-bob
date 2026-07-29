@@ -5,10 +5,11 @@ const assert = require("node:assert/strict");
 
 const {
   CANONICAL_PERMISSION_PREFIX,
-  PRESERVED_BOUNTY_TOOL_NAMES,
+  assertLegacyToolPermissionsMigratable,
   mergeSettings,
   migrateLegacySettings,
   rewriteLegacyToolNamePermission,
+  unmigratableLegacyToolPermissions,
 } = require("../scripts/merge-claude-config.js");
 const {
   defaultClaudeSettings,
@@ -17,20 +18,16 @@ const {
 
 // Build a representative v1.x .claude/settings.json that has already had its
 // server key rewritten (mcp__hacker-bob__...) but still carries the legacy
-// `bounty_*` tool-suffix from the pre-P.1 rename generation. This mirrors
-// the empirical state observed in installs upgraded with the
-// installer-cleanup-cycle shim, which handled the server prefix but not the
-// tool-name suffix.
+// `bounty_*` tool-suffix from the pre-rename generation. Every suffix here has
+// a live canonical `bob_*` twin, so the installer migrates it cleanly. A
+// suffix whose twin was removed in v2.1.0 (report_written, transition_phase)
+// has no clean migration and is exercised by the fail-loud tests below.
 function buildV1HackerBobSettings() {
   return {
     permissions: {
       allow: [
         "mcp__hacker-bob__bounty_init_session",
         "mcp__hacker-bob__bounty_http_scan",
-        // Bona-fide P.1 deprecation-shim tool — owns its own primary handler
-        // and must keep the bounty_ prefix in the permission allow-list
-        // because the server still dispatches it under that exact name.
-        "mcp__hacker-bob__bounty_transition_phase",
         "Read",
         "Bash(echo *)",
       ],
@@ -39,7 +36,7 @@ function buildV1HackerBobSettings() {
   };
 }
 
-test("rewriteLegacyToolNamePermission rewrites canonical-prefix bounty_ suffixes to bob_", () => {
+test("rewriteLegacyToolNamePermission rewrites canonical-prefix bounty_ suffixes with a live bob_ twin", () => {
   assert.equal(
     rewriteLegacyToolNamePermission("mcp__hacker-bob__bounty_init_session"),
     "mcp__hacker-bob__bob_init_session",
@@ -55,15 +52,83 @@ test("rewriteLegacyToolNamePermission rewrites canonical-prefix bounty_ suffixes
   );
 });
 
-test("rewriteLegacyToolNamePermission preserves bona-fide P.1 deprecation-shim tool names", () => {
-  for (const preserved of PRESERVED_BOUNTY_TOOL_NAMES) {
-    const fullPermission = `${CANONICAL_PERMISSION_PREFIX}${preserved}`;
-    assert.equal(
-      rewriteLegacyToolNamePermission(fullPermission),
-      fullPermission,
-      `${preserved} must be preserved (owns its own primary handler with legacy schema)`,
+test("rewriteLegacyToolNamePermission fails loud on a removed bounty_* tool with no canonical twin", () => {
+  // report_written was deleted (covered by bob_compose_report + bob_finalize_report);
+  // transition_phase was deleted (covered by bob_advance_session). Neither has a
+  // same-suffix bob_ twin, so a blind rewrite would mint a dead permission.
+  for (const removed of ["bounty_report_written", "bounty_transition_phase"]) {
+    const fullPermission = `${CANONICAL_PERMISSION_PREFIX}${removed}`;
+    assert.throws(
+      () => rewriteLegacyToolNamePermission(fullPermission),
+      (err) => {
+        assert.ok(err instanceof Error);
+        // The error names the stale string verbatim and the bob_* replacement
+        // guidance so an operator can hand-fix the allow-list.
+        assert.match(err.message, /removed bounty_\* tool alias layer/);
+        assert.match(err.message, /v2\.1\.0/);
+        assert.ok(
+          err.message.includes(fullPermission),
+          `error must name the stale permission ${fullPermission}`,
+        );
+        assert.match(
+          err.message,
+          /bob_finalize_report|bob_advance_session/,
+          "error must name a bob_* replacement",
+        );
+        return true;
+      },
+      `${removed} must fail loud (no canonical twin to migrate to)`,
     );
   }
+});
+
+test("PRE-FLIGHT: unmigratableLegacyToolPermissions collects every stale permission, [] when all migrate", () => {
+  // A clean v1.x settings (every suffix has a live twin) → nothing stale.
+  assert.deepEqual(unmigratableLegacyToolPermissions(buildV1HackerBobSettings()), []);
+  // Mixed: two removed-tool pins (no twin) alongside migratable + unrelated permissions.
+  const mixed = {
+    permissions: {
+      allow: [
+        "mcp__hacker-bob__bounty_init_session", // migratable
+        "mcp__hacker-bob__bounty_report_written", // removed, no twin
+        "Read",
+        "mcp__hacker-bob__bounty_transition_phase", // removed, no twin
+        "mcp__hacker-bob__bob_http_scan", // already canonical
+      ],
+    },
+  };
+  const stale = unmigratableLegacyToolPermissions(mixed);
+  assert.deepEqual(
+    stale.map((s) => s.permission).sort(),
+    ["mcp__hacker-bob__bounty_report_written", "mcp__hacker-bob__bounty_transition_phase"],
+  );
+  // Empty / shapeless settings never throw and report nothing stale.
+  assert.deepEqual(unmigratableLegacyToolPermissions({}), []);
+  assert.deepEqual(unmigratableLegacyToolPermissions(null), []);
+});
+
+test("PRE-FLIGHT: assertLegacyToolPermissionsMigratable throws ONE comprehensive error naming every stale pin", () => {
+  const settings = {
+    permissions: {
+      allow: ["mcp__hacker-bob__bounty_report_written", "mcp__hacker-bob__bounty_transition_phase"],
+    },
+  };
+  assert.throws(
+    () => assertLegacyToolPermissionsMigratable(settings),
+    (err) => {
+      assert.ok(err instanceof Error);
+      // names BOTH stale pins in one error
+      assert.ok(err.message.includes("mcp__hacker-bob__bounty_report_written"));
+      assert.ok(err.message.includes("mcp__hacker-bob__bounty_transition_phase"));
+      assert.match(err.message, /2 stale MCP permission/);
+      assert.match(err.message, /bob_finalize_report|bob_advance_session/);
+      // makes the atomicity guarantee explicit
+      assert.match(err.message, /no files have been modified yet/i);
+      return true;
+    },
+  );
+  // A clean settings validates silently (no throw).
+  assert.doesNotThrow(() => assertLegacyToolPermissionsMigratable(buildV1HackerBobSettings()));
 });
 
 test("rewriteLegacyToolNamePermission is idempotent on canonical and unrelated permissions", () => {
@@ -91,7 +156,7 @@ test("rewriteLegacyToolNamePermission is idempotent on canonical and unrelated p
   assert.equal(rewriteLegacyToolNamePermission(undefined), undefined);
 });
 
-test("migrateLegacySettings rewrites bounty_* tool suffixes and preserves the bona-fide shim", () => {
+test("migrateLegacySettings rewrites bounty_* tool suffixes that have a live bob_ twin", () => {
   const v1 = buildV1HackerBobSettings();
   const result = migrateLegacySettings(v1);
   assert.equal(result.migrated, true);
@@ -109,11 +174,6 @@ test("migrateLegacySettings rewrites bounty_* tool suffixes and preserves the bo
   // Legacy strings dropped after rewrite.
   assert.ok(!allow.includes("mcp__hacker-bob__bounty_init_session"));
   assert.ok(!allow.includes("mcp__hacker-bob__bounty_http_scan"));
-  // Bona-fide P.1 deprecation-shim tool is preserved verbatim.
-  assert.ok(
-    allow.includes("mcp__hacker-bob__bounty_transition_phase"),
-    "bounty_transition_phase must be preserved (owns its own handler)",
-  );
   // Operator-authored unrelated entries survive.
   assert.ok(allow.includes("Read"));
   assert.ok(allow.includes("Bash(echo *)"));
@@ -123,17 +183,29 @@ test("migrateLegacySettings rewrites bounty_* tool suffixes and preserves the bo
   assert.equal(allow.length, new Set(allow).size);
 });
 
+test("migrateLegacySettings fails loud when a removed bounty_* permission is pinned", () => {
+  const stale = {
+    permissions: {
+      allow: [
+        "mcp__hacker-bob__bob_init_session",
+        "mcp__hacker-bob__bounty_report_written",
+        "Read",
+      ],
+    },
+  };
+  assert.throws(
+    () => migrateLegacySettings(stale),
+    /removed bounty_\* tool alias layer.*bob_finalize_report/s,
+    "a pinned removed-tool permission must abort the migration with a helpful error",
+  );
+});
+
 test("migrateLegacySettings is a no-op when no legacy bounty_* permissions are present", () => {
-  // Settings without any bounty_* suffix — only canonical bob_* permissions,
-  // non-mcp permissions, and the bona-fide deprecation shim (which is not a
-  // "legacy" entry, it's intentional).
   const clean = {
     permissions: {
       allow: [
         "mcp__hacker-bob__bob_init_session",
         "mcp__hacker-bob__bob_http_scan",
-        "mcp__hacker-bob__bounty_transition_phase",
-        "mcp__hacker-bob__bounty_report_written",
         "Read",
         "Bash(echo *)",
       ],
@@ -141,7 +213,7 @@ test("migrateLegacySettings is a no-op when no legacy bounty_* permissions are p
     customSetting: true,
   };
   const result = migrateLegacySettings(clean);
-  assert.equal(result.migrated, false, "no rewrite should be reported when all bounty_ tokens are preserved shims");
+  assert.equal(result.migrated, false, "no rewrite should be reported when there are no bounty_ tokens");
   assert.deepEqual(result.value, clean);
 });
 
@@ -176,7 +248,7 @@ test("mergeSettings adds missing canonical primary permissions on upgrade", () =
   };
   const merged = mergeSettings(existing, defaultClaudeSettings());
 
-  // Canonical T.1/T.7 browser-driver tools land on upgrade.
+  // Canonical browser-driver tools land on upgrade.
   assert.ok(
     merged.permissions.allow.includes("mcp__hacker-bob__bob_browser_navigate"),
     "bob_browser_navigate must land in the allow-list on upgrade",
@@ -187,16 +259,16 @@ test("mergeSettings adds missing canonical primary permissions on upgrade", () =
   );
   assert.ok(
     merged.permissions.allow.includes("mcp__hacker-bob__bob_browser_session_start_recording"),
-    "bob_browser_session_start_recording (T.7) must land in the allow-list on upgrade",
+    "bob_browser_session_start_recording must land in the allow-list on upgrade",
   );
   assert.ok(
     merged.permissions.allow.includes("mcp__hacker-bob__bob_browser_flush_recorded_requests"),
-    "bob_browser_flush_recorded_requests (T.7) must land in the allow-list on upgrade",
+    "bob_browser_flush_recorded_requests must land in the allow-list on upgrade",
   );
-  // Canonical T.8 pack-telemetry tool lands on upgrade.
+  // Canonical pack-telemetry tool lands on upgrade.
   assert.ok(
     merged.permissions.allow.includes("mcp__hacker-bob__bob_set_pack_telemetry_config"),
-    "bob_set_pack_telemetry_config (T.8) must land in the allow-list on upgrade",
+    "bob_set_pack_telemetry_config must land in the allow-list on upgrade",
   );
 
   // Pre-existing entries survive.
@@ -221,26 +293,42 @@ test("mergeSettings is byte-identical on the second run over its own output", ()
   assert.equal(secondJson, firstJson, "second mergeSettings run must produce byte-identical output");
 });
 
-test("mergeSettings on a bounty_*-laden v1 surface ends with the canonical bob_* set + bona-fide shim", () => {
+test("mergeSettings on a bounty_*-laden v1 surface ends with the canonical bob_* set", () => {
   // Combined surface test: starting from buildV1HackerBobSettings(),
-  // mergeSettings must produce the canonical bob_* permissions for every
-  // tool plus the preserved bounty_transition_phase shim entry.
+  // mergeSettings must produce the canonical bob_* permissions for every tool.
   const merged = mergeSettings(buildV1HackerBobSettings(), defaultClaudeSettings());
   const allow = merged.permissions.allow;
 
   // Rewrites land.
   assert.ok(allow.includes("mcp__hacker-bob__bob_init_session"));
   assert.ok(allow.includes("mcp__hacker-bob__bob_http_scan"));
-  // Legacy suffix forms are gone for non-shim tools.
+  // Legacy suffix forms are gone.
   assert.ok(!allow.includes("mcp__hacker-bob__bounty_init_session"));
   assert.ok(!allow.includes("mcp__hacker-bob__bounty_http_scan"));
-  // Bona-fide shim survives.
-  assert.ok(allow.includes("mcp__hacker-bob__bounty_transition_phase"));
+  // No bounty_* tool permission survives the merge.
+  assert.ok(!allow.some((perm) => /^mcp__hacker-bob__bounty_/.test(perm)));
   // Operator entries survive.
   assert.ok(allow.includes("Read"));
   assert.ok(allow.includes("Bash(echo *)"));
   // Unrelated keys survive.
   assert.equal(merged.customSetting, true);
+});
+
+test("mergeSettings fails loud on a v1 surface pinning a removed bounty_* tool", () => {
+  const v1WithRemoved = {
+    permissions: {
+      allow: [
+        "mcp__hacker-bob__bounty_http_scan",
+        "mcp__hacker-bob__bounty_transition_phase",
+        "Read",
+      ],
+    },
+  };
+  assert.throws(
+    () => mergeSettings(v1WithRemoved, defaultClaudeSettings()),
+    /removed bounty_\* tool alias layer.*bob_advance_session/s,
+    "an upgrade that pins a removed bounty_* tool must abort with a helpful error",
+  );
 });
 
 test("permissionsForAllTools covers the canonical surfaces this migration adds", () => {

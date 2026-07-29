@@ -11,7 +11,30 @@ permissions:
   id-token: write
 
 jobs:
+  native-darwin-qualification:
+    # macos-15, not macos-14: direct_cdc_custody.mm needs the IOUSBHost option
+    # IOUSBHostObjectInitOptionsDeviceSeize, absent from the macOS 14 SDK.
+    # Kept in step with the same job in ci.yml — this one gates publish.
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Qualify Darwin arm64 native and lifecycle surfaces
+        run: npm run test:native-darwin
+
   publish:
+    needs: native-darwin-qualification
     runs-on: ubuntu-latest
 
     steps:

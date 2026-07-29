@@ -16,9 +16,9 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+const { sessionsRoot } = require("./paths.js");
 
 const MAX_SESSIONS_PER_DOMAIN = 3;
 // Timeouts are mutable so tests can run the reaping path without waiting for
@@ -261,7 +261,7 @@ async function startSession({
   targetUrl,
   headless = false,
   recordMode = false,
-  sessionsRoot,
+  sessionsRoot: sessionsRootOverride,
   patchrightCheck = isPatchrightAvailable,
   proxy = null,
   authCookies = null,
@@ -289,7 +289,14 @@ async function startSession({
   }
 
   const sessionId = generateSessionId(trimmedDomain);
-  const resolvedSessionsRoot = sessionsRoot || path.join(os.homedir(), "hacker-bob-sessions");
+  // No caller passes `sessionsRoot`, so this fallback IS the production path.
+  // It must go through paths.sessionsRoot() rather than re-deriving the root
+  // from os.homedir(): with an operator-configured BOB_SESSIONS_ROOT, a
+  // hardcoded homedir join would drop browser screenshots into the DEFAULT
+  // root — invisible to this engine's session, and shared with every other
+  // workspace. With no override set it resolves to exactly the same path as
+  // before.
+  const resolvedSessionsRoot = sessionsRootOverride || sessionsRoot();
   const initPayload = {
     session_id: sessionId,
     target_domain: trimmedDomain,

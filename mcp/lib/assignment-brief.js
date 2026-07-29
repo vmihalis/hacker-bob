@@ -9,6 +9,9 @@ const {
   loadWaveAssignments,
 } = require("./assignments.js");
 const {
+  markAgentRunStartedIdempotent,
+} = require("./agent-runs.js");
+const {
   blockInternalHostsPolicyFields,
 } = require("./session-state-contracts.js");
 const {
@@ -69,6 +72,7 @@ const {
 const {
   normalizeAssignmentRouteMetadata,
 } = require("./capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
 const {
   readFrontierEvents,
 } = require("./frontier-events.js");
@@ -308,7 +312,7 @@ const WEB_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("static_scan_hints", 4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.staticScanHints, true),
   briefSliceEntry("schema_slice", 8192 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.schemaSlice, true),
   briefSliceEntry("surface_graph_slice", 8192 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.surfaceGraphSlice, true),
-  briefSliceEntry("auth_profiles_hint", 512, () => "Call `bob_list_auth_profiles`; pass the chosen profile name as `auth_profile` to `bob_http_scan`."),
+  briefSliceEntry("auth_profiles_hint", 512, () => "Call `bob_list_auth_profiles`; pass the chosen profile name as `auth_profile` to `bob_http_scan`. Offensive-confirm producers are available — escalate a find to its confirm tool (reflected canary -> browser execution, baseline read -> cross-identity read, blind sink -> out-of-band callback) to mint the signed row that closes the surface."),
 ]);
 
 // Plane T cycle T.4 — partition the selected technique packs by lens affinity
@@ -521,7 +525,12 @@ const REPO_WORKFLOW_TEXT = [
   "   for unsafe-sink hunting, config-misuse hunting, docs-vs-behavior diffs.",
   "3. `bob_repo_docker_run({ target_domain, command, allow_network?: false })`",
   "   — sandboxed execution (cap-drop ALL, no-new-privileges, --user 1000:1000,",
-  "   --network none default). Use for fuzz / sanitizer / build runs.",
+  "   --network none default). Writable surfaces: `/work` (session-scoped, persists",
+  "   across calls), exec-capable `/tmp` scratch, and `HOME=/work` for build caches;",
+  "   stage `/src` into `/work` and build+run there. This is the ONLY execution path",
+  "   that writes the audit-graded repo-command-runs.jsonl ledger — a raw `docker` or",
+  "   Bash invocation is NOT captured and cannot back a high/critical claim or a",
+  "   verified_pass. Use it for every fuzz / sanitizer / build / repro run.",
   "4. Static analyzers via cli_tools: semgrep, trivy, CodeQL, Coccinelle,",
   "   cargo-audit, npm-audit, pip-audit. Each pack lists the install_check",
   "   + invocation template.",
@@ -536,6 +545,17 @@ const REPO_WORKFLOW_TEXT = [
   "`repo-command-runs.jsonl` rows. Flat `cov`/`ft` means switch seed or",
   "harness strategy; it never completes or blocks a surface by itself.",
   "",
+  "Memory-safety proof contract (native C/C++/Rust-unsafe/asm):",
+  "When a sanitizer crash reproduces, record the finding with `repro_command_argv`",
+  "— the exact `bob_repo_docker_run` token array that triggers it — alongside the",
+  "cited repo_command_run evidence; high/critical native claims are rejected",
+  "without this recipe. At verification the differential gate",
+  "`bob_verify_repro_reproduction({ finding_id, command: repro_command_argv,",
+  "control_ref })` re-runs the SAME argv on the vulnerable tree and the upstream-",
+  "fix tree (control_ref = the fix commit): a real bug crashes the vulnerable tree",
+  "and is QUIET on the fix; a printf'd banner fires on both and is refuted. A claim",
+  "with no verified_pass bound to its argv cannot be graded at high/critical.",
+  "",
   "The curl-shaped HTTP playbook (`bob_http_scan`, ffuf-style content",
   "discovery, param fuzzing) is de-emphasized under OSS lenses — repo-bound",
   "sessions do not own the deployed instance unless an operator explicitly",
@@ -546,7 +566,7 @@ const OSS_BRIEF_SLICE_REGISTRY = Object.freeze([
   // `repo_workflow` leads when the active task lens is one of the OSS lenses.
   // Returns "" for other lenses; the registry assembly pass drops empty-string
   // slices so the brief stays absent rather than carrying an empty header.
-  briefSliceEntry("repo_workflow", 2048, (context) => (
+  briefSliceEntry("repo_workflow", 3072, (context) => (
     isOssLens(context.taskLens) ? REPO_WORKFLOW_TEXT : ""
   )),
   briefSliceEntry("governance", 1024, (context) => context.governance),
@@ -962,6 +982,51 @@ function slimSurfaceForBrief(surface) {
   };
 }
 
+// Depth (A1) — carry the route-frozen id-bearing obligation into the brief.
+// The assignment stores id_bearing (detector result), the FROZEN id-bearing
+// endpoint TEMPLATES, and the auth_differential_required flag at route time
+// (wave-assignment-store.js). The evaluator brief must surface the known-
+// mandatory cross-tenant experiment for that surface so the brief promises
+// exactly what the finalize/grade gate will require — never more, never less.
+// The endpoint list is the only variable-length field and is capped via the
+// existing cappedSurfaceArray; the guidance is a fixed literal (no unbounded
+// scalar). The whole key is omitted for non-id_bearing surfaces (drop-empty).
+const ID_BEARING_ENDPOINT_BRIEF_LIMIT = 40; // mirrors interesting_params cap
+const ID_BEARING_OBLIGATION_TEXT = [
+  "This surface is id-bearing: the frozen id_bearing_endpoints expose per-object ids, so a cross-tenant IDOR/BOLA flip is the known-mandatory experiment for this surface.",
+  "Call bob_list_auth_profiles, then run bob_run_auth_differential across >=2 distinct authenticated principals on those frozen endpoints (do not re-derive endpoints from attack_surface.json).",
+  "The negative control must FLIP per endpoint: principal A reads its own object (allowed) while a distinct principal B is denied that same object (forbidden) — a same-object cross-tenant divergence, not two unrelated 200s.",
+  "If <2 principals are provisionable or the flip cannot be run, mark the surface partial with a blocked_prereqs entry naming the un-run test — do NOT mark it complete. A coverage row or bypass_attempt narrative does not clear an id-bearing surface.",
+].join(" ");
+
+// Pure, fail-soft obligation builder. Sourced ONLY from the on-disk, route-
+// frozen (MCP-owned) assignment fields — never re-derived from agent-writable
+// attack_surface.json (the reason id_bearing_endpoints were frozen at route
+// time). The fire predicate mirrors the finalize gate at
+// agent-run-completion.js (id_bearing || auth_differential_required) so the
+// brief never promises an experiment the gate won't require nor omits one it
+// will demand. Legacy/absent fields yield null (omitted key), never a throw.
+function buildIdBearingObligationForBrief(assignment) {
+  const source = assignment && typeof assignment === "object" && !Array.isArray(assignment)
+    ? assignment
+    : {};
+  const authDifferentialRequired = source.auth_differential_required === true;
+  const isIdBearing = source.id_bearing === true || authDifferentialRequired;
+  if (!isIdBearing) return null;
+  const { values, limits } = cappedSurfaceArray(
+    source.id_bearing_endpoints,
+    ID_BEARING_ENDPOINT_BRIEF_LIMIT,
+  );
+  return {
+    id_bearing: true,
+    auth_differential_required: authDifferentialRequired,
+    ...(values.length
+      ? { id_bearing_endpoints: values, id_bearing_endpoints_limits: limits }
+      : {}),
+    obligation: ID_BEARING_OBLIGATION_TEXT,
+  };
+}
+
 function readSurfaceInfoForBrief(domain, routeMetadata) {
   if (routeMetadata.brief_profile === "oss") {
     const projected = currentSurfaces(domain);
@@ -979,6 +1044,364 @@ function readSurfaceInfoForBrief(domain, routeMetadata) {
     }
     throw error;
   }
+}
+
+// CN (coverage-nesting) — assemble the bounded (bug_class x auth_role) child
+// fan-out plan for a wave-dispatched per-surface evaluator. The brain owns the
+// decomposition + budget here; the host muscle decides actuation (nested
+// subagent spawn where the host supports it, flat extra wave assignments
+// otherwise). Returns null when nesting is off (default max_spawn_depth=1) or
+// the surface yields no uncovered cells, so the brief is byte-for-byte
+// unchanged until an operator opts in via bob_set_queue_policy.
+//
+// Fail-soft on every read: a missing queue-policy.json, auth.json, or coverage
+// log degrades to "no fan-out" rather than aborting brief composition (matching
+// the Y-P4 caller-side fail-soft discipline of the wave-brief derivation).
+//
+// NOTE (Step B): under the flat-fallback actuation, the orchestrator enqueues
+// each child cell as an additional wave assignment; the wave-planner must stamp
+// those child assignments with their spawn depth so their own briefs see
+// remaining_depth - 1 and recursion stays bounded. Until that lands, fan-out is
+// gated OFF by the default max_spawn_depth=1.
+// Shared cell-floor planner for ONE surface: sources the target-class-polymorphic
+// axes (web/SC bug_class x auth_role; OSS sanitizer x input_class), derives the
+// already-covered cell keys from the coverage summary, and crosses them via the
+// pure deriveChildFanoutPlan with the caller's budget. Used by BOTH the wave-
+// brief fan-out (nesting actuation, budgeted by max_spawn_depth) and the cell-
+// floor producer (the deterministic coverage obligation, always enumerated).
+// The depth/count budget is the caller's choice — the floor is NOT gated by the
+// (parked) nesting budget.
+function deriveCellFloorForSurface({ domain, surfaceObj, surfaceId, coverageSummary, remainingDepth, maxChildren, belief }) {
+  if (!(remainingDepth > 0)) return null;
+
+  const { deriveChildFanoutPlan, fanoutPlanningKey } = require("./capability-pack-derivation.js");
+  const {
+    isOssSurfaceMetadata,
+    OSS_SANITIZER_CLASS_AXIS,
+    OSS_INPUT_CLASS_AXIS,
+  } = require("./capability-packs.js");
+
+  // Cell axes are target-class-polymorphic. web/SC cross (bug_class x auth_role).
+  // An OSS/native surface IS a harness: it crosses the build-config axis
+  // (sanitizer class) with the fuzzing-strategy axis (input class) and has NO
+  // auth_role — the specific crash is an outcome recorded at reconcile, not an
+  // enumerated axis. The cell-key slots (bug_class, auth_profile) carry
+  // (sanitizer_class, input_class) for OSS; all values are lowercase so the key
+  // survives coverage normalization unchanged.
+  let bugClassAxis;
+  let authProfiles;
+  if (isOssSurfaceMetadata(surfaceObj)) {
+    bugClassAxis = OSS_SANITIZER_CLASS_AXIS;
+    authProfiles = OSS_INPUT_CLASS_AXIS;
+  } else {
+    bugClassAxis = Array.isArray(surfaceObj && surfaceObj.bug_class_hints)
+      ? surfaceObj.bug_class_hints
+      : [];
+    // auth-role axis: REDACTED profile names (no secrets) via the same reader
+    // bob_list_auth_profiles exposes. Fail-soft to the anonymous baseline.
+    authProfiles = [];
+    try {
+      const parsed = JSON.parse(require("./auth.js").listAuthProfiles({ target_domain: domain }));
+      authProfiles = Array.isArray(parsed.profiles)
+        ? parsed.profiles
+          .map((p) => p && p.profile_name)
+          .filter((n) => typeof n === "string" && n.length > 0)
+        : [];
+    } catch {
+      authProfiles = [];
+    }
+  }
+
+  // covered_cell_keys: a cell is terminally covered when
+  //   (a) it is `tested` AND has no unfinished sibling (promising/needs_auth/
+  //       requeue) — an in-progress success stays re-spawnable; OR
+  //   (b) it is `blocked` — a terminal give-up that DOMINATES any unfinished
+  //       sibling. Blocked must win, else a cell that fails its witness (which
+  //       leaves promising/needs_auth/requeue rows behind) could never be retired:
+  //       the stuck-cell auto-block writes `blocked`, but an unfinished sibling
+  //       would filter it back out and wedge OPEN_FRONTIER->CLAIM_FREEZE forever.
+  // (For OSS the same slots carry (sanitizer_class, input_class).)
+  const testedKeys = new Set();
+  const blockedKeys = new Set();
+  const unfinishedKeys = new Set();
+  const addKeys = (items, target) => {
+    if (!Array.isArray(items)) return;
+    for (const it of items) {
+      if (!it || typeof it.bug_class !== "string") continue;
+      target.add(fanoutPlanningKey(it.bug_class, it.auth_profile || ""));
+    }
+  };
+  if (coverageSummary && typeof coverageSummary === "object") {
+    addKeys(coverageSummary.tested, testedKeys);
+    addKeys(coverageSummary.blocked, blockedKeys);
+    addKeys(coverageSummary.promising, unfinishedKeys);
+    addKeys(coverageSummary.needs_auth, unfinishedKeys);
+    addKeys(coverageSummary.requeue, unfinishedKeys);
+  }
+  const coveredCellKeys = Array.from(new Set([
+    ...Array.from(testedKeys).filter((k) => !unfinishedKeys.has(k)),
+    ...blockedKeys,
+  ]));
+
+  // Open-registry feed (the live-feed actuation). When an operator opts into
+  // belief-assisted priority, read the merged mechanism registry (corpus tier-2
+  // + per-session tier-3 candidates) at THIS I/O boundary and thread it into the
+  // pure deriver via the belief option, so the cell-floor fans out over the whole
+  // open mechanism space and ranks dispatch by the trust gradient. The fs read
+  // lives HERE (the impure producer), never inside the pure deriveChildFanoutPlan.
+  // Absent/disabled belief => no belief key => byte-identical to the deterministic
+  // baseline (the floor's INV-6 default-off contract holds).
+  let beliefOption;
+  if (belief && typeof belief === "object" && !Array.isArray(belief) && belief.enabled === true) {
+    let mechanismTemplates = [];
+    try {
+      const { getMechanismTemplatesForDomain } = require("./invariant-template-corpus.js");
+      const merged = getMechanismTemplatesForDomain(domain);
+      mechanismTemplates = Array.isArray(merged) ? merged : [];
+    } catch {
+      mechanismTemplates = [];
+    }
+    beliefOption = { ...belief, mechanism_templates: mechanismTemplates };
+  }
+
+  return deriveChildFanoutPlan(surfaceId, surfaceObj, {
+    bug_class_hints: bugClassAxis,
+    auth_profiles: authProfiles,
+    budget: { remaining_depth: remainingDepth, max_children: maxChildren },
+    covered_cell_keys: coveredCellKeys,
+    ...(beliefOption ? { belief: beliefOption } : {}),
+  });
+}
+
+// The coverage-floor producer view: collapse an all-covered surface (no
+// uncovered children) to null so it is not dispatched. The audit closure-stat
+// reads deriveCellFloorForSurface directly so a fully-covered surface still
+// reports its covered_pruned_count.
+function planCellsForSurface(args) {
+  const plan = deriveCellFloorForSurface(args);
+  return plan && plan.children.length > 0 ? plan : null;
+}
+
+// The transition-cell's coverage identity (A2): a deterministic, bounded
+// projection of the REAL (from_surface, to_surface, transition_kind). It is the
+// coverage row's surface_id, so a transition coverage row is keyed disjoint from
+// every real surface (and every other edge) — a cross-surface invariant never
+// contaminates a surface-cell's pruner, and two edges sharing a from_surface
+// never collide. Direction matters (L1->L2 replay != L2->L1), so the edge id is
+// NOT order-normalized.
+function transitionEdgeToken(fromSurface, toSurface, transitionKind) {
+  const crypto = require("crypto");
+  const edgeId = JSON.stringify([fromSurface, toSurface, transitionKind]);
+  return `transition:${crypto.createHash("sha256").update(edgeId).digest("hex").slice(0, 16)}`;
+}
+
+// Enumerate the transition-cell FLOOR: one (edge x bug_class) cell per proposed
+// transition edge, pruned against that edge's own coverage rows. Shared by the
+// producer (bob_materialize_cell_floor), the closure gate (uncovered_reachable_
+// cells), and the H1 audit stat (coverageClosureStat) so all three agree on what
+// "uncovered cross-surface invariant" means. Lazy-requires to avoid a load-time
+// cycle. Returns one entry per distinct edge: {edge_token, from_surface,
+// to_surface, transition_kind, plan}.
+function enumerateTransitionCellFloor({ domain, coverageRecords, maxChildren }) {
+  const { readTransitionProposals } = require("./task-graph-events.js");
+  const { TRANSITION_BUG_CLASS_AXIS } = require("./capability-packs.js");
+  const { planTransitionCellsForEdge, fanoutPlanningKey } = require("./capability-pack-derivation.js");
+  const { buildCoverageSummaryForSurface } = require("./coverage.js");
+  const records = Array.isArray(coverageRecords) ? coverageRecords : [];
+
+  const seen = new Set();
+  const edges = [];
+  for (const event of readTransitionProposals(domain)) {
+    const payload = event && event.payload;
+    if (!payload) continue;
+    const from = typeof payload.from_surface === "string" ? payload.from_surface : null;
+    const to = typeof payload.to_surface === "string" ? payload.to_surface : null;
+    // payload.kind is the event discriminator ("transition_proposed"); the trust-
+    // hop class is payload.transition_kind (the TRANSITION_KIND_VALUES enum).
+    const kind = typeof payload.transition_kind === "string" ? payload.transition_kind : null;
+    if (!from || !to || !kind) continue;
+    const edgeToken = transitionEdgeToken(from, to, kind);
+    if (seen.has(edgeToken)) continue;
+    seen.add(edgeToken);
+    const bugClassAxis = TRANSITION_BUG_CLASS_AXIS[kind] || [];
+
+    // Covered keys for THIS edge: the edge token is the coverage surface_id, so
+    // the summary is already scoped to the edge. Mirrors the surface-cell idiom:
+    // `tested` covers only when not still unfinished; `blocked` is a terminal
+    // give-up that dominates any unfinished sibling (so the stuck-cell auto-block
+    // can retire a transition cell that keeps failing its witness).
+    const summary = buildCoverageSummaryForSurface(records, edgeToken);
+    const testedKeys = new Set();
+    const blockedKeys = new Set();
+    const unfinishedKeys = new Set();
+    const addKeys = (items, target) => {
+      if (!Array.isArray(items)) return;
+      for (const it of items) {
+        if (!it || typeof it.bug_class !== "string") continue;
+        target.add(fanoutPlanningKey(it.bug_class, it.auth_profile || ""));
+      }
+    };
+    if (summary && typeof summary === "object") {
+      addKeys(summary.tested, testedKeys);
+      addKeys(summary.blocked, blockedKeys);
+      addKeys(summary.promising, unfinishedKeys);
+      addKeys(summary.needs_auth, unfinishedKeys);
+      addKeys(summary.requeue, unfinishedKeys);
+    }
+    const coveredCellKeys = Array.from(new Set([
+      ...Array.from(testedKeys).filter((k) => !unfinishedKeys.has(k)),
+      ...blockedKeys,
+    ]));
+
+    const plan = planTransitionCellsForEdge(edgeToken, {
+      bug_class_axis: bugClassAxis,
+      covered_cell_keys: coveredCellKeys,
+      max_children: maxChildren,
+    });
+    edges.push({ edge_token: edgeToken, from_surface: from, to_surface: to, transition_kind: kind, plan });
+  }
+  return edges;
+}
+
+// Wave-brief fan-out: the nesting actuation path, gated by the (parked) nesting
+// depth budget (default max_spawn_depth=1 -> remainingDepth 0 -> null). The
+// coverage-floor producer instead calls planCellsForSurface directly with an
+// always-on budget.
+// D6 — the planning_keys of the cell-floor cells already proposed for a surface (the
+// in-flight set). readCellProposals payloads carry bug_class + auth_profile directly, so
+// the key matches a fan-out child's planning_key (fanoutPlanningKey). Used to dedup a
+// nested fan-out against the cell floor so neither double-probes the same (bug_class,auth)
+// cell. Empty during the normal wave phase (the floor proposes in the closure phase), so
+// this bites only the narrow re-materialize window — covered_cell_keys + phase ordering
+// are the primary dedup. Lazy-require to avoid a load-time cycle.
+function cellFloorPlanningKeysForSurface(domain, surfaceId) {
+  const { readCellProposals } = require("./task-graph-events.js");
+  const { fanoutPlanningKey } = require("./capability-pack-derivation.js");
+  const keys = new Set();
+  for (const ev of readCellProposals(domain)) {
+    const p = ev && ev.payload;
+    if (!p || p.surface_id !== surfaceId || typeof p.bug_class !== "string") continue;
+    keys.add(fanoutPlanningKey(p.bug_class, p.auth_profile || ""));
+  }
+  return keys;
+}
+
+// NS-7 — the brain-pinned leaf role is distinct from the single registry
+// spawn-capable root. validateSpawnFanout rejects any other child type, while
+// role-model.js removes recursion and settlement authority before spawn.
+const SPAWN_SUBAGENT_TYPE = FANOUT_ROLE_REGISTRY.child.subagent_type;
+
+// EARNED-DONE COMPOSITION INVARIANT (do not sever): child (bug_class × auth) cells are NOT
+// minted as wave assignments — they reuse the PARENT's (wave, agent) and re-read the parent's
+// on-disk assignment via bob_read_assignment_brief (prompts/roles/evaluator-fanout.md). The
+// completion gate keys on (wave, agent) -> parent assignment, and the id-bearing /
+// auth_differential_required / id_bearing_endpoints obligation lives ONLY on that parent
+// assignment. So a nested child marking an id-bearing surface complete is still BLOCKED
+// (missing_auth_differential) unless a real cross_tenant_flip row exists. A future redesign
+// that gives children DISTINCT agent ids, or has them consume the injected cell spec instead
+// of re-reading the parent assignment, would make assignmentByAgent.get(child_agent) miss and
+// silently BYPASS the earned-done gate through nesting — it must FIRST mint per-cell
+// assignments through prepareWaveAssignments (which re-stamps id_bearing from surface_id).
+function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverageSummary, wave = null, remainingDepthOverride = null }) {
+  let policy;
+  try {
+    policy = require("./queue-policy.js").loadQueuePolicy(domain);
+  } catch {
+    return null;
+  }
+  // NS-3 (B3 / FIX-6) — host-depth clamp. Nesting is reachable ONLY on host==claude: the
+  // MCP-side runtimeClient() resolves to "claude" or "unknown" (never codex/kimi),
+  // and effectiveSpawnDepth('codex') is UNCAPPED — so gate
+  // depth>1 on host==="claude" SPECIFICALLY and clamp by the host nesting registry
+  // (claude: 2 only when CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 — a named wave
+  // teammate may spawn one anonymous synchronous child level; Bob's distinct
+  // child role cannot recurse because it has no Agent grant and the hook denies
+  // it). Default Claude, a max_spawn_depth=1 policy, or any non-Claude host
+  // gets remainingDepth 0 => no nested plan, so fan-out degrades to flat wave
+  // assignments. The router calls the same effectiveSpawnDepth predicate before
+  // selecting evaluator-fanout, so routing and child-plan emission cannot desync.
+  const hostId = require("./runtime-resources.js").runtimeClient();
+  const hostCeiling = hostId === "claude"
+    ? require("./nested-spawn.js").effectiveSpawnDepth(policy.max_spawn_depth, hostId)
+    : 0;
+  // NESTING-LEVEL AWARE: when a NESTED CHILD re-reads its (wave,agent) brief it passes its own
+  // injected remaining_depth as remainingDepthOverride, so the plan DECREMENTS and leafs out
+  // instead of recomputing the ROOT's session-level depth every level (which would let a child
+  // re-enter fan-out mode from a stateless brief re-read = ungoverned recursion). Clamped to the
+  // host ceiling. A root read (no override) computes effectiveSpawnDepth(max_spawn_depth)-1.
+  const remainingDepth = Number.isInteger(remainingDepthOverride)
+    ? Math.max(0, Math.min(remainingDepthOverride, hostCeiling))
+    : Math.max(0, hostCeiling - 1);
+  // NS-4 — read-path width bound: when the session
+  // spawn budget governor is set, cap this root's branching so its worst-case subtree
+  // allocation fits the remaining DESCENDANT budget: max_total_spawned_agents minus
+  // the MCP-owned ledger's running total minus one slot for this root itself. Read-only —
+  // the brief is mutating:false, so the ledger is
+  // READ here and WRITTEN at the mutating dispatch step (startWaveLocked, per
+  // spawn-capable root, greedy-sequential). The running total therefore accumulates
+  // across roots AND waves; passing the current root's (wave, surfaceId) excludes ITS
+  // OWN reservation so the bound reproduces exactly the allocation dispatch reserved
+  // for it (without the exclusion a root would subtract itself and under-fan-out).
+  // validateSpawnFanout's total_spawned leg is the detective backstop at finalize.
+  // Null budget (default) leaves branching unchanged => byte-identical default-off; an
+  // exhausted budget collapses branching to 0 => a leaf plan (the breaker).
+  let maxChildren = policy.max_spawn_children;
+  if (Number.isInteger(policy.max_total_spawned_agents)) {
+    const { spawnLedgerTotal } = require("./spawn-ledger.js");
+    const { maxBranchingForBudget } = require("./nested-spawn.js");
+    const remainingDescendantBudget = Math.max(
+      0,
+      policy.max_total_spawned_agents
+        - spawnLedgerTotal(domain, { excludeWave: wave, excludeSurfaceId: surfaceId })
+        - 1,
+    );
+    maxChildren = maxBranchingForBudget(
+      remainingDepth,
+      remainingDescendantBudget,
+      policy.max_spawn_children,
+    );
+  }
+  const plan = planCellsForSurface({
+    domain,
+    surfaceObj,
+    surfaceId,
+    coverageSummary,
+    remainingDepth,
+    maxChildren,
+  });
+  if (!plan) return null;
+  // Stamp the actuation fields the spawn-capable evaluator-fanout needs onto each
+  // child — ONLY here, the nesting-only wrapper, so the shared deriveCellFloorForSurface
+  // child-shape (the always-on coverage floor + child-fanout-plan snapshots) stays
+  // byte-identical (INV-6 default-off). Each child carries the brain-pinned spawn role
+  // plus its own one-level-smaller depth budget, so a depth-2 child knows how far it
+  // may itself fan out. (Per-child max_children is partitioned at wave-dispatch in C5.)
+  // The child is dispatched AS the distinct evaluator-fanout-child role, so its
+  // brief may name only tools that role actually holds. The role-model deny strips
+  // transition, handoff, and finalize writes, keeping this MCP-issued allowlist in
+  // exact lockstep with generated child frontmatter rather than maintaining a
+  // second ad-hoc subtraction list here.
+  // D6 nested-spawn-time dedup: drop a nested child whose (bug_class, auth) cell the
+  // cell floor has already proposed for this surface, so a nested child and a closure
+  // cell never double-probe the same cell within one materialize window. Nesting-only
+  // (the floor is untouched); empty in the normal wave phase, so byte-identical there.
+  const inFlightKeys = cellFloorPlanningKeysForSurface(domain, surfaceId);
+  const grantedByChild = new Set(require("./role-model.js").mcpToolNamesForRole(SPAWN_SUBAGENT_TYPE));
+  const childRemainingDepth = Math.max(0, plan.remaining_depth - 1);
+  const children = plan.children
+    .filter((child) => !inFlightKeys.has(child.planning_key))
+    .map((child) =>
+      Object.freeze({
+        ...child,
+        allowed_tools_for_node: Object.freeze(
+          (child.allowed_tools_for_node || []).filter((toolName) => grantedByChild.has(toolName)),
+        ),
+        subagent_type: SPAWN_SUBAGENT_TYPE,
+        remaining_depth: childRemainingDepth,
+        max_children: plan.max_children,
+      }),
+    );
+  return Object.freeze({ ...plan, children: Object.freeze(children) });
 }
 
 function readAssignmentBrief(args) {
@@ -999,6 +1422,31 @@ function readAssignmentBrief(args) {
   if (!assignment) {
     throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
   }
+
+  // Universal MCP-side start-recording. Reading the brief is every evaluator's
+  // documented first action, so this is the single universal first surface-scoped
+  // tool call: record the (target_domain, wave, agent, surface_id) agent-run as
+  // `running` so the wave-handoff merge gate sees a real started lifecycle without
+  // depending on any adapter wiring a SubagentStart hook. surface_id comes from
+  // the resolved on-disk assignment, never from an agent-asserted field, so the
+  // start cannot be forged or mis-attributed; the call is idempotent
+  // (first-transition-only). bob_read_assignment_brief stays mutating:false (the
+  // marker is best-effort and must never break brief composition, so a ledger
+  // write fault is swallowed), but it DECLARES agent-runs.jsonl in
+  // session_artifacts_written so the authority kernel's canShadowMissingSession
+  // guard refuses to shadow this read past a MISSING session — the declared
+  // session-artifact write is honest, not silent.
+  try {
+    markAgentRunStartedIdempotent({
+      targetDomain: domain,
+      wave,
+      agent,
+      surfaceId: assignment.surface_id,
+    });
+  } catch {
+    // Swallow: start-recording is best-effort and never fails the brief.
+  }
+
   // normalizeAssignmentRouteMetadata already validates brief_profile against
   // the capability-packs registry; any registered profile (web today, plus
   // smart_contract_* once SC packs are added) is accepted by assignment-brief.
@@ -1038,10 +1486,27 @@ function readAssignmentBrief(args) {
   // coverage_summary stays in both profiles: SC evaluators call bob_log_coverage
   // for chain-flavored bug-class taxonomies, and resumed waves want to know
   // what was already tested regardless of profile.
+  // The evaluator's bob_log_coverage row (keyed surface_id x bug_class x
+  // auth_profile x status) is the cell-floor reconciliation input the
+  // OPEN_FRONTIER engine prunes covered cells against, not mere housekeeping.
   const coverageSummary = buildCoverageSummaryForSurface(
     readCoverageRecordsFromJsonl(domain),
     assignment.surface_id,
   );
+
+  // CN (coverage-nesting) — bounded (bug_class x auth_role) child fan-out plan.
+  // null (key omitted) under the default queue policy (max_spawn_depth=1), so
+  // the brief is unchanged until an operator opts into nesting.
+  const childFanoutPlan = buildChildFanoutPlanForSurface({
+    domain,
+    surfaceObj,
+    surfaceId: assignment.surface_id,
+    coverageSummary,
+    wave,
+    // A NESTED CHILD passes its injected remaining_depth so the re-read plan DECREMENTS and
+    // leafs out (else a stateless re-read recomputes the root's depth → ungoverned recursion).
+    remainingDepthOverride: Number.isInteger(args.remaining_depth) ? args.remaining_depth : null,
+  });
 
   // Dispatch explicitly on brief_profile. The capability-pack registry is
   // the source of truth for what profiles exist; an unknown profile is a
@@ -1096,6 +1561,12 @@ function readAssignmentBrief(args) {
     routeMetadata.evaluator_agent,
   );
 
+  // Depth (A1) — the id-bearing surface's known-mandatory auth-differential
+  // obligation, carried from the route-frozen (MCP-owned) assignment fields.
+  // null (key omitted) for non-id_bearing surfaces so the brief shape is
+  // unchanged for those.
+  const idBearingObligation = buildIdBearingObligationForBrief(assignment);
+
   return JSON.stringify({
     untrusted_content_policy: UNTRUSTED_CONTENT_POLICY,
     run_context: {
@@ -1133,6 +1604,10 @@ function readAssignmentBrief(args) {
     },
     coverage_summary: coverageSummary,
     ranking_summary: surfaceObj.ranking || null,
+    // CN (coverage-nesting) — present only when an operator enabled nesting
+    // AND the surface has uncovered (bug_class x auth_role) cells; omitted by
+    // default so the brief shape is unchanged for existing sessions.
+    ...(childFanoutPlan ? { child_fanout_plan: childFanoutPlan } : {}),
     // Plane Y Cycle Y.5 — top-level slice carrying the wave-side
     // derivation summary (friction-widened allowed tools, target_class
     // auxiliaries, technique pack ids). Distinct from `technique_packs`
@@ -1143,6 +1618,11 @@ function readAssignmentBrief(args) {
     // Y-P14d. Null until Y.6 lands role-trace-expectations.js OR when
     // the assignment's evaluator_agent has no mapped entry.
     ...(traceReadingExpectations ? { trace_reading_expectations: traceReadingExpectations } : {}),
+    // Depth (A1) — top-level, conditional. Present only for an id-bearing (or
+    // auth_differential_required) surface; carries the route-frozen endpoints
+    // and the fixed obligation guidance. A top-level key (not a WEB slice-
+    // registry entry) keeps the web slice key-list assertion valid.
+    ...(idBearingObligation ? { id_bearing_obligation: idBearingObligation } : {}),
     ...profileExtras,
   }, null, 2);
 }
@@ -1832,7 +2312,17 @@ module.exports = {
   ASSIGNMENT_BRIEF_SLICE_REGISTRY,
   UNTRUSTED_CONTENT_POLICY,
   UNTRUSTED_FENCE_OVERHEAD_CHARS,
+  planCellsForSurface,
+  deriveCellFloorForSurface,
+  enumerateTransitionCellFloor,
+  transitionEdgeToken,
+  cellFloorPlanningKeysForSurface,
+  buildChildFanoutPlanForSurface,
   readAssignmentBrief,
+  // Depth (A1) — id-bearing obligation carried into the brief.
+  ID_BEARING_ENDPOINT_BRIEF_LIMIT,
+  ID_BEARING_OBLIGATION_TEXT,
+  buildIdBearingObligationForBrief,
   renderAvailableCliToolsSection,
   renderAvailableCliToolsSectionSync,
   evaluatorKnowledgeCandidatePaths,

@@ -25,8 +25,8 @@ const {
   ToolError,
 } = require("./envelope.js");
 const {
-  CAPABILITY_PACKS,
   DEFAULT_REPLAY_SAFETY,
+  dispatchableCapabilityPacks,
 } = require("./capability-packs.js");
 const {
   isPlainObject,
@@ -66,7 +66,7 @@ function replaySafetyForTool(toolName) {
   // replay tool (bob_http_scan) so concurrent rounds can't add ungoverned live
   // requests. Resolve it via the pack whose replay_tool is bob_http_scan.
   const lookupName = toolName === "bob_http_confirm" ? "bob_http_scan" : toolName;
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (!pack || !pack.verifier) continue;
     if (pack.verifier.replay_tool === lookupName || (pack.evidence && pack.evidence.runner === lookupName)) {
       return {
@@ -78,6 +78,15 @@ function replaySafetyForTool(toolName) {
   return null;
 }
 
+// The only caller-supplied lease-scope opt-in. A per-finding verification worker
+// sets replay_context.lease_scope:"finding" to NARROW its replay lease from the
+// pack default (attempt_pack — one lock per attempt+pack, serializing every
+// round) to a per-finding lock. The narrowing is the only direction permitted:
+// it serializes concurrent replays WITHIN a finding while leaving DISJOINT
+// findings independent. It can never widen attempt_pack→none, so the
+// no-ungoverned-concurrent-live-request guarantee is preserved per finding.
+const REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN = "finding";
+
 function normalizeReplayContext(ctx) {
   if (!isPlainObject(ctx)) return null;
   const purpose = typeof ctx.purpose === "string" ? ctx.purpose.trim() : "";
@@ -85,6 +94,17 @@ function normalizeReplayContext(ctx) {
     return { purpose, active: false };
   }
   try {
+    let leaseScopeOptIn = null;
+    if (ctx.lease_scope != null) {
+      const requested = typeof ctx.lease_scope === "string" ? ctx.lease_scope.trim() : "";
+      if (requested !== REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `replay_context.lease_scope opt-in supports only "${REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN}"`,
+        );
+      }
+      leaseScopeOptIn = requested;
+    }
     return {
       active: true,
       purpose,
@@ -92,10 +112,28 @@ function normalizeReplayContext(ctx) {
       verification_snapshot_hash: assertNonEmptyString(ctx.verification_snapshot_hash, "replay_context.verification_snapshot_hash"),
       round: ctx.round == null ? null : assertEnumValue(ctx.round, VERIFICATION_ROUND_VALUES, "replay_context.round"),
       finding_id: ctx.finding_id == null ? null : parseFindingId(ctx.finding_id, "replay_context.finding_id"),
+      lease_scope_opt_in: leaseScopeOptIn,
     };
   } catch (error) {
+    if (error instanceof ToolError) throw error;
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || String(error));
   }
+}
+
+// Resolve the effective lease scope. The pack default is authoritative UNLESS a
+// per-finding worker opts in via replay_context.lease_scope:"finding" AND carries
+// a finding_id. The opt-in NARROWS attempt_pack→finding only; a pack that already
+// serializes more loosely or with parallel-safe semantics is left unchanged so
+// no shipped default behavior shifts without the explicit opt-in.
+function resolveEffectiveLeaseScope(packLeaseScope, context) {
+  if (
+    context.lease_scope_opt_in === REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN
+    && context.finding_id
+    && packLeaseScope === "attempt_pack"
+  ) {
+    return "finding";
+  }
+  return packLeaseScope;
 }
 
 function replayLeaseKey({ targetDomain, capabilityPack, context, leaseScope }) {
@@ -333,7 +371,8 @@ async function runWithReplaySafety(tool, args, handler) {
   const policy = replaySafetyForTool(tool.name);
   if (!policy) return handler();
   const mode = policy.replay_safety.mode || DEFAULT_REPLAY_SAFETY.mode;
-  const leaseScope = policy.replay_safety.lease_scope || DEFAULT_REPLAY_SAFETY.lease_scope;
+  const packLeaseScope = policy.replay_safety.lease_scope || DEFAULT_REPLAY_SAFETY.lease_scope;
+  const leaseScope = resolveEffectiveLeaseScope(packLeaseScope, context);
   if (leaseScope === "none" && mode !== "parallel_safe") {
     throw new ToolError(ERROR_CODES.INTERNAL_ERROR, "replay lease_scope none is allowed only with mode parallel_safe");
   }
@@ -396,7 +435,7 @@ async function runWithReplaySafety(tool, args, handler) {
 
 function replayExecutionPolicy(targetDomain) {
   const activeLeases = targetDomain ? listActiveReplayLeases(targetDomain) : [];
-  return Object.values(CAPABILITY_PACKS).map((pack) => {
+  return dispatchableCapabilityPacks().map((pack) => {
     const safety = pack.verifier.replay_safety || DEFAULT_REPLAY_SAFETY;
     const active = activeLeases
       .filter((lease) => lease.capability_pack === pack.id)
@@ -423,8 +462,12 @@ function replayExecutionPolicy(targetDomain) {
 
 module.exports = {
   DEFAULT_REPLAY_SAFETY,
+  REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN,
   VERIFICATION_REPLAY_LEASE_TTL_MS,
   listActiveReplayLeases,
+  normalizeReplayContext,
   replayExecutionPolicy,
+  replayLeaseKey,
+  resolveEffectiveLeaseScope,
   runWithReplaySafety,
 };

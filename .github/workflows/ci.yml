@@ -32,3 +32,30 @@ jobs:
         env:
           BOB_SKIP_BROWSER_TESTS: "1"
         run: npm test
+
+  native-darwin-qualification:
+    # An Apple-silicon arm64 runner. The command also rejects a mismatched
+    # host, so a skip can never satisfy this required qualification job.
+    #
+    # macos-15, not macos-14: direct_cdc_custody.mm requires the IOUSBHost
+    # option IOUSBHostObjectInitOptionsDeviceSeize, which the macOS 14 SDK
+    # does not declare — it only has DeviceCapture, and the two claim a device
+    # with different semantics, so compiling against the older symbol would
+    # change what the custody layer actually does rather than fix the build.
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Qualify Darwin arm64 native and lifecycle surfaces
+        run: npm run test:native-darwin

@@ -40,7 +40,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_substrate_fetch_storage",
-  aliases: ["bounty_substrate_fetch_storage"],
   description: "Read-only state_getStorage(key, blockHash?) call against the DNS-pinned direct public HTTPS substrate JSON-RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; localnet RPC has no default endpoint and endpoint_used is redacted. Returns the raw SCALE-encoded storage value at the supplied key, plus the head block number for the verified-at reference line. Evaluators and verifiers use this to confirm pallet_contracts.ContractInfoOf entries (owner, code_hash, storage deposit) and validator/governance capability state without re-running the full harness.",
   inputSchema: {
     "type": "object",
@@ -54,12 +53,13 @@ module.exports = Object.freeze({
     "required": ["target_domain", "network", "storage_key"]
   },
   handler,
-  role_bundles: ["evaluator-substrate", "verifier", "evidence"],
+  role_bundles: ["evaluator-substrate", "verifier", "evidence", "sc-recon"],
   mutating: false,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: [],
+  required_session_axes: ["contracts"],
 });

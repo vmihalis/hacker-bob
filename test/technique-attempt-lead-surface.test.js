@@ -40,6 +40,7 @@ const {
   sessionDir,
   attackSurfacePath,
   surfaceIndexPath,
+  surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
@@ -193,5 +194,137 @@ test("logTechniqueAttempt still enforces assignment scoping for an unassigned wa
       false,
       "a scoping rejection must not persist a technique-attempt row",
     );
+  });
+});
+
+// ── Unroutable smart_contract disposition (Y-D21) ──────────────────────────
+// An ambiguous smart_contract surface (missing/unrecognized chain_family) is
+// unroutable, not web. selectTechniquePacks must record the unroutable
+// disposition and return a non-halting empty result — never getCapabilityPack(null)
+// -> `Unknown capability_pack: null`, never the web pack.
+
+// Seed a single surface directly into attack_surface.json (the legacy fallback
+// currentSurfaces reads when surface-index.json is absent). Fields pass through
+// unmodified, so surface_type/chain_family survive to classifySurfaceCapability.
+function seedSurface(domain, surface) {
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  fs.writeFileSync(
+    attackSurfacePath(domain),
+    `${JSON.stringify({ surfaces: [surface] }, null, 2)}\n`,
+  );
+}
+
+test("selectTechniquePacks records an unroutable smart_contract surface (missing chain_family) non-haltingly with no packs", () => {
+  withTempHome(() => {
+    const domain = "sc-unroutable-fresh.example.com";
+    seedSurface(domain, { id: "sc-unroutable", surface_type: "smart_contract" });
+
+    let raw;
+    assert.doesNotThrow(() => {
+      raw = selectTechniquePacks({ target_domain: domain, surface_id: "sc-unroutable" });
+    }, "unroutable SC selection must not throw Unknown capability_pack: null");
+    const selection = JSON.parse(raw);
+
+    assert.equal(selection.surface_id, "sc-unroutable");
+    assert.equal(selection.capability_pack, null, "unroutable surface must not substitute a pack");
+    assert.equal(selection.unroutable, true);
+    assert.ok(
+      typeof selection.unroutable_reason === "string" && selection.unroutable_reason.length > 0,
+      "unroutable result must carry a non-empty unroutable_reason",
+    );
+    assert.deepEqual(selection.technique_packs, [], "unroutable surface selects no technique packs");
+  });
+});
+
+test("selectTechniquePacks detects a PERSISTED disposition:unroutable route read from surface-routes.json", () => {
+  withTempHome(() => {
+    const domain = "sc-unroutable-persisted.example.com";
+    // The surface itself would classify as unroutable too, but pin the outcome to
+    // the persisted route: write a disposition:"unroutable" route to disk (the
+    // shape surface-router.js emits) so the read-from-disk detection path is
+    // exercised, not just fresh classification.
+    seedSurface(domain, { id: "sc-persisted", surface_type: "smart_contract" });
+    fs.writeFileSync(
+      surfaceRoutesPath(domain),
+      `${JSON.stringify({
+        version: 1,
+        route_version: 1,
+        routes: [
+          {
+            surface_id: "sc-persisted",
+            surface_type: "smart_contract",
+            disposition: "unroutable",
+            reason: "smart_contract surface is missing chain_family; capability routing requires it",
+          },
+        ],
+      }, null, 2)}\n`,
+    );
+
+    let raw;
+    assert.doesNotThrow(() => {
+      raw = selectTechniquePacks({ target_domain: domain, surface_id: "sc-persisted" });
+    }, "persisted unroutable route must not throw");
+    const selection = JSON.parse(raw);
+
+    assert.equal(selection.capability_pack, null);
+    assert.equal(selection.unroutable, true);
+    assert.equal(
+      selection.unroutable_reason,
+      "smart_contract surface is missing chain_family; capability routing requires it",
+      "the persisted route's reason must be carried through as unroutable_reason",
+    );
+    assert.deepEqual(selection.technique_packs, []);
+  });
+});
+
+test("logTechniqueAttempt on an unroutable smart_contract surface throws a clean surface-unroutable ToolError, not capability_pack null", () => {
+  withTempHome(() => {
+    const domain = "sc-unroutable-log.example.com";
+    seedSurface(domain, { id: "sc-unroutable-log", surface_type: "smart_contract" });
+
+    assert.throws(
+      () =>
+        logTechniqueAttempt({
+          target_domain: domain,
+          surface_id: "sc-unroutable-log",
+          pack_id: "generic-rest-api",
+          status: "attempted",
+          evidence: "x",
+        }),
+      (err) => {
+        assert.ok(err instanceof ToolError, "must be a ToolError");
+        assert.equal(err.code, ERROR_CODES.INVALID_ARGUMENTS);
+        assert.match(err.message, /surface unroutable/);
+        assert.match(err.message, /no technique packs apply/);
+        assert.doesNotMatch(err.message, /capability_pack null/);
+        return true;
+      },
+    );
+
+    assert.equal(
+      fs.existsSync(techniqueAttemptsJsonlPath(domain)),
+      false,
+      "an unroutable rejection must not persist a technique-attempt row",
+    );
+  });
+});
+
+test("selectTechniquePacks leaves a routable smart_contract (evm) surface unchanged — real pack, no unroutable marker", () => {
+  withTempHome(() => {
+    const domain = "sc-routable-evm.example.com";
+    seedSurface(domain, {
+      id: "sc-evm",
+      surface_type: "smart_contract",
+      chain_family: "evm",
+      contract_address: "0x0000000000000000000000000000000000000001",
+    });
+
+    const selection = JSON.parse(selectTechniquePacks({ target_domain: domain, surface_id: "sc-evm" }));
+    assert.ok(
+      typeof selection.capability_pack === "string" && selection.capability_pack.length > 0,
+      "a routable evm SC surface must resolve to a real capability pack",
+    );
+    assert.notEqual(selection.unroutable, true, "a routable surface must not carry an unroutable marker");
+    assert.ok(Array.isArray(selection.technique_packs));
   });
 });

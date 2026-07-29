@@ -1,0 +1,37 @@
+{
+  "name": "@hacker-bob/instrument-chameleon",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Transport-neutral Chameleon Ultra codec, semantic manifest, state stewardship, closed manual-action custody, inert BLE NUS conformance, and worker-private USB CDC custody for Hacker Bob",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "lib/**/*.js"
+  ],
+  "exports": {
+    ".": "./lib/codec.js",
+    "./availability-evidence-backend": "./lib/availability-evidence-backend.js",
+    "./ble": "./lib/ble.js",
+    "./codec": "./lib/codec.js",
+    "./bootstrap-operations": "./lib/bootstrap-operations.js",
+    "./bootstrap-response-payloads": "./lib/bootstrap-response-payloads.js",
+    "./failure-matrix-engineering": "./lib/failure-matrix-engineering.js",
+    "./manual-actions": "./lib/manual-actions.js",
+    "./get-app-version-semantic-validator": "./lib/get-app-version-semantic-validator.js",
+    "./operations": "./lib/operations.js",
+    "./provider-completion-evidence-adapter": "./lib/provider-completion-evidence-adapter.js",
+    "./rf-off-usb-executor": "./lib/rf-off-usb-executor.js",
+    "./state-stewardship": "./lib/state-stewardship.js",
+    "./usb-cdc-custody": "./lib/usb-cdc-custody.js"
+  },
+  "scripts": {
+    "test": "node --test test/availability-evidence-backend.test.js test/ble.test.js test/bootstrap-response-payloads.test.js test/codec.test.js test/failure-matrix-engineering.test.js test/hf14a-probe-compiler.test.js test/manual-actions.test.js test/operations.test.js test/provider-completion-evidence-adapter.test.js test/rf-off-usb-executor.test.js test/state-stewardship.test.js test/usb-cdc-custody.test.js"
+  },
+  "dependencies": {
+    "@hacker-bob/instrument-chameleon-worker-runtime": "0.0.0-development",
+    "@hacker-bob/instrument-contracts": "0.0.0-development"
+  }
+}

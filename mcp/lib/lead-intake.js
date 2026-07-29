@@ -26,6 +26,7 @@ const {
   normalizePriority,
   normalizeScore,
 } = require("./lead-scoring.js");
+const { CHAIN_FAMILY_VALUES } = require("./constants.js");
 
 const LEAD_STATUS_VALUES = ["new", "promoted", "dismissed"];
 const SURFACE_LEAD_ARRAY_LIMITS = Object.freeze({
@@ -65,6 +66,69 @@ function normalizeOptionalChainId(value) {
     return value;
   }
   return normalizeOptionalString(value, "chain_id", { maxChars: 40 });
+}
+
+function collectChainContextStrings(input) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return [];
+  const values = [];
+  for (const field of ["evidence", "endpoints", "hosts"]) {
+    const raw = input[field];
+    if (!Array.isArray(raw)) continue;
+    for (const entry of raw) {
+      if (typeof entry === "string") {
+        values.push(entry);
+      } else if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        for (const value of Object.values(entry)) {
+          if (typeof value === "string") values.push(value);
+        }
+      }
+    }
+  }
+  for (const field of ["rpc", "chain", "network"]) {
+    if (typeof input[field] === "string") values.push(input[field]);
+  }
+  return values;
+}
+
+function knownChainFamily(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : null;
+  return normalized && CHAIN_FAMILY_VALUES.includes(normalized) ? normalized : null;
+}
+
+// Y-D22 - resolve chain_family/chain_id from address shape + observed
+// chain context, fail-closed to a blocked_prereqs lead (never a silent
+// unroutable-park). Emits only a CHAIN_FAMILY_VALUES member.
+function resolveChainContext(input) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return null;
+  const contractAddress = typeof input.contract_address === "string" ? input.contract_address.trim() : "";
+  if (!contractAddress) return null;
+
+  const contextText = collectChainContextStrings(input).join("\n").toLowerCase();
+  const evmFamily = knownChainFamily("evm");
+  const svmFamily = knownChainFamily("svm");
+
+  if (/^0x[0-9a-fA-F]{40}$/.test(contractAddress)) {
+    // Collect EVERY chain the evidence names, then require EXACTLY ONE. A base-specific token
+    // is required for Base (bare "base" matches "base fee"/"base URL"); a mainnet-specific
+    // token for Ethereum (bare "ethereum" matches "Ethereum-compatible"/"EVM" on every L2).
+    // If the evidence names TWO different chains (e.g. "bridged via Arbitrum" on a Polygon
+    // contract), fail CLOSED to a blocked_prereqs lead rather than tie-break by branch
+    // priority onto the wrong chain (Y-D22).
+    const chainMatches = new Set();
+    if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli|testnet)\b|\beip155:8453\b|\bchain[-_\s]?id[\s:=]*8453\b/.test(contextText)) chainMatches.add(8453);
+    if (/\boptimism\b|\boptimistic[-_\s]?ethereum\b|\bop[-_\s]?mainnet\b/.test(contextText)) chainMatches.add(10);
+    if (/\barbitrum\b|\barb[-_\s]?mainnet\b/.test(contextText)) chainMatches.add(42161);
+    if (/\bpolygon\b|\bmatic\b/.test(contextText)) chainMatches.add(137);
+    if (/\bethereum[-_\s]?mainnet\b|\beth[-_\s]?mainnet\b|\beip155:1\b|\bchain[-_\s]?id[\s:=]*1\b/.test(contextText)) chainMatches.add(1);
+    if (chainMatches.size !== 1) return null;
+    return evmFamily ? { chain_family: evmFamily, chain_id: [...chainMatches][0] } : null;
+  }
+
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(contractAddress) && /\bsolana\b|\bsvm\b/.test(contextText)) {
+    return svmFamily ? { chain_family: svmFamily, chain_id: null } : null;
+  }
+
+  return null;
 }
 
 function normalizeReachabilityMeta(value) {
@@ -146,6 +210,29 @@ function normalizeSurfaceLead(input, context = {}) {
     reachability_meta: normalizeReachabilityMeta(input.reachability_meta),
     ...arrays,
   };
+  if (
+    String(initial.surface_type || "").trim().toLowerCase() === "smart_contract" &&
+    initial.chain_family == null &&
+    initial.contract_address != null
+  ) {
+    const resolved = resolveChainContext({
+      ...initial,
+      rpc: input.rpc,
+      chain: input.chain,
+      network: input.network,
+    });
+    if (resolved && CHAIN_FAMILY_VALUES.includes(resolved.chain_family)) {
+      initial.chain_family = resolved.chain_family;
+      initial.chain_id = normalizeOptionalChainId(resolved.chain_id);
+    } else {
+      initial.blocked_prereqs = [
+        {
+          reason: "smart_contract lead has a contract_address but no resolvable chain_family; supply chain_family/chain_id or an RPC endpoint that resolves the address",
+          needed_for: "capability routing",
+        },
+      ];
+    }
+  }
   const score = normalizeScore(input.score == null ? evidenceScore(initial) : input.score);
   const confidence = initial.confidence || confidenceFromScore(score);
   const priority = normalizePriority(input.priority, score);
@@ -199,6 +286,12 @@ function mergeSurfaceLead(existing, incoming) {
     score,
     priority,
   };
+  const blockedPrereqs = Array.isArray(existing.blocked_prereqs) && existing.blocked_prereqs.length > 0
+    ? existing.blocked_prereqs
+    : incoming.blocked_prereqs;
+  if (Array.isArray(blockedPrereqs) && blockedPrereqs.length > 0) {
+    next.blocked_prereqs = blockedPrereqs;
+  }
   return {
     ...next,
     key: leadDedupeKey(next),

@@ -34,6 +34,7 @@ const {
   appendClosureFrontierEvents,
   appendHandoffLeadSurfaceFrontierEvents,
   buildCurrentWaveBlockerMaps,
+  computeCapabilityClearedPremiseSurfaceIds,
   computeRequeueSurfaceIds,
   detectTerminalPromotions,
   inspectSchedulerDecisionIntegrity,
@@ -121,7 +122,6 @@ function computeMergeResolution({ domain, state, merge, artifacts, waveNumber })
     schedulerDecisionId: artifacts.scheduler_decision_id,
   });
   const coverageRecords = readCoverageRecordsFromJsonl(domain);
-  const requeueSurfaceIds = computeRequeueSurfaceIds(artifacts, merge, coverageRecords);
   const findings = summarizeFindings(findingPayloadsFromClaims(domain));
   const scopeExclusions = [...state.scope_exclusions];
   pushUnique(scopeExclusions, new Set(scopeExclusions), readScopeExclusions(domain));
@@ -137,12 +137,26 @@ function computeMergeResolution({ domain, state, merge, artifacts, waveNumber })
     if (!clearHistoryBySurface.has(entry.surface_id)) clearHistoryBySurface.set(entry.surface_id, []);
     clearHistoryBySurface.get(entry.surface_id).push(entry);
   }
+  const capabilityClearedSurfaceIds = computeCapabilityClearedPremiseSurfaceIds({
+    merge,
+    historyBySurface,
+    currentWaveBlockersBySurface,
+    currentWave: waveNumber,
+    target_domain: domain,
+  });
+  const requeueSurfaceIds = computeRequeueSurfaceIds(
+    artifacts,
+    merge,
+    coverageRecords,
+    capabilityClearedSurfaceIds,
+  );
   const promotions = detectTerminalPromotions({
     currentWaveBlockersBySurface,
     historyBySurface,
     prereqRegistrySnapshots: priorSnapshots,
     clearHistoryBySurface,
     currentWave: waveNumber,
+    capabilityClearedSurfaceIds,
   });
 
   const deadEnds = [...state.dead_ends];
@@ -195,7 +209,7 @@ function serializeMergeResult({ merge, filteredRequeueSurfaceIds, promotions }) 
     terminally_blocked_promoted: promotions,
     bypass_attempts: merge.bypass_attempts,
     bypass_attempts_grouped: merge.bypass_attempts_grouped,
-    suspicion_flags: merge.suspicion_flags,
+    unconsumed_pivots: merge.unconsumed_pivots,
     provenance: merge.provenance,
   };
 }
@@ -280,7 +294,7 @@ function applyWaveMerge(args) {
     // CR-3 / I4 — mechanized friction trigger. Auto-propose tool_absent groups
     // at threshold (the load-bearing invariant) and run the one
     // server-witnessable scanner (handoff_ledger_diff, advisory). Synthetics
-    // forward under the Y-P3 5-tuple (collapse only same-detected_by dups; a
+    // forward under the Y-P3 6-tuple (collapse only same-detected_by dups; a
     // voluntary report coexists, Y-P11). tool_inadequate stays operator-gated.
     // Best-effort: never fails the merge, but a swallowed bug is surfaced as
     // friction_mechanization.error so the e2e test can assert the non-error path.

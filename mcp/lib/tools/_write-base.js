@@ -31,6 +31,16 @@ const {
   ERROR_CODES,
   ToolError,
 } = require("../envelope.js");
+const {
+  AUDIT_GRADED_WRITER_TOOLS,
+  auditGradedWriterClosure,
+} = require("../paths.js");
+
+// Y-P13 (T4) — every spec that passes writes_audit_graded:true registers its
+// name here at wrap time so the FLAG↔WHITELIST closure self-check can run
+// against the live declaring set. Module-scoped; deterministic across require
+// order because every writer module requires _write-base before first dispatch.
+const DECLARED_AUDIT_GRADED_WRITERS = new Set();
 
 // Lazy load of tool-validation: importing it eagerly would create a circular
 // dependency (tool-validation → tool-registry → tools/index → writers →
@@ -166,6 +176,27 @@ function wrapWriteTool(spec) {
     throw new TypeError(`wrapWriteTool(${spec.name}): inputSchema must be an object`);
   }
 
+  // Y-P13 (T4) — fail-closed at wrap time. A spec that claims to write an
+  // audit-graded artifact MUST be on the paths.js whitelist; a whitelisted name
+  // MUST declare the flag. Either mismatch throws at module load, so a
+  // mis-registered composer can never reach dispatch. This drives the
+  // FLAG↔WHITELIST closure leg; it does NOT gate the harness write syscall.
+  const writesAuditGraded = spec.writes_audit_graded === true;
+  if (writesAuditGraded) {
+    if (!AUDIT_GRADED_WRITER_TOOLS.includes(spec.name)) {
+      throw new TypeError(
+        `wrapWriteTool(${spec.name}): declares writes_audit_graded but is not in ` +
+        `paths.js AUDIT_GRADED_WRITER_TOOLS (Y-P13 whitelist drift)`,
+      );
+    }
+    DECLARED_AUDIT_GRADED_WRITERS.add(spec.name);
+  } else if (AUDIT_GRADED_WRITER_TOOLS.includes(spec.name)) {
+    throw new TypeError(
+      `wrapWriteTool(${spec.name}): is whitelisted in AUDIT_GRADED_WRITER_TOOLS but ` +
+      `does not set writes_audit_graded:true (Y-P13 missing declaration)`,
+    );
+  }
+
   const innerHandler = spec.handler;
   const inputSchema = spec.inputSchema;
   const toolName = spec.name;
@@ -200,15 +231,33 @@ function wrapWriteTool(spec) {
   return Object.freeze({
     ...spec,
     handler: wrappedHandler,
+    writes_audit_graded: writesAuditGraded,
   });
+}
+
+// Y-P13 (T4) — FLAG↔WHITELIST closure self-check. Run on demand (CI + tests)
+// against the live declaring set built up by wrapWriteTool. Surfaced as an
+// export so the closure can be asserted AFTER every writer module is required
+// (all-loaded snapshot), not racily at first-wrap.
+function assertAuditGradedWriterClosure() {
+  const result = auditGradedWriterClosure([...DECLARED_AUDIT_GRADED_WRITERS]);
+  if (!result.ok) {
+    throw new Error(
+      `Y-P13 audit-graded writer closure violation: ` +
+      `orphans=[${result.orphans.join(",")}] undeclared=[${result.undeclared.join(",")}]`,
+    );
+  }
+  return result;
 }
 
 module.exports = Object.freeze({
   wrapWriteTool,
   MCP_SERVER_INTERNAL_BUNDLE,
+  assertAuditGradedWriterClosure,
   // Exposed for testing only — production callers go through wrapWriteTool.
   _internals: Object.freeze({
     PENDING_RETRY_KEYS,
     buildRetryKey,
+    DECLARED_AUDIT_GRADED_WRITERS,
   }),
 });

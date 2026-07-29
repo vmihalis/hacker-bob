@@ -2,12 +2,72 @@ const DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_HEADER_BYTES = 64 * 1024;
 const HEADER_DELIMITER = Buffer.from("\r\n\r\n");
 
+// fx-gate-bypass defense 2 — caller-auth token shape. Mirrors
+// agentcore-entrypoint.py's own hex-shape check for grade_verdict_hash
+// (`re.fullmatch(r"[0-9a-f]{64}", candidate)`) and matches
+// `secrets.token_hex(32)`'s output shape exactly (64 lowercase hex chars).
+const CALLER_TOKEN_RE = /^[0-9a-f]{64}$/;
+
 function hasResponseId(rpc) {
   return Object.prototype.hasOwnProperty.call(rpc || {}, "id");
 }
 
-function createMcpMessageHandler({ tools, executeTool, send }) {
+// fx-gate-bypass defense 2 — a rogue second engine instance the model spawns
+// directly via Bash (e.g. `env -u BOB_AGENTCORE node .../mcp/server.js`)
+// inherits only the MODEL's own ambient env, never the mcp-config `env` block
+// the CLI applies exclusively to the MCP-server child IT spawns. So
+// agentcore-entrypoint.py mints a per-invocation random token and injects it
+// ONLY into that mcp-config's `mcpServers.hacker-bob.env.BOB_MCP_CALLER_TOKEN`
+// -- a rogue Bash-spawned instance never receives it. This checks for that
+// token on the FIRST inbound message and refuses to proceed (exit non-zero,
+// no response sent) if it is absent or malformed, but ONLY when enforcement
+// is active (gated on the SAME BOB_AGENTCORE==="1" flag as the other two
+// AgentCore-branch defenses, for consistency) -- fully inert off that flag,
+// so local/dev/CI stdio usage requires no new env var and behaves
+// identically to before this defense existed.
+//
+// Documented residual (this is defense-in-depth, NOT the root of trust): a
+// model that reads the per-invocation mcp-config JSON via Bash/Read could in
+// principle exfiltrate and replay the token into a rogue spawn. The true
+// structural backstop is the INDEPENDENT export-tool chokepoint
+// (mcp/lib/tools/export-security-hub-finding.js's unconditional
+// verifyApprovalArtifact call), which this defense does not weaken or
+// replace.
+function createCallerAuthGate({ stderr, env, exit }) {
+  let checked = false;
+  return function enforceCallerAuthOnce() {
+    if (checked) return true;
+    checked = true;
+    if (env.BOB_AGENTCORE !== "1") return true;
+    const token = env.BOB_MCP_CALLER_TOKEN;
+    if (typeof token !== "string" || !CALLER_TOKEN_RE.test(token)) {
+      stderr.write(
+        "hacker-bob MCP server: refusing first request -- BOB_MCP_CALLER_TOKEN is "
+        + "missing or malformed (expected 64 lowercase hex chars). A rogue engine "
+        + "instance spawned outside the CLI's own --mcp-config wiring would lack "
+        + "this token; see infra/runner/agentcore-entrypoint.py.\n",
+      );
+      exit(1);
+      return false;
+    }
+    return true;
+  };
+}
+
+function createMcpMessageHandler({
+  tools,
+  executeTool,
+  send,
+  stderr = process.stderr,
+  env = process.env,
+  exit = (code) => process.exit(code),
+}) {
+  const enforceCallerAuthOnce = createCallerAuthGate({ stderr, env, exit });
+
   return async function handleMessage(rpc) {
+    if (!enforceCallerAuthOnce()) {
+      return;
+    }
     switch (rpc.method) {
       case "initialize":
         // The canonical MCP server name is `hacker-bob`. v1.x installs that
@@ -95,6 +155,11 @@ function createStdioServer({
   executeTool,
   maxFrameBytes = DEFAULT_MAX_FRAME_BYTES,
   maxHeaderBytes = DEFAULT_MAX_HEADER_BYTES,
+  // Test-only injection points for the fx-gate-bypass defense-2 caller-auth
+  // gate (never overridden in production -- startStdioServer/mcp/server.js
+  // never pass these, so real runs always use process.env / process.exit).
+  env = process.env,
+  exit = (code) => process.exit(code),
 } = {}) {
   if (!Number.isInteger(maxFrameBytes) || maxFrameBytes < 1) {
     throw new Error("maxFrameBytes must be a positive integer");
@@ -116,7 +181,7 @@ function createStdioServer({
     stdout.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
   }
 
-  const handleMessage = createMcpMessageHandler({ tools, executeTool, send });
+  const handleMessage = createMcpMessageHandler({ tools, executeTool, send, stderr, env, exit });
 
   function sendParseError(message = "Parse error") {
     send({ jsonrpc: "2.0", id: null, error: { code: -32700, message } });
@@ -252,22 +317,10 @@ function createStdioServer({
   }
 
   function start() {
-    // Cycle P.2 / Risk R6: copy-preserve any legacy `~/bounty-agent-sessions/`
-    // domain directories into the canonical `~/hacker-bob-sessions/` on
-    // startup. The shim is idempotent and the legacy root is never deleted by
-    // this call; explicit purge is reserved for the v2.1.0
-    // `--purge-legacy-session-root` flag.
-    try {
-      require("./session-root-migration.js").migrateLegacySessionRoot();
-    } catch (_) {
-      // Migration failure must never prevent the MCP server from starting.
-      // Sessions still resolve through `paths.sessionsRoot()`.
-    }
     stdin.on("data", handleChunk);
-    // Surface the canonical session root in the startup banner so operators
-    // see the new `~/hacker-bob-sessions/` path; the legacy
-    // `~/bounty-agent-sessions/` remains readable until v2.1.0.
-    stderr.write("hacker-bob MCP server running (stdio); sessions: ~/hacker-bob-sessions/ (legacy: ~/bounty-agent-sessions/ read-fallback)\n");
+    // Surface the canonical session root in the startup banner. Sessions
+    // resolve only from `~/hacker-bob-sessions/`.
+    stderr.write("hacker-bob MCP server running (stdio); sessions: ~/hacker-bob-sessions/\n");
   }
 
   return {

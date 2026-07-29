@@ -1,9 +1,16 @@
 "use strict";
 
-// CWE is required and catalog-validated on the fresh write path for reportable
-// findings (severity critical/high/medium), optional for low/info, idempotently
+// CWE is required and labelled on the fresh write path for reportable findings
+// (severity critical/high/medium), optional for low/info, idempotently
 // canonicalized so the dedupe key does not fork, and tolerant on legacy
 // read-back projection (a row missing a CWE still projects).
+//
+// Catalog membership is an ANNOTATION, not a drop-gate: a curated catalog CWE
+// records as before; a novel (CWE-shaped but non-catalog) mechanism records at
+// its demonstrated severity ONLY when an executed differential backs it, and is
+// stamped cwe_in_catalog:false. The executed-proof floor is preserved — a
+// medium+ novel-mechanism finding with no executed proof cannot reach reportable
+// severity. The label requirement and the CWE-shape floor still hold.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -16,14 +23,78 @@ const {
   findingPayloadsFromClaims,
 } = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
+  canonicalizeExploitTarget,
   readCandidateClaims,
 } = require("../mcp/lib/claims.js");
 const {
   claimsJsonlPath,
+  offensiveRunsJsonlPath,
 } = require("../mcp/lib/paths.js");
+const {
+  ensureHandoffSigningKey,
+} = require("../mcp/lib/handoff-signing-key.js");
+const {
+  signOffensiveRunRow,
+} = require("../mcp/lib/offensive-row-mac.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+
+// A novel-mechanism reportable finding records only when an executed
+// differential backs it. The most direct executed-proof channel at the claim
+// layer is a MAC-signed, non-dry-run offensive-runs.jsonl row cited via an
+// exploit_run evidence ref. bob_http_idor_confirm caps at medium, so seed a
+// medium row and cite it on a medium claim.
+const EXECUTED_SURFACE_ID = "surface:executed-idor";
+
+function executedExploitRef(domain) {
+  return {
+    kind: "exploit_run",
+    run_id: "run-novel-finding-01",
+    tool_id: "bob_http_idor_confirm",
+    target: `https://${domain}/api/records/1`,
+    offensive_outcome: "exploited_safely",
+    command_hash: "a".repeat(64),
+    exit_code: 0,
+    stdout_hash: "b".repeat(64),
+    stderr_hash: "c".repeat(64),
+  };
+}
+
+function seedExecutedDifferential(domain) {
+  const ref = executedExploitRef(domain);
+  const row = {
+    version: 1,
+    target_domain: domain,
+    run_id: ref.run_id,
+    tool_id: ref.tool_id,
+    target: canonicalizeExploitTarget(ref.target),
+    offensive_outcome: "exploited_safely",
+    dry_run: false,
+    timed_out: false,
+    command_hash: ref.command_hash,
+    exit_code: ref.exit_code,
+    stdout_hash: ref.stdout_hash,
+    stderr_hash: ref.stderr_hash,
+    demonstrated_severity: "medium",
+    surface_id: EXECUTED_SURFACE_ID,
+  };
+  signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+  fs.mkdirSync(path.dirname(offensiveRunsJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+}
+
+// A medium finding that cites the seeded executed differential and pins the same
+// surface_id the row stamped (the cross-finding severity-laundering gate requires
+// the citing claim's single surface_id to equal the backed row's).
+function executedProofOverrides(domain) {
+  return {
+    severity: "medium",
+    surface_id: EXECUTED_SURFACE_ID,
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+    evidence_refs: [executedExploitRef(domain)],
+  };
+}
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -92,13 +163,87 @@ test("write path rejects an empty-string CWE for reportable severities", () => {
   });
 });
 
-test("write path rejects a well-formed but non-catalog CWE for reportable severities", () => {
+test("write path rejects a well-formed non-catalog CWE for reportable severities WITHOUT executed proof", () => {
+  // Catalog membership is now annotate-not-gate, but the executed-proof floor
+  // stays: a medium+ novel-mechanism finding with no executed differential
+  // cannot reach reportable severity. It is rejected with guidance, not silently
+  // recorded.
   withTempHome(() => {
     const domain = "cwe-unknown.example.com";
     assert.throws(
       () => recordCandidateClaimTool.handler(baseFinding(domain, { cwe: "CWE-999999" })),
-      /not in the curated CWE catalog/i,
+      (err) => {
+        assert.match(err.message, /outside the curated CWE catalog/i);
+        assert.match(err.message, /executed differential/i);
+        return true;
+      },
     );
+  });
+});
+
+test("write path records a novel-mechanism medium finding WITH an executed differential at its demonstrated severity", () => {
+  withTempHome(() => {
+    const domain = "cwe-novel-executed.example.com";
+    seedExecutedDifferential(domain);
+    const response = JSON.parse(
+      recordCandidateClaimTool.handler(
+        baseFinding(domain, { cwe: "CWE-999999", ...executedProofOverrides(domain) }),
+      ),
+    );
+    assert.equal(response.recorded, true, "a novel CWE backed by an executed differential records");
+
+    const claim = readCandidateClaims(domain)[0];
+    assert.equal(claim.payload.finding.cwe, "CWE-999999", "the canonical free-form label is persisted");
+    assert.equal(claim.payload.finding.cwe_in_catalog, false, "non-catalog membership is annotated, not gated");
+    assert.equal(claim.payload.finding.severity, "medium", "records at the demonstrated severity");
+  });
+});
+
+test("write path accepts a free-form lowercase novel CWE id WITH executed proof and canonicalizes the label", () => {
+  withTempHome(() => {
+    const domain = "cwe-novel-freeform.example.com";
+    seedExecutedDifferential(domain);
+    const response = JSON.parse(
+      recordCandidateClaimTool.handler(
+        baseFinding(domain, { cwe: "cwe-602", ...executedProofOverrides(domain) }),
+      ),
+    );
+    assert.equal(response.recorded, true);
+
+    const claim = readCandidateClaims(domain)[0];
+    assert.equal(claim.payload.finding.cwe, "CWE-602", "the novel label canonicalizes to CWE-602");
+    assert.equal(claim.payload.finding.cwe_in_catalog, false);
+  });
+});
+
+test("write path rejects a non-CWE-shaped label even with executed proof (shape floor)", () => {
+  // The shape floor survives the annotate-not-gate relaxation: only
+  // catalog-MEMBERSHIP is relaxed, not the requirement to name a CWE-shaped
+  // mechanism. A free-text label like "IDOR" is not a CWE id.
+  withTempHome(() => {
+    const domain = "cwe-nonshaped.example.com";
+    seedExecutedDifferential(domain);
+    assert.throws(
+      () => recordCandidateClaimTool.handler(
+        baseFinding(domain, { cwe: "IDOR", ...executedProofOverrides(domain) }),
+      ),
+      /must be a CWE identifier/i,
+    );
+  });
+});
+
+test("a catalog CWE is annotated cwe_in_catalog:true and records unchanged", () => {
+  withTempHome(() => {
+    const domain = "cwe-catalog-annotated.example.com";
+    const response = JSON.parse(
+      recordCandidateClaimTool.handler(baseFinding(domain)),
+    );
+    assert.equal(response.recorded, true);
+
+    const claim = readCandidateClaims(domain)[0];
+    assert.equal(claim.payload.finding.cwe, "CWE-639");
+    assert.equal(claim.payload.finding.cwe_in_catalog, true, "catalog membership is annotated true");
+    assert.equal(claim.payload.finding.severity, "medium");
   });
 });
 

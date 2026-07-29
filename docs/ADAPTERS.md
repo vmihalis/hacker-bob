@@ -81,5 +81,47 @@ Claude `SubagentStop` can keep enforcing the evaluator handoff contract, but the
 portable runtime must also be able to verify evaluator completion through MCP state
 and tools so hosts without a matching hook can still run Bob predictably.
 
+## Audit-graded enforcement trust boundary (R-HOST)
+
+Y-P13 (audit-graded paths are MCP-write-only) has two enforcement layers with
+different reach:
+
+- **In-process (MCP server).** `mcp/lib/tools/_write-base.js` and
+  `mcp/lib/belief/authority.js` gate the server's OWN writes — the report / grade /
+  chain-rollup / evidence / verification-round / wave-handoff / proof-bundle /
+  amend composers and belief artifacts — against `paths.js` `isAuditGradedPath`.
+  `scripts/check-audit-graded-writers.js` anchors the composer whitelist to the
+  writers' actual audit-graded paths (ground truth, not a self-referential flag).
+  This layer is fail-closed and host-independent.
+- **External (PreToolUse hook).** The agent's own `Write`/`Bash` tools run in a
+  separate process from the MCP server, which cannot intercept them. Only the
+  PreToolUse `session-write-guard.sh` — whose allow/deny is generated from
+  `AUDIT_GRADED_PATHS` (`scripts/generate-write-guard-tables.js`, gated by
+  `check:write-guard-tables`; full session-root coverage gated by
+  `check:mcp-owned-basename-inventory`) — blocks an agent from directly writing an
+  audit-graded path.
+
+**Irreducible host-trust assumption (R-HOST).** Because the server cannot see the
+harness's own tools, audit-graded enforcement for AGENT writes depends entirely on
+the host honoring PreToolUse hooks. A host that strips or ignores them loses Y-P13
+for agent writes; the in-process gate does not and cannot back-fill that. Full
+Y-P13 requires a host that runs PreToolUse hooks. Per adapter: **Claude** registers
+the guards via `.claude/settings.json` (hard); **Kimi** registers via
+`~/.kimi/config.toml` but best-effort (unverified tool-name/payload shape — the
+guard loud-warns then allows on an unrecognized payload, and `doctor` surfaces
+`kimi_hook_best_effort`); **Codex** has no PreToolUse guard and relies on MCP-side
+authority validation; **generic-mcp** has MCP-side validation only.
+
+### Session-authority enforcement mode
+
+`BOB_SESSION_AUTHORITY_MODE=shadow` downgrades session-authority failures ONLY for
+the narrow legitimate case of a missing-session READ-ONLY block. It is not a
+general escape hatch: a mutating session write under shadow is REFUSED
+(`STATE_CONFLICT` / `enforcement_degraded_unacked`, plus a runtime-drift record)
+unless the operator explicitly sets `BOB_SESSION_AUTHORITY_SHADOW_ACK`, which
+stamps `operator_ack` on the audit-graded decision. Unset (the default) is
+`enforce`. The ack token is single-homed in `mcp/lib/enforcement-attest.js`
+(asserted by `test/enforcement-liveness-attest.test.js`).
+
 Longer-running platform work is tracked in the roadmap and release notes rather
 than through adapter-owned host files.

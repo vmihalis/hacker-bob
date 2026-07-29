@@ -40,6 +40,7 @@ const {
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
+  REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES,
   REPO_MOUNT_MODE_VALUES,
 } = require("../mcp/lib/repo-env.js");
 const {
@@ -215,12 +216,49 @@ test("buildDockerRunArgv emits --read-only (O-P3)", () => {
   assert.ok(argv.args.includes("--read-only"), "expected --read-only flag");
 });
 
-test("buildDockerRunArgv emits --tmpfs /tmp:size=512m (O-P3)", () => {
+test("buildDockerRunArgv emits an EXEC-capable /tmp tmpfs (O-P3 + portability)", () => {
   const argv = buildDockerRunArgv({
     repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
     allowNetwork: false, repoMountMode: "read_only", egressProfile: null,
   });
-  assert.equal(valueAfterFlag(argv.args, "--tmpfs"), "/tmp:size=512m");
+  // exec is required so a sanitizer harness / fuzzer / test runner can stage and
+  // run a binary under $TMPDIR (Docker tmpfs defaults to noexec, which breaks the
+  // native-repro idiom with a bare exit-126); nosuid+nodev keep the hardening.
+  assert.equal(valueAfterFlag(argv.args, "--tmpfs"), "/tmp:size=512m,exec,nosuid,nodev");
+});
+
+test("buildDockerRunArgv sets HOME=/work so build caches land on the writable mount", () => {
+  const argv = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null,
+  });
+  // Read-only root + default ~ means cmake/cargo/pip/go caches have nowhere to
+  // write; HOME=/work points them at the session-scoped writable mount.
+  assert.equal(valueAfterFlag(argv.args, "--env"), "HOME=/work");
+});
+
+test("buildDockerRunArgv emits NO --platform when platform is native/absent (byte-identical back-compat)", () => {
+  const omitted = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null,
+  });
+  assert.equal(omitted.args.indexOf("--platform"), -1, "absent platform must emit no --platform");
+  const native = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null, platform: "native",
+  });
+  assert.equal(native.args.indexOf("--platform"), -1, "platform: native must emit no --platform");
+  assert.deepEqual(native.args, omitted.args, "native must be byte-identical to omitted");
+});
+
+test("buildDockerRunArgv emits --platform linux/amd64 when requested (and keeps --network)", () => {
+  const argv = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null, platform: "linux/amd64",
+  });
+  assert.equal(valueAfterFlag(argv.args, "--platform"), "linux/amd64");
+  // --network handling is unchanged.
+  assert.equal(valueAfterFlag(argv.args, "--network"), "none");
 });
 
 test("buildDockerRunArgv mounts /src read-only by default and /work read-write", () => {
@@ -316,8 +354,11 @@ test("buildDockerRunArgv does NOT thread proxy when allow_network=false", () => 
     repoMountMode: "read_only",
     egressProfile: { proxy_url: "http://proxy.invalid:3128/", proxy_configured: true },
   });
-  // No --env flag should appear when network is closed: a proxy is meaningless and would leak intent.
-  assert.equal(argv.args.indexOf("--env"), -1, "--env should not appear under --network none");
+  // No PROXY --env should appear when network is closed: a proxy is meaningless
+  // and would leak intent. (HOME=/work is always set and is unrelated to egress.)
+  const envValues = argv.args.filter((_, i) => argv.args[i - 1] === "--env");
+  assert.ok(!envValues.some((v) => /proxy/i.test(v)), "no proxy --env under --network none");
+  assert.deepEqual(envValues, ["HOME=/work"], "only the HOME env is threaded under --network none");
 });
 
 // ---------- S14 differential checkout builder (pure) ----------
@@ -421,6 +462,69 @@ test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without dock
     assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "checkout_kind"), false);
     assert.ok(typeof rows[0].command_hash === "string" && /^[0-9a-f]{64}$/.test(rows[0].command_hash));
     assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["echo", "hi"])));
+  });
+});
+
+test("repoDockerRun dry_run omits --platform by default and emits it when requested", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    // No platform + no repo-env.json → defaults to native → no --platform.
+    const bare = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["echo", "hi"],
+    });
+    assert.equal(bare.platform, "native");
+    assert.equal(bare.planned_argv.indexOf("--platform"), -1, "default run must emit no --platform");
+
+    // Explicit platform threads --platform into the planned argv.
+    const amd = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["echo", "hi"],
+      platform: "linux/amd64",
+    });
+    assert.equal(amd.platform, "linux/amd64");
+    const idx = amd.planned_argv.indexOf("--platform");
+    assert.ok(idx >= 0, "--platform missing from planned_argv");
+    assert.equal(amd.planned_argv[idx + 1], "linux/amd64");
+
+    // Plan rows carry the platform for provenance.
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[rows.length - 1].platform, "linux/amd64");
+  });
+});
+
+test("repoDockerRun defaults its platform to the build platform recorded in repo-env.json", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    // Record a linux/amd64 build in repo-env.json (dry_run, no docker exec).
+    await prepareRepoEnv({ target_domain: init.target_domain, platform: "linux/amd64" });
+
+    // A run that omits platform inherits the build platform so the image is
+    // never accidentally run without --platform linux/amd64.
+    const run = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["echo", "hi"],
+    });
+    assert.equal(run.platform, "linux/amd64");
+    assert.equal(valueAfterFlag(run.planned_argv, "--platform"), "linux/amd64");
+  });
+});
+
+test("repoDockerRun rejects an unknown platform fail-closed", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+    await assert.rejects(
+      () => repoDockerRun({ target_domain: init.target_domain, command: ["echo", "hi"], platform: "linux/riscv64" }),
+      /platform must be one of/,
+    );
   });
 });
 
@@ -853,6 +957,201 @@ test("repoDockerRun self_patch aborts if patch.diff changes before materializati
   });
 });
 
+test("repoDockerRun checkout_patch writes /work/patch.diff and applies it for self_patch (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const patchBody = [
+      "diff --git a/file.txt b/file.txt",
+      "new file mode 100644",
+      "index 0000000..2d6a07d",
+      "--- /dev/null",
+      "+++ b/file.txt",
+      "@@ -0,0 +1 @@",
+      "+patched",
+      "",
+    ].join("\n");
+    // No pre-written patch.diff: the agent supplies it via checkout_patch and
+    // the handler must write it to /work/patch.diff before materialization.
+    const workDir = repoWorkDir(init.target_domain);
+    assert.equal(fs.existsSync(path.join(workDir, "patch.diff")), false);
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "patched replay\n");
+        fs.writeFileSync(stderrPath, "");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 5,
+          timed_out: false,
+          stdout_bytes: 15,
+          stderr_bytes: 0,
+          stdout_truncated: false,
+          stderr_truncated: false,
+        };
+      },
+    };
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "self_patch" },
+      checkout_patch: patchBody,
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "patch.diff"), "utf8"),
+      patchBody,
+      "checkout_patch must be written to the Bob-owned /work/patch.diff",
+    );
+    const checkoutDir = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
+    assert.ok(fs.existsSync(path.join(checkoutDir, "file.txt")), "supplied patch must be git-applied to the checkout");
+    assert.equal(result.checkout_kind, "self_patch");
+    assert.equal(result.checkout_patch_hash, sha256Hex(patchBody));
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].checkout_patch_hash, sha256Hex(patchBody));
+  });
+});
+
+test("repoDockerRun checkout_patch applies a supplied diff on an upstream_fix checkout (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    // first only has package.json; the patch adds an instrumentation file on
+    // top of the upstream_fix ref — the generalized materializer must apply it.
+    const patchBody = [
+      "diff --git a/instrument.txt b/instrument.txt",
+      "new file mode 100644",
+      "index 0000000..2d6a07d",
+      "--- /dev/null",
+      "+++ b/instrument.txt",
+      "@@ -0,0 +1 @@",
+      "+patched",
+      "",
+    ].join("\n");
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "instrumented fix\n");
+        fs.writeFileSync(stderrPath, "");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 5,
+          timed_out: false,
+          stdout_bytes: 17,
+          stderr_bytes: 0,
+          stdout_truncated: false,
+          stderr_truncated: false,
+        };
+      },
+    };
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "upstream_fix" },
+      checkout_patch: patchBody,
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+
+    const checkoutDir = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
+    assert.ok(
+      fs.existsSync(path.join(checkoutDir, "package.json")),
+      "upstream_fix ref must still be archived + extracted",
+    );
+    assert.ok(
+      fs.existsSync(path.join(checkoutDir, "instrument.txt")),
+      "supplied checkout_patch must be applied on top of the upstream_fix ref",
+    );
+    assert.equal(result.checkout_kind, "upstream_fix");
+    assert.equal(result.checkout_patch_hash, sha256Hex(patchBody));
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].checkout_patch_hash, sha256Hex(patchBody));
+  });
+});
+
+test("repoDockerRun checkout_patch refuses to apply without a checkout (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout_patch: "diff --git a/x b/x\n",
+        command: ["true"],
+        dry_run: true,
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "checkout_patch_requires_checkout",
+    );
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "checkout_patch without a checkout must not land a row");
+  });
+});
+
+test("repoDockerRun checkout_patch redacts embedded secrets before write and binds the redacted bytes (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const AWS = "AKIAIOSFODNN7EXAMPLE";
+    const patchBody = [
+      "diff --git a/secret.txt b/secret.txt",
+      "new file mode 100644",
+      "index 0000000..2d6a07d",
+      "--- /dev/null",
+      "+++ b/secret.txt",
+      "@@ -0,0 +1 @@",
+      `+key=${AWS}`,
+      "",
+    ].join("\n");
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "");
+        fs.writeFileSync(stderrPath, "");
+        return { exit_code: 0, signal: null, duration_ms: 5, timed_out: false, stdout_bytes: 0, stderr_bytes: 0, stdout_truncated: false, stderr_truncated: false };
+      },
+    };
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "self_patch" },
+      checkout_patch: patchBody,
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+    const written = fs.readFileSync(path.join(repoWorkDir(init.target_domain), "patch.diff"), "utf8");
+    assert.ok(!written.includes(AWS), "embedded AWS key must be redacted out of the on-disk patch.diff");
+    assert.ok(written.includes("REDACTED_AWS_ACCESS_KEY"), "redaction placeholder must be present");
+    assert.equal(result.checkout_patch_hash, sha256Hex(written), "checkout_patch_hash must bind the REDACTED bytes, not the raw secret");
+    assert.notEqual(result.checkout_patch_hash, sha256Hex(patchBody), "hash must not bind the raw (unredacted) patch");
+  });
+});
+
+test("repoDockerRun checkout_patch over the size cap is refused (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const huge = `diff --git a/x b/x\n+${"A".repeat(REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES + 1)}`;
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: first, kind: "self_patch" },
+        checkout_patch: huge,
+        command: ["true"],
+        dry_run: true,
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "checkout_patch_too_large",
+    );
+  });
+});
+
 test("repoDockerRun checkout provenance is scrub-validated before persistence", async () => {
   await withTempHome(async () => {
     const { repoRoot, first } = makeGitRepo();
@@ -925,7 +1224,8 @@ test("repoDockerRun live mode constructs argv with every O-P3 sandbox flag (per-
     assert.equal(valueAfterFlag(capturedArgs, "--memory"), "4g");
     assert.equal(valueAfterFlag(capturedArgs, "--pids-limit"), "1024");
     assert.ok(capturedArgs.includes("--read-only"));
-    assert.equal(valueAfterFlag(capturedArgs, "--tmpfs"), "/tmp:size=512m");
+    assert.equal(valueAfterFlag(capturedArgs, "--tmpfs"), "/tmp:size=512m,exec,nosuid,nodev");
+    assert.equal(valueAfterFlag(capturedArgs, "--env"), "HOME=/work");
 
     // Mounts: /src read-only, /work writable.
     const mounts = capturedArgs

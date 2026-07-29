@@ -4,7 +4,7 @@
 
 <h1 align="center">Hacker Bob</h1>
 
-<p align="center"><i>A local MCP workflow framework for authorized bug bounty research.</i></p>
+<p align="center"><i>Offensive security you run yourself — a local MCP workflow for authorized testing, in CI or against staging.</i></p>
 
 <p align="center">
   <a href="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml/badge.svg" /></a>
@@ -18,7 +18,7 @@
 
 Hacker Bob installs a local MCP runtime into a project directory and connects it to Claude Code, Codex, Kimi CLI, or another MCP-capable host. The runtime coordinates surface mapping, authentication setup, parallel surface testing, finding verification, grading, reporting, and local evidence handling.
 
-Bob is designed for authorized security testing. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
+Bob runs offensive security on surfaces you control — your own code in CI, your staging and authorized live targets. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
 
 ## Quickstart
 
@@ -39,7 +39,7 @@ Restart your host CLI from the same project directory, then run the matching com
 | Kimi CLI | `/skill:bob-evaluate target.com` |
 | Generic MCP host | Connect the generated `.mcp.json`, then follow `.hacker-bob/generic-mcp/hacker-bob.md`. |
 
-Run a status check before a full evaluate if you want to confirm the integration is loaded:
+Run a status check before a full evaluation if you want to confirm the integration is loaded:
 
 | Host | Status command |
 |---|---|
@@ -50,11 +50,11 @@ Run a status check before a full evaluate if you want to confirm the integration
 
 ## Safety
 
-Only run Bob against targets, accounts, applications, APIs, and infrastructure you own or are explicitly authorized to test. Read the target program's scope and rules of engagement before starting a evaluate.
+Only run Bob against targets, accounts, applications, APIs, and infrastructure you own or are explicitly authorized to test. Read the scope and rules of engagement before starting an evaluation.
 
 Bob does not prove authorization, enforce a program policy, or guarantee containment. For session-bound MCP tools, caller `target_domain` is only a lookup key: Bob authorizes against initialized session state, validates the stored `target` and `target_url`, and rejects drift before handlers run. Bob's MCP-scoped HTTP tools additionally require a public `target_domain` and only send first-party target-host requests; browser auto-signup routes page HTTP requests through a target-host guard but refuses effective `block_internal_hosts: true` because Chromium resolves network destinations outside Bob's safeFetch transport. Bob does not control arbitrary host shell commands, unrelated browser activity, or external surface-discovery binaries. By default, `normal`, `yolo`, and compatible legacy sessions allow public first-party hostnames that resolve to private infrastructure; `paranoid` sessions default to direct-egress DNS/private-address blocking unless the operator starts the session with `--allow-internal-hosts` for an explicitly authorized internal/lab program. First-party host scope is not DNS-rebinding or SSRF protection. Bob uses the packaged Public Suffix List via `psl` to reject public-suffix-only `target_domain` values and isolate registrable tenant domains. If that packaged list is stale, an operator can set `BOB_PSL_OVERLAY_FILE` to a local suffix file before running Bob; overlay matches are recorded in HTTP audit rows with `public_suffix_source` and `psl_overlay_file`, and the overlay is not a per-request bypass. For tools that support it, pass `--block-internal-hosts` or `block_internal_hosts: true` when you need local DNS/private-address blocking outside paranoid mode. The effective value is persisted in state and HTTP audit rows. That stricter mode is only available on direct egress, not proxy-backed egress profiles where target DNS and routing happen outside Bob.
 
-Bob binds the selected `egress_profile` to the session at `bounty_init_session` and records a redacted `egress_profile_identity_hash` in state, HTTP audit, evaluator briefs, signup responses, pipeline events, and analytics. Egress-bound HTTP and signup tools require initialized session state; legacy sessions may default presentation/progress fields, but missing or drifted authority fields such as `target`, `target_url`, internal-host policy, or egress identity fail closed for tools that rely on them. Bob hashes the profile name, region, proxy-configured bit, proxy route, and env/source identity, excluding raw credentials and description text; credential rotation on the same proxy route is allowed, but profile, route, or source drift fails closed.
+Bob binds the selected `egress_profile` to the session at `bob_init_session` and records a redacted `egress_profile_identity_hash` in state, HTTP audit, evaluator briefs, signup responses, pipeline events, and analytics. Egress-bound HTTP and signup tools require initialized session state; legacy sessions may default presentation/progress fields, but missing or drifted authority fields such as `target`, `target_url`, internal-host policy, or egress identity fail closed for tools that rely on them. Bob hashes the profile name, region, proxy-configured bit, proxy route, and env/source identity, excluding raw credentials and description text; credential rotation on the same proxy route is allowed, but profile, route, or source drift fails closed.
 
 Smart-contract RPC/REST tools use a separate direct-only model: shipped public ladders, explicit `endpoints` / `fork_urls`, and `BOB_<FAMILY>_RPCS_<NETWORK>` env overrides must be public HTTPS endpoints. Bob filters localhost/private/internal literals and performs bounded DNS private-address preflight for SC endpoints. Bob-owned Node SC reads and EVM source fetches then pin the HTTPS socket lookup to one of those preflighted public DNS answers. Fork runners are different: Foundry, Anchor, Aptos, Sui, Substrate, CosmWasm, and Halmos subprocesses run with proxy/RPC/secret env scrubbed, then receive only runner-created fork URL env or CLI args that came from preflighted public endpoints; Bob does not control or DNS-pin the downstream CLI socket. SC RPC does not use `egress_profile` proxy routing, and private/localnet RPC is unsupported by default until a per-family opt-in policy exists. Returned endpoint evidence and policy rejections redact credentials and query values.
 
@@ -84,7 +84,7 @@ The installer is idempotent and preserves unrelated host configuration. It write
 |---|---|
 | `claude` | `.claude/` commands, skills, agents, hooks, statusline setup, and MCP settings. |
 | `codex` | `$bob-*` skills in `~/.codex/skills`, a local `.codex/plugins/hacker-bob` plugin, `.agents/plugins/marketplace.json`, and Codex MCP activation metadata. |
-| `kimi` | `.kimi/skills`, `.kimi/mcp.json`, and `.kimi/bob` compatibility metadata. Relies on prompt-side enforcement; no PreToolUse hooks until `~/.kimi/config.toml` wiring lands. |
+| `kimi` | `.kimi/skills`, `.kimi/mcp.json`, and `.kimi/bob` compatibility metadata. Installs PreToolUse session-guard hooks registered in `~/.kimi/config.toml`. |
 | `generic-mcp` | A root `.mcp.json` entry plus prompt guide files under `.hacker-bob/generic-mcp/`. |
 
 When `--adapter` is omitted, Bob chooses an adapter from prior install metadata, host environment markers, project files, and installed host CLIs. Claude is the final fallback.
@@ -252,7 +252,7 @@ the matching local action source:
 uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
 ```
 
-## How A Evaluation Works
+## How An Evaluation Works
 
 Bob follows a structured workflow:
 
@@ -282,7 +282,7 @@ For a local read-only dashboard over multiple concurrent sessions:
 hacker-bob dashboard --repo-only
 ```
 
-The dashboard binds to `127.0.0.1:4873` by default and reads `~/hacker-bob-sessions` (falling back to the legacy `~/bounty-agent-sessions` root during the v2.0.x migration window). It shows OSS/repo progress, pending handoffs, claims, verification/evidence/grade state, and cross-session bottlenecks.
+The dashboard binds to `127.0.0.1:4873` by default and reads `~/hacker-bob-sessions`. It shows OSS/repo progress, pending handoffs, claims, verification/evidence/grade state, and cross-session bottlenecks.
 
 ## Requirements
 
@@ -377,9 +377,13 @@ Detailed guides:
 
 ## Data And Security Model
 
-Bob stores local run state, telemetry, and evidence under `~/hacker-bob-sessions`. Legacy `~/bounty-agent-sessions/` is migrated to `~/hacker-bob-sessions/` on first use; preserved until v2.1.0 (`--purge-legacy-session-root`). Bob copies — never moves — any legacy domain directories into the canonical root on first session access, so the legacy directory remains readable as a fallback for sessions created before the v2.0 rename. Treat both directories as sensitive. They can contain target names, request metadata, notes, credentials metadata, and report evidence from authorized testing.
+Bob stores local run state, telemetry, and evidence under a session root that all reads and writes resolve to. The pre-v2.0 `~/bounty-agent-sessions/` root is no longer auto-resolved or auto-copied; remove a leftover legacy root with `hacker-bob install --purge-legacy-session-root` (dry-run by default, `--yes` to delete). Treat these directories as sensitive. They can contain target names, request metadata, notes, credentials metadata, and report evidence from authorized testing.
 
-During a evaluate, Bob may make outbound HTTP requests, run local surface-discovery tools, import HTTP or static artifacts, and use host-side reasoning over the collected context. Optional third-party services and dependencies, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external surface-discovery tools, are used only when you configure the relevant dependencies or credentials.
+### Session roots and concurrent engines
+
+Bob elects exactly one engine per session root, so two workspaces can only run engines at the same time if their session roots are **disjoint** — an engine sharing another engine's session state would enforce gates against state a second process is already moving. The installer therefore gives each workspace its own root, `~/hacker-bob-sessions-<workspace>-<hash>`, derived from the workspace path (stable across re-installs) and written as `BOB_SESSIONS_ROOT` into that workspace's `.mcp.json` server env and `.claude/settings.json` env. That is **operator configuration**: the engine reads it once at boot and freezes it, and no agent or MCP tool can change it — edit it yourself if you want a different root, keeping it absolute, private to your user, and never nested inside another root. A workspace that was already installed and still has sessions in the shared `~/hacker-bob-sessions/` keeps using it (nothing is orphaned); to move it onto its own root, run `mv ~/hacker-bob-sessions/<target-domain> ~/hacker-bob-sessions-<workspace>-<hash>/` — the installer prints the exact path — and re-run the installer. The standalone `hacker-bob dashboard` CLI reads whatever `BOB_SESSIONS_ROOT` its own shell exports (it is not tied to a workspace), so point it at one root explicitly: `BOB_SESSIONS_ROOT=~/hacker-bob-sessions-<workspace>-<hash> hacker-bob dashboard`. **Operator caution:** disjoint roots make concurrent engines safe, they do not make concurrent evaluations of the SAME target safe. Rate limits, circuit breakers, and request budgets are per-engine, so two engines hunting one target from two roots double the request volume that target sees and neither one knows it. Hunt different targets.
+
+During an evaluation, Bob may make outbound HTTP requests, run local surface-discovery tools, import HTTP or static artifacts, and use host-side reasoning over the collected context. Optional third-party services and dependencies, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external surface-discovery tools, are used only when you configure the relevant dependencies or credentials.
 
 The npm packages are published through the project release workflow with npm provenance. `hacker-bob` is the canonical package; `hacker-bob-cc`, `hacker-bob-codex`, and `hacker-bob-kimi` are small wrapper packages that depend on the matching canonical version.
 
@@ -391,6 +395,7 @@ For local development on Bob itself:
 
 ```bash
 npm test
+npm run test:native-darwin # Darwin arm64 + Node.js 20 qualification
 npm run release:check
 npm run release:check:dependencies
 ```

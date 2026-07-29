@@ -13,13 +13,29 @@ const {
   LOCAL_INSTALL_METADATA_FILES,
   REQUIRED_SUPPORT_SURFACES,
   expectedCanonicalFiles,
+  isInternalPlaneBeliefRoadmapDoc,
+  isInternalPlaneDeltaDetailDoc,
+  isInternalPlaneDeltaVerificationDoc,
+  isInternalPlanePhysicalDoc,
+  isInternalPolicyReplayPlanningDoc,
+  isCanonicalRuntimePackageFile,
   isInternalRefactorDoc,
   isPackableBin,
   isPackableBobResource,
+  isPackableMcpRuntimeFile,
   isPackableScript,
   isPackedTextFile,
   wrapperPackages,
 } = require("./lib/package-policy.js");
+const {
+  evaluatePackagedPlanePhysicalReleaseReadiness,
+  evaluatePlanePhysicalReleaseReadiness,
+} = require("../mcp/lib/plane-physical-release-readiness.js");
+const {
+  PLANE_PHYSICAL_PACKAGED_RELEASE_SNAPSHOT,
+  assertPackagedPlanePhysicalReleaseSnapshot,
+  compilePlanePhysicalReleaseSnapshot,
+} = require("../mcp/lib/plane-physical-release-snapshot.js");
 
 const ROOT = path.join(__dirname, "..");
 const WRAPPER_PACKAGES = wrapperPackages(ROOT);
@@ -27,6 +43,13 @@ const NPM_CACHE = process.env.HACKER_BOB_RELEASE_NPM_CACHE || path.join(os.tmpdi
 const args = new Set(process.argv.slice(2));
 const registryMode = args.has("--registry");
 const allowPublished = args.has("--allow-published");
+const PLANE_PHYSICAL_NODES_PATH = path.join(ROOT, "docs", "plane-physical", "nodes.json");
+const PLANE_PHYSICAL_HYPEREDGES_PATH = path.join(
+  ROOT,
+  "docs",
+  "plane-physical",
+  "hyperedges.json",
+);
 
 let failures = 0;
 let warnings = 0;
@@ -51,6 +74,22 @@ function warn(message) {
 function fail(message) {
   failures += 1;
   log("FAIL", message);
+}
+
+function parsePhysicalProductionRequirement(argv, environmentValue) {
+  const values = Array.isArray(argv) ? argv : [];
+  const cliRequested = values.includes("--physical-production");
+  if (environmentValue == null || String(environmentValue).trim() === "") {
+    return { requested: cliRequested, valid: true, source: cliRequested ? "cli" : "none" };
+  }
+  const normalized = String(environmentValue).trim().toLowerCase();
+  if (["1", "true", "required", "on"].includes(normalized)) {
+    return { requested: true, valid: true, source: cliRequested ? "cli+env" : "env" };
+  }
+  if (["0", "false", "off"].includes(normalized)) {
+    return { requested: cliRequested, valid: true, source: cliRequested ? "cli" : "env-disabled" };
+  }
+  return { requested: true, valid: false, source: "invalid-env" };
 }
 
 function readJson(filePath) {
@@ -198,20 +237,17 @@ function checkCanonicalPack(rootPackage) {
   // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
   // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
   // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
-  // Raised again to 3.2 MB for the CVSS v3.1 + CWE annotation surfaces, now
+  // Raised alongside the capability-layer + native-fuzz surfaces,
   // measured against the lean tarball (mcp/node_modules excluded from the pack).
-  // Raised to 3.3 MB for PR7 — the first container-runner-backed offensive tool
-  // surface (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
-  // channel) — which took the lean tarball past 3.2 MB. Mirrors the
+  // Also raised for the container-runner-backed offensive tool surface
+  // (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
+  // channel), then for the provider-neutral physical contract runtime. Mirrors the
   // test/package.test.js ceiling (keep the two in lockstep).
-  // Raised to 3.4 MB: accumulated offensive-surface growth since PR7 plus the
-  // primitive→producer evaluator prose (P12) crossed 3.3 MB (lean pack ~3.30 MB).
-  // The 921 KB docs/hacker-bob-social.png (a web/marketing asset) is now excluded
-  // from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES), dropping the lean pack to
-  // ~2.48 MB, and the ceiling was RATCHETED DOWN from 3.4 MB to a snug 2.7 MB so the
-  // reclaimed space is not unmonitored slack. The ceiling is a single source of truth
-  // (CANONICAL_PACKAGE_MAX_BYTES in scripts/lib/package-policy.js) shared with
-  // test/package.test.js — they cannot drift.
+  // The 921 KB docs/hacker-bob-social.png (a web/marketing asset never read by the installed
+  // runtime) is excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES). The ceiling is a single
+  // source of truth (CANONICAL_PACKAGE_MAX_BYTES in scripts/lib/package-policy.js) shared with
+  // test/package.test.js so the two cannot drift; it is calibrated to core's full offensive +
+  // sandbox-isolation surface, a larger lean tarball than the public line.
   if (canonical.size < CANONICAL_PACKAGE_MAX_BYTES) {
     pass(`canonical pack size ${canonical.size} bytes is under the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   } else {
@@ -227,6 +263,14 @@ function checkCanonicalPack(rootPackage) {
     if (isInternalRefactorDoc(file)) {
       foundDisallowed = true;
       fail(`canonical pack includes internal refactor tracker ${file}`);
+    }
+    if (isInternalPlaneBeliefRoadmapDoc(file)
+        || isInternalPlaneDeltaDetailDoc(file)
+        || isInternalPlaneDeltaVerificationDoc(file)
+        || isInternalPlanePhysicalDoc(file)
+        || isInternalPolicyReplayPlanningDoc(file)) {
+      foundDisallowed = true;
+      fail(`canonical pack includes internal design document ${file}`);
     }
     if (file.startsWith("scripts/replay-prompts/")) {
       foundDisallowed = true;
@@ -248,9 +292,15 @@ function checkCanonicalPack(rootPackage) {
       foundDisallowed = true;
       fail(`canonical pack includes unsupported .hacker-bob resource ${file}`);
     }
-    if (file.startsWith("packages/")) {
+    if (file.startsWith("mcp/") && !isPackableMcpRuntimeFile(file)) {
       foundDisallowed = true;
-      fail(`canonical pack includes nested package artifact ${file}`);
+      fail(`canonical pack includes non-runtime MCP artifact ${file}`);
+    }
+    if (file.startsWith("packages/")) {
+      if (!isCanonicalRuntimePackageFile(file)) {
+        foundDisallowed = true;
+        fail(`canonical pack includes non-runtime nested package artifact ${file}`);
+      }
     }
     if (file.startsWith(".github/")) {
       foundDisallowed = true;
@@ -319,6 +369,89 @@ function checkWrapperPack(spec, rootPackage) {
   } else {
     fail(`${spec.label} bin script does not pin --adapter ${spec.adapter}`);
   }
+}
+
+function checkPlanePhysicalReleaseReadiness() {
+  const requirement = parsePhysicalProductionRequirement(
+    process.argv.slice(2),
+    process.env.HACKER_BOB_PHYSICAL_PRODUCTION,
+  );
+  if (!requirement.valid) {
+    fail(
+      "HACKER_BOB_PHYSICAL_PRODUCTION must be one of 1/true/required/on or 0/false/off; refusing an ambiguous production claim",
+    );
+  }
+  let verdict;
+  try {
+    const packagedSnapshot = assertPackagedPlanePhysicalReleaseSnapshot(
+      PLANE_PHYSICAL_PACKAGED_RELEASE_SNAPSHOT,
+    );
+    const hasNodes = exists(PLANE_PHYSICAL_NODES_PATH);
+    const hasHyperedges = exists(PLANE_PHYSICAL_HYPEREDGES_PATH);
+    if (hasNodes !== hasHyperedges) {
+      throw new Error("repository Plane-PH graph is only partially present");
+    }
+    const sourceMarkersPresent = exists(path.join(ROOT, "scripts", "check-plane-physical.js"))
+      || exists(path.join(ROOT, ".github"));
+    if (!hasNodes && sourceMarkersPresent) {
+      throw new Error("repository Plane-PH graph is missing from a source release layout");
+    }
+    if (hasNodes) {
+      const nodesDocument = readJson(PLANE_PHYSICAL_NODES_PATH);
+      const hyperedgesDocument = readJson(PLANE_PHYSICAL_HYPEREDGES_PATH);
+      const sourceSnapshot = compilePlanePhysicalReleaseSnapshot(
+        nodesDocument,
+        hyperedgesDocument,
+      );
+      if (sourceSnapshot.snapshot_sha256 !== packagedSnapshot.snapshot_sha256) {
+        throw new Error(
+          "reviewed packaged Plane-PH release projection drifted from repository graph/status",
+        );
+      }
+      verdict = evaluatePlanePhysicalReleaseReadiness({
+        nodes_document: nodesDocument,
+        hyperedges_document: hyperedgesDocument,
+      });
+      info(`Plane-PH repository graph matches compiled release snapshot ${sourceSnapshot.snapshot_sha256}`);
+    } else {
+      verdict = evaluatePackagedPlanePhysicalReleaseReadiness();
+      info(
+        `Plane-PH installed diagnostic uses reviewed compiled release snapshot ${packagedSnapshot.snapshot_sha256}`,
+      );
+    }
+  } catch (error) {
+    fail(`Plane-PH release-readiness validation could not run: ${error.message}`);
+    return;
+  }
+  const blockerSummary = Object.entries(verdict.blocker_counts)
+    .map(([code, count]) => `${code}=${count}`)
+    .join(", ");
+  warn(
+    `Plane-PH physical_production_ready:${verdict.physical_production_ready} `
+      + `verdict=${verdict.verdict} blockers=${verdict.blocker_count} `
+      + `verdict_digest=${verdict.verdict_digest}`,
+  );
+  info(`Plane-PH production blockers: ${blockerSummary}`);
+  if (requirement.requested) {
+    if (verdict.physical_production_ready === true) {
+      pass(`Plane-PH physical-production release gate passed (${requirement.source})`);
+    } else {
+      fail(
+        `Plane-PH physical-production release gate is blocked (${requirement.source}); `
+          + "missing or waived production-nonwaivable HIL can never be accepted",
+      );
+    }
+  } else {
+    info("Plane-PH runtime ships as inert engineering surfaces; no physical-production claim was requested");
+  }
+  return verdict;
+}
+
+function isInstalledPackageDiagnosticLayout() {
+  return !exists(PLANE_PHYSICAL_NODES_PATH)
+    && !exists(PLANE_PHYSICAL_HYPEREDGES_PATH)
+    && !exists(path.join(ROOT, "scripts", "check-plane-physical.js"))
+    && !exists(path.join(ROOT, ".github"));
 }
 
 function npmJson(commandArgs, description, options = {}) {
@@ -430,19 +563,49 @@ function main() {
   console.log("Hacker Bob release check");
   if (registryMode) info("registry checks enabled");
 
+  if (isInstalledPackageDiagnosticLayout()) {
+    info("installed_package_diagnostic:true source-only publish checks are intentionally unavailable");
+    if (registryMode) {
+      fail("registry publishing checks cannot run from an installed package diagnostic layout");
+    }
+    checkPlanePhysicalReleaseReadiness();
+    if (failures > 0) {
+      console.error(`Installed package diagnostic failed with ${failures} failure(s) and ${warnings} warning(s).`);
+      // Never process.exit() here: see the note on the failure path below.
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Installed package diagnostic completed with ${warnings} warning(s).`);
+    return;
+  }
+
   const { rootPackage, wrapperPackages } = checkManifest();
   checkCanonicalPack(rootPackage);
   for (const { spec } of wrapperPackages) {
     checkWrapperPack(spec, rootPackage);
   }
+  checkPlanePhysicalReleaseReadiness();
 
   if (registryMode) checkRegistry(rootPackage, wrapperPackages);
 
   if (failures > 0) {
     console.error(`Release check failed with ${failures} failure(s) and ${warnings} warning(s).`);
-    process.exit(1);
+    // Set the code and let Node exit once the streams drain. process.exit()
+    // here discarded whatever was still buffered, and this check emits tens of
+    // kilobytes: when stdout is a pipe (any caller capturing output — CI, a
+    // test, a shell pipeline) writes are asynchronous, so the tail was lost
+    // while a direct-to-file run kept everything. The Plane-PH verdict is
+    // emitted last and was the first thing to disappear.
+    process.exitCode = 1;
+    return;
   }
   console.log(`Release check passed with ${warnings} warning(s).`);
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+  checkPlanePhysicalReleaseReadiness,
+  isInstalledPackageDiagnosticLayout,
+  parsePhysicalProductionRequirement,
+};

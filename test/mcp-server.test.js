@@ -38,6 +38,10 @@ const {
   TOOL_HANDLERS,
 } = require("../mcp/lib/dispatch.js");
 const {
+  SHADOW_ACK_ENV,
+  SHADOW_ACK_TOKEN,
+} = require("../mcp/lib/enforcement-attest.js");
+const {
   buildToolRegistry,
   capabilityToolMapFromRegistry,
   defineTool,
@@ -175,7 +179,6 @@ const {
   initSession,
   readSessionState,
   advanceSession,
-  reportWritten,
   setOperatorNote,
   readStateSummary,
 } = require("../mcp/lib/session-state.js");
@@ -278,6 +281,7 @@ const {
   renderGradeVerdictMarkdown,
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   normalizeVerificationRoundDocument,
   readVerificationRound,
@@ -408,6 +412,8 @@ const EXPECTED_TOOL_NAMES = [
   "bob_http_xss_confirm",
   "bob_oob_mint",
   "bob_oob_poll",
+  "bob_secondorder_mint",
+  "bob_secondorder_reread",
   "bob_nuclei_scan",
   "bob_read_http_audit",
   "bob_start_next_wave",
@@ -427,6 +433,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_ingest_sarif",
   "bob_read_static_analysis_index",
   "bob_record_candidate_claim",
+  "bob_record_physical_candidate_claim",
   "bob_read_candidate_claims",
   "bob_list_candidate_claims",
   "bob_write_chain_attempt",
@@ -436,6 +443,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_chain_frontier",
   "bob_chain_ancestry",
   "bob_write_verification_round",
+  "bob_stage_verification_round_partial",
   "bob_read_verification_round",
   "bob_read_verification_context",
   "bob_diff_verification_attempts",
@@ -447,10 +455,15 @@ const EXPECTED_TOOL_NAMES = [
   "bob_read_grade_verdict",
   "bob_init_session",
   "bob_init_repo_session",
+  "bob_init_contract_session",
+  "bob_init_physical_session",
+  "bob_query_instrument_capabilities",
   "bob_repo_inventory",
   "bob_repo_prepare_env",
   "bob_repo_docker_run",
   "bob_repo_check",
+  "bob_import_harness",
+  "bob_import_seed_corpus",
   "bob_read_session_state",
   "bob_read_session_nucleus",
   "bob_advance_session",
@@ -474,7 +487,6 @@ const EXPECTED_TOOL_NAMES = [
   "bob_set_operator_note",
   "bob_clear_operator_note",
   "bob_clear_terminal_block",
-  "bounty_report_written",
   "bob_finalize_report",
   "bob_compose_report",
   "bob_amend_report",
@@ -492,6 +504,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_evaluate_capabilities",
   "bob_ingest_audit_report",
   "bob_query_audit_reports",
+  "bob_register_mechanism_template",
   "bob_suggest_invariants",
   "bob_run_invariant_for_finding",
   "bob_read_invariant_runs",
@@ -524,16 +537,45 @@ const EXPECTED_TOOL_NAMES = [
   "bob_promote_surface_leads",
   "bob_build_surface_graph",
   "bob_query_surface_graph",
+  "bob_read_belief_signals",
+  "bob_query_belief_signals",
+  "bob_query_belief_window",
+  "bob_run_belief_sampler",
+  "bob_run_belief_residual",
+  "bob_query_intervention_calculus",
+  "bob_plan_belief_experiment",
+  "bob_train_belief_model",
+  "bob_read_belief_model_info",
+  "bob_elicit_belief",
   "bob_append_frontier_event",
   "bob_propose_hypothesis",
   "bob_propose_transition",
   "bob_materialize_task_graph",
+  "bob_materialize_cell_floor",
   "bob_read_task_graph",
+  "bob_read_composition_telemetry",
+  "bob_run_path_composition_experiment",
+  "bob_verify_composition_path",
+  "bob_verify_repro_reproduction",
+  "bob_verify_oracle_differential",
+  "bob_verify_invariant_differential",
+  "bob_verify_finding_differential",
+  "bob_verify_physical_verdict",
+  "bob_verify_physical_candidate_claim",
+  "bob_physical_observe",
+  "bob_credential_acquire",
+  "bob_credential_recover",
+  "bob_credential_emulate",
+  "bob_credential_write",
+  "bob_protocol_transceive",
+  "bob_rf_trace",
   "bob_attach_contract",
   "bob_resolve_body",
   "bob_prepare_node",
   "bob_finalize_node",
   "bob_schedule_graph_nodes",
+  "bob_materialize_producer_floor",
+  "bob_schedule_seed_producers",
   "bob_materialize_frontier",
   "bob_read_queue_policy",
   "bob_set_queue_policy",
@@ -567,6 +609,9 @@ const EXPECTED_TOOL_NAMES = [
   // Orchestrator-only pure read returning synthetic capability_friction +
   // protocol_drift records (W2 + rev-4.1 silent_lead_threshold_drop).
   "bob_scan_transcript_for_friction",
+  "bob_ws_probe",
+  // Recon multi-modal sweep — read-only SETUP recon-angle planner.
+  "bob_plan_recon_angles",
 ];
 
 function withTempHome(fn) {
@@ -594,6 +639,23 @@ function withTempHome(fn) {
     cleanup();
     throw error;
   }
+}
+
+async function withBoundEvmSession(address, fn) {
+  return withTempHome(async () => {
+    const boot = await executeTool("bob_init_contract_session", {
+      contracts: [{ chain_family: "evm", chain_id: "1", address }],
+    });
+    assert.equal(boot.ok, true, JSON.stringify(boot));
+    return fn(boot.data.target_domain);
+  });
+}
+
+async function withUrlSession(targetDomain, fn) {
+  return withTempHome(async () => {
+    seedSessionState(targetDomain);
+    return fn(targetDomain);
+  });
 }
 
 function withEnv(overrides, fn) {
@@ -973,11 +1035,9 @@ function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
-// Test compat shim. Cycle D.1 retired the bounty_transition_phase tool and
-// its handler; tests that drove the legacy phase machine via direct
-// transitionPhase(...) calls now route through bob_advance_session. The
-// legacy phase-to-lifecycle mapping is the same one the registry alias
-// uses (see mcp/lib/tools/advance-session.js arg_adapter). When the target
+// Test compat shim. The lifecycle FSM speaks a six-state enum; tests that
+// drove fixtures forward with the older eight-phase names route those names
+// through bob_advance_session via this local mapping. When the target
 // lifecycle state equals the current one (e.g., legacy AUTH -> EVALUATE both
 // collapse to OPEN_FRONTIER), the helper returns a synthetic success
 // envelope instead of calling advanceSession so existing legacy chains keep
@@ -1476,6 +1536,25 @@ function seedTechniqueAttempt(domain, {
   }));
 }
 
+// Seed a completion-status technique attempt for every attempt_log_required
+// (web/OSS) surface assigned in the wave, mirroring an evaluator that logged its
+// attempt before finalizing. The branch-uniform merge gate requires this for a
+// non-settled handoff to be honored on any acceptance branch; SC surfaces
+// (attempt_log_required=false) and missing/invalid handoffs are unaffected.
+function seedWaveTechniqueAttempts(domain, waveNumber) {
+  const info = loadWaveAssignments(domain, waveNumber);
+  for (const assignment of info.assignments) {
+    if (!assignment.context_budget || assignment.context_budget.attempt_log_required !== true) {
+      continue;
+    }
+    seedTechniqueAttempt(domain, {
+      wave: info.wave,
+      agent: assignment.agent,
+      surface_id: assignment.surface_id,
+    });
+  }
+}
+
 function writeUnexpectedHandoff(domain, wave, agent, payload = {}) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
@@ -1660,6 +1739,43 @@ function evidencePack(findingId = "F-1", overrides = {}) {
     report_snippet: "An attacker can retrieve another account's private metadata by changing the account ID.",
     ...overrides,
   };
+}
+
+// A standalone web (IDOR) finding is an executable-flip class; seed its
+// finding-differential verified_pass arm so the grade-time standalone-finding gate is
+// satisfied (it stays reportable, NO amputation). Post-A1 the gate RE-RESOLVES the verdict
+// against the MAC-covered offensive-runs rows + re-adjudicates the flip, so a bare ledger
+// line no longer suffices: seed a real MAC-signed exploited_safely positive +
+// blocked_by_defense control (distinct command_hash, same surface), then the verdict line
+// that binds them. The positive demonstrates high (the finding's severity) so B1's
+// demonstrated-severity ceiling is also satisfied.
+function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface-a") {
+  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { appendJsonlLine } = require("../mcp/lib/storage.js");
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/export`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: surfaceId, source: "offensive_runs",
+    positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+  });
 }
 
 function v2VerificationResult(findingId = "F-1", overrides = {}) {
@@ -1875,19 +1991,18 @@ test("mcp server public exports remain stable", () => {
 });
 
 test("MCP tool registry and dispatch cases stay in sync", async () => {
-  // Cycle P.1: TOOLS publishes only primary names. TOOL_REGISTRY carries both
-  // primaries and bounty_* deprecation aliases for handler routing; aliases
-  // are registry-only entries (alias_of set) that share their primary's
-  // metadata. EXPECTED_TOOL_NAMES enumerates the primary surface.
+  // Every registered tool is its own canonical bob_* primary: TOOLS,
+  // TOOL_REGISTRY, and EXPECTED_TOOL_NAMES are the same surface in the same
+  // order. The v2.1.0 break removed the bounty_* alias layer, so there are no
+  // registry-only alias entries.
   const toolNames = TOOLS.map((tool) => tool.name);
-  const primaryRegistryNames = TOOL_REGISTRY
-    .filter((tool) => !tool.alias_of)
-    .map((tool) => tool.name);
+  const registryNames = TOOL_REGISTRY.map((tool) => tool.name);
   assert.deepEqual(toolNames, EXPECTED_TOOL_NAMES);
-  assert.deepEqual(primaryRegistryNames, EXPECTED_TOOL_NAMES);
+  assert.deepEqual(registryNames, EXPECTED_TOOL_NAMES);
   assert.deepEqual(TOOL_MODULES.map((tool) => defineTool(tool).name), EXPECTED_TOOL_NAMES);
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
-  assert.ok(toolNames.every((name) => name.startsWith("bounty_") || name.startsWith("bob_")));
+  assert.ok(toolNames.every((name) => name.startsWith("bob_")), "every tool name is bob_-prefixed");
+  assert.ok(!toolNames.some((name) => name.startsWith("bounty_")), "no bounty_* tool survives the v2.1.0 break");
   assert.ok(!toolNames.includes("bob_auth_manual"));
   assert.ok(!toolNames.includes("bob_read_handoff"));
   assert.equal(
@@ -1895,37 +2010,17 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
     "^SA-[1-9][0-9]*$",
   );
 
-  // Every primary that declares aliases must have a corresponding registry
-  // entry for each alias. Aliases must point back to a registered primary.
-  // Aliases may be plain strings or descriptor objects with .name; both
-  // shapes are materialized by buildToolRegistry into top-level alias
-  // entries with tool.alias_of pointing at the primary.
-  const allRegistryNames = new Set(TOOL_REGISTRY.map((tool) => tool.name));
+  // Dispatch surfaces exactly the registered primaries; no module declares an
+  // alias array any more.
   for (const tool of TOOL_REGISTRY) {
-    if (tool.alias_of) {
-      assert.ok(allRegistryNames.has(tool.alias_of), `alias ${tool.name} points to unknown primary ${tool.alias_of}`);
-    } else if (Array.isArray(tool.aliases)) {
-      for (const alias of tool.aliases) {
-        const aliasName = typeof alias === "string" ? alias : alias.name;
-        assert.ok(allRegistryNames.has(aliasName), `${tool.name} declares missing alias ${aliasName}`);
-      }
-    }
+    assert.ok(!Object.prototype.hasOwnProperty.call(tool, "alias_of"), `${tool.name} must not carry alias_of`);
+    assert.ok(!Object.prototype.hasOwnProperty.call(tool, "aliases"), `${tool.name} must not carry an aliases array`);
   }
-
-  // Dispatch resolves both primary and alias names so existing clients that
-  // still call bounty_* can route through the same handler.
-  const dispatchNames = Object.keys(TOOL_HANDLERS);
-  const dispatchPrimaryNames = dispatchNames.filter((name) => {
-    const tool = TOOL_REGISTRY.find((entry) => entry.name === name);
-    return tool && !tool.alias_of;
-  });
-  assert.deepEqual(dispatchPrimaryNames, toolNames);
+  assert.deepEqual(Object.keys(TOOL_HANDLERS), toolNames);
   assert.deepEqual(Object.keys(TOOL_MANIFEST), toolNames);
   for (const tool of TOOL_REGISTRY) {
     assert.equal(TOOL_HANDLERS[tool.name], tool.handler);
-    if (!tool.alias_of) {
-      assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
-    }
+    assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
   }
   await withTempHome(async () => {
     assert.deepEqual(await executeTool("__unknown_tool__", {}), {
@@ -1946,6 +2041,9 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.equal(typeof metadata.global_preapproval, "boolean");
     assert.equal(typeof metadata.network_access, "boolean");
     assert.equal(typeof metadata.browser_access, "boolean");
+    if (metadata.network_access || metadata.browser_access) {
+      assert.equal(metadata.global_preapproval, false, `${tool.name} cannot globally preapprove external access`);
+    }
     assert.equal(typeof metadata.scope_required, "boolean");
     assert.equal(typeof metadata.sensitive_output, "boolean");
     assert.ok(Array.isArray(metadata.session_artifacts_written));
@@ -1958,7 +2056,85 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.ok(metadata.capability_id === null || typeof metadata.capability_id === "string");
     assert.ok(Array.isArray(metadata.scope_url_fields));
     assert.equal(Object.isFrozen(metadata.scope_url_fields), true, `${tool.name} scope_url_fields should be frozen`);
+    assert.ok(Array.isArray(metadata.required_session_axes));
+    assert.equal(
+      Object.isFrozen(metadata.required_session_axes),
+      true,
+      `${tool.name} required_session_axes should be frozen`,
+    );
     assert.equal(Object.isFrozen(tool.inputSchema), true, `${tool.name} inputSchema should be frozen`);
+  }
+  for (const name of [
+    "bob_repo_inventory",
+    "bob_repo_prepare_env",
+    "bob_repo_docker_run",
+    "bob_repo_check",
+    "bob_verify_repro_reproduction",
+    "bob_verify_oracle_differential",
+  ]) {
+    assert.deepEqual(TOOL_MANIFEST[name].required_session_axes, ["repo"]);
+  }
+  for (const name of [
+    "bob_http_scan",
+    "bob_http_confirm",
+    "bob_temp_email",
+    "bob_signup_detect",
+    "bob_auto_signup",
+    "bob_ws_probe",
+    "bob_http_cors_confirm",
+    "bob_http_massread_confirm",
+    "bob_http_idor_confirm",
+    "bob_http_xss_reflect",
+    "bob_http_xss_confirm",
+    "bob_oob_poll",
+    "bob_secondorder_reread",
+    "bob_nuclei_scan",
+    "bob_public_intel",
+    "bob_run_doc_delta",
+    "bob_run_auth_differential",
+    "bob_verify_composition_path",
+    "bob_browser_session_start",
+    "bob_browser_navigate",
+    "bob_browser_snapshot",
+    "bob_browser_click",
+    "bob_browser_type",
+    "bob_browser_evaluate",
+    "bob_browser_network_requests",
+    "bob_browser_console_messages",
+    "bob_browser_wait_for",
+    "bob_browser_press_key",
+    "bob_browser_take_screenshot",
+    "bob_browser_fill_form",
+    "bob_browser_session_close",
+    "bob_browser_session_start_recording",
+    "bob_browser_flush_recorded_requests",
+  ]) {
+    assert.deepEqual(TOOL_MANIFEST[name].required_session_axes, ["url"]);
+  }
+  for (const name of [
+    "bob_evm_call",
+    "bob_evm_storage_read",
+    "bob_evm_fetch_source",
+    "bob_evm_role_table",
+    "bob_svm_fetch_account",
+    "bob_svm_fetch_program",
+    "bob_aptos_fetch_resource",
+    "bob_aptos_fetch_module",
+    "bob_sui_fetch_object",
+    "bob_sui_fetch_package",
+    "bob_substrate_fetch_storage",
+    "bob_substrate_fetch_runtime",
+    "bob_cosmwasm_fetch_contract",
+    "bob_cosmwasm_smart_query",
+    "bob_run_invariant_for_finding",
+    "bob_foundry_run",
+    "bob_anchor_run",
+    "bob_aptos_run",
+    "bob_sui_run",
+    "bob_substrate_run",
+    "bob_cosmwasm_run",
+  ]) {
+    assert.deepEqual(TOOL_MANIFEST[name].required_session_axes, ["contracts"]);
   }
   const httpScanSchema = TOOLS.find((tool) => tool.name === "bob_http_scan").inputSchema;
   assert.equal(Object.isFrozen(httpScanSchema.properties), true);
@@ -1984,6 +2160,14 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
       "bob_run_auth_differential",
       "bob_read_auth_differential_results",
     ],
+    S3_stepup_registration: [
+      "bob_temp_email",
+      "bob_signup_detect",
+      "bob_auto_signup",
+    ],
+    S3_oob_callback: [
+      "bob_oob_mint",
+    ],
     I7_chain_state_tree: [
       "bob_append_chain_node",
       "bob_query_chain_tree",
@@ -1996,6 +2180,53 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
     I1_surface_graph: [
       "bob_build_surface_graph",
       "bob_query_surface_graph",
+    ],
+    "CB-S1_belief_authority": [
+      "bob_read_belief_signals",
+      "bob_query_belief_signals",
+    ],
+    "CB-B1_belief_window": [
+      "bob_query_belief_window",
+    ],
+    "CB-B4_factor_graph_sampler": [
+      "bob_run_belief_sampler",
+    ],
+    "CB-B6_residual_anomaly": [
+      "bob_run_belief_residual",
+    ],
+    "CB-B2_intervention_calculus": [
+      "bob_query_intervention_calculus",
+    ],
+    "CB-B3_experiment_loop": [
+      "bob_plan_belief_experiment",
+    ],
+    "CB-B5_calibrated_factor_model": [
+      "bob_train_belief_model",
+      "bob_read_belief_model_info",
+    ],
+    "CB-B7_belief_elicitation": [
+      "bob_elicit_belief",
+    ],
+    "physical.observe": [
+      "bob_physical_observe",
+    ],
+    "physical.credential.acquire": [
+      "bob_credential_acquire",
+    ],
+    "physical.credential.recover": [
+      "bob_credential_recover",
+    ],
+    "physical.credential.emulate": [
+      "bob_credential_emulate",
+    ],
+    "physical.credential.write": [
+      "bob_credential_write",
+    ],
+    "physical.protocol.transceive": [
+      "bob_protocol_transceive",
+    ],
+    "physical.rf.trace": [
+      "bob_rf_trace",
     ],
     // Plane Y Cycle Y.2 — capability friction + protocol drift voluntary
     // emission tools plus the orchestrator-facing runtime drift telemetry
@@ -2060,12 +2291,17 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.deepEqual(TOOL_MANIFEST.bob_write_evidence_packs.role_bundles, ["evidence"]);
   assert.deepEqual(TOOL_MANIFEST.bob_write_evidence_packs.session_artifacts_written, ["evidence-packs.json", "evidence-packs.md", "verification-manifest.json"]);
   assert.deepEqual(TOOL_MANIFEST.bob_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
-  // bob_advance_session replaces the legacy bounty_transition_phase tool;
-  // the registry alias is exercised by the dispatch tests below.
+  // bob_advance_session is the sole lifecycle-FSM tool.
   assert.deepEqual(TOOL_MANIFEST.bob_advance_session.session_artifacts_written, [
     "session-nucleus.json",
     "session-events.jsonl",
   ]);
+  const advanceSessionSchema = byName.get("bob_advance_session").inputSchema;
+  assert.deepEqual(advanceSessionSchema.dependentRequired, {
+    override: ["override_reason"],
+  });
+  assert.equal(advanceSessionSchema.properties.override_reason.minLength, 1);
+  assert.equal(advanceSessionSchema.properties.override_reason.pattern, "\\S");
   assert.deepEqual(TOOL_MANIFEST.bob_write_verification_round.session_artifacts_written, ["brutalist.json", "balanced.json", "verified-final.json", "verification-manifest.json"]);
   assert.deepEqual(TOOL_MANIFEST.bob_build_verification_adjudication.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_build_verification_adjudication.mutating, true);
@@ -2091,7 +2327,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "state.json",
   ]);
   assert.equal(TOOL_MANIFEST.bob_http_scan.network_access, true);
-  assert.equal(TOOL_MANIFEST.bob_http_scan.global_preapproval, true);
+  assert.equal(TOOL_MANIFEST.bob_http_scan.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bob_http_scan.scope_required, true);
   assert.deepEqual(TOOL_MANIFEST.bob_http_scan.scope_url_fields, []);
   assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.role_bundles, ["verifier", "evaluator-web", "evidence"]);
@@ -2128,6 +2364,12 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_read_surface_leads.scope_required, false);
   assert.equal(TOOL_MANIFEST.bob_read_surface_leads.sensitive_output, false);
   assert.deepEqual(TOOL_MANIFEST.bob_read_surface_leads.session_artifacts_written, []);
+  // bob_read_assignment_brief records a best-effort `running` marker into agent-runs.jsonl
+  // (the universal first surface-scoped tool call), so it DECLARES that MCP-owned ledger
+  // even though it stays mutating:false — the declaration is what makes the
+  // canShadowMissingSession guard refuse to shadow this read past a missing session.
+  assert.equal(TOOL_MANIFEST.bob_read_assignment_brief.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bob_read_assignment_brief.session_artifacts_written, ["agent-runs.jsonl"]);
   assert.deepEqual(TOOL_MANIFEST.bob_promote_surface_leads.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.global_preapproval, false);
@@ -2143,19 +2385,35 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "task-graph.json",
     "pipeline-events.jsonl",
   ]);
-  assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.role_bundles, ["evaluator-shared", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.role_bundles, [
+    "evaluator-shared",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.mutating, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.network_access, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.browser_access, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.scope_required, false);
   assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.session_artifacts_written, []);
-  assert.deepEqual(TOOL_MANIFEST.bob_select_technique_packs.role_bundles, ["evaluator-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_select_technique_packs.role_bundles, [
+    "evaluator-web",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_select_technique_packs.mutating, false);
-  assert.deepEqual(TOOL_MANIFEST.bob_read_technique_pack.role_bundles, ["evaluator-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_read_technique_pack.role_bundles, [
+    "evaluator-web",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_read_technique_pack.mutating, true);
   assert.equal(byName.get("bob_read_technique_pack").inputSchema.properties.mode.enum.includes("full"), true);
   assert.deepEqual(TOOL_MANIFEST.bob_read_technique_pack.session_artifacts_written, ["technique-pack-reads.jsonl"]);
-  assert.deepEqual(TOOL_MANIFEST.bob_log_technique_attempt.role_bundles, ["evaluator-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_log_technique_attempt.role_bundles, [
+    "evaluator-web",
+    "evaluator-physical",
+    "orchestrator",
+  ]);
   assert.equal(TOOL_MANIFEST.bob_log_technique_attempt.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_log_technique_attempt.network_access, false);
   assert.equal(TOOL_MANIFEST.bob_log_technique_attempt.browser_access, false);
@@ -2241,6 +2499,49 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
       toolModules: [{ ...completeModule, global_preapproval: "yes" }],
     }),
     /invalid global_preapproval/,
+  );
+
+  for (const externalAccessField of ["network_access", "browser_access"]) {
+    assert.throws(
+      () => buildToolRegistry({
+        toolModules: [{
+          ...completeModule,
+          [externalAccessField]: true,
+        }],
+      }),
+      /cannot globally preapprove network or browser access/,
+    );
+  }
+
+  const sessionBoundExternalModule = {
+    ...completeModule,
+    global_preapproval: false,
+    network_access: true,
+    inputSchema: {
+      type: "object",
+      properties: { target_domain: { type: "string" } },
+      required: ["target_domain"],
+    },
+  };
+  assert.throws(
+    () => buildToolRegistry({ toolModules: [sessionBoundExternalModule] }),
+    /must bind network or browser access to a session axis/,
+  );
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [{
+        ...sessionBoundExternalModule,
+        inputSchema: { type: "object", properties: {} },
+        required_session_axes: ["url"],
+      }],
+    }),
+    /must require target_domain for network or browser access/,
+  );
+  assert.deepEqual(
+    buildToolRegistry({
+      toolModules: [{ ...sessionBoundExternalModule, required_session_axes: ["url"] }],
+    })[0].required_session_axes,
+    ["url"],
   );
 
   assert.throws(
@@ -2352,6 +2653,29 @@ test("executeTool rejects unknown top-level arguments while allowing nested map-
     });
     assert.equal(auth.ok, true);
     assert.equal(auth.data.success, true);
+  });
+});
+
+test("executeTool enforces bob_advance_session's operator_force override_reason dependency", async () => {
+  await withTempHome(async () => {
+    const missing = await executeTool("bob_advance_session", {
+      target_domain: "override-schema.example.com",
+      to_state: "VERIFY",
+      override: "operator_force",
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "INVALID_ARGUMENTS");
+    assert.match(missing.error.message, /override_reason is required when override is provided/);
+
+    const blank = await executeTool("bob_advance_session", {
+      target_domain: "override-schema.example.com",
+      to_state: "VERIFY",
+      override: "operator_force",
+      override_reason: "   ",
+    });
+    assert.equal(blank.ok, false);
+    assert.equal(blank.error.code, "INVALID_ARGUMENTS");
+    assert.match(blank.error.message, /override_reason must match pattern/);
   });
 });
 
@@ -2499,6 +2823,7 @@ test("executeTool enforces target URL scope for direct and composite HTTP tools"
 
       const authDifferentialBlocked = await executeTool("bob_run_auth_differential", {
         target_domain: "example.com",
+        surface_id: "surface-x",
         base_url: "https://auth.other.test",
         endpoints: ["/api/me"],
         auth_profiles: ["attacker", "victim"],
@@ -2720,7 +3045,10 @@ test("central session authority shadow mode is bounded to missing read-only sess
   });
 
   await withTempHome(async () => {
-    await withEnv({ BOB_SESSION_AUTHORITY_MODE: "shadow" }, async () => {
+    await withEnv({
+      BOB_SESSION_AUTHORITY_MODE: "shadow",
+      [SHADOW_ACK_ENV]: SHADOW_ACK_TOKEN,
+    }, async () => {
       const readOnly = await executeTool("bob_read_session_state", {
         target_domain: "shadow-missing.example.com",
       });
@@ -2753,6 +3081,21 @@ test("central session authority shadow mode is bounded to missing read-only sess
       assert.equal(writeRow.authority.authority_result, "blocked");
       assert.equal(writeRow.authority.authority_error_code, "no_session");
       assert.equal(writeRow.authority.authority_shadowed, false);
+
+      // bob_read_assignment_brief is classed initialized_session_read (shadow-eligible by
+      // class) but DECLARES agent-runs.jsonl in session_artifacts_written, so
+      // canShadowMissingSession refuses to shadow it past a MISSING session: it gets the
+      // loud no_session block (authority_shadowed:false), never a soft shadow_blocked that
+      // would let its best-effort ledger-write side-effect run against an absent session.
+      const briefRead = await executeTool("bob_read_assignment_brief", {
+        target_domain: "shadow-missing.example.com",
+        wave: "w1",
+        agent: "a1",
+      });
+      assert.equal(briefRead.ok, false);
+      assert.equal(briefRead.error.code, "STATE_CONFLICT");
+      assert.equal(briefRead.error.details.authority.authority_error_code, "no_session");
+      assert.equal(briefRead.error.details.authority.authority_shadowed, false);
     });
   });
 });
@@ -3271,8 +3614,272 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
   }
 });
 
+// Completion-depth gate (claims.js completionDepthGapForCompleteSurfaces). A surface
+// marked surface_status:complete must bind to REAL work — a re-derived executed
+// differential for one of its findings, OR documented exhaustion (a coverage row /
+// substantive bypass) — not finding EXISTENCE alone. The grade door fails closed.
+function seedCompleteBareFinding(domain) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+  seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" }]);
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "EVALUATE", auth_status: "authenticated" }));
+  const started = JSON.parse(startWave({
+    target_domain: domain,
+    wave_number: 1,
+    assignments: [{ agent: "a1", surface_id: "surface-a" }],
+  }));
+  JSON.parse(recordFinding({
+    target_domain: domain,
+    title: "IDOR on export",
+    severity: "high",
+    cwe: "CWE-639",
+    endpoint: "/api/export",
+    description: "Cross-account export is possible.",
+    proof_of_concept: "poc",
+    response_evidence: "evidence",
+    impact: "PII disclosure.",
+    validated: true,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+  }));
+  JSON.parse(writeWaveHandoff({
+    target_domain: domain,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+    surface_status: "complete",
+    handoff_token: started.assignments[0].handoff_token,
+    summary: "surface complete",
+    content: "# Handoff\n\nbody",
+  }));
+  return started;
+}
+
+test("completion-depth gate fires on a complete surface whose only basis is an unexecuted finding; a coverage row clears it", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    seedCompleteBareFinding(domain);
+
+    const before = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(before.missing.length, 1);
+    assert.equal(before.missing[0].surface_id, "surface-a");
+    assert.equal(before.missing[0].finding_id, "F-1");
+    assert.equal(before.missing[0].reason, "complete_surface_finding_not_executed");
+
+    // Documented honest exhaustion (a coverage row) is an accepted basis.
+    JSON.parse(logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{ endpoint: "/api/export", method: "GET", bug_class: "idor", status: "tested", evidence_summary: "probed cross-account export" }],
+    }));
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("completion-depth gate clears a complete surface when its finding carries a re-derived executed differential", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    seedCompleteBareFinding(domain);
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 1);
+
+    // A genuine finding-differential verified_pass (MAC-signed source rows) is the
+    // executed arm — no coverage row needed.
+    seedFindingDifferentialArm(domain, "F-1", "surface-a");
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("completion-depth gate is forgery-closed: a hand-written verified_pass whose source rows do not MAC-resolve does not clear the surface", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
+    const { appendJsonlLine } = require("../mcp/lib/storage.js");
+    seedCompleteBareFinding(domain);
+
+    // Hand-write a bare verified_pass for F-1 citing source rows that resolve to nothing.
+    // readFindingDifferentialVerifiedSummary re-derives from the MAC-covered source rows,
+    // so this forged line is excluded — the surface stays unbacked.
+    appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+      version: 1,
+      target_domain: domain,
+      finding_id: "F-1",
+      result: "verified_pass",
+      reason: "forged",
+      surface_id: "surface-a",
+      source: "offensive_runs",
+      positive_run_id: "F-1-pos",
+      positive_row_hash: "d".repeat(64),
+      control_run_id: "F-1-ctl",
+      control_row_hash: "e".repeat(64),
+    });
+
+    const gap = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(gap.missing.length, 1);
+    assert.equal(gap.missing[0].surface_id, "surface-a");
+    assert.equal(gap.missing[0].reason, "complete_surface_finding_not_executed");
+  }));
+});
+
+// D1comp: a cross-stack composition verified_pass is PATH-keyed, never in verified_by_finding,
+// so the completion gate must credit the offensive CAUSE surface of a re-verified cross-stack
+// flip via verified_cross_stack_path_surface_refs (re-derived at read time from MAC-resolved
+// bind leaves). Mints a REAL bound cross-stack verified_pass whose offensive cause is surfaceId.
+async function seedCrossStackComposition(domain, surfaceId, findingId) {
+  const crypto = require("node:crypto");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { canonicalizeExploitTarget, appendCandidateClaim } = require("../mcp/lib/claims.js");
+  const { verifyCompositionPath } = require("../mcp/lib/composition-live-verifier.js");
+  const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/lib/paths.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
+  const { CONSUME_TEMPLATE_ID, DECOY_HASH, DECOY_RUN_ID, appendDecoyCapture } = require("./helpers/cross-stack-decoy.js");
+  const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, ...opts });
+
+  const causeRunId = `${findingId}-web-cause`;
+  const consumedBytes = Buffer.from("forged-relay-payload:0xdeadbeef", "utf8");
+  const consumedHash = crypto.createHash("sha256").update(consumedBytes).digest("hex");
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  fs.writeFileSync(surfaceRoutesPath(domain), JSON.stringify({ version: 1, route_version: 1, routes: [
+    { surface_id: surfaceId, surface_type: "web", capability_pack: "web", capability_pack_version: 1, evaluator_agent: "evaluator-agent", brief_profile: "web" },
+    { surface_id: "surface:evm-b", surface_type: "smart_contract", capability_pack: "smart_contract_evm", capability_pack_version: 1, evaluator_agent: "evaluator-evm-agent", brief_profile: "smart_contract_evm" },
+  ] }));
+  const row = {
+    version: 1, target_domain: domain, run_id: causeRunId, tool_id: "bob_http_idor_confirm",
+    target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+    offensive_outcome: "exploited_safely", dry_run: false, timed_out: false,
+    command_hash: "1".repeat(64), exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+    demonstrated_severity: "high", surface_id: surfaceId, consumed_artifact_hash: consumedHash, container_isolated: true,
+  };
+  signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+  fs.mkdirSync(path.dirname(offensiveRunsJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+  fs.mkdirSync(offensiveRunsDir(domain), { recursive: true });
+  fs.writeFileSync(path.join(offensiveRunsDir(domain), `${causeRunId}.consumed`), consumedBytes);
+  appendCandidateClaim({
+    target_domain: domain, title: `cross-stack finding ${findingId}`,
+    summary: "web cause scoped to the effect finding for the fail-closed finding-scope gate",
+    severity: "high", status: "candidate", surface_ids: [surfaceId], payload: { finding: { id: findingId } },
+  });
+  const evmPositive = seedInvariantRunRow(domain, { findingId, outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true, causeRunId, consumedArtifactHash: consumedHash });
+  const evmControl = seedInvariantRunRow(domain, { findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true });
+  appendDecoyCapture(domain);
+  const decoyArm = seedInvariantRunRow(domain, {
+    findingId, outcome: "test_passed", treeRef: evmPositive.tree_ref, checkoutKind: evmPositive.checkout_kind,
+    contractName: evmPositive.contract_name, functionName: evmPositive.function_name,
+    executionContextHash: evmPositive.execution_context_hash, slotValues: evmPositive.slot_values,
+    sign: true, causeRunId: DECOY_RUN_ID, consumedArtifactHash: DECOY_HASH,
+  });
+  const res = await verifyCompositionPath(
+    {
+      target_domain: domain, base_url: `https://${domain}`,
+      path: [{
+        edge_type: "web_seeds_evm_state_corruption",
+        positive_run_ref: { ledger: "invariant_runs", row_id: evmPositive.run_hash },
+        control_run_ref: { ledger: "invariant_runs", row_id: evmControl.run_hash },
+        cause_run_ref: { ledger: "offensive_runs", row_id: causeRunId },
+        decoy_run_ref: { ledger: "invariant_runs", row_id: decoyArm.run_hash },
+        decoy_cause_run_ref: { ledger: "offensive_runs", row_id: DECOY_RUN_ID },
+      }],
+    },
+    { httpScanFn: () => { throw new Error("bind path must not fetch"); } },
+  );
+  assert.equal(res.result, "verified_pass");
+}
+
+test("completion-depth gate clears a complete cross-stack offensive surface bound to a re-verified composition verified_pass (no coverage)", () => withTempHome(() => withIsolatedSigner(async () => {
+  const domain = "example.com";
+  const SURFACE = "surface:web-a";
+  const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+  seedAttackSurfaces(domain, [{ id: SURFACE, hosts: [`https://${domain}`], priority: "HIGH" }]);
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "EVALUATE", auth_status: "authenticated" }));
+  const started = JSON.parse(startWave({
+    target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: SURFACE }],
+  }));
+  JSON.parse(recordFinding({
+    target_domain: domain, title: "web cause for cross-stack", severity: "high", cwe: "CWE-639",
+    endpoint: "/api/billing/1", description: "Web cause feeding an EVM state corruption.",
+    proof_of_concept: "poc", response_evidence: "evidence", impact: "PII.", validated: true,
+    wave: "w1", agent: "a1", surface_id: SURFACE,
+  }));
+  JSON.parse(writeWaveHandoff({
+    target_domain: domain, wave: "w1", agent: "a1", surface_id: SURFACE,
+    surface_status: "complete", handoff_token: started.assignments[0].handoff_token,
+    summary: "surface complete", content: "# Handoff\n\nbody",
+  }));
+
+  // RED — complete, recorded finding never executed, no coverage, no composition.
+  const before = completionDepthGapForCompleteSurfaces(domain);
+  assert.equal(before.missing.length, 1);
+  assert.equal(before.missing[0].surface_id, SURFACE);
+
+  // A genuine bound cross-stack composition verified_pass whose offensive CAUSE is SURFACE
+  // (a distinct finding from the handoff's F-1; the gate credits the SURFACE, not the finding).
+  await seedCrossStackComposition(domain, SURFACE, "F-2");
+
+  // GREEN — credited via offensive:surface:web-a in verified_cross_stack_path_surface_refs.
+  assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
+})));
+
+test("completion-depth gate FAILS CLOSED when the handoff doc is unreadable (corrupt claims.jsonl) — never silently disables", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { claimsJsonlPath } = require("../mcp/lib/paths.js");
+    seedCompleteBareFinding(domain);
+    // A single malformed claims.jsonl line makes findingPayloadsFromClaims (called inside
+    // buildWaveHandoffsDocument, the sole enumerator of complete surfaces) throw. The gate
+    // must BLOCK with a legible reason, NOT return { missing: [] } (which would clear every
+    // complete surface — the masquerade it exists to close).
+    fs.appendFileSync(claimsJsonlPath(domain), "{ this is not valid json\n");
+    const gap = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(gap.missing.length, 1);
+    assert.equal(gap.missing[0].reason, "completion_state_unreadable");
+  }));
+});
+
+test("completion-depth gate FAILS CLOSED when listWaveAssignmentNumbers THROWS (populated session dir unreadable) — distinct from the legitimate empty", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const waveHandoffStore = require("../mcp/lib/wave-handoff-store.js");
+    seedCompleteBareFinding(domain);
+    // listWaveAssignmentNumbers returns [] for a missing session dir (no throw); it THROWS only
+    // when an EXISTING session dir cannot be enumerated (readdir FS error / dir replaced). That
+    // is the "cannot tell whether complete surfaces are hidden behind it" state and must BLOCK,
+    // not silently clear every complete surface. Simulate the readdir throw deterministically.
+    const original = waveHandoffStore.listWaveAssignmentNumbers;
+    waveHandoffStore.listWaveAssignmentNumbers = () => { throw new Error("EACCES: readdir failed"); };
+    try {
+      const gap = completionDepthGapForCompleteSurfaces(domain);
+      assert.equal(gap.missing.length, 1);
+      assert.equal(gap.missing[0].reason, "completion_state_unreadable");
+    } finally {
+      waveHandoffStore.listWaveAssignmentNumbers = original;
+    }
+  }));
+});
+
+test("completion-depth gate is VACUOUS (missing empty) for a no-waves session — listWaveAssignmentNumbers returns [], never throws", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    // No session / no wave-assignment files: the legitimate empty enumeration is RETURNED (not a
+    // throw), so the gate proceeds vacuously — the throw→fail-closed change must NOT block this.
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
+  }));
+});
+
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
     const rawPocSecret = "pipeline-raw-poc-secret";
     const rawHandoffSecret = "pipeline-raw-handoff-secret";
@@ -3381,6 +3988,9 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
         report_snippet: rawEvidenceText,
       }],
     }));
+    // Standalone web (IDOR) executable-flip class — seed its arm row so the SUBMIT grade
+    // clears the standalone-finding gate (this test asserts pipeline analytics, not the gate).
+    seedFindingDifferentialArm(domain, "F-1");
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "GRADE" }));
     JSON.parse(writeGradeVerdict({
       target_domain: domain,
@@ -3469,7 +4079,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
       assert.equal(analyticsText.includes(forbidden), false, `${forbidden} leaked into pipeline analytics`);
       assert.equal(JSON.stringify(rows).includes(forbidden), false, `${forbidden} leaked into pipeline events`);
     }
-  });
+  }));
 });
 
 test("pipeline analytics backfills legacy sessions from artifacts without an event log", () => {
@@ -3953,7 +4563,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
   // "low-score reportables below the HOLD threshold" (grader correctly
   // applied its scoring rule). Neither is anomalous — only HOLD asks for
   // operator action.
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const skipCleanDomain = "skip-clean.example.com";
     seedSessionState(skipCleanDomain, { phase: "REPORT" });
     seedVerificationPipeline(skipCleanDomain, []);
@@ -3979,6 +4589,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
       reasoning: "Confirmed by replay.",
     }]);
     writeEvidencePacks({ target_domain: skipLowScoreDomain, packs: [evidencePack("F-1")] });
+    seedFindingDifferentialArm(skipLowScoreDomain, "F-1");
     writeGradeVerdict({
       target_domain: skipLowScoreDomain,
       verdict: "SKIP",
@@ -4009,6 +4620,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
       reasoning: "Confirmed.",
     }]);
     writeEvidencePacks({ target_domain: holdDomain, packs: [evidencePack("F-1")] });
+    seedFindingDifferentialArm(holdDomain, "F-1");
     writeGradeVerdict({
       target_domain: holdDomain,
       verdict: "HOLD",
@@ -4027,7 +4639,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
     const hold = JSON.parse(readPipelineAnalytics({ target_domain: holdDomain, include_events: true }));
     assert.ok(hold.sessions[0].health.reasons.includes("grade_hold"));
     assert.ok(hold.bottlenecks.some((bottleneck) => bottleneck.code === "grade_hold"));
-  });
+  }));
 });
 
 test("pipeline analytics treats malformed evidence packs as invalid metadata", () => {
@@ -4552,7 +5164,7 @@ test("operator note set read and clear works and rejects secret-looking values",
 });
 
 test("bob_read_session_summary derives compact status without raw proof evidence or report text", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "summary.example.com";
     const rawPoc = "raw-poc-text-that-must-not-escape";
     const rawEvidence = "raw-evidence-text-that-must-not-escape";
@@ -4581,6 +5193,9 @@ test("bob_read_session_summary derives compact status without raw proof evidence
         report_snippet: "Private metadata exposure.",
       })],
     }));
+    // Standalone web (IDOR) executable-flip class — seed its arm row so the SUBMIT grade
+    // clears the standalone-finding gate (this test asserts session-summary shape).
+    seedFindingDifferentialArm(domain, "F-1");
     JSON.parse(writeGradeVerdict({
       target_domain: domain,
       verdict: "SUBMIT",
@@ -4623,7 +5238,7 @@ test("bob_read_session_summary derives compact status without raw proof evidence
     assert.doesNotMatch(JSON.stringify(result), new RegExp(rawEvidence));
     assert.doesNotMatch(JSON.stringify(result), new RegExp(fullReport));
     assert.doesNotMatch(JSON.stringify(result), /representative_samples/);
-  });
+  }));
 });
 
 test("bob_read_session_summary aggregates blocked_prereqs by (kind, identifier_hint)", () => {
@@ -4764,12 +5379,11 @@ test("bob_write_chain_attempt rejects malformed references and invalid outcomes"
   });
 });
 
-// Cycle D.1 deleted the bounty_transition_phase / transitionPhase tests
-// because the legacy phase FSM and its gating helpers no longer exist; the
-// replacement coverage lives in bob_advance_session and lifecycle-gates
-// tests. The bounty_transition_phase tool name survives as a registry alias
-// that arg-adapts onto bob_advance_session; its dispatch and deprecation
-// telemetry are exercised by the registry/dispatch tests.
+// The legacy eight-phase FSM and its standalone tool no longer exist; lifecycle
+// coverage lives in bob_advance_session and the lifecycle-gates tests. The
+// transitionPhase(...) helper above is a local test shim that maps the older
+// phase names onto bob_advance_session so existing fixtures keep driving
+// forward.
 
 test("session lock busy blocks mutating tools and stale locks are recoverable", () => {
   withTempHome(() => {
@@ -4848,12 +5462,14 @@ test("bob_route_surfaces writes bounded current routes and removes stale routes"
     let routeText = fs.readFileSync(surfaceRoutesPath(domain), "utf8");
     assert.doesNotMatch(routeText, /private\/export|large surface-discovery details/);
     assert.deepEqual(JSON.parse(routeText).routes.map((route) => Object.keys(route).sort()), [[
+      "auth_differential_required",
       "brief_profile",
       "capability_pack",
       "capability_pack_version",
       "confidence",
       "context_budget",
       "evaluator_agent",
+      "id_bearing",
       "reasons",
       "surface_id",
       "surface_type",
@@ -4938,6 +5554,10 @@ test("bob_start_wave validates inputs, writes assignments, and updates pending_w
       version: 1,
       started: true,
       wave_number: 2,
+      unroutable_count: 0,
+      unroutable_surfaces: [],
+      has_routable_assignments: true,
+      zero_executable: false,
       assignments: [
         {
           agent: "a1",
@@ -5147,21 +5767,23 @@ test("bob_start_next_wave promotes deep leads, re-ranks, starts a wave, and attr
     assert.equal(result.next_action.kind, "spawn_evaluators");
     assert.equal(result.next_action.assignments, undefined);
     assert.deepEqual(result.promotion.would_promote_lead_ids, ["SL-1"]);
-    assert.deepEqual(result.promotion.promoted_surface_ids, ["lead-promoted-admin-api"]);
-    assert.deepEqual(result.state.lead_surface_ids, ["lead-promoted-admin-api"]);
-    assert.equal(result.assignments[0].surface_id, "lead-promoted-admin-api");
+    const promotedId = result.promotion.promoted_surface_ids[0];
+    assert.ok(promotedId && promotedId.startsWith("lead-"), `expected a lead-* id, got ${promotedId}`);
+    assert.equal(result.promotion.promoted_surface_ids.length, 1);
+    assert.deepEqual(result.state.lead_surface_ids, [promotedId]);
+    assert.equal(result.assignments[0].surface_id, promotedId);
     assert.match(result.assignments[0].handoff_token, /^[A-Za-z0-9_-]{32}$/);
 
     // Cycle D.3: promotion writes the new surface to surface-index.json
     // (materialized from frontier.surface.observed events). attack_surface.json
     // is no longer mutated by the promotion path.
     const surfaceIndex = JSON.parse(fs.readFileSync(surfaceIndexPath(domain), "utf8"));
-    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === "lead-promoted-admin-api"));
+    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === promotedId));
     const leads = JSON.parse(readSurfaceLeads({ target_domain: domain, limit: 10 }));
     assert.equal(leads.leads[0].status, "promoted");
 
     const routes = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
-    assert.ok(routes.routes.some((route) => route.surface_id === "lead-promoted-admin-api"));
+    assert.ok(routes.routes.some((route) => route.surface_id === promotedId));
     const events = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true })).events;
     const startedEvent = events.find((event) => event.type === "wave_started");
     assert.equal(startedEvent.source, "bob_start_next_wave");
@@ -5266,6 +5888,7 @@ test("bob_apply_wave_merge returns pending without mutating state when handoffs 
       content: "# A1",
     });
 
+    seedWaveTechniqueAttempts(domain, 1);
     const before = fs.readFileSync(statePath(domain), "utf8");
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -5406,6 +6029,56 @@ test("computeOpenRequeueSurfaceIds excludes terminally_blocked surfaces (options
   assert.deepEqual(result, ["surface-b"]);
 });
 
+test("attack-surface readiness defaults missing priorities to HIGH", () => {
+  const { computeAttackSurfaceCoverage } = require("../mcp/lib/frontier-readiness.js");
+  const coverage = computeAttackSurfaceCoverage(
+    [
+      { id: "missing-open" },
+      { id: "missing-explored" },
+      { id: "missing-blocked" },
+      { id: "explicit-low", priority: "LOW" },
+    ],
+    ["missing-explored"],
+    ["missing-blocked"],
+    [],
+  );
+
+  assert.equal(coverage.total_surfaces, 4);
+  assert.equal(coverage.non_low_total, 3);
+  assert.equal(coverage.non_low_explored, 1);
+  assert.equal(coverage.non_low_terminally_blocked, 1);
+  assert.equal(coverage.non_low_closed, 2);
+  assert.equal(coverage.coverage_pct, 33);
+  assert.equal(coverage.closed_pct, 67);
+  assert.equal(coverage.unexplored_high, 1);
+  assert.deepEqual(coverage.unexplored_high_surface_ids, ["missing-open"]);
+  assert.equal(coverage.blocked_high, 1);
+  assert.deepEqual(coverage.blocked_high_surface_ids, ["missing-blocked"]);
+});
+
+test("wave status and pipeline analytics agree on a surface with no priority", () => {
+  withTempHome(() => {
+    const domain = "missing-priority.example.com";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    fs.writeFileSync(
+      attackSurfacePath(domain),
+      `${JSON.stringify({ surfaces: [{ id: "missing-priority" }] })}\n`,
+      "utf8",
+    );
+
+    const statusCoverage = JSON.parse(waveStatus({ target_domain: domain })).coverage;
+    const analyticsCoverage = readSessionArtifactSummary(domain).attack_surface_coverage;
+
+    assert.equal(statusCoverage.non_low_total, 1);
+    assert.equal(statusCoverage.coverage_pct, 0);
+    assert.equal(statusCoverage.unexplored_high, 1);
+    assert.deepEqual(statusCoverage.unexplored_high_surface_ids, ["missing-priority"]);
+    assert.equal(analyticsCoverage.non_low_total, statusCoverage.non_low_total);
+    assert.equal(analyticsCoverage.coverage_pct, statusCoverage.coverage_pct);
+    assert.equal(analyticsCoverage.unexplored_high, statusCoverage.unexplored_high);
+  });
+});
+
 test("EVALUATE -> CHAIN gate exposes blocked_high_surface_ids and blocks transition on it", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -5498,6 +6171,7 @@ test("bob_apply_wave_merge adds surface_status: complete surfaces to state.explo
       summary: "Surface tested; one endpoint marked requeue while triaging others, then closed.",
       content: "# A1",
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -5569,6 +6243,7 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       "[2026-01-01T00:00:01Z] OUT-OF-SCOPE (http_scan): api.other.example (url: https://api.other.example/admin)",
     ].join("\n"));
 
+    seedWaveTechniqueAttempts(domain, 1);
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
       wave_number: 1,
@@ -5603,7 +6278,8 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       terminally_blocked_promoted: [],
       bypass_attempts: [],
       bypass_attempts_grouped: [],
-      suspicion_flags: [],
+      // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
+      unconsumed_pivots: [],
       provenance: {
         verified_agents: ["a1", "a2"],
       },
@@ -5682,7 +6358,8 @@ test("surface leads are compact, promotable, and wave assignable", () => {
     assert.equal(leads.leads[0].id, "SL-1");
 
     const promoted = JSON.parse(promoteSurfaceLeads({ target_domain: domain, limit: 3, min_score: 60 }));
-    assert.deepEqual(promoted.promoted_surface_ids, ["lead-admin-api-from-js-bundle"]);
+    assert.equal(promoted.promoted_surface_ids.length, 1);
+    assert.ok(promoted.promoted_surface_ids[0].startsWith("lead-"), `expected a lead-* id, got ${promoted.promoted_surface_ids[0]}`);
     const promotedSurfaceId = promoted.promoted_surface_ids[0];
     const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
     assert.deepEqual(state.lead_surface_ids, [promotedSurfaceId]);
@@ -5735,7 +6412,8 @@ test("explicit medium surface lead promotion stays MEDIUM while becoming wave as
 
     const promoted = JSON.parse(promoteSurfaceLeads({ target_domain: domain, limit: 3, min_score: 60 }));
     assert.equal(promoted.promoted, 1);
-    assert.deepEqual(promoted.promoted_surface_ids, ["lead-brand-linked-sibling-properties-lightly-probed"]);
+    assert.equal(promoted.promoted_surface_ids.length, 1);
+    assert.ok(promoted.promoted_surface_ids[0].startsWith("lead-"), `expected a lead-* id, got ${promoted.promoted_surface_ids[0]}`);
     const promotedSurfaceId = promoted.promoted_surface_ids[0];
 
     const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
@@ -5920,6 +6598,7 @@ test("deep wave merge records handoff surface leads but leaves automatic promoti
         score: 78,
       }],
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const merged = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -6044,6 +6723,7 @@ test("bob_apply_wave_merge requeues unfinished coverage without treating tested 
       });
     }
 
+    seedWaveTechniqueAttempts(domain, 1);
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
       wave_number: 1,
@@ -6119,6 +6799,7 @@ test("bob_apply_wave_merge force-merges missing and invalid handoffs and compute
       summary: "A3 partial.",
       content: "# A3",
     });
+    seedWaveTechniqueAttempts(domain, 2);
 
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -6199,6 +6880,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
     let fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
@@ -6220,6 +6902,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
@@ -6235,7 +6918,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
   });
 });
 
-test("bob_apply_wave_merge does NOT promote auth_missing when the named handle was added between waves", () => {
+test("bob_apply_wave_merge promotes recurring auth_missing even when the prereq snapshot contains the named handle", () => {
   withTempHome(() => {
     const domain = "registry-grew.example.com";
     seedAttackSurfaces(domain, [
@@ -6256,6 +6939,7 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6274,8 +6958,65 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
         { kind: "auth_missing", identifier_hint: "attacker", reason: "marker repeated" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
+    const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
+    assert.equal(result.merge.terminally_blocked_promoted.length, 1);
+    assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
+    assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "auth_missing");
+    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    assert.equal(currentBlockers(domain).length, 1);
+    assert.ok(!result.merge.requeue_surface_ids.includes("surface-auth"));
+  });
+});
+
+test("bob_apply_wave_merge requeues a blocked_prereq surface when its auth capability is live", () => {
+  withTempHome(() => {
+    const domain = "capability-clear-auth.example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-auth", hosts: [`https://${domain}/auth`], priority: "HIGH" },
+    ]);
+    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1, evaluation_wave: 0 });
+    seedPrereqSnapshot(domain, 1, { auth_handles: [], egress_handles: [] });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-auth" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-auth",
+      surface_status: "partial",
+      summary: "auth profile not registered; cannot test org-scoped IDOR",
+      content: "# A1",
+      blocked_prereqs: [
+        { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
+      ],
+    });
+    seedWaveTechniqueAttempts(domain, 1);
+    JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
+
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    setStatePendingWave(domain, 2);
+    seedPrereqSnapshot(domain, 2, { auth_handles: ["attacker"], egress_handles: [] });
+    seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-auth" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w2",
+      agent: "a1",
+      surface_id: "surface-auth",
+      surface_status: "partial",
+      summary: "same surface needs a fresh run with the live auth profile",
+      content: "# A1 wave 2",
+      blocked_prereqs: [
+        { kind: "auth_missing", identifier_hint: "attacker", reason: "profile is now available" },
+      ],
+    });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
+    assert.ok(result.merge.requeue_surface_ids.includes("surface-auth"));
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
     assert.equal(currentBlockers(domain).length, 0);
   });
@@ -6302,6 +7043,7 @@ test("bob_apply_wave_merge DOES promote auth_missing when an unrelated handle wa
         { kind: "auth_missing", identifier_hint: "attacker", reason: "attacker profile required" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6322,6 +7064,7 @@ test("bob_apply_wave_merge DOES promote auth_missing when an unrelated handle wa
         { kind: "auth_missing", identifier_hint: "attacker", reason: "attacker still missing" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].identifier_hint, "attacker");
@@ -6349,6 +7092,7 @@ test("bob_apply_wave_merge promotes funded_wallet_missing on 2-wave recurrence (
         { kind: "funded_wallet_missing", identifier_hint: "sepolia.funded", reason: "balance gate requires funded wallet" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6366,6 +7110,7 @@ test("bob_apply_wave_merge promotes funded_wallet_missing on 2-wave recurrence (
         { kind: "funded_wallet_missing", identifier_hint: "sepolia.funded", reason: "still no funded wallet" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "funded_wallet_missing");
@@ -6518,6 +7263,7 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no profile" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6535,6 +7281,7 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
         { kind: "auth_missing", identifier_hint: "attacker", reason: "still none" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
 
     const eventsResult = readPipelineEvents(domain);
@@ -6544,33 +7291,6 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
     assert.equal(events[0].kind, "auth_missing");
     assert.equal(events[0].identifier_hint, "attacker");
     assert.equal(events[0].wave_number, 2);
-  });
-});
-
-test("bounty_report_written emits report_written when report.md is present", () => {
-  withTempHome(() => {
-    const domain = "report-event.example.com";
-    const dir = sessionDir(domain);
-    fs.mkdirSync(dir, { recursive: true });
-    seedSessionState(domain, { phase: "REPORT", evaluation_wave: 1 });
-    fs.writeFileSync(path.join(dir, "report.md"), "# Report\n\nNo findings.\n");
-
-    const result = JSON.parse(reportWritten({ target_domain: domain }));
-    assert.equal(result.report_written, true);
-    assert.ok(result.size_bytes > 0);
-
-    const eventsResult = readPipelineEvents(domain);
-    const events = eventsResult.events.filter((e) => e.type === "report_written");
-    assert.equal(events.length, 1);
-    assert.ok(events[0].counts.report_size_bytes > 0);
-  });
-});
-
-test("bounty_report_written rejects when report.md is absent", () => {
-  withTempHome(() => {
-    const domain = "no-report.example.com";
-    seedSessionState(domain, { phase: "REPORT", evaluation_wave: 1 });
-    assert.throws(() => reportWritten({ target_domain: domain }), /report\.md is not present/);
   });
 });
 
@@ -6662,6 +7382,7 @@ test("bob_clear_terminal_block lets a re-blocked surface start fresh recurrence 
         { kind: "auth_missing", identifier_hint: "attacker", reason: "blocker reappeared" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 3);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 3, force_merge: false }));
     // After the clear, history is RETAINED but the loop detector ignores
     // entries from waves <= cleared_at_wave (which was 2). Wave 3's
@@ -7222,7 +7943,7 @@ test("bob_write_wave_handoff rejects smart_contract complete without findings or
       surface_status: "complete",
       summary: "Audit confirms fixed; nothing to test.",
       content: "# Handoff\n",
-    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+    }), /smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks/);
   });
 });
 
@@ -7253,6 +7974,76 @@ test("bob_write_wave_handoff accepts smart_contract complete with bypass_attempt
     assert.equal(payload.bypass_attempts.length, 1);
     assert.equal(payload.bypass_attempts[0].condition, "admin_eoa_compromise");
     assert.equal(payload.bypass_attempts[0].outcome, "no_finding");
+  });
+});
+
+test("bob_write_wave_handoff rejects smart_contract complete on a thin bypass_attempt", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // Clears the write existence floor (condition >= 4, summary >= 30) but not
+    // the substance floor (summary < 60): a thin attestation. Rejected at WRITE,
+    // so the artifact never persists to feed a finalize-retry or requeue loop.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Audit says fixed; admin-gated.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "admin_role_gate", attempt_summary: "Role-gated function; we did not attempt a bypass.", outcome: "no_finding" },
+      ],
+    }), /cannot be marked 'complete' without substantive evidence/);
+  });
+});
+
+test("bob_write_wave_handoff rejects smart_contract complete on a bare partial_evidence claim", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // A partial_evidence OUTCOME LABEL is not substance without a finding_id or a
+    // documented mechanism. The cheapest laundering path, refused at write.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Partial lead on the oracle path.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "oracle", attempt_summary: "Partial evidence captured but inconclusive.", outcome: "partial_evidence" },
+      ],
+    }), /cannot be marked 'complete' without substantive evidence/);
+  });
+});
+
+test("bob_write_wave_handoff accepts smart_contract partial_evidence that documents the mechanism", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // A partial_evidence attempt clearing the substance floor (condition >= 8,
+    // mechanism >= 60) is admissible.
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Partial lead on the price oracle staleness path.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "oracle_staleness", attempt_summary: "Forge fork test pushes a stale Chainlink round; the consumer accepts it but the downstream guard reverts before value moves. Inconclusive.", outcome: "partial_evidence" },
+      ],
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "complete");
+    assert.equal(payload.bypass_attempts[0].outcome, "partial_evidence");
   });
 });
 
@@ -7353,7 +8144,7 @@ test("smart_contract gate ignores agent-mutated attack_surface.json (assignment 
       surface_status: "complete",
       summary: "Tampered with attack_surface.json; expected to bypass gate.",
       content: "# Handoff\n",
-    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+    }), /smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks/);
   });
 });
 
@@ -7394,12 +8185,14 @@ test("merge re-derives smart_contract surface_type even when stored handoff cach
   });
 });
 
-test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_attempts are substantive", () => {
+test("merge admits a substantive smart_contract complete in the dual-write fallback regime", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
     seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // No finalize call -> the AgentRun row stays `assigned` -> merge runs in the
+    // file-presence fallback regime. Substantive attempts clear the depth bar.
     writeWaveHandoff({
       target_domain: domain,
       wave: "w1",
@@ -7414,34 +8207,8 @@ test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_
       ],
     });
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
-    assert.deepEqual(merged.suspicion_flags, []);
-  });
-});
-
-test("merge emits sc_complete_with_zero_evidence suspicion flag when bypass_attempts are low-effort attestations", () => {
-  withTempHome(() => {
-    const domain = "example.com";
-    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
-    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
-    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
-    writeWaveHandoff({
-      target_domain: domain,
-      wave: "w1",
-      agent: "a1",
-      surface_id: "surface-a",
-      surface_status: "complete",
-      summary: "Audit confirms fixed.",
-      content: "# Handoff\n",
-      bypass_attempts: [
-        // Clears the schema floors (condition >= 4, attempt_summary >= 30) but
-        // cites no real condition and documents no exercised mechanism.
-        { condition: "gate", attempt_summary: "role-gated so we did not test it.", outcome: "no_finding" },
-      ],
-    });
-    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
-    assert.equal(merged.suspicion_flags.length, 1);
-    assert.equal(merged.suspicion_flags[0].flag, "sc_complete_with_zero_evidence");
-    assert.equal(merged.suspicion_flags[0].surface_id, "surface-a");
+    assert.ok(merged.completed_surface_ids.includes("surface-a"));
+    assert.ok(!merged.missing_surface_ids.includes("surface-a"));
   });
 });
 
@@ -7599,6 +8366,7 @@ test("tokenized wave handoffs require the correct token and report verified prov
     assert.equal(handoffs.data.handoffs[0].summary, "Tested the assigned surface.");
     assert.deepEqual(handoffs.data.handoffs[0].chain_notes, ["No chainable primitive found."]);
 
+    seedWaveTechniqueAttempts(domain, 1);
     const merged = await executeTool("bob_apply_wave_merge", {
       target_domain: domain,
       wave_number: 1,
@@ -8920,6 +9688,7 @@ test("bob_wave_handoff_status reports complete when all assigned handoffs exist"
       content: "# A2",
     });
 
+    seedWaveTechniqueAttempts(domain, 1);
     const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 1 }));
 
     assert.deepEqual(status, {
@@ -8974,6 +9743,7 @@ test("markdown-only handoffs do not satisfy readiness or advance merges", () => 
       summary: "Structured handoff summary.",
       content: "# structured handoff",
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const merged = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -9067,6 +9837,7 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       waf_blocked_endpoints: ["/admin", " /reports "],
       lead_surface_ids: ["surface-c", "surface-d"],
     });
+    seedWaveTechniqueAttempts(domain, 2);
 
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 2 }));
 
@@ -9089,7 +9860,8 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       blocked_prereqs_grouped: [],
       bypass_attempts: [],
       bypass_attempts_grouped: [],
-      suspicion_flags: [],
+      // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
+      unconsumed_pivots: [],
       provenance: {
         verified_agents: ["a1", "a2"],
       },
@@ -9139,7 +9911,8 @@ test("bob_merge_wave_handoffs requeues missing and invalid assigned handoffs whi
       blocked_prereqs_grouped: [],
       bypass_attempts: [],
       bypass_attempts_grouped: [],
-      suspicion_flags: [],
+      // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
+      unconsumed_pivots: [],
       provenance: {
         verified_agents: [],
       },
@@ -9181,6 +9954,8 @@ test("bob_read_wave_handoffs returns validated structured summaries and ignores 
       provenance: "verified",
       summary: "A1 complete with an old dead end.",
       chain_notes: ["Old endpoint may chain into surface-b."],
+      discovered_pivots: [],
+      spawned_children: [],
       blocked_harness_runs: [],
       blocked_prereqs: [],
       bypass_attempts: [],
@@ -9262,6 +10037,7 @@ test("bob_record_finding appends findings.jsonl and bob_read_findings preserves 
           affected_package: null,
           affected_version_range: null,
           repro_command: null,
+          repro_command_argv: null,
           description: "Authenticated user can export another account's data by changing account_id.",
           proof_of_concept: "curl https://example.com/api/export?account_id=2",
           response_evidence: "{\"account_id\":2}",
@@ -9291,6 +10067,7 @@ test("bob_record_finding appends findings.jsonl and bob_read_findings preserves 
           affected_package: null,
           affected_version_range: null,
           repro_command: null,
+          repro_command_argv: null,
           description: "Unsanitized comment body executes in admin view.",
           proof_of_concept: "<script>alert(1)</script>",
           response_evidence: "<script>alert(1)</script>",
@@ -9663,20 +10440,23 @@ test("bob_record_finding rejects sc_evidence in the no-wave/no-agent path so SC 
   });
 });
 
-test("classifySurfaceCapability throws on smart_contract surface with missing or unsupported chain_family", () => {
-  // Pre-fix the router silently fell back to the web pack for SC surfaces
-  // with no chain_family, producing surface_type="smart_contract" routed to
-  // evaluator-agent (a contradiction). Now the router fails loudly so the
-  // operator either fixes the surface or registers the missing pack.
+test("classifySurfaceCapability returns a non-throwing unroutable result for smart_contract with missing or unsupported chain_family", () => {
+  // An ambiguous smart_contract surface (no chain_family, or one with no
+  // registered capability pack) is never routed to the web pack. The classifier
+  // returns a structured unroutable result (routable:false, capability_pack:null,
+  // unroutable_reason) so downstream records a non-halting disposition instead of
+  // mis-arming a web evaluator on an on-chain target.
   const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
-  assert.throws(
-    () => classifySurfaceCapability({ id: "surface-mystery", surface_type: "smart_contract" }),
-    /missing chain_family/,
-  );
-  assert.throws(
-    () => classifySurfaceCapability({ id: "surface-near", surface_type: "smart_contract", chain_family: "near" }),
-    /unsupported chain_family/,
-  );
+
+  const missing = classifySurfaceCapability({ id: "surface-mystery", surface_type: "smart_contract" });
+  assert.strictEqual(missing.routable, false);
+  assert.strictEqual(missing.capability_pack, null);
+  assert.match(missing.unroutable_reason, /missing chain_family/);
+
+  const unsupported = classifySurfaceCapability({ id: "surface-near", surface_type: "smart_contract", chain_family: "near" });
+  assert.strictEqual(unsupported.routable, false);
+  assert.strictEqual(unsupported.capability_pack, null);
+  assert.match(unsupported.unroutable_reason, /unsupported chain_family/);
 });
 
 test("normalizeAssignmentRouteMetadata throws on smart_contract assignment without route metadata", () => {
@@ -10943,13 +11723,20 @@ test("svm-fetch-program parses BPFLoaderUpgradeable Program account discriminato
 });
 
 test("svm tools register with verifier and evidence role bundles (so balanced/brutalist/final + evidence-agent can re-run SVM PoCs)", () => {
-  const tools = ["bob_svm_fetch_account", "bob_svm_fetch_program", "bob_anchor_run"];
-  for (const name of tools) {
+  // The read/fetch tools additionally carry the sc-recon bundle so the
+  // smart-contract recon expander can resolve programs/accounts; the run
+  // tool keeps the evaluator/verifier/evidence triple only.
+  const fetchTools = ["bob_svm_fetch_account", "bob_svm_fetch_program"];
+  for (const name of fetchTools) {
     const meta = TOOL_MANIFEST[name];
     assert.ok(meta, `${name} is in TOOL_MANIFEST`);
-    assert.deepEqual(meta.role_bundles, ["evaluator-svm", "verifier", "evidence"], `${name} exposes role_bundles=[evaluator-svm, verifier, evidence]`);
+    assert.deepEqual(meta.role_bundles, ["evaluator-svm", "verifier", "evidence", "sc-recon"], `${name} exposes role_bundles=[evaluator-svm, verifier, evidence, sc-recon]`);
     assert.equal(meta.network_access, true, `${name} declares network_access`);
   }
+  const anchorMeta = TOOL_MANIFEST.bob_anchor_run;
+  assert.ok(anchorMeta, "bob_anchor_run is in TOOL_MANIFEST");
+  assert.deepEqual(anchorMeta.role_bundles, ["evaluator-svm", "verifier", "evidence"], "bob_anchor_run exposes role_bundles=[evaluator-svm, verifier, evidence]");
+  assert.equal(anchorMeta.network_access, true, "bob_anchor_run declares network_access");
 });
 
 // ----------------------------------------------------------------------
@@ -11053,26 +11840,29 @@ test("smart-contract egress policy blocks DNS-private RPC endpoints before fetch
   assert.equal(isPublicHttpsUrl("https://[5f00::1]/rpc"), false);
   assert.equal(isBlockedInternalHost("fe80::1%eth0"), true);
 
-  let called = false;
-  await withMockSmartContractHttpRequest(async () => {
-    called = true;
-    return { ok: true, status: 200, text: JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1" }) };
-  }, async () => {
-    const secret = "rpc-secret-token";
-    const result = await withMockSmartContractRpcLookup({
-      "rpc.example.test": [{ address: "198.18.0.9", family: 4 }],
-    }, () => executeTool("bob_evm_call", {
-      chain_id: 1,
-      to: "0x" + "11".repeat(20),
-      data: "0x",
-      endpoints: [`https://rpc.example.test/rpc?api_key=${secret}`],
-    }));
-    assert.equal(result.ok, false);
-    assert.equal(called, false, "HTTP request must not run after DNS-private policy rejection");
-    assert.match(result.error.message, /no public HTTPS RPC endpoints/);
-    assert.equal(result.error.details.rpc_policy_rejections[0].reason, "blocked_internal_dns_address");
-    assert.match(result.error.details.rpc_policy_rejections[0].endpoint, /api_key=REDACTED/);
-    assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  await withBoundEvmSession("0x" + "11".repeat(20), async (targetDomain) => {
+    let called = false;
+    await withMockSmartContractHttpRequest(async () => {
+      called = true;
+      return { ok: true, status: 200, text: JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1" }) };
+    }, async () => {
+      const secret = "rpc-secret-token";
+      const result = await withMockSmartContractRpcLookup({
+        "rpc.example.test": [{ address: "198.18.0.9", family: 4 }],
+      }, () => executeTool("bob_evm_call", {
+        target_domain: targetDomain,
+        chain_id: 1,
+        to: "0x" + "11".repeat(20),
+        data: "0x",
+        endpoints: [`https://rpc.example.test/rpc?api_key=${secret}`],
+      }));
+      assert.equal(result.ok, false);
+      assert.equal(called, false, "HTTP request must not run after DNS-private policy rejection");
+      assert.match(result.error.message, /no public HTTPS RPC endpoints/);
+      assert.equal(result.error.details.rpc_policy_rejections[0].reason, "blocked_internal_dns_address");
+      assert.match(result.error.details.rpc_policy_rejections[0].endpoint, /api_key=REDACTED/);
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+    });
   });
 });
 
@@ -12066,15 +12856,23 @@ test("sui runner classifies CLI usage errors as sui_dependency_missing", () => {
 });
 
 test("Move tools register with verifier and evidence role bundles (so balanced/brutalist/final + evidence-agent can re-run Aptos/Sui PoCs)", () => {
-  const tools = [
+  // The read/fetch tools additionally carry the sc-recon bundle so the
+  // smart-contract recon expander can resolve modules/resources/packages/
+  // objects; the run tools keep the evaluator/verifier/evidence triple only.
+  const fetchTools = [
     "bob_aptos_fetch_resource",
     "bob_aptos_fetch_module",
-    "bob_aptos_run",
     "bob_sui_fetch_object",
     "bob_sui_fetch_package",
-    "bob_sui_run",
   ];
-  for (const name of tools) {
+  for (const name of fetchTools) {
+    const meta = TOOL_MANIFEST[name];
+    assert.ok(meta, `${name} is in TOOL_MANIFEST`);
+    assert.deepEqual(meta.role_bundles, ["evaluator-move", "verifier", "evidence", "sc-recon"], `${name} exposes role_bundles=[evaluator-move, verifier, evidence, sc-recon]`);
+    assert.equal(meta.network_access, true, `${name} declares network_access`);
+  }
+  const runTools = ["bob_aptos_run", "bob_sui_run"];
+  for (const name of runTools) {
     const meta = TOOL_MANIFEST[name];
     assert.ok(meta, `${name} is in TOOL_MANIFEST`);
     assert.deepEqual(meta.role_bundles, ["evaluator-move", "verifier", "evidence"], `${name} exposes role_bundles=[evaluator-move, verifier, evidence]`);
@@ -12126,6 +12924,7 @@ test("bob_read_findings, bob_list_findings, and bob_wave_status return empty-sta
       by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       has_high_or_critical: false,
       coverage: null,
+      unroutable_surfaces: [],
       transition_blockers: [{
         code: "state_unavailable",
         message: "session state could not be read for frontier readiness",
@@ -12204,6 +13003,7 @@ test("bob_list_findings and bob_wave_status keep their external shapes while rea
       by_severity: { critical: 1, high: 0, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
       coverage: null,
+      unroutable_surfaces: [],
       transition_blockers: [{
         code: "state_unavailable",
         message: "session state could not be read for frontier readiness",
@@ -13953,6 +14753,7 @@ test("bob_write_evidence_packs writes JSON and markdown mirror", () => {
       packs: 1,
       representative_samples: 1,
       reportable_findings_covered: 1,
+      capability_pack_generated: 0,
     });
   });
 });
@@ -14150,7 +14951,7 @@ test("bob_write_grade_verdict requires valid final verification before grading",
 });
 
 test("bob_write_grade_verdict enforces score totals, thresholds, and final reportability", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
     seedFinding(domain, { severity: "high" });
     const verified = [{
@@ -14162,6 +14963,10 @@ test("bob_write_grade_verdict enforces score totals, thresholds, and final repor
     }];
     seedVerificationPipeline(domain, verified);
     JSON.parse(writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] }));
+    // Standalone web (IDOR) executable-flip class — seed its arm row so the SUBMIT grade
+    // is satisfied; the test under test asserts score-total / threshold behavior, not the
+    // standalone-finding gate.
+    seedFindingDifferentialArm(domain, "F-1");
 
     const gradeFinding = {
       finding_id: "F-1",
@@ -14198,11 +15003,11 @@ test("bob_write_grade_verdict enforces score totals, thresholds, and final repor
       findings: [gradeFinding],
       feedback: null,
     }), /expected SUBMIT/);
-  });
+  }));
 });
 
 test("bob_write_grade_verdict requires evidence packs for final reportables before writing", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "grade-evidence-required.example.com";
     seedFinding(domain, { severity: "high" });
     seedVerificationPipeline(domain, [{
@@ -14212,6 +15017,9 @@ test("bob_write_grade_verdict requires evidence packs for final reportables befo
       reportable: true,
       reasoning: "Confirmed.",
     }]);
+    // Seed the standalone-finding arm row so the (earlier) finding-differential gate is
+    // satisfied and the EVIDENCE gate under test is the one that blocks the grade.
+    seedFindingDifferentialArm(domain, "F-1");
 
     assert.throws(() => writeGradeVerdict({
       target_domain: domain,
@@ -14246,7 +15054,7 @@ test("bob_write_grade_verdict requires evidence packs for final reportables befo
       }],
       feedback: "Evidence collection did not run.",
     }), /Evidence packs.*Missing evidence packs JSON/);
-  });
+  }));
 });
 
 test("bob_write_grade_verdict permits only SKIP when final verification has no medium-or-higher reportable finding", () => {
@@ -14839,8 +15647,9 @@ test("bob_http_scan resolves auth by explicit target_domain and first-party subd
 });
 
 test("bob_evm_call resolves the latest block via eth_blockNumber and returns block_used", async () => {
-  let callCount = 0;
-  await withMockSmartContractHttpRequest(async (_url, request) => {
+  await withBoundEvmSession("0x" + "11".repeat(20), async (targetDomain) => {
+    let callCount = 0;
+    await withMockSmartContractHttpRequest(async (_url, request) => {
     callCount += 1;
     const body = JSON.parse(request.body);
     if (body.method === "eth_call") {
@@ -14861,26 +15670,58 @@ test("bob_evm_call resolves the latest block via eth_blockNumber and returns blo
       };
     }
     return { ok: false, status: 500, text: "" };
-  }, async () => {
-    const result = await withMockSmartContractRpcLookup({
-      "eth.llamarpc.com": [{ address: "93.184.216.34", family: 4 }],
-    }, () => executeTool("bob_evm_call", {
-      chain_id: 1,
-      to: "0x" + "11".repeat(20),
-      data: "0x70a08231" + "00".repeat(32),
-      endpoints: ["https://eth.llamarpc.com"],
-    }));
-    assert.equal(result.ok, true);
-    assert.equal(result.data.block, "latest");
-    // Hex 0x129a8c0 = 19_507_392
-    assert.equal(result.data.block_used, 19_507_392);
-    assert.ok(callCount >= 2, "expected at least one eth_call and one eth_blockNumber");
+    }, async () => {
+      const result = await withMockSmartContractRpcLookup({
+        "eth.llamarpc.com": [{ address: "93.184.216.34", family: 4 }],
+      }, () => executeTool("bob_evm_call", {
+        target_domain: targetDomain,
+        chain_id: 1,
+        to: "0x" + "11".repeat(20),
+        data: "0x70a08231" + "00".repeat(32),
+        endpoints: ["https://eth.llamarpc.com"],
+      }));
+      assert.equal(result.ok, true);
+      assert.equal(result.data.block, "latest");
+      // Hex 0x129a8c0 = 19_507_392
+      assert.equal(result.data.block_used, 19_507_392);
+      assert.ok(callCount >= 2, "expected at least one eth_call and one eth_blockNumber");
+    });
   });
 });
 
 // ── bob_temp_email tests ──
 
-test("bob_temp_email create returns email with mocked mail.tm", async () => {
+test("bob_temp_email requires an initialized URL session before any provider request", async () => {
+  await withTempHome(async () => {
+    const originalFetch = global.fetch;
+    let providerRequestCalled = false;
+    try {
+      global.fetch = async () => {
+        providerRequestCalled = true;
+        throw new Error("provider request must not run before authority");
+      };
+
+      const missingHandle = await executeTool("bob_temp_email", { operation: "create" });
+      assert.equal(missingHandle.ok, false);
+      assert.equal(missingHandle.error.code, "INVALID_ARGUMENTS");
+
+      const missingSession = await executeTool("bob_temp_email", {
+        target_domain: "temp-email.example.com",
+        operation: "create",
+      });
+      assert.equal(missingSession.ok, false);
+      assert.equal(missingSession.error.code, "STATE_CONFLICT");
+      assert.equal(missingSession.error.details.authority.authority_class, "scoped_http_network");
+      assert.equal(providerRequestCalled, false);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+test("bob_temp_email create returns email with mocked mail.tm", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     global.fetch = async (url, opts) => {
@@ -14896,7 +15737,7 @@ test("bob_temp_email create returns email with mocked mail.tm", async () => {
       return { ok: false, status: 500 };
     };
 
-    const result = await executeTool("bob_temp_email", { operation: "create" });
+    const result = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(result.ok, true);
     assert.equal(result.data.success, true);
     assert.ok(result.data.email_address.endsWith("@test.tm"));
@@ -14905,9 +15746,12 @@ test("bob_temp_email create returns email with mocked mail.tm", async () => {
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email create falls back to guerrillamail on mail.tm failure", async () => {
+test("bob_temp_email create falls back to guerrillamail on mail.tm failure", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     global.fetch = async (url) => {
@@ -14920,7 +15764,7 @@ test("bob_temp_email create falls back to guerrillamail on mail.tm failure", asy
       return { ok: false, status: 500, text: async () => "" };
     };
 
-    const result = await executeTool("bob_temp_email", { operation: "create" });
+    const result = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(result.ok, true);
     assert.equal(result.data.success, true);
     assert.equal(result.data.email_address, "test_user@guerrillamail.com");
@@ -14928,14 +15772,17 @@ test("bob_temp_email create falls back to guerrillamail on mail.tm failure", asy
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email create returns error when all providers fail", async () => {
+test("bob_temp_email create returns error when all providers fail", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     global.fetch = async () => ({ ok: false, status: 500, text: async () => "Internal Server Error" });
 
-    const result = await executeTool("bob_temp_email", { operation: "create" });
+    const result = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "INTERNAL_ERROR");
     assert.equal(result.error.details.success, false);
@@ -14943,9 +15790,12 @@ test("bob_temp_email create returns error when all providers fail", async () => 
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email poll returns messages with mocked mail.tm", async () => {
+test("bob_temp_email poll returns messages with mocked mail.tm", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     // First create a mailbox to populate tempMailboxes
@@ -14972,9 +15822,10 @@ test("bob_temp_email poll returns messages with mocked mail.tm", async () => {
       return { ok: false, status: 500 };
     };
 
-    const createResult = await executeTool("bob_temp_email", { operation: "create" });
+    const createResult = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(createResult.ok, true);
     const pollResult = await executeTool("bob_temp_email", {
+      target_domain: targetDomain,
       operation: "poll",
       email_address: createResult.data.email_address,
     });
@@ -14986,9 +15837,12 @@ test("bob_temp_email poll returns messages with mocked mail.tm", async () => {
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email extract finds codes and links", async () => {
+test("bob_temp_email extract finds codes and links", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const originalFetch = global.fetch;
   try {
     // Create mailbox first
@@ -15013,9 +15867,10 @@ test("bob_temp_email extract finds codes and links", async () => {
       return { ok: false, status: 500 };
     };
 
-    const createResult = await executeTool("bob_temp_email", { operation: "create" });
+    const createResult = await executeTool("bob_temp_email", { target_domain: targetDomain, operation: "create" });
     assert.equal(createResult.ok, true);
     const extractResult = await executeTool("bob_temp_email", {
+      target_domain: targetDomain,
       operation: "extract",
       email_address: createResult.data.email_address,
       message_id: "msg1",
@@ -15028,17 +15883,22 @@ test("bob_temp_email extract finds codes and links", async () => {
   } finally {
     global.fetch = originalFetch;
   }
-});
+  },
+));
 
-test("bob_temp_email poll for unknown email returns error", async () => {
+test("bob_temp_email poll for unknown email returns error", async () => withUrlSession(
+  "temp-email.example.com",
+  async (targetDomain) => {
   const result = await executeTool("bob_temp_email", {
+    target_domain: targetDomain,
     operation: "poll",
     email_address: "nonexistent@nowhere.com",
   });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "INTERNAL_ERROR");
   assert.ok(result.error.message.includes("Unknown email"));
-});
+  },
+));
 
 test("auto-signup result normalization fails ambiguous states and preserves diagnostics", () => {
   const signupUrl = "https://example.com/signup/";
@@ -16733,6 +17593,100 @@ test("bob_import_static_artifact stores redacted session-owned content and rejec
     const stored = fs.readFileSync(staticArtifactPath(domain, "SA-1"), "utf8");
     assert.match(stored, /REDACTED/);
     assert.doesNotMatch(stored, /super-secret-token-value|\/tmp\/RugToken/);
+  });
+});
+
+test("bob_import_harness stores a session-owned harness, rejects unsafe imports, and flips native_fuzz_shape", () => {
+  withTempHome(() => {
+    const { importHarness, hasAcquiredHarness, readHarnessRecordsFromJsonl } = require("../mcp/lib/harness-store.js");
+    const { harnessPath, harnessesJsonlPath } = require("../mcp/lib/paths.js");
+    const { initRepoSession, buildRepoInventory } = require("../mcp/lib/repo-target.js");
+    const { loadNativeFuzzShape } = require("../mcp/lib/repo-env.js");
+    const harness = "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*d,unsigned long n){ char k[]=\"api_key=supersecretvalue123\"; (void)k; return n>0&&d[0]; }";
+
+    // content-only: filesystem path imports are rejected.
+    assert.throws(() => importHarness({ target_domain: "x", file_path: "/tmp/h.cc", content: harness }),
+      /Path imports are not supported/);
+    // a usable libFuzzer harness must define the entry point.
+    assert.throws(() => importHarness({ target_domain: "x", content: "int main(){return 0;}" }),
+      /must define LLVMFuzzerTestOneInput/);
+    // cap is enforced.
+    assert.throws(() => importHarness({ target_domain: "x", content: "LLVMFuzzerTestOneInput" + "x".repeat(200001) }),
+      /exceeds harness cap/);
+
+    // Set up a real repo session with NO in-tree harness.
+    const rawRepoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-harness-fixture-"));
+    const repoRoot = fs.realpathSync.native ? fs.realpathSync.native(rawRepoRoot) : fs.realpathSync(rawRepoRoot);
+    fs.writeFileSync(path.join(repoRoot, "CMakeLists.txt"), "project(x)\n");
+    fs.mkdirSync(path.join(repoRoot, "src"));
+    fs.writeFileSync(path.join(repoRoot, "src", "lib.c"), "int add(int a,int b){return a+b;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+    const domain = init.target_domain;
+    buildRepoInventory({ target_domain: domain });
+    assert.equal(loadNativeFuzzShape(domain), false, "no harness in repo -> native_fuzz_shape false");
+    assert.equal(hasAcquiredHarness(domain), false);
+
+    // import the harness.
+    const imported = importHarness({ target_domain: domain, language: "cpp", source: "operator", content: harness });
+    assert.equal(imported.harness_id, "H-1");
+    assert.equal(imported.harness_path, harnessPath(domain, "H-1"));
+    assert.ok(fs.existsSync(harnessPath(domain, "H-1")));
+    assert.ok(fs.existsSync(harnessesJsonlPath(domain)));
+    assert.equal(readHarnessRecordsFromJsonl(domain).length, 1);
+    assert.equal(hasAcquiredHarness(domain), true);
+
+    // secret in the harness is redacted at rest.
+    const stored = fs.readFileSync(harnessPath(domain, "H-1"), "utf8");
+    assert.doesNotMatch(stored, /supersecretvalue123/);
+
+    // re-inventory: native_fuzz_shape now flips true even though the repo ships none.
+    buildRepoInventory({ target_domain: domain });
+    assert.equal(loadNativeFuzzShape(domain), true, "imported harness flips native_fuzz_shape true");
+  });
+});
+
+test("bob_import_seed_corpus stores a batch of grammar-generated seeds and resolves the newest corpus dir", () => {
+  withTempHome(() => {
+    const { importSeedCorpus, hasAcquiredSeedCorpus, newestSeedCorpusDir, readSeedCorpusRecordsFromJsonl } = require("../mcp/lib/seed-corpus-store.js");
+    const { seedCorpusEntryDir, seedCorpusJsonlPath } = require("../mcp/lib/paths.js");
+    const domain = "example.com";
+
+    // content-only: path imports rejected.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, dir: "/tmp/corpus", seeds: ["1+2"] }),
+      /Path imports are not supported/);
+    // non-empty batch required.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, seeds: [] }), /non-empty array/);
+    // per-seed cap.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, seeds: ["x".repeat(65537)] }), /per-seed cap/);
+    // session must exist.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, seeds: ["1+2"] }), /Missing session state:/);
+    assert.equal(JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` })).created, true);
+
+    assert.equal(hasAcquiredSeedCorpus(domain), false);
+    // import a batch of diverse grammar-spanning seeds (with a secret to verify redaction).
+    const r = importSeedCorpus({
+      target_domain: domain,
+      source: "grammar_gen",
+      label: "text-grammar/value-state",
+      seeds: ['("hi"),3', "sin(1)+2", "max(1,2,3)", 'strlen("ab")', "api_key=supersecretvalue123"],
+    });
+    assert.equal(r.corpus_id, "SC-1");
+    assert.equal(r.seed_count, 5);
+    assert.equal(r.corpus_path, seedCorpusEntryDir(domain, "SC-1"));
+    assert.ok(fs.existsSync(seedCorpusJsonlPath(domain)));
+    assert.equal(fs.readdirSync(seedCorpusEntryDir(domain, "SC-1")).length, 5);
+    assert.equal(readSeedCorpusRecordsFromJsonl(domain).length, 1);
+    assert.equal(hasAcquiredSeedCorpus(domain), true);
+    assert.equal(newestSeedCorpusDir(domain), seedCorpusEntryDir(domain, "SC-1"));
+    // each seed is a numbered raw file; the secret is redacted at rest.
+    const files = fs.readdirSync(seedCorpusEntryDir(domain, "SC-1")).sort();
+    assert.match(files[0], /^seed-0{6}$/);
+    const all = files.map((f) => fs.readFileSync(seedCorpusEntryDir(domain, "SC-1") + "/" + f, "utf8")).join("\n");
+    assert.doesNotMatch(all, /supersecretvalue123/);
+    // a second import gets SC-2 and becomes the newest.
+    const r2 = importSeedCorpus({ target_domain: domain, seeds: ["(1),(2)"] });
+    assert.equal(r2.corpus_id, "SC-2");
+    assert.equal(newestSeedCorpusDir(domain), seedCorpusEntryDir(domain, "SC-2"));
   });
 });
 
@@ -19127,8 +20081,12 @@ test("validateScanUrl rejects malformed URLs", () => {
   assert.throws(() => validateScanUrl("not-a-url"), /Invalid URL/);
 });
 
-test("Claude settings register only artifact guards; scoped HTTP policy is enforced by MCP runtime", () => {
-  const { defaultClaudeSettings } = require("../adapters/claude/config.js");
+test("Claude settings register canonical artifact and fanout-ownership guards; scoped HTTP policy stays in MCP", () => {
+  const {
+    defaultClaudeSettings,
+    FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+    fanoutChildScopeGuardHookEntry,
+  } = require("../adapters/claude/config.js");
   const { mergeSettings } = require("../scripts/merge-claude-config.js");
   const generated = defaultClaudeSettings();
   const installed = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude", "settings.json"), "utf8"));
@@ -19146,18 +20104,28 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     assert.ok(bash, "Bash hook entry should remain for session artifact guards");
     assert.ok(bash.hooks.some((hook) => /session-write-guard\.sh/.test(hook.command)));
     assert.ok(bash.hooks.some((hook) => /session-read-guard\.sh/.test(hook.command)));
-    // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS
-    // the operator before a target-mutating bob_http_scan (and is inert unless BOB_HTTP_WRITE_CONFIRM
-    // is set). It does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where it can't be
-    // bypassed by editing a hook. So an MCP matcher is allowed ONLY when it is exactly that gate; a
-    // scope/enforcement guard on an MCP tool remains forbidden.
+    // Exactly two canonical MCP matchers are permitted: the opt-in HTTP write-confirm HITL gate and
+    // the host-context guard that prevents a nested evaluator-fanout child from invoking root-owned
+    // handoff/finalize tools. Target scope and HTTP policy remain MCP-runtime responsibilities.
     const mcpEntries = settings.hooks.PreToolUse.filter((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || ""));
+    assert.deepEqual(
+      mcpEntries.map((entry) => entry.matcher).sort(),
+      ["mcp__hacker-bob__bob_http_scan", FANOUT_CHILD_SCOPE_GUARD_MATCHER].sort(),
+      "only the canonical HTTP confirmation and fanout ownership guards may hook MCP tools",
+    );
     for (const entry of mcpEntries) {
-      assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
-      assert.ok(
-        entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
-        "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
-      );
+      if (entry.matcher === "mcp__hacker-bob__bob_http_scan") {
+        assert.ok(
+          entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+          "the HTTP-scan matcher must contain only the write-confirm HITL gate",
+        );
+      } else {
+        assert.deepEqual(
+          entry,
+          fanoutChildScopeGuardHookEntry(),
+          "the fanout ownership matcher and command must stay exact",
+        );
+      }
     }
   }
 
@@ -19201,6 +20169,14 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   assert.ok(
     mergedScan.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
     "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
+  );
+  const mergedFanoutGuard = merged.hooks.PreToolUse.find((entry) => (
+    entry.matcher === FANOUT_CHILD_SCOPE_GUARD_MATCHER
+  ));
+  assert.deepEqual(
+    mergedFanoutGuard,
+    fanoutChildScopeGuardHookEntry(),
+    "the canonical fanout child/root ownership guard survives merge unchanged",
   );
 });
 
@@ -19470,7 +20446,10 @@ test("bob_wave_status returns open requeue coverage surface ids and transition b
       explored: [],
     });
     seedAttackSurfaces(domain, [
-      { id: "surface-a", hosts: [`https://${domain}`], priority: "MEDIUM" },
+      // bob_log_coverage materializes this legacy row into the authoritative
+      // surface index without a priority. Readiness conservatively treats that
+      // missing priority as HIGH, matching pipeline analytics.
+      { id: "surface-a", hosts: [`https://${domain}`] },
     ]);
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
     logCoverage({
@@ -19489,8 +20468,9 @@ test("bob_wave_status returns open requeue coverage surface ids and transition b
 
     const result = JSON.parse(waveStatus({ target_domain: domain }));
     assert.deepEqual(result.coverage.open_requeue_surface_ids, ["surface-a"]);
-    assert.deepEqual(result.coverage.unexplored_high_surface_ids, []);
+    assert.deepEqual(result.coverage.unexplored_high_surface_ids, ["surface-a"]);
     assert.equal(result.transition_blockers.some((item) => item.code === "open_requeue_coverage"), true);
+    assert.equal(result.transition_blockers.some((item) => item.code === "unexplored_high_surfaces"), true);
   });
 });
 

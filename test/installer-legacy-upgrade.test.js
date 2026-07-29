@@ -19,6 +19,11 @@ const {
 
 const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
+const LIFECYCLE_CUSTODIAN_TEST_PRELOAD = path.join(
+  __dirname,
+  "fixtures",
+  "lifecycle-custodian-test-preload.js",
+);
 
 const PROJECT_DIR_EXPR = "${CLAUDE_PROJECT_DIR:-$PWD}";
 
@@ -113,7 +118,14 @@ function readMcp(workspace) {
 function runInstall(workspace, tempHome) {
   execFileSync(process.execPath, [CLI, "install", workspace], {
     cwd: ROOT,
-    env: { ...process.env, HOME: tempHome },
+    env: {
+      ...process.env,
+      HOME: tempHome,
+      NODE_OPTIONS: [
+        `--require=${LIFECYCLE_CUSTODIAN_TEST_PRELOAD}`,
+        process.env.NODE_OPTIONS,
+      ].filter(Boolean).join(" "),
+    },
     stdio: "pipe",
   });
 }

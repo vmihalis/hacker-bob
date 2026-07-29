@@ -235,7 +235,11 @@ test("a snapshot is invalid if claim_freeze_id is missing or the freeze hash has
       "missing claim_freeze_id must fail validation",
     );
 
-    // Restore the snapshot and tamper with the freeze hash on disk instead.
+    // Restore the snapshot and tamper with the freeze hash on disk instead. freeze_hash is
+    // a freeze_mac-COVERED field, so mutating it invalidates the freeze_mac: under MEDIUM A
+    // readCurrentClaimFreeze now hard-fails on a tampered freeze (a present-but-invalid mac),
+    // which surfaces BEFORE the snapshot freeze_hash integrity check. Either fail-closed throw
+    // is correct — the tampered freeze can never feed the snapshot validation.
     writeFileAtomic(verificationSnapshotPath(domain), `${JSON.stringify(snapshot, null, 2)}\n`);
     const freezePath = claimFreezePath(domain);
     const freezeDoc = JSON.parse(fs.readFileSync(freezePath, "utf8"));
@@ -243,16 +247,17 @@ test("a snapshot is invalid if claim_freeze_id is missing or the freeze hash has
     writeFileAtomic(freezePath, `${JSON.stringify(tampered, null, 2)}\n`);
     assert.throws(
       () => assertFreshVerificationSnapshot(domain, state),
-      /VERIFY input changed after snapshot/,
-      "tampering with freeze_hash must fail the integrity check",
+      /VERIFY input changed after snapshot|freeze_mac present but does not verify|tampered/,
+      "tampering with freeze_hash must fail the integrity check (freeze_mac tamper hard-fail or snapshot mismatch)",
     );
 
-    // Replacing the freeze artifact with a different freeze_id also fails.
+    // Replacing the freeze artifact with a different freeze_id also fails (freeze_id is a
+    // covered field too, so it likewise invalidates the freeze_mac).
     const replaced = { ...freezeDoc, freeze_id: "CF-replaced-id" };
     writeFileAtomic(freezePath, `${JSON.stringify(replaced, null, 2)}\n`);
     assert.throws(
       () => assertFreshVerificationSnapshot(domain, state),
-      /VERIFY input changed after snapshot/,
+      /VERIFY input changed after snapshot|freeze_mac present but does not verify|tampered/,
       "replacing the freeze with a different freeze_id must fail the integrity check",
     );
   });

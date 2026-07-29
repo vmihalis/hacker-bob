@@ -51,6 +51,13 @@ policy lives in `scripts/lib/package-policy.js` and is consumed by both
 when changing packaged runtime surfaces, intentional support files, excluded
 generated artifacts, or wrapper package shape.
 
-Plane-Delta graph and verification docs may ship as support material; per-node
-detail docs under `docs/plane-delta/detail/` are internal planning notes and are
-excluded from npm packages.
+The high-level Plane-Delta topology and graph JSON may ship as support material.
+Its implementation-order README, per-node `detail/` specs, and `verification/`
+workbook remain source-tree-only planning/review records. The mutable Plane-B
+`/goal` authoring ledger (`docs/causal-belief-hypergraph.md` and
+`docs/plane-belief/`) is likewise source-tree-only rather than installed product
+documentation.
+
+The policy-replay runners, fixture, prompts, and user-facing README remain
+packaged installed diagnostics. `testing/policy-replay/LIVE_SMOKE_DESIGN.md` is
+a deferred CI/OAuth planning memo and is deliberately source-tree-only.

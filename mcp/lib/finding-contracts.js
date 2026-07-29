@@ -10,6 +10,7 @@ const {
   CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
   SEVERITY_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
   SURFACE_TYPE_VALUES,
@@ -28,6 +29,7 @@ const {
 } = require("./validation.js");
 const {
   capabilityPackForLegacyFinding,
+  getCapabilityPack,
 } = require("./capability-packs.js");
 const {
   normalizeCvssInputs,
@@ -74,6 +76,38 @@ function normalizeSurfaceType(value) {
     throw new Error(`surface_type must be one of: ${SURFACE_TYPE_VALUES.join(", ")}`);
   }
   return trimmed;
+}
+
+// The structured PoC recipe an OSS native-code finding declares: the exact argv
+// the reproduction verifier re-runs on the vuln tree and the upstream-fix tree to
+// confirm a differential flip. Distinct from the free-text repro_command (a human
+// hint): this is the machine-runnable token array, shaped identically to
+// bob_verify_repro_reproduction's `command` parameter so a verified_pass binds to
+// it by command_hash. Excluded from computeFindingDedupeKey (allowlist), so adding
+// it never reshuffles finding ids.
+const REPRO_COMMAND_ARGV_MAX_TOKENS = 64;
+const REPRO_COMMAND_ARGV_MAX_TOKEN_LEN = 4096;
+
+function normalizeReproCommandArgv(value, fieldName = "repro_command_argv") {
+  if (value == null) return null;
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of command tokens`);
+  }
+  if (value.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty argv array`);
+  }
+  if (value.length > REPRO_COMMAND_ARGV_MAX_TOKENS) {
+    throw new Error(`${fieldName} must have ${REPRO_COMMAND_ARGV_MAX_TOKENS} tokens or fewer`);
+  }
+  return value.map((token, index) => {
+    if (typeof token !== "string" || token.length === 0) {
+      throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+    }
+    if (token.length > REPRO_COMMAND_ARGV_MAX_TOKEN_LEN) {
+      throw new Error(`${fieldName}[${index}] must be ${REPRO_COMMAND_ARGV_MAX_TOKEN_LEN} characters or fewer`);
+    }
+    return token;
+  });
 }
 
 const REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES = Object.freeze(
@@ -455,7 +489,21 @@ function summarizeFindings(findings) {
 
 const CWE_REQUIRED_SEVERITIES = Object.freeze(["critical", "high", "medium"]);
 
-function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
+// Trust-degradation marker on a finding, present only when the finding's source
+// could not be signature-verified. Absent => signature-verified; the marker is
+// never auto-materialized, so signed findings stay byte-identical and the
+// claim-freeze hash of existing findings is unchanged. Strict on the write path
+// (throws on an invalid enum); tolerant on read-back projection (an unparseable
+// legacy value degrades to absent rather than dropping the whole finding).
+function normalizeSignatureVerificationStatus(value, { strict = false } = {}) {
+  if (value == null) return null;
+  if (strict) {
+    return assertEnumValue(value, SIGNATURE_VERIFICATION_STATUS_VALUES, "signature_verification_status");
+  }
+  return SIGNATURE_VERIFICATION_STATUS_VALUES.includes(value) ? value : null;
+}
+
+function normalizeEndpointPocFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
     throw new Error(lineNumber == null
       ? "finding record must be an object"
@@ -486,6 +534,7 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       affected_package: normalizeOptionalText(record.affected_package, "affected_package"),
       affected_version_range: normalizeOptionalText(record.affected_version_range, "affected_version_range"),
       repro_command: normalizeOptionalText(record.repro_command, "repro_command"),
+      repro_command_argv: normalizeReproCommandArgv(record.repro_command_argv, "repro_command_argv"),
       description: assertRequiredText(record.description, "description"),
       proof_of_concept: assertRequiredText(record.proof_of_concept, "proof_of_concept"),
       response_evidence: normalizeOptionalText(record.response_evidence, "response_evidence"),
@@ -550,6 +599,26 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       }
       finding.cvss_inputs = { ...(finding.cvss_inputs || {}), attack_vector: derivedAv };
     }
+    // Trust-degradation marker. Excluded from computeFindingDedupeKey so adding
+    // it never reshuffles finding ids; strict on write, tolerant on read-back.
+    // Deliberately not part of the agent-facing claim-tool input (so an agent
+    // cannot self-declare signature status): it is set only by a producer that
+    // persists a finding from a source it could not signature-verify, by writing
+    // it onto payload.finding directly. RESERVED: no such production producer
+    // exists today (the intended wave-merge producer was superseded), so the
+    // fail-closed audit-writer gates that read this marker are inert until a
+    // producer is added; this read path re-normalizes the marker when present.
+    const signatureStatus = normalizeSignatureVerificationStatus(
+      record.signature_verification_status,
+      { strict: requireCwe },
+    );
+    if (signatureStatus) {
+      finding.signature_verification_status = signatureStatus;
+      const signatureReason = normalizeOptionalText(record.signature_error_reason, "signature_error_reason");
+      if (signatureReason) finding.signature_error_reason = signatureReason;
+      const markedAt = normalizeOptionalText(record.degradation_marked_at, "degradation_marked_at");
+      if (markedAt) finding.degradation_marked_at = markedAt;
+    }
     if (finding.surface_type === "smart_contract" && !finding.sc_evidence) {
       throw new Error("smart-contract findings must include sc_evidence");
     }
@@ -576,6 +645,37 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
   }
 }
 
+// Capability-pack finding adapters are selected from the pack manifest.  Core
+// lifecycle consumers call one normalizer and never branch on a physical/web
+// domain enum.  Packs without an explicit adapter retain the legacy
+// endpoint+PoC contract; a pack that declares an unknown adapter fails closed.
+const FINDING_RECORD_ADAPTER_LOADERS = Object.freeze({
+  physical_verified_transition_finding_v1: () => (
+    require("./physical-finding-record-adapter.js").normalizePhysicalFindingRecord
+  ),
+});
+
+function declaredFindingRecordAdapter(record) {
+  if (record == null || typeof record !== "object" || Array.isArray(record)) return null;
+  if (typeof record.capability_pack !== "string" || !record.capability_pack.trim()) return null;
+  const pack = getCapabilityPack(record.capability_pack.trim());
+  if (!pack || !pack.finding || typeof pack.finding.adapter !== "string") return null;
+  const adapterId = pack.finding.adapter;
+  const loader = FINDING_RECORD_ADAPTER_LOADERS[adapterId];
+  if (typeof loader !== "function") {
+    throw new Error(
+      `capability_pack ${pack.id} declares unsupported finding adapter ${adapterId}`,
+    );
+  }
+  return Object.freeze({ adapter_id: adapterId, normalize: loader() });
+}
+
+function normalizeFindingRecord(record, options = {}) {
+  const adapter = declaredFindingRecordAdapter(record);
+  if (adapter) return adapter.normalize(record, options);
+  return normalizeEndpointPocFindingRecord(record, options);
+}
+
 function renderFindingMarkdownEntry(finding) {
   const waveAgent = finding.wave || finding.agent
     ? `\n- **Wave/Agent:** ${finding.wave || "?"}/${finding.agent || "?"}`
@@ -595,6 +695,7 @@ function renderFindingMarkdownEntry(finding) {
     finding.affected_package ? `\n- **Affected Package:** ${finding.affected_package}` : "",
     finding.affected_version_range ? `\n- **Affected Version Range:** ${finding.affected_version_range}` : "",
     finding.repro_command ? `\n- **Repro Command:** \`${finding.repro_command}\`` : "",
+    finding.repro_command_argv ? `\n- **Repro Argv:** \`${JSON.stringify(finding.repro_command_argv)}\`` : "",
   ].join("");
   let scBlock = "";
   if (finding.sc_evidence) {
@@ -653,9 +754,11 @@ function renderFindingMarkdownEntry(finding) {
 
 module.exports = {
   computeFindingDedupeKey,
+  declaredFindingRecordAdapter,
   normalizeBech32Address,
   normalizeFindingRecord,
   normalizeReachabilityAssertion,
+  normalizeSignatureVerificationStatus,
   findingSupportsReachabilityAssertion,
   normalizeScEvidence,
   normalizeSs58Address,

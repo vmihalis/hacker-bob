@@ -40,8 +40,6 @@
 // The producer refuses to run under proxy-backed egress while block_internal_hosts
 // is on (it cannot verify the policy through a proxy), mirroring the confirmer.
 
-const crypto = require("crypto");
-
 const {
   ERROR_CODES,
   ToolError,
@@ -76,6 +74,7 @@ const {
   assertNoForbiddenInputs,
   contentTypeOf,
   sensitiveShapesPresent,
+  mintSensitiveShapeSafeToken,
   SCOPE_VALIDATION_OPTS,
 } = require("./offensive-http-common.js");
 const {
@@ -174,13 +173,6 @@ function normalizeParamLocus(value) {
     rejectInvalidArguments(`param_locus ordinal must be between 0 and ${MAX_PARAM_LOCUS}`);
   }
   return index;
-}
-
-function mintToken(prefix) {
-  // prefix + 128 bits hex. Alphanumeric (no metacharacters), high-entropy, and
-  // never an action verb / "1" / "true", so the only metacharacters at the sink
-  // come from the sentinel.
-  return `${prefix}${crypto.randomBytes(16).toString("hex")}`;
 }
 
 function bodyTextOf(response, limit = 1_048_576) {
@@ -502,8 +494,8 @@ async function reflectXss(args = {}, { fetch_fn = null } = {}) {
   const egressProfileName = identity.egress_profile || requestedEgressProfile;
 
   // Server-mint the canary tokens + the inert sentinel.
-  const nonce = mintToken("bxr");
-  const endMarker = mintToken("exr");
+  const nonce = mintSensitiveShapeSafeToken("bxr");
+  const endMarker = mintSensitiveShapeSafeToken("exr");
   const controlValue = nonce;
   const probeValue = `${nonce}${REFLECTION_SENTINEL}${endMarker}`;
 

@@ -1,0 +1,28 @@
+{
+  "name": "@hacker-bob/lifecycle-custodian-native-darwin-source",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Source-only descriptor-relative lifecycle custodian test fixture for Darwin arm64",
+  "license": "Apache-2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "README.md",
+    "native/lifecycle_custodian.c",
+    "scripts/build-test-fixture.js",
+    "scripts/check-source.js",
+    "test/source-contract.test.js"
+  ],
+  "scripts": {
+    "build:test": "node scripts/build-test-fixture.js",
+    "check:source": "node scripts/check-source.js",
+    "test": "npm run check:source && npm run build:test && node --test test/*.test.js"
+  }
+}

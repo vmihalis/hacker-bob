@@ -31,7 +31,6 @@ async function runDocDeltaToolHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_run_doc_delta",
-  aliases: ["bounty_run_doc_delta"],
   capability_id: "C2_doc_vs_behavior",
   description:
     "Run a doc-vs-behavior differential against the persisted schema-contract corpus. For each contract, issues a request via bob_http_scan, classifies divergences, and writes doc-delta-results.json. Use after seeding the corpus with bob_ingest_schema_doc.",
@@ -86,5 +85,6 @@ module.exports = Object.freeze({
   scope_required: true,
   scope_url_fields: ["base_url"],
   sensitive_output: true,
-  session_artifacts_written: ["doc-delta-results.json"],
+ session_artifacts_written: ["doc-delta-results.json"],
+  required_session_axes: ["url"],
 });

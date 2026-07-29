@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+# ============================================================================
+# SUPERSEDED (fx-kyber-iac) — this stack is NOT deployed.
+#
+# KYBERFORK-SPEC.md's own REFRAMED 2026-07-09 banner (top of file) explains
+# why: hacker-bob's SC/EVM axis (mcp/lib/sc-egress-policy.js) unconditionally
+# rejects RFC1918/private RPC endpoints, with ZERO coupling to the web-axis
+# lab-attestation carve-out this in-VPC anvil node + kyberfork.internal
+# private-DNS design depended on. That makes this stack's own architecture
+# (§1/§4 of the spec) structurally unreachable by the EVM pack as written —
+# not a bug in this template, a design fact about the engine it was built to
+# feed.
+#
+# Kyber now runs via a PUBLIC ARCHIVE FORK instead: bob_foundry_run(chain_id=1,
+# fork_block=17050000) resolves through hacker-bob's own DEFAULT_PUBLIC_RPC_LADDER
+# (mcp/lib/evm-rpc-pool.js), reached from inside the deny-egress microVM over
+# exactly ONE declared archive-RPC egress path — see
+# infra/aws/hacker-bob-stack/template.yaml's ArchiveRpcGatewayEgressRule +
+# ArchiveRpcAllowedDomainList/ArchiveRpcDenyAllDomainList Route 53 Resolver
+# DNS Firewall pair (fx-kyber-iac), and that stack's README.md for the full
+# egress path description. BOB_EVM_RPCS_1 (set at Runtime-provisioning time,
+# out of the model's reach) pins the fork to that one host.
+#
+# What is NOT deleted: infra/aws/kyberfork/scripts/prevalidate.sh stays as
+# CONFIRMED ground truth (the independent build-time re-derivation that the
+# pinned block reproduces the real bug), run exactly as before, on an
+# egress-capable build box, never inside the microVM. See README.md (this
+# directory) for "Build-day egress hygiene" and the retargeted containment
+# Part A.
+#
+# This file is kept on disk (not deleted) for traceability. The Resources
+# block below is a short placeholder, not the previously-deployable 198-line
+# in-VPC-anvil-node stack — do not `sam deploy` this.
+# ============================================================================
+
+Description: >
+  SUPERSEDED (fx-kyber-iac): this stack previously declared a private in-VPC
+  anvil node + kyberfork.internal private DNS zone. That design is moot — see
+  the SUPERSEDED banner above. Kept as a placeholder for traceability only;
+  not deployed. Kyber's live target is the public-archive-fork path declared
+  in infra/aws/hacker-bob-stack/template.yaml.
+
+Resources:
+  # Intentionally empty. The KyberForkSecurityGroup / KyberForkInstance /
+  # KyberForkNetworkInterface / KyberForkHostedZone / KyberForkDnsRecord
+  # resources this stack used to declare are gone, not merely disabled — the
+  # private in-VPC anvil node is not part of the build. See the SUPERSEDED
+  # banner above for the retargeted path.
+  KyberForkSupersededPlaceholder:
+    Type: AWS::CloudFormation::WaitConditionHandle
+    Properties: {}

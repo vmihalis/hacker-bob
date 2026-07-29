@@ -19,6 +19,8 @@
  *
  * Environment overrides:
  *   MOCK_GITHUB_PORT      — port to listen on (default 8080)
+ *   MOCK_GITHUB_HOST      — bind host (default 0.0.0.0)
+ *   MOCK_STRICT_ROUTES    — return 404 for unknown routes when true
  *   MOCK_DIFF_FIXTURE     — path to a .diff file to serve as the PR diff
  */
 
@@ -47,6 +49,8 @@ for (let i = 0; i < args.length; i++) {
 }
 
 const PORT = parseInt(cliPort ?? process.env.MOCK_GITHUB_PORT ?? '8080', 10);
+const HOST = process.env.MOCK_GITHUB_HOST ?? '0.0.0.0';
+const STRICT_ROUTES = /^(1|true)$/i.test(process.env.MOCK_STRICT_ROUTES ?? '');
 
 if (!diffFixturePath) {
   // Default: look for pr_42.diff relative to repo root
@@ -79,6 +83,54 @@ function log(msg) {
 // ---------------------------------------------------------------------------
 
 const ROUTES = [
+  {
+    method: 'GET',
+    pattern: /^\/$/,
+    handler(req, res) {
+      log(`GET ${req.url} => 200 demo metadata`);
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'X-Hacker-Bob-Demo': 'owned-synthetic-target',
+      });
+      res.end(JSON.stringify({
+        service: 'hacker-bob-owned-github-mock',
+        purpose: 'synthetic security-demo target; no real GitHub data or side effects',
+        pull_request: '/repos/acme/demo/pulls/42',
+        openapi: '/openapi.json',
+      }));
+    },
+  },
+
+  {
+    method: 'GET',
+    pattern: /^\/healthz$/,
+    handler(req, res) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, target: 'owned-synthetic' }));
+    },
+  },
+
+  {
+    method: 'GET',
+    pattern: /^\/openapi\.json$/,
+    handler(req, res) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        openapi: '3.0.3',
+        info: { title: 'Owned GitHub API demo fixture', version: '1.0.0' },
+        paths: {
+          '/repos/{owner}/{repo}/pulls/{number}': { get: { responses: { 200: { description: 'Pull request' } } } },
+          '/repos/{owner}/{repo}/pulls/{number}/reviews': {
+            post: {
+              summary: 'Create a synthetic pull-request review',
+              responses: { 200: { description: 'Review created' } },
+            },
+          },
+        },
+      }));
+    },
+  },
+
   // PR diff — served as application/vnd.github.diff
   {
     method: 'GET',
@@ -97,8 +149,10 @@ const ROUTES = [
       res.end(JSON.stringify({
         number: 42,
         state: 'open',
+        synthetic: true,
         head: { sha: 'abc1234def5678abc1234def5678abc1234def56' },
         base: { ref: 'main', sha: 'fedcba9876543210fedcba9876543210fedcba98' },
+        _links: { reviews: { href: '/repos/acme/demo/pulls/42/reviews' } },
       }));
     },
   },
@@ -217,11 +271,13 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // Catch-all — log and return empty 200 so the action doesn't abort
-  log(`UNMATCHED ${req.method} ${req.url} => 200 empty`);
+  // Catch-all — default local-action compatibility returns 200; AgentCore's
+  // owned demo fixture enables strict routes and returns 404 for unknown paths.
+  const status = STRICT_ROUTES ? 404 : 200;
+  log(`UNMATCHED ${req.method} ${req.url} => ${status} ${STRICT_ROUTES ? 'not found' : 'empty'}`);
   collectBody(req, () => {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({}));
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(STRICT_ROUTES ? { error: 'not_found' } : {}));
   });
 });
 
@@ -229,8 +285,8 @@ const server = http.createServer((req, res) => {
 //   - the host (127.0.0.1:<PORT>)
 //   - Docker containers via host.docker.internal:<PORT> (macOS/Windows Docker Desktop)
 //   - Docker containers via --add-host=host.docker.internal:host-gateway (Linux)
-server.listen(PORT, '0.0.0.0', () => {
-  log(`Mock GitHub API listening on http://0.0.0.0:${PORT} (all interfaces)`);
+server.listen(PORT, HOST, () => {
+  log(`Mock GitHub API listening on http://${HOST}:${PORT}`);
   log(`Serving diff fixture: ${diffFixturePath ?? '(inline default)'}`);
   // Signal to the parent shell that the server is ready.
   // Written to stdout so test-local.sh can grep the log for "READY port=".

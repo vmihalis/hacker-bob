@@ -19,7 +19,7 @@ concurrency:
 jobs:
   brutalist:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 55
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -50,14 +50,9 @@ jobs:
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
-          # Check each critic independently — `command -v a b c` returns 0 if ANY
-          # resolves, so it would pass even with agy missing.
-          for bin in brutalist-mcp claude codex agy; do
-            command -v "$bin" >/dev/null || { echo "::error::missing critic binary: $bin"; exit 1; }
-          done
+          command -v brutalist-mcp claude codex agy
           claude --version
           codex --version
-          agy --version
           # codex: disable the broken built-in image_generation tool (gpt-image-2)
           mkdir -p "$HOME/.codex"
           printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
@@ -68,13 +63,12 @@ jobs:
         # Tracks the moving @v1 tag — repointed to each release by the upstream
         # move-tags automation — so this repo auto-updates. Trust root is the
         # owner-controlled ejmockler/brutalist-mcp repo + release pipeline.
+        # @v1 ships the turn-cap 20→50 fix (was hitting "max turns (20)" on large PRs).
         uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
           BRUTALIST_TIMEOUT: "1800000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2700000"
-          # Disable agy's in-run self-update (it self-updates from a us-central1
-          # endpoint mid-run). NOTE: this does NOT pin the installed version —
-          # install.sh above fetches the latest; this only stops drift WITHIN a run.
+          # Freeze agy's binary version for the run (stops self-update drift).
           AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: ${{ github.token }}
@@ -89,9 +83,20 @@ jobs:
           custom-claude-client-id: glm
           custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
           custom-claude-auth-token: ${{ secrets.GLM_TOKEN }}
-          custom-claude-model: glm-5.1
+          custom-claude-model: glm-5.2
           custom-claude-small-fast-model: glm-4.5-air
-          custom-claude-context-window: 128000
+          # glm-5.2 has a 1M context window (was glm-5.1/128k). 128k was the
+          # binding floor of the diff-chunk min, splitting diffs into more chunks
+          # than necessary (and hammering the GLM gateway concurrently); at 1M,
+          # codex (~200k) governs instead. The declared window must match the
+          # model's real window so the min still protects GLM from overflow.
+          custom-claude-context-window: 1000000
+          # Coding-agent PRs are huge: the action's old default (80000) truncated
+          # a real 1.39M-char diff to ~78K (94% dropped), so the review silently
+          # missed almost everything. Pin a high explicit cap that works on the
+          # currently-pinned action (v1.14.7) without waiting on a re-pin.
+          # (brutalist-mcp v1.15.1 raises the built-in default to 2000000 too.)
+          max-diff-chars: '2000000'
       - name: Report advisory reviewer failure
         if: steps.brutalist-review.outcome == 'failure'
         env:

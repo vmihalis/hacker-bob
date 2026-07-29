@@ -207,6 +207,88 @@ function normalizeChainNotes(value) {
   return notes;
 }
 
+// CN (coverage-nesting) Step B (B5/HE-6) — the transition-blind evaluator-fanout
+// reports cross-surface pivots it discovered here instead of proposing them; the
+// orchestrator (D7) calls bob_propose_transition per entry on receipt. Bounded like
+// chain_notes. kind is a bounded string here — bob_propose_transition validates it
+// against the transition-kind enum when the orchestrator actually proposes the pivot.
+function normalizeDiscoveredPivots(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "discovered_pivots must be an array");
+  }
+  if (value.length > 20) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "discovered_pivots must contain at most 20 entries");
+  }
+  return value.map((entry, i) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}] must be an object`);
+    }
+    const reqStr = (key, max) => {
+      const v = entry[key];
+      if (typeof v !== "string" || v.length === 0) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}].${key} is required`);
+      }
+      if (v.length > max) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}].${key} must be at most ${max} characters`);
+      }
+      return v;
+    };
+    const pivot = {
+      from_surface: reqStr("from_surface", 200),
+      to_surface: reqStr("to_surface", 200),
+      kind: reqStr("kind", 100),
+      trust_assumption: reqStr("trust_assumption", 500),
+    };
+    const refs = normalizeStringArray(entry.evidence_refs, "evidence_refs");
+    if (refs.length > 10) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}].evidence_refs must contain at most 10 entries`);
+    }
+    if (refs.length > 0) pivot.evidence_refs = refs;
+    return pivot;
+  });
+}
+
+// CN (coverage-nesting) Step B (B6) — the spawn-capable evaluator-fanout self-reports
+// the children it actually spawned (subagent_type + optional cell_key). This is the
+// DETECTIVE finalize channel: the orchestrator cross-checks it via validateSpawnFanout
+// against the brief's child_fanout_plan budget on receipt. Agent-attested (so forgeable
+// — it bounds an honest agent); the host pool is the preventive backstop. Bounded by
+// max_spawn_children (64).
+function normalizeSpawnedChildren(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "spawned_children must be an array");
+  }
+  if (value.length > 64) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "spawned_children must contain at most 64 entries");
+  }
+  return value.map((entry, i) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}] must be an object`);
+    }
+    const subagentType = entry.subagent_type;
+    if (typeof subagentType !== "string" || subagentType.length === 0) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].subagent_type is required`);
+    }
+    if (subagentType.length > 100) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].subagent_type must be at most 100 characters`);
+    }
+    const child = { subagent_type: subagentType };
+    // Legacy signed handoffs may predate cell-bound NS-7 reporting, so the
+    // storage normalizer keeps cell_key optional on READ. New MCP writes require
+    // it in the tool schema and assertSpawnFanoutWithinBudget rejects a missing
+    // or unissued key before persistence.
+    if (entry.cell_key != null) {
+      if (typeof entry.cell_key !== "string" || entry.cell_key.length > 300) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].cell_key must be a string of at most 300 characters`);
+      }
+      child.cell_key = entry.cell_key;
+    }
+    return child;
+  });
+}
+
 // Runtime mirror of the bob_write_wave_handoff JSON schema enum and the
 // renderer's BLOCKED_HARNESS_RUN_KINDS constant. Mismatch here would cause
 // SVM/Move/Substrate/CosmWasm evaluators to fail finalization even though the
@@ -442,6 +524,36 @@ function assertBlockedPrereqConsistency(surfaceStatus, blockedPrereqs) {
   }
 }
 
+// A bypass_attempt counts as SUBSTANCE only when it carries a finding-bearing
+// outcome WITH a write-validated finding_id, or when it documents the mechanism
+// it exercised (cited condition >= 8, attempt_summary >= 60 — 2x the schema
+// existence floors of 4/30). An outcome label alone is not substance: a bare
+// partial_evidence claim (no finding_id, no described mechanism) is the cheapest
+// low-effort attestation and must not pass. A stronger semantic check (condition
+// must appear in the surface's trust_assumptions[*].bypass_conditions) is a
+// follow-up; length is a floor, not a guarantee.
+const SUBSTANTIVE_BYPASS_CONDITION_MIN_CHARS = 8;
+const SUBSTANTIVE_BYPASS_SUMMARY_MIN_CHARS = 60;
+
+function bypassAttemptHasSubstance(attempt) {
+  const hasFindingId = typeof attempt.finding_id === "string" && attempt.finding_id.trim() !== "";
+  if (hasFindingId && (attempt.outcome === "partial_evidence" || attempt.outcome === "finding_recorded")) {
+    return true;
+  }
+  const condition = typeof attempt.condition === "string" ? attempt.condition.trim() : "";
+  const summary = typeof attempt.attempt_summary === "string" ? attempt.attempt_summary.trim() : "";
+  return (
+    condition.length >= SUBSTANTIVE_BYPASS_CONDITION_MIN_CHARS
+    && summary.length >= SUBSTANTIVE_BYPASS_SUMMARY_MIN_CHARS
+  );
+}
+
+// The smart_contract completion-depth gate. Fires at WRITE (bob_write_wave_handoff
+// via wave-assignment-store) and at MERGE (validateWaveHandoffPayload) — the same
+// write+merge double-enforcement points the existence rule already used — so a
+// thin attestation is refused before it is ever persisted, never reaching a
+// finalize-retry or requeue loop. A complete SC surface closes only on a recorded
+// finding OR a SUBSTANTIVE bypass_attempt.
 function assertSmartContractCompletionEvidence({
   surfaceType,
   surfaceStatus,
@@ -451,10 +563,10 @@ function assertSmartContractCompletionEvidence({
   if (surfaceType !== "smart_contract") return;
   if (surfaceStatus !== "complete") return;
   if (findingCount > 0) return;
-  if (bypassAttempts.length > 0) return;
+  if (bypassAttempts.some(bypassAttemptHasSubstance)) return;
   throw new ToolError(
     ERROR_CODES.INVALID_ARGUMENTS,
-    "smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks: record at least one finding for this surface, or supply at least one bypass_attempts entry citing a trust_assumptions[*].bypass_conditions condition that was tested. Set surface_status to 'partial' if no attempt was made.",
+    "smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks: record a finding for this surface, or supply a bypass_attempts entry that cites a real trust_assumptions[*].bypass_conditions condition AND documents the exercised mechanism (or carries a partial_evidence/finding_recorded finding_id). Set surface_status to 'partial' if no real attempt was made.",
   );
 }
 
@@ -511,6 +623,8 @@ function validateWaveHandoffPayload(payload, {
     surface_type: surfaceType,
     summary: normalizeHandoffSummary(payload),
     chain_notes: normalizeChainNotes(payload.chain_notes),
+    discovered_pivots: normalizeDiscoveredPivots(payload.discovered_pivots),
+    spawned_children: normalizeSpawnedChildren(payload.spawned_children),
     blocked_harness_runs: blockedHarnessRuns,
     blocked_prereqs: blockedPrereqs,
     bypass_attempts: bypassAttempts,
@@ -591,6 +705,58 @@ function groupBypassAttempts(entries) {
   });
 }
 
+// Advisory surfacing for cross-surface
+// pivots the transition-blind evaluator-fanout rode up as
+// handoff.discovered_pivots[] but the orchestrator never consumed. The
+// orchestrator is supposed to call bob_propose_transition per entry (recording
+// a lead via bob_record_surface_leads when the to_surface is unmaterialized),
+// but that consumption is prompt-discipline, not a hard gate — a skipped loop
+// SILENTLY DROPS a pivot to an unmaterialized surface. This computes which
+// merged pivots have NO corresponding consumption so the merge/status result
+// can REPORT them. It is purely advisory: it gates nothing.
+//
+// A pivot is CONSUMED when either
+//   (a) a proposed transition edge exists for the same from->to pair
+//       (proposedEdges holds `${from} ${to}` keys), OR
+//   (b) the to_surface string is referenced by a recorded surface lead
+//       (leadReferenceStrings holds lead title/source_surface_id/
+//       contract_address/promoted_surface_id values) — the path the
+//       orchestrator takes when the to_surface is unmaterialized.
+// Off the nesting path (the default) discovered_pivots is empty, so this is a
+// no-op returning []. The pivots are bounded by normalizeDiscoveredPivots
+// (<=20 per handoff) so the membership scan stays trivially cheap.
+function pivotEdgeKey(fromSurface, toSurface) {
+  return `${fromSurface} ${toSurface}`;
+}
+
+function computeUnconsumedPivots(pivots, { proposedEdges, leadReferenceStrings } = {}) {
+  if (!Array.isArray(pivots) || pivots.length === 0) return [];
+  const edges = proposedEdges instanceof Set ? proposedEdges : new Set();
+  const leadRefs = leadReferenceStrings instanceof Set ? leadReferenceStrings : new Set();
+  const unconsumed = [];
+  for (const pivot of pivots) {
+    if (!pivot || typeof pivot !== "object" || Array.isArray(pivot)) continue;
+    const fromSurface = typeof pivot.from_surface === "string" ? pivot.from_surface : "";
+    const toSurface = typeof pivot.to_surface === "string" ? pivot.to_surface : "";
+    if (!fromSurface || !toSurface) continue;
+    const hasTransition = edges.has(pivotEdgeKey(fromSurface, toSurface));
+    const hasLead = leadRefs.has(toSurface);
+    if (hasTransition || hasLead) continue;
+    const entry = {
+      from_surface: fromSurface,
+      to_surface: toSurface,
+    };
+    if (typeof pivot.kind === "string" && pivot.kind) entry.kind = pivot.kind;
+    if (typeof pivot.trust_assumption === "string" && pivot.trust_assumption) {
+      entry.trust_assumption = pivot.trust_assumption;
+    }
+    if (pivot.agent) entry.agent = pivot.agent;
+    if (pivot.surface_id) entry.surface_id = pivot.surface_id;
+    unconsumed.push(entry);
+  }
+  return unconsumed;
+}
+
 module.exports = {
   BLOCKED_HARNESS_KIND_VALUES,
   BLOCKED_PREREQ_IDENTIFIER_HINT_LONG_HEX_PATTERN,
@@ -607,11 +773,14 @@ module.exports = {
   assertBlockedHarnessConsistency,
   assertBlockedPrereqConsistency,
   assertSmartContractCompletionEvidence,
+  bypassAttemptHasSubstance,
   assignmentRequiresToken,
   attachHandoffOrigin,
   computeHandoffAssignmentHash,
   computeHandoffProvenanceDigest,
+  computeUnconsumedPivots,
   generateHandoffToken,
+  pivotEdgeKey,
   groupBlockedHarnessRuns,
   groupBlockedPrereqs,
   groupBypassAttempts,
@@ -621,6 +790,8 @@ module.exports = {
   normalizeBlockedPrereqs,
   normalizeBypassAttempts,
   normalizeChainNotes,
+  normalizeDiscoveredPivots,
+  normalizeSpawnedChildren,
   normalizeHandoffSummary,
   normalizeHandoffProvenanceSignature,
   sha256Hex,

@@ -31,7 +31,12 @@ const {
   createObject,
   idorProvisionAuthorizedFor,
   pathHasConcreteParentInstance,
+  createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,
+  endpointValueIsIdBearing,
+  templatizeIdBearingEndpoint,
+  surfaceExposesIdBearingCollection,
+  surfaceIdBearingEndpoints,
 } = require("../mcp/lib/offensive-idor-producer.js");
 const { assertCreateCollectionShapeSafe } = require("../mcp/lib/offensive-http-common.js");
 const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
@@ -39,7 +44,14 @@ const idorDescriptor = require("../mcp/lib/tools/bob-http-idor-confirm.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+
+// New offensive rows are ed25519 (v2); the verifier bundle (public key + symmetric
+// key) verifies them with the PUBLIC key while still accepting any legacy v1 hmac row.
+function rowMacVerifies(domain, row) {
+  return verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain));
+}
 const { attackSurfacePath, offensiveRunsJsonlPath, offensiveRunsDir } = require("../mcp/lib/paths.js");
 const {
   appendCandidateClaim,
@@ -47,7 +59,7 @@ const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
 } = require("../mcp/lib/claims.js");
-const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
+const { projectExploitRunObservedRef, readOffensiveCaptureBytesSecure } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -262,6 +274,220 @@ async function run(domain, { fetch_fn, provision, args } = {}) {
 
 // ───────────────────────── pure-helper unit tests ──────────────────────────
 
+test("endpointValueIsIdBearing requires a real id, not a bare punctuation char (fixed routes are NOT id-bearing)", () => {
+  // Ubiquitous FIXED routes: a hyphen/underscore/dot is NOT an id — flagging these would
+  // freeze an unsatisfiable auth-differential obligation (no per-object id to cross-tenant
+  // swap; both principals 2xx their own data at the same URL, so no flip is possible).
+  for (const p of [
+    "/oauth/access-token", "/account/reset-password", "/user-profile",
+    "/api/csrf-token", "/favicon.ico", "/assets/app.js", "/robots.txt",
+    // Versioned / API-structural / acronym segments are NOT per-object ids.
+    "/api/v1/users", "/oauth2/authorize", "/v2/orders", "/api2/reports", "/s3/bucket", "/graphql", "/api/v1.2/users",
+  ]) {
+    assert.equal(endpointValueIsIdBearing(p), false, `fixed/versioned route ${p} must not be id-bearing`);
+  }
+  // Real per-object identifiers still ARE id-bearing — including the canonical nested-collection
+  // BOLA shape where the owner id is in a NON-final segment (/users/{id}/orders).
+  for (const p of [
+    "/api/orders/12345", "/api/accounts/789", "/users/{id}", "/users/:id",
+    "/users/550e8400-e29b-41d4-a716-446655440000", "/tx/0xabcdef0123456789",
+    "/posts/deadbeefcafebabe00",
+    "/users/{id}/orders", "/api/tenants/42/settings", "/orgs/99/config", "/accounts/{id}/balance",
+  ]) {
+    assert.equal(endpointValueIsIdBearing(p), true, `id-bearing route ${p} must be detected`);
+  }
+});
+
+test("object-scoping QUERY-param routes are id-bearing with a canonical key={id} frozen template", () => {
+  // The query-param BOLA shape: a per-object resource keyed by an object-scoping SEARCH param
+  // (numeric, uuid, slug, or a {id} marker) rather than a path segment. aitalent tagged all such
+  // routes id_bearing:false — the completion gate then never fired. Each now templatizes to a
+  // non-null canonical `?key={id}` form the frozen surface template can bind.
+  const cases = [
+    ["/api/teams?teamId=550e8400-e29b-41d4-a716-446655440000", "/api/teams?teamId={id}"],
+    ["/api/projects?projectId=42", "/api/projects?projectId={id}"],
+    ["/api/x?userId={id}", "/api/x?userId={id}"],
+    ["/api/things?id=7", "/api/things?id={id}"],
+    ["/api/o?uuid=abc-123", "/api/o?uuid={id}"],
+    ["/api/w?tenantId=acme", "/api/w?tenantId={id}"],
+    ["/api/o?workspace_id=w1", "/api/o?workspace_id={id}"],
+  ];
+  for (const [value, template] of cases) {
+    assert.equal(endpointValueIsIdBearing(value), true, `query-param object route ${value} must be id-bearing`);
+    assert.equal(templatizeIdBearingEndpoint(value), template, `frozen template for ${value}`);
+  }
+  // Object-scoping params are collapsed + SORTED, and NON-object params (limit/page/sort) are
+  // dropped, so the frozen suffix is order-independent and pagination noise never leaks in.
+  assert.equal(
+    templatizeIdBearingEndpoint("/orgs?limit=10&userId=1&teamId=2&page=3"),
+    "/orgs?teamId={id}&userId={id}",
+  );
+  // A path id AND an object-scoping query key compose into one canonical template.
+  assert.equal(
+    templatizeIdBearingEndpoint("/api/users/12345?teamId=99"),
+    "/api/users/{id}?teamId={id}",
+  );
+});
+
+test("pagination / sort / search / bare-collection query routes stay id_bearing:false with no frozen endpoint", () => {
+  // Over-tagging a non-object collection would freeze an unsatisfiable cross-tenant obligation
+  // onto a non-BOLA surface (the inverted bound-not-rank harm) — these must NOT trip.
+  for (const value of [
+    "/api/users", "/api/orders?page=2", "/api/list?sort=name&limit=10", "/search?q=foo",
+    "/api/reports?filter=open&offset=5", "/feed?cursor=abc", "/api/items?q=widget&sort=price",
+  ]) {
+    assert.equal(endpointValueIsIdBearing(value), false, `non-object query route ${value} must not be id-bearing`);
+    assert.equal(templatizeIdBearingEndpoint(value), null, `no frozen template for ${value}`);
+  }
+});
+
+test("detection is structurally EQUAL to the frozen-endpoint basis across a spanning corpus", () => {
+  // The keystone invariant: endpointValueIsIdBearing(v) === (templatizeIdBearingEndpoint(v)!==null)
+  // AND surfaceExposesIdBearingCollection(s) === (surfaceIdBearingEndpoints(s).length>0). The route
+  // flag, the frozen endpoints, the runner gate, and the grade binding then all resolve through the
+  // ONE templatizer and cannot disagree (an id-bearing surface the gate cannot bind can never exist).
+  const corpus = [
+    "/api/orders/12345", "/users/{id}", "/users/:id", "/api/tenants/42/settings",
+    "/users/550e8400-e29b-41d4-a716-446655440000", "/tx/0xabcdef0123456789",
+    "/api/teams?teamId=550e8400-e29b-41d4-a716-446655440000", "/api/projects?projectId=42",
+    "/api/x?userId={id}", "/api/things?id=7", "/orgs?workspace_id=w1&limit=10",
+    "/api/users", "/api/orders?page=2", "/api/list?sort=name&limit=10", "/search?q=foo",
+    "/oauth/access-token", "/api/v1/users", "/favicon.ico", "", "/",
+  ];
+  for (const v of corpus) {
+    assert.equal(
+      endpointValueIsIdBearing(v),
+      templatizeIdBearingEndpoint(v) !== null,
+      `detector must equal (templatize!==null) for ${JSON.stringify(v)}`,
+    );
+  }
+  const surfaces = [
+    { id: "s1", uri: "/api/teams?teamId=550e8400-e29b-41d4-a716-446655440000", endpoints: ["/api/teams"] },
+    { id: "s2", uri: "/api/orders/{id}", endpoints: ["/api/orders", "/me"] },
+    { id: "s3", uri: "/api/users", endpoints: ["/api/orders?page=2", "/search?q=foo"] },
+    { id: "s4", endpoints: ["/api/projects?projectId=42", "/api/list?sort=name"] },
+    { id: "s5", uri: "/api/users" },
+  ];
+  for (const s of surfaces) {
+    assert.equal(
+      surfaceExposesIdBearingCollection(s),
+      surfaceIdBearingEndpoints(s).length > 0,
+      `surface flag must equal (frozen-endpoints non-empty) for ${s.id}`,
+    );
+  }
+  // Frozen endpoints stay sorted + deduped (determinism of the MCP-owned freeze).
+  const mixed = { id: "m", uri: "/api/teams?teamId=1", endpoints: ["/api/projects?projectId=2", "/api/teams?teamId=9", "/api/orders/7"] };
+  const eps = surfaceIdBearingEndpoints(mixed);
+  assert.deepEqual(eps, ["/api/orders/{id}", "/api/projects?projectId={id}", "/api/teams?teamId={id}"]);
+  assert.deepEqual(eps, Array.from(new Set(eps)).sort(), "frozen endpoints must be sorted + deduped");
+});
+
+test("round-trip binding: two swept values differing only in the object-key VALUE freeze to ONE template", () => {
+  // The auth-differential grade binding (claims.js:2001) and runner gating (auth-differential-
+  // runner.js:402) both templatize the swept endpoint and check Set membership against the frozen
+  // surface template. For a query-param surface that is satisfiable ONLY if two distinct swept
+  // values collapse to the identical canonical string the surface froze.
+  const a = "/api/teams?teamId=aaaaaaaa-e29b-41d4-a716-446655440000";
+  const b = "/api/teams?teamId=bbbbbbbb-e29b-41d4-a716-446655440000";
+  const frozen = surfaceIdBearingEndpoints({ id: "s", uri: "/api/teams?teamId=550e8400-e29b-41d4-a716-446655440000" });
+  assert.equal(templatizeIdBearingEndpoint(a), templatizeIdBearingEndpoint(b));
+  assert.equal(templatizeIdBearingEndpoint(a), "/api/teams?teamId={id}");
+  assert.deepEqual(frozen, ["/api/teams?teamId={id}"]);
+  assert.ok(new Set(frozen).has(templatizeIdBearingEndpoint(a)), "swept value binds the frozen template");
+  assert.ok(new Set(frozen).has(templatizeIdBearingEndpoint(b)), "sibling swept value binds the same template");
+});
+
+test("recall (1/2/3): prefixed opaque slugs, ULIDs, and base58/base64url keys are id-bearing segments", () => {
+  // A gated crown carrying one of these object-id shapes previously routed id_bearing:false and never
+  // earned a cross-tenant test. Each templatizes to a canonical {id}-collapsed form the frozen surface
+  // template binds; endpointValueIsIdBearing === (templatize !== null) is preserved by construction.
+  // (1) PREFIXED opaque slug: short lowercase word + "_" + a mixed alnum token >=6 chars (ord_KxPq9Z).
+  //     segmentLooksLikeResourceInstance needs a SEPARATED digit run, so it misses these Stripe/Twilio ids.
+  for (const [v, t] of [
+    ["/api/orders/ord_KxPq9Z", "/api/orders/{id}"],
+    ["/users/user_abc123", "/users/{id}"],
+    ["/api/subscriptions/sub_9fKQ2p", "/api/subscriptions/{id}"],
+    ["/api/accounts/acct_a1b2c3", "/api/accounts/{id}"],
+  ]) {
+    assert.equal(endpointValueIsIdBearing(v), true, `prefixed opaque slug ${v} must be id-bearing`);
+    assert.equal(templatizeIdBearingEndpoint(v), t, `frozen template for ${v}`);
+  }
+  // (2) ULID: 26-char Crockford base32 — base32 letters beyond hex, so isHexIdToken never catches it.
+  assert.equal(endpointValueIsIdBearing("/events/01ARZ3NDEKTSV4RRFFQ69G5FAV"), true);
+  assert.equal(templatizeIdBearingEndpoint("/events/01ARZ3NDEKTSV4RRFFQ69G5FAV"), "/events/{id}");
+  assert.equal(endpointValueIsIdBearing("/events/01arz3ndektsv4rrffq69g5fav"), true, "lowercase ULID too");
+  // (3) base58 / base64url object key: a single >=16-char high-entropy alnum token, not a known word.
+  assert.equal(endpointValueIsIdBearing("/keys/3vQB7B6MrGQZaxCuFg4oh1"), true, "base58 key");
+  assert.equal(templatizeIdBearingEndpoint("/keys/3vQB7B6MrGQZaxCuFg4oh1"), "/keys/{id}");
+  assert.equal(endpointValueIsIdBearing("/t/V1StGXR8_Z5jdHi6ByT"), true, "base64url/nanoid key");
+});
+
+test("recall (4): a handle/slug immediately after a plural collection noun is a per-object instance", () => {
+  // The context-sensitive BOLA shape a context-free per-segment scan cannot see (no digit/uuid/hex
+  // signal in the handle). Only PLURAL collection nouns qualify — a singular namespace is a singleton.
+  for (const [v, t] of [
+    ["/users/johndoe", "/users/{id}"],
+    ["/orgs/acme-corp", "/orgs/{id}"],
+    ["/teams/platform-alpha", "/teams/{id}"],
+    ["/api/customers/jane.doe", "/api/customers/{id}"],
+  ]) {
+    assert.equal(endpointValueIsIdBearing(v), true, `handle-after-collection ${v} must be id-bearing`);
+    assert.equal(templatizeIdBearingEndpoint(v), t, `frozen template for ${v}`);
+  }
+  // The template the runner re-derives from a swept handle matches the frozen surface template, so the
+  // auth-differential completion binding is satisfiable for a handle surface (not an unbindable obligation).
+  const frozen = surfaceIdBearingEndpoints({ id: "s", uri: "/users/somehandle" });
+  assert.deepEqual(frozen, ["/users/{id}"]);
+  assert.ok(new Set(frozen).has(templatizeIdBearingEndpoint("/users/johndoe")));
+});
+
+test("recall precision: reserved sub-routes, verbs, singular namespaces, and sort keys stay id_bearing:false", () => {
+  // Over-tag guard: the new recall must NOT freeze an unsatisfiable cross-tenant obligation onto a
+  // non-object route. A single common English word (/users/settings), a verb-led method, a singular
+  // namespace, a nested collection, a sort directive, and static/two-word segments all stay non-id.
+  for (const v of [
+    // A single common English word after a collection noun is a sub-route, not an id (the named case).
+    "/users/settings", "/orgs/new", "/teams/search", "/accounts/billing",
+    // Verb-led RPC methods after a collection noun are actions, not objects.
+    "/accounts/getBalanceDetails", "/users/createOrder", "/orgs/list_all",
+    // Singular namespaces are singleton routes, not object collections.
+    "/account/reset-password", "/user/settings",
+    // Nested collections (not an instance).
+    "/users/orders", "/orgs/members",
+    // Query sort/order/group directives (isQuerySortDirectiveKey stays intact).
+    "/api/list?sortBy=name", "/api/list?order_by=created", "/api/items?groupBy=type",
+    // Static / asset / short two-word segments retain no id signal.
+    "/user-profile", "/api/csrf-token", "/favicon.ico", "/assets/app.js",
+    "/api/reset_password", "/api/v1/users",
+  ]) {
+    assert.equal(endpointValueIsIdBearing(v), false, `${v} must NOT be id-bearing (precision)`);
+    assert.equal(templatizeIdBearingEndpoint(v), null, `no frozen template for ${v}`);
+  }
+});
+
+test("recall (5): an id-like interesting_param raises the surface id_bearing FLAG (holds toward an honest partial)", () => {
+  // A surface whose ONLY id signal is discovery's interesting_params — no concrete id-bearing endpoint
+  // URL captured — is still flagged id_bearing so the completion gate forces a real cross-tenant test.
+  // surfaceIdBearingEndpoints stays endpoint-derived (empty), so the gate can never AUTO-CLEAR it; it
+  // holds toward complete_idbearing_surface_no_differential (the safe over-tag direction, never a false clear).
+  for (const param of ["id", "uuid", "objectId", "user_id", "teamId", "tenant_id"]) {
+    const surface = { id: "s", uri: "/api/things", endpoints: ["/api/things"], interesting_params: [param] };
+    assert.equal(surfaceExposesIdBearingCollection(surface), true, `interesting_param ${param} must flag id_bearing`);
+  }
+  // A sort/order/group directive OR a pagination/search param does NOT flag the surface (names a column
+  // or a page, not an object) — isQuerySortDirectiveKey precision carried through to interesting_params.
+  for (const param of ["sortBy", "order_by", "groupBy", "page", "limit", "q", "cursor"]) {
+    const surface = { id: "s", uri: "/api/things", endpoints: ["/api/things"], interesting_params: [param] };
+    assert.equal(surfaceExposesIdBearingCollection(surface), false, `listing param ${param} must NOT flag id_bearing`);
+  }
+  // With no interesting_params and no id-bearing endpoint, the flag stays false (baseline unchanged).
+  assert.equal(surfaceExposesIdBearingCollection({ id: "s", uri: "/api/things", endpoints: ["/api/things"] }), false);
+  // A concrete id-bearing endpoint AND an id-like param stay consistent (flag true, endpoints frozen).
+  const both = { id: "s", uri: "/api/orders/ord_KxPq9Z", endpoints: ["/api/orders/ord_KxPq9Z"], interesting_params: ["objectId"] };
+  assert.equal(surfaceExposesIdBearingCollection(both), true);
+  assert.deepEqual(surfaceIdBearingEndpoints(both), ["/api/orders/{id}"]);
+});
+
 test("canaryAt walks an exact leaf path, never a substring", () => {
   const body = { details: { secret: { token: CANARY_B } }, note: `x${CANARY_B}x` };
   assert.equal(canaryAt(body, ["details", "secret", "token"]), CANARY_B);
@@ -358,7 +584,8 @@ test("AC-6 positive: a sound cross-tenant read mints EXACTLY ONE signed medium r
   assert.equal(row.demonstrated_severity, "medium");
   assert.equal(row.surface_id, SURFACE_ID);
   assert.equal(row.target, canonicalizeExploitTarget(endpointFor(domain)));
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
+  assert.equal(row.row_mac.version, 2, "new rows are the v2 ed25519 envelope");
+  assert.ok(rowMacVerifies(domain, row), "row must be MAC-signed");
   // three hashes returned + on the row
   for (const h of ["command_hash", "stdout_hash", "stderr_hash"]) {
     assert.match(result[h], /^[0-9a-f]{64}$/);
@@ -367,6 +594,31 @@ test("AC-6 positive: a sound cross-tenant read mints EXACTLY ONE signed medium r
   // capture file on disk re-hashes to the row's stdout_hash (freeze re-hash path)
   const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
   assert.equal(observed.stdout_hash, row.stdout_hash);
+
+  // CROSS-STACK CONSUMABLE CAPTURE (the wired producer): the cross-tenant body P2 is
+  // captured as the .consumed leaf, its re-hashed hash binds consumed_artifact_hash on
+  // the signed row AND is surfaced in the return. For a fully-proven IDOR fire the
+  // cross-tenant body IS the human-facing stdout proof, so consumed_artifact_hash ==
+  // stdout_hash (both re-hash the SAME canonical p2BodyForCapture bytes).
+  assert.match(result.consumed_artifact_hash, /^[0-9a-f]{64}$/, "the producer surfaces consumed_artifact_hash");
+  assert.equal(result.consumed_artifact_hash, row.consumed_artifact_hash, "return field matches the signed row");
+  assert.equal(row.consumed_artifact_hash, row.stdout_hash, "the cross-tenant body is BOTH the stdout proof and the consumable");
+  const consumedLeaf = path.join(offensiveRunsDir(domain), `${row.run_id}.consumed`);
+  assert.ok(fs.existsSync(consumedLeaf), "the .consumed capture leaf is written to the MCP-owned store");
+  const fetchedConsumed = readOffensiveCaptureBytesSecure(domain, row.run_id, "consumed");
+  assert.ok(fetchedConsumed, "the .consumed leaf is fetchable by run_id");
+  assert.equal(fetchedConsumed.sha256, row.consumed_artifact_hash, "on-disk consumable bytes re-hash to the MAC-covered hash");
+  // The captured bytes ARE the tool's actual canonical cross-tenant body (the genuine,
+  // non-agent-supplied probe output), byte-identical to the captured stdout proof.
+  const fetchedStdout = readOffensiveCaptureBytesSecure(domain, row.run_id, "stdout");
+  assert.ok(fetchedConsumed.bytes.equals(fetchedStdout.bytes), "the consumable IS the captured cross-tenant body bytes");
+  // The hash is MAC-covered on the offensive row: flipping it invalidates the row_mac.
+  const tamperedConsumed = { ...row, consumed_artifact_hash: "0".repeat(64) };
+  assert.equal(
+    rowMacVerifies(domain, tamperedConsumed),
+    false,
+    "flipping consumed_artifact_hash invalidates the offensive row_mac (the consumable hash is MAC-covered)",
+  );
 }));
 
 // PR-PROV end-to-end: arm the three identities through the REAL production stamp path
@@ -401,7 +653,7 @@ test("AC-6 via production stamp: identities armed by authStore(2nd-arg provenanc
   assert.equal(result.demonstrated_severity, "medium");
   const rows = readOffensiveRunRecords(domain);
   assert.equal(rows.length, 1);
-  assert.ok(rows[0].row_mac && rows[0].row_mac.digest, "row must be MAC-signed");
+  assert.ok(rowMacVerifies(domain, rows[0]), "row must be MAC-signed");
 }));
 
 test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NOT block", () => withTempHome(async () => {
@@ -671,31 +923,53 @@ test("AC-5: canary not reflected in the owner readback → canary_not_reflected"
 
 // ───────────────────────── AC-6 negative matrix ──────────────────────────
 
+// Each case: [label, overrides, expectedReason, signsControlRow]. The honest negative
+// CONTROL leg of the finding differential is a same-surface server-DENIAL of the safe
+// variant (canary_absent_p2_no_cross_tenant_read — the authenticated cross read the
+// server answered with a redacted resource). object_not_access_controlled is NOT that:
+// an anon-200 read means the object is anonymously reachable (no defense fired, no
+// privilege boundary), so it stays UNSIGNED — a signed blocked_by_defense row would
+// assert a flip that never happened. All cases below stay unsigned.
 const NEGATIVE_CASES = [
-  ["public P4-200 (anon can read O_B)", { anonStatus: 200 }, "object_not_access_controlled", null],
+  ["public P4-200 (anon can read O_B)", { anonStatus: 200 }, "object_not_access_controlled", false],
   ["P5 200-without-canary (id collision) → p5_ambiguous", {
     p5: () => jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-C", details: { secret: { token: "different" } }, server_ts: "x" }),
-  }, "p5_ambiguous", null],
-  ["P5 404 (not-found ambiguous)", { p5: () => challenge(404) }, "p5_not_found_ambiguous", null],
+  }, "p5_ambiguous", false],
+  ["P5 404 (not-found ambiguous)", { p5: () => challenge(404) }, "p5_not_found_ambiguous", false],
   ["P5 200 WITH O_B's canary (authenticated-shared)", {
     p5: () => jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-B", details: { secret: { token: CANARY_B } }, server_ts: "x" }),
-  }, "p5_authenticated_shared", null],
+  }, "p5_authenticated_shared", false],
   ["asymmetric P6-200 (B can read O_A — not partitioned)", {
     p6: () => jsonResponse(200, { id: OBJ_A, owner_scope: "tenant-A", details: { secret: { token: CANARY_A } }, server_ts: "x" }),
-  }, "p6_not_partitioned", null],
-  ["cache-HIT on P2 (edge cross-fill)", { p2Headers: { "X-Cache": "HIT" } }, "cache_shared_response", null],
+  }, "p6_not_partitioned", false],
+  ["cache-HIT on P2 (edge cross-fill)", { p2Headers: { "X-Cache": "HIT" } }, "cache_shared_response", false],
 ];
 
 for (let ni = 0; ni < NEGATIVE_CASES.length; ni += 1) {
-  const [label, overrides, expectedReason] = NEGATIVE_CASES[ni];
-  test(`AC-6 negative: ${label} mints NOTHING`, () => withTempHome(async () => {
+  const [label, overrides, expectedReason, signsControlRow] = NEGATIVE_CASES[ni];
+  test(`AC-6 negative: ${label} ${signsControlRow ? "signs a blocked_by_defense control row" : "mints NOTHING"}`, () => withTempHome(async () => {
     const domain = `idor-neg-${ni}.example.test`;
     setupSession(domain);
     const result = await run(domain, { fetch_fn: soundFetchFn(domain, overrides) });
     assert.equal(result.confirmed, false, `${label}: expected blocked, got ${JSON.stringify(result)}`);
     assert.equal(result.reason, expectedReason, `${label}: wrong reason`);
-    assert.equal(result.row_written, false);
-    assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false, `${label}: ledger must not exist`);
+    if (signsControlRow) {
+      // A real executed server-denied observation on the SAME surface: a signed
+      // blocked_by_defense control row (the negative leg the differential flips against).
+      assert.equal(result.row_written, true, `${label}: server-denied safe variant must sign a control row`);
+      assert.equal(result.offensive_outcome, "blocked_by_defense");
+      const rows = readOffensiveRunRecords(domain);
+      assert.equal(rows.length, 1, `${label}: exactly one signed control row`);
+      const row = rows[0];
+      assert.equal(row.offensive_outcome, "blocked_by_defense");
+      assert.equal(row.surface_id, SURFACE_ID, `${label}: control row binds the finding surface`);
+      assert.ok(rowMacVerifies(domain, row), `${label}: control row verifies its MAC`);
+      assert.equal(row.exit_code, 0, `${label}: a server-denied response is a completed execution`);
+      assert.equal(result.run_id, row.run_id);
+    } else {
+      assert.equal(result.row_written, false);
+      assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false, `${label}: ledger must not exist`);
+    }
   }));
 }
 
@@ -716,7 +990,19 @@ test("AC-6 negative: P2 does NOT carry the canary (no cross-tenant read) → blo
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, false);
   assert.equal(result.reason, "canary_absent_p2_no_cross_tenant_read");
-  assert.equal(result.row_written, false);
+  // The cross-tenant read (P2) actually fired and the server did NOT return B's object:
+  // the defense IS present on the safe variant. That is the honest negative CONTROL leg,
+  // so it now signs a MAC-bound blocked_by_defense row on the SAME surface.
+  assert.equal(result.row_written, true);
+  assert.equal(result.offensive_outcome, "blocked_by_defense");
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.offensive_outcome, "blocked_by_defense");
+  assert.equal(row.surface_id, SURFACE_ID);
+  assert.ok(rowMacVerifies(domain, row), "control row verifies its MAC");
+  assert.equal(row.exit_code, 0, "a server-denied response is a completed execution");
+  assert.equal(result.run_id, row.run_id);
 }));
 
 test("AC-6 negative: volatile P0 (B's own reads differ) → volatile_object", () => withTempHome(async () => {
@@ -1918,7 +2204,7 @@ test("soft-gated fire: confidence_signals are hash-bound into the durable stderr
   assert.equal(rows.length, 1);
   const row = rows[0];
   assert.equal(row.demonstrated_severity, "low", "the signed row carries the LOW soft-gate severity");
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
+  assert.ok(rowMacVerifies(domain, row), "row must be MAC-signed");
   assert.equal(row.stderr_hash, result.stderr_hash);
 
   // the signal text is physically in the frozen stderr capture, and that capture re-hashes
@@ -2376,7 +2662,8 @@ test("PR-D live arm (armed, no provision): full create→readback→P0-P8→sign
     const rows = readOffensiveRunRecords(domain);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].demonstrated_severity, "medium");
-    assert.ok(rows[0].row_mac && rows[0].row_mac.digest, "minted row is MAC-signed");
+    assert.equal(rows[0].row_mac.version, 2, "producer-minted rows are the v2 ed25519 envelope");
+    assert.ok(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, rows[0], resolveOffensiveRowVerifier(domain)), "minted row is MAC-signed");
     // masked rail: the signed row carries NONE of the three identity mailboxes NOR their auth-token markers.
     const rowText = fs.readFileSync(offensiveRunsJsonlPath(domain), "utf8");
     for (const leak of ["eval_a@example.test", "eval_b@example.test", "eval_c@example.test", "eyJatoken", "eyJbtoken", "eyJctoken"]) {
@@ -3368,6 +3655,64 @@ test("PR-D r15/r16: pathHasConcreteParentInstance flags id-bearing parents (incl
   assert.equal(pathHasConcreteParentInstance("/api/notes"), false);
   assert.equal(pathHasConcreteParentInstance("/api/v1/notes"), false, "a version tag is not an instance");
   assert.equal(pathHasConcreteParentInstance("/api/oauth2/tokens"), false, "an acronym-with-digit route word is not an instance");
+});
+
+test("PR-D r17 (security HIGH): a PURE-ALPHA nested tenant parent (/api/orgs/acme/projects/accounts) is REFUSED before any write", () => withTempHome(async () => {
+  const domain = "idor-r17-alphatenant.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  // The parent /api/orgs/acme/projects carries a REAL tenant slug `acme` that no concrete-instance check can
+  // distinguish from a static route word; the derived POST would create a synthetic object INSIDE acme's
+  // container. The write-arm must refuse fail-closed, NOT rely on a downstream same-tenant guard that fires
+  // only after the POST already landed (and only when the bodies echo a comparable owning-scope key).
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/orgs/acme/projects/accounts/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), path_template: "/api/orgs/acme/projects/accounts/{id}", canary_field: "note" },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.offensive_outcome, "blocked_by_design", JSON.stringify(result));
+    assert.equal(result.reason, "create_collection_nested_in_ambiguous_container", JSON.stringify(result));
+    assert.equal(result.confirmed, false);
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs into a real (pure-alpha) tenant container");
+    assert.equal(readOffensiveRunRecords(domain).length, 0, "no row minted for a refused write");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r17: a genuinely-safe top-level synthetic-owned collection (/api/accounts) still mints", () => withTempHome(async () => {
+  const domain = "idor-r17-safetop.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, true, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "exploited_safely");
+    assert.equal(mock.postCount(), 3, "a top-level collection whose only ancestors are static API words still provisions");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r17: createCollectionParentIsAmbiguous refuses ambiguous alpha parents, allows top-level/static", () => {
+  // ambiguous: a plain collection-noun or pure-alpha tenant slug ancestor → refuse (fail-closed)
+  assert.equal(createCollectionParentIsAmbiguous("/api/orgs/acme/projects/accounts"), true, "pure-alpha tenant slug parent");
+  assert.equal(createCollectionParentIsAmbiguous("/api/tenants/acme/users"), true, "tenant-slug parent");
+  assert.equal(createCollectionParentIsAmbiguous("/api/orgs/accounts"), true, "nested collection-noun parent (orgs) is not provably static");
+  assert.equal(createCollectionParentIsAmbiguous("/api/users/%zz/notes"), true, "residual percent-escape parent fails closed");
+  // safe: a top-level collection whose ancestors are ALL known API-structural words (or none)
+  assert.equal(createCollectionParentIsAmbiguous("/api/accounts"), false, "api-rooted top-level collection");
+  assert.equal(createCollectionParentIsAmbiguous("/api/v1/accounts"), false, "version-tag ancestor is structural");
+  assert.equal(createCollectionParentIsAmbiguous("/api/v2.1/users"), false, "dotted version tag is structural");
+  assert.equal(createCollectionParentIsAmbiguous("/accounts"), false, "a bare top-level collection has no ancestors");
+  assert.equal(createCollectionParentIsAmbiguous("/public/gql/tokens"), false, "all-structural ancestors");
 });
 
 // ───────────────────────────── round-16 review (brutalist + Codex P1 + CodeRabbit) ─────────────────────────────

@@ -84,6 +84,15 @@ function normalizeHttpAuditRecord(record, { expectedDomain = null, lineNumber = 
       // genuine authenticated block would otherwise look like a healable unauth challenge).
       tool: normalizeOptionalText(record.tool, "tool"),
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
+      // The credential-placeholder LABELS ({{auth.<profile>.<field>}} without the braces)
+      // whose values the MCP server substituted into this request body. Names only: the
+      // audit ledger proves WHICH credential was injected and never holds the secret. The
+      // body itself is not recorded at all, and http-scan redacts substituted values out of
+      // every other field before the record is written.
+      credential_placeholders: normalizeStringArray(
+        record.credential_placeholders,
+        "credential_placeholders",
+      ),
       checkpoint_mode: normalizeOptionalText(record.checkpoint_mode, "checkpoint_mode"),
       block_internal_hosts: record.block_internal_hosts == null
         ? false
@@ -179,6 +188,9 @@ function compactHttpAuditRecord(record) {
   };
   if (record.error) item.error = record.error;
   if (record.auth_profile) item.auth_profile = record.auth_profile;
+  if (Array.isArray(record.credential_placeholders) && record.credential_placeholders.length) {
+    item.credential_placeholders = record.credential_placeholders;
+  }
   if (record.checkpoint_mode) item.checkpoint_mode = record.checkpoint_mode;
   item.block_internal_hosts = record.block_internal_hosts === true;
   if (record.block_internal_hosts_source) {

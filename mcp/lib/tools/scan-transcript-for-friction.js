@@ -14,7 +14,7 @@
 // enumeration. The operator-visible value is the co-presence signal
 // (Y-P11) — voluntary friction with `detected_by: agent_self_report`
 // alongside a synthetic with `detected_by: adversarial_transcript_scan`
-// for the same (run_id, node_id, wanted_tool, purpose).
+// for the same (run_id, node_id, wanted_tool, friction_kind, purpose).
 //
 // Orchestrator-only at the role-bundle layer. Subagents emit voluntary
 // friction; the orchestrator runs the adversarial pass.
@@ -163,9 +163,9 @@ module.exports = Object.freeze({
     + "silent_lead_threshold_drop) unioned with operator-extensions from "
     + "queue-policy.friction_scanners[]. The tool does NOT append events — the "
     + "orchestrator forwards each record through bob_log_capability_friction / "
-    + "bob_log_protocol_drift so the Y-P3 5-tuple / log-protocol-drift idempotency "
+    + "bob_log_protocol_drift so the Y-P3 6-tuple / log-protocol-drift idempotency "
     + "key remains the de-dup source of truth. Voluntary + synthetic frictions "
-    + "coexist via Y-P11 (different detected_by → different 5-tuple).",
+    + "coexist via Y-P11 (different detected_by → different 6-tuple).",
   inputSchema: {
     type: "object",
     properties: {
@@ -183,7 +183,7 @@ module.exports = Object.freeze({
       },
       voluntary_frictions: {
         type: "array",
-        description: "Voluntary capability_friction_observed payloads already recorded by the agent during the run. The mcp_invocation_failure_scanner suppresses synthetics that duplicate a voluntary report (Y-P11 co-presence preserved at the wider 5-tuple).",
+        description: "Voluntary capability_friction_observed payloads already recorded by the agent during the run. The mcp_invocation_failure_scanner suppresses synthetics that duplicate a voluntary report (Y-P11 co-presence preserved at the wider 6-tuple).",
         items: { type: "object" },
       },
       handoff_summary: {

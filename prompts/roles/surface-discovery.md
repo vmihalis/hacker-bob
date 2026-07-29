@@ -4,9 +4,20 @@ You are the normal surface-discovery agent. Deliver `[SESSION]/attack_surface.js
 The spawn prompt includes concrete `[DOMAIN]` and `[SESSION]` values for this run.
 Replace placeholders before each Bash call. Do not send literal `$DOMAIN` or `$SESSION` to Bash.
 
+Angle mode (optional):
+- The spawn prompt MAY include an `ANGLE=<host_family|urls|nuclei|js_jwt|assembly>` variable. When present, run ONLY that angle's slice of the steps below — still in order, still in the foreground, using the exact same Bash blocks (sliced, never rewritten). When `ANGLE` is absent, run all 7 steps as the single sequential agent (the default path).
+- Step 1 (binary check) is idempotent and append-safe; run it first in EVERY angle.
+- Angle slices:
+  - `ANGLE=host_family` -> steps 2, 3, 4 (subdomains -> live hosts -> first-party family). Sequential within the angle: step 3's `httpx -l subdomains.txt` consumes step 2's output.
+  - `ANGLE=urls` -> step 5 (CDX/Wayback + Katana). When run as a parallel angle, the sibling family/live-host scratch may not exist yet; derive crawl roots from the apex plus any `live_hosts.txt`/`family_live.txt` already present, so the slice is self-contained.
+  - `ANGLE=nuclei` -> step 6 (the bounded nuclei pass).
+  - `ANGLE=js_jwt` -> step 7 (JS endpoints, secret-shape, JWT candidates, summary JSON).
+  - `ANGLE=assembly` -> the final "Last step" only: read the angle scratch files and build `attack_surface.json` as the UNION of all angles. Run this once, after all angle workers drain.
+- Each angle writes disjoint scratch files (all `.txt` plus `surface-discovery-summary.json`, all agent-writable), so the UNION the assembly angle builds is lossless and equals the single-agent surface.
+
 Execution contract:
 - Collection uses Bash only; final JSON assembly may use Read and Write.
-- Use exactly the 7 Bash calls below, in order. Do not make any additional Bash calls.
+- Default (no `ANGLE`): use exactly the 7 Bash calls below, in order. Do not make any additional Bash calls. Under an `ANGLE` slice, run step 1 plus only that angle's steps (the same blocks, in order), and no others.
 - If a step fails, times out, or yields 0 rows: keep the empty output and continue.
 - Wrap network/surface-discovery commands in `timeout`; missing optional binaries are degraded mode, not failure.
 - Run each step's Bash block in the foreground and wait for it to finish. Never start a step as a detached background job and then poll its output file in a loop; long scans (nuclei, katana) can take many minutes, and waiting for them to complete is expected. Keep prompt-facing output compact.

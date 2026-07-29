@@ -4,7 +4,7 @@
 //
 // Asserts:
 //   * STIGMERGIC_CONSUMERS is Object.freeze'd (closed list).
-//   * Exactly 12 canonical consumer entries per Y-D19 rev 4.1 + Plane-Delta S12/C9/I12/I10/C11.
+//   * Exactly 17 canonical consumer entries per Y-D19 rev 4.1 + Plane-Delta S12/C9/I12/I10/C11 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1.
 //   * Every entry carries the required keys (consumer_id,
 //     source_location: {file, token_or_regex}, producer_id,
 //     decision_boundary, rationale).
@@ -32,6 +32,7 @@ const {
 
 const CANONICAL_CONSUMER_IDS = [
   "assignment_brief_technique_section_renderer",
+  "cell_floor_coverage_prune_gate",
   "orchestrator_handoff_receipt_record_surface_leads",
   "chain_builder_prompt_body_read_before_propose",
   "compose_report_provenance_gate",
@@ -43,6 +44,20 @@ const CANONICAL_CONSUMER_IDS = [
   "assignment_brief_oss_rootcause_family_renderer",
   "c11_static_analysis_reachability_ranker",
   "c11_static_analysis_brief_slice",
+  "belief_signal_read_query_tools",
+  "surface_graph_mechanism_query_mode",
+  "mechanism_template_loader_object_authorization",
+  "belief_frontier_fact_projection_reader",
+  "belief_window_query_tool",
+  "belief_sample_scratch_reader",
+  "belief_residual_diagnostic_reader",
+  "belief_intervention_query_tool",
+  "belief_experiment_loop_reader",
+  "verification_adjudication_causal_reason_reader",
+  "wave_planner_belief_priority_bridge",
+  "belief_model_info_reader",
+  "recon_producer_floor_dispatch_reader",
+  "sc_expander_floor_dispatch_reader",
 ];
 
 test("STIGMERGIC_CONSUMERS is Object.freeze'd and elements are frozen", () => {
@@ -63,8 +78,8 @@ test("STIGMERGIC_CONSUMERS is Object.freeze'd and elements are frozen", () => {
   assert.equal(Object.isFrozen(DECISION_BOUNDARY_VALUES), true);
 });
 
-test("STIGMERGIC_CONSUMERS contains exactly the 12 canonical Y-D19/Plane-Delta entries", () => {
-  assert.equal(STIGMERGIC_CONSUMERS.length, 12);
+test("STIGMERGIC_CONSUMERS contains exactly the 24 canonical Y-D19/Plane-Delta + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6/CB-B2/CB-B3/CB-C2/CB-C1/CB-B5 entries", () => {
+  assert.equal(STIGMERGIC_CONSUMERS.length, 27);
   const actualIds = STIGMERGIC_CONSUMERS.map((c) => c.consumer_id).sort();
   const expectedIds = [...CANONICAL_CONSUMER_IDS].sort();
   assert.deepEqual(

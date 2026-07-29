@@ -12,13 +12,15 @@ async function handler(args) {
     forkUrls: Array.isArray(args.fork_urls) ? args.fork_urls : null,
     extraArgs: Array.isArray(args.extra_args) ? args.extra_args : [],
     timeoutMs: args.timeout_ms || DEFAULT_TIMEOUT_MS,
+    // Lets the SC seam probe signer isolation to refuse a host-as-signer degrade
+    // on an isolated box (HIGH-1).
+    targetDomain: typeof args.target_domain === "string" ? args.target_domain : null,
   });
   return JSON.stringify(result);
 }
 
 module.exports = Object.freeze({
   name: "bob_cosmwasm_run",
-  aliases: ["bounty_cosmwasm_run"],
   description: "Run `cargo test --exact <match_test>` on a local CosmWasm contract harness (cw-multi-test integration), optionally pinned to a Cosmos chain for harnesses that opt into mainnet-clone fixtures via BOB_COSMWASM_FORK_URL. Forks use direct public HTTPS REST endpoints from explicit fork_urls, env overrides, or the supplied network ladder; DNS-private/private endpoints and egress_profile proxy routing are unsupported by default, and localnet REST has no default endpoint. Endpoint filtering is preflight-only handoff; Bob does not DNS-pin the downstream cargo/harness socket. On REST failure the result reports reason: rpc_unreachable or a no_fork_endpoints* reason plus redacted fork_attempts[]/rpc_policy_rejections[] so the evaluator can record blocked_harness_runs[] and set surface_status: partial. Returns structured per-test pass/fail parsed from cargo test output. Requires `cargo` in PATH on the user's machine; if absent, returns reason: cosmwasm_not_in_path. Subprocess hard-killed at timeout (default 90s, max 600s).",
   inputSchema: {
     "type": "object",
@@ -43,5 +45,6 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: [],
+ session_artifacts_written: [],
+  required_session_axes: ["contracts"],
 });

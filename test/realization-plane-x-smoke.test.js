@@ -65,6 +65,7 @@ const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
 const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
 const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
 
 const {
@@ -116,6 +117,7 @@ const {
   sessionDir,
   trafficJsonlPath,
   verificationRoundPaths,
+  findingDifferentialVerifiedJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   evmCallsJsonlPath,
@@ -455,8 +457,44 @@ function driveReportSnapshotChain(domain, {
     })),
   });
 
+  // The cross-stack identity-handoff finding is a standalone executable-flip class (its
+  // wallet-impersonation flip is demonstrable as an exploited positive vs a blocked
+  // control); seed its finding-differential verified_pass arm so the grade-time standalone
+  // gate is satisfied (NO amputation). Post-A1 the gate re-resolves the verdict against
+  // MAC-covered offensive-runs rows, so seed a real signed exploited_safely positive +
+  // blocked_by_defense control (high severity) + the verdict line binding them.
+  {
+    const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+    const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+    const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+    const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+    for (const findingId of findingIds) {
+      const mkRow = (suffix, outcome, ch) => {
+        const row = {
+          version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+          target: canonicalizeExploitTarget(`https://${domain}/api/x/${findingId}`),
+          offensive_outcome: outcome, dry_run: false, timed_out: false,
+          command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+          demonstrated_severity: "high", surface_id: promotedSurfaceId,
+        };
+        signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+        fs.mkdirSync(sessionDir(domain), { recursive: true });
+        fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+        return row;
+      };
+      const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+      const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+      appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+        version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+        reason: "executed_finding_differential_flip", surface_id: promotedSurfaceId,
+        source: "offensive_runs", positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+        control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+      });
+    }
+  }
   callTool(advanceSessionTool, { target_domain: domain, to_state: "GRADE" });
-  callTool(writeGradeVerdictTool, {
+  withIsolatedSigner(() => callTool(writeGradeVerdictTool, {
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
@@ -471,7 +509,7 @@ function driveReportSnapshotChain(domain, {
       feedback: "Cross-stack impact is clear and reproducible.",
     })),
     feedback: "Cross-stack handoff thesis is submission-ready.",
-  });
+  }));
 
   callTool(advanceSessionTool, { target_domain: domain, to_state: "REPORT" });
 

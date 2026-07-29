@@ -168,6 +168,48 @@ function loadOobConfig(env = process.env) {
 
 const OOB_CONFIG = loadOobConfig();
 
+// Single-source remediation guidance for each inert (fail-closed) reason code. The
+// machine `reason` code is preserved verbatim by callers (the offensive gates key on
+// it); this is an ADDITIVE human `hint` that names exactly which env vars an operator
+// must set. It never echoes a value — the config values are read from the frozen
+// module-load env, never surfaced here.
+function oobConfigHint(reason) {
+  switch (reason) {
+    case "oob_sink_not_configured":
+      return "Set BOB_OOB_HOST (the constant public OOB sink host) and BOB_OOB_POLL_URL "
+        + "(the HTTPS poll API for that sink) — both are REQUIRED. Also set "
+        + "BOB_OOB_SELF_EGRESS_IP, REQUIRED for sound HTTP self-hit attribution: without "
+        + "it an HTTP callback cannot be proven target-caused (the agent could self-request "
+        + "the token), so the finding is capped to a lead.";
+    case "oob_host_internal":
+      return "BOB_OOB_HOST is an internal/private/link-local/loopback host; point it at a "
+        + "public, registrable OOB sink domain.";
+    case "oob_poll_url_not_https":
+      return "BOB_OOB_POLL_URL must be an https:// URL (the Bob->sink poll channel is HTTPS-only).";
+    case "oob_poll_host_internal":
+      return "BOB_OOB_POLL_URL host is internal/private/link-local/loopback; point it at the "
+        + "public HTTPS poll endpoint of your OOB sink.";
+    case "oob_config_invalid":
+      return "BOB_OOB_HOST / BOB_OOB_POLL_URL failed validation (unparseable poll URL or a "
+        + "non-scope host); verify both values.";
+    default:
+      return "OOB sink configuration is incomplete; set BOB_OOB_HOST and BOB_OOB_POLL_URL "
+        + "(and BOB_OOB_SELF_EGRESS_IP for sound attribution).";
+  }
+}
+
+// Presence-ONLY map (booleans, never the values) of the three OOB env vars — so an
+// operator/inert response can report which knobs are unset without ever echoing a
+// secret or the (non-secret) sink host.
+function oobEnvPresence(env = process.env) {
+  const present = (v) => typeof v === "string" && v.trim() !== "";
+  return {
+    BOB_OOB_HOST: present(env.BOB_OOB_HOST),
+    BOB_OOB_POLL_URL: present(env.BOB_OOB_POLL_URL),
+    BOB_OOB_SELF_EGRESS_IP: present(env.BOB_OOB_SELF_EGRESS_IP),
+  };
+}
+
 // ── small helpers ────────────────────────────────────────────────────────────
 
 function rejectInvalidArguments(message) {
@@ -181,6 +223,16 @@ function normalizeMethod(value) {
 
 function normalizeOracleKind(value) {
   return assertEnumValue(assertRequiredText(value, "oracle_kind"), ORACLE_KIND_VALUES, "oracle_kind");
+}
+
+// poll arm selector. "interaction" (default) requires a matching callback and signs the
+// exploited_safely positive; "silence" is the negative control — a DECOY token the agent
+// did NOT inject, confirmed silent against a reachable sink, signed blocked_by_defense so
+// finding-differential can FLIP the pair. It is an arm selector, never a target input.
+const EXPECT_VALUES = Object.freeze(["interaction", "silence"]);
+function normalizeExpect(value) {
+  if (value == null) return "interaction";
+  return assertEnumValue(assertRequiredText(value, "expect"), EXPECT_VALUES, "expect");
 }
 
 // prefix + 128 bits of hex = a DNS-label-safe ([a-z0-9], <= 63 chars), high-entropy
@@ -383,7 +435,12 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
   normalizeOracleKind(args.oracle_kind);
 
   if (!config.configured) {
-    return notConfirmed("blocked_by_infra", config.reason || "oob_sink_not_configured", { minted: false });
+    const reason = config.reason || "oob_sink_not_configured";
+    return notConfirmed("blocked_by_infra", reason, {
+      minted: false,
+      hint: oobConfigHint(reason),
+      env_present: oobEnvPresence(),
+    });
   }
 
   // Resolve the IN-SCOPE injection endpoint server-side from the routed surface.
@@ -484,9 +541,15 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   assertNoForbiddenInputs(args, POLL_TOOL_ID, OOB_FORBIDDEN_EXTRAS);
   const domain = assertRequiredText(args.target_domain, "target_domain");
   const tokenHandle = assertRequiredText(args.token_handle, "token_handle");
+  const expect = normalizeExpect(args.expect);
 
   if (!config.configured) {
-    return notConfirmed("blocked_by_infra", config.reason || "oob_sink_not_configured", { available: false });
+    const reason = config.reason || "oob_sink_not_configured";
+    return notConfirmed("blocked_by_infra", reason, {
+      available: false,
+      hint: oobConfigHint(reason),
+      env_present: oobEnvPresence(),
+    });
   }
 
   const { binding } = resolveBinding(domain, tokenHandle);
@@ -507,6 +570,124 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
 
   // Exact-token match ONLY. Stray / non-minted interactions are dropped → no row.
   const matched = normalizeInteractions(parsed).filter((i) => i.token === binding.token);
+
+  if (expect === "silence") {
+    // CONTROL ARM (decoy-silent). A server-side-minted token the agent did NOT inject into the
+    // target. A REACHABLE sink (the fetch above succeeded) with NO interaction for this token is
+    // an affirmative silent control: it signs a blocked_by_defense row so finding-differential
+    // can FLIP it against the injected-and-fired positive on the same surface.
+    //
+    // SCOPE — what this control DOES prove: the sink does not FABRICATE or receive AMBIENT
+    // interactions for a server-side-minted token that never entered the target, so the
+    // positive's interaction is attributable to the agent's injection, not to background noise
+    // at the sink (other scanners, the sink's own probes, a token-independent beacon).
+    //
+    // ACKNOWLEDGED RESIDUALS — what a NEVER-INJECTED decoy cannot probe, so this control does
+    // NOT close them: (1) PROMISCUITY — a sink/intermediary that fires for ANY *injected* token
+    // would need an EXPOSED-but-silent decoy to rule out, which a never-injected decoy is not;
+    // (2) INTERMEDIARY-ATTRIBUTION — an intermediary in the target's request path that fires
+    // only for the injected token. Both are bounded the same way the positive arm's standalone
+    // OOB evidence is: the verified flip rests on a GENUINE server-side callback (which the
+    // agent cannot fabricate — the sink is MCP-controlled), with this control closing only the
+    // ambient/fabricated-noise class. The blocked_by_defense outcome is the safe-variant the
+    // finding-differential flip contract requires; it names the silent-control disposition, not
+    // a proof that a defense blocked an injected token.
+    //
+    // A decoy that DID interact is refused as a control: either the agent injected it, or the
+    // sink fired for a non-injected token (which would itself refute positive specificity) —
+    // never signed as a silent control.
+    if (matched.length > 0) {
+      return notConfirmed("blocked_by_design", "decoy_interaction_observed");
+    }
+    const controlStdout = canonicalJson({
+      token: binding.token,
+      oob_host: config.host,
+      decoy_silent: true,
+      bound_surface_id: binding.surface_id,
+    });
+    const controlStderr = canonicalJson({
+      interaction_count: 0,
+      token_match: "none",
+      sink_reachable: true,
+    });
+    if (
+      sensitiveShapesPresent(binding.canonical_target) ||
+      sensitiveShapesPresent(controlStdout) ||
+      sensitiveShapesPresent(controlStderr)
+    ) {
+      return notConfirmed("blocked_operator_pii", "capture_contains_sensitive_value");
+    }
+    const controlRelation = {
+      oob_host_is_constant: true,
+      token_minted_server_side: true,
+      interaction_observed: false,
+      decoy_silent_against_reachable_sink: true,
+      source_is_remote: true,
+    };
+    const controlResult = withSessionLock(domain, () => {
+      const reread = resolveBinding(domain, tokenHandle);
+      if (reread.consume && typeof reread.consume.run_id === "string") {
+        return { idempotent: true, run_id: reread.consume.run_id };
+      }
+      const row = buildAndSignOffensiveRow(domain, {
+        runIdPrefix: "oobctl",
+        toolId: POLL_TOOL_ID,
+        method: binding.method || "GET",
+        canonicalTarget: binding.canonical_target,
+        surfaceId: binding.surface_id,
+        identityTag: "unauth-oob-control",
+        stdoutContent: controlStdout,
+        stderrContent: controlStderr,
+        relationBooleans: controlRelation,
+        // A denial, never a positive cause leg. blocked_by_defense is the affirmative
+        // safe-variant the finding-differential flip contract requires for a control.
+        offensiveOutcome: "blocked_by_defense",
+        oracleKind: ORACLE_KIND_VALUES[0],
+      });
+      appendOobTokenRecordHardened(domain, {
+        kind: "consume",
+        token_handle: tokenHandle,
+        run_id: row.run_id,
+        consumed_at: clock(),
+      });
+      return { idempotent: false, row };
+    });
+    if (controlResult.idempotent) {
+      return {
+        confirmed: false,
+        control: true,
+        idempotent: true,
+        row_written: false,
+        target_domain: domain,
+        surface_id: binding.surface_id,
+        oracle_kind: ORACLE_KIND_VALUES[0],
+        offensive_outcome: "blocked_by_defense",
+        run_id: controlResult.run_id,
+        note: "token already consumed; returning the previously-signed control run_id (no second row)",
+      };
+    }
+    const controlRow = controlResult.row;
+    return {
+      confirmed: false,
+      control: true,
+      idempotent: false,
+      row_written: true,
+      target_domain: domain,
+      surface_id: binding.surface_id,
+      oracle_kind: ORACLE_KIND_VALUES[0],
+      offensive_outcome: "blocked_by_defense",
+      run_id: controlRow.run_id,
+      tool_id: controlRow.tool_id,
+      target: controlRow.target,
+      command_hash: controlRow.command_hash,
+      stdout_hash: controlRow.stdout_hash,
+      stderr_hash: controlRow.stderr_hash,
+      exit_code: controlRow.exit_code,
+      demonstrated_severity: controlRow.demonstrated_severity,
+      note: "silent decoy control signed (blocked_by_defense); pair it with the injected-and-fired positive via bob_verify_finding_differential",
+    };
+  }
+
   if (matched.length === 0) {
     return notConfirmed("blocked_by_infra", "no_matching_interaction");
   }
@@ -523,6 +704,14 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   // agent's own curl, not the target — withhold the signed row. Useless for DNS
   // (source = resolver), so DNS hits are never withheld on this basis.
   let sourceDistinct = true;
+  // source_attribution_established: the sink interaction is PROVABLY target-caused, not an agent
+  // self-hit. TRUE only for an HTTP callback whose source IP is VERIFIED distinct from the
+  // configured session egress IP. DNS (the source is the target's recursive resolver, so it is
+  // self-hittable AND unattributable) and HTTP when no session-egress IP is configured (source
+  // distinctness is unverifiable, so an agent could self-request http://<oob-host>/<token>) both
+  // leave it FALSE — the finding-differential gate then caps the finding to a lead, never a clean
+  // verified_pass. MAC-covered, so an agent cannot flip it through tool args.
+  let attributionEstablished = false;
   if (httpHit && config.selfEgressIp && typeof httpHit.source_ip === "string") {
     // Normalize IPv4-mapped IPv6 (a Node server on :: reports IPv4 clients as
     // "::ffff:203.0.113.99") so the documented plain-IPv4 config still matches.
@@ -532,6 +721,18 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       return notConfirmed("blocked_by_design", "self_hit_suspected");
     }
     sourceDistinct = !sameEgress;
+    // RESIDUAL (OPEN, deferred — not closed here): distinctness from the SINGLE configured
+    // selfEgressIp does NOT soundly exclude an agent self-hit. A callback from a DIFFERENT
+    // member of Bob's NAT egress pool, or an edge-collapsed tunnel, can read as distinct and
+    // set attributionEstablished=true with no real target-causation. The sound close is the
+    // offensive-sandbox signer-UID/network-isolation prerequisite (physically separate the
+    // signer so a self-hit is impossible); this residual is DEFERRED to it. A name-derived,
+    // single-ipify-probe, or tunnel-header attribution fix is UNSOUND — a single probe cannot
+    // enumerate a NAT pool — and would mint a false verified_pass, so it MUST NOT be attempted
+    // in-repo. Blast radius stays bounded meanwhile: OOB rows carry a fixed-MEDIUM
+    // demonstrated_severity ceiling and the finding-differential gate caps an
+    // attribution-unestablished OOB positive to a LEAD.
+    attributionEstablished = true;
   }
 
   // CAPTURE: Bob's OWN observation ONLY — token + constant host + protocol + ts +
@@ -550,6 +751,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     protocol,
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
+    source_attribution_established: attributionEstablished,
     dns_only_attribution_weak: dnsOnly,
   });
   // Defense in depth: even the bounded capture + the bound target must carry no PII
@@ -569,6 +771,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     token_match_exact: true,
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
+    source_attribution_established: attributionEstablished,
     dns_only_attribution_weak: dnsOnly,
     // NOTE: we do NOT stamp a "no pre-injection hit" control — no pre-injection
     // poll is performed, so asserting it in the signed MAC would claim an
@@ -595,6 +798,12 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       stdoutContent,
       stderrContent,
       relationBooleans,
+      // Stamp the oracle kind into the MAC-covered row. A received callback does not
+      // prove THIS injection caused it (no pre-injection control; intermediary
+      // attribution is open), so the read-time exploit-run skip refuses to treat this
+      // single-arm row as a self-contained executed binding — it must earn a
+      // finding-differential verified_pass against a blocked_by_defense control.
+      oracleKind: ORACLE_KIND_VALUES[0],
     });
     appendOobTokenRecordHardened(domain, {
       kind: "consume",
@@ -646,6 +855,79 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   };
 }
 
+// ── oob smoke / readiness check (operator-owned; NON-signing, NON-provisioning) ─
+//
+// Validate an OPERATOR-configured sink in one call WITHOUT self-provisioning and
+// WITHOUT any audit-graded write. Unconfigured -> names exactly which env vars to
+// set (no session, signs nothing, writes nothing). Configured -> mints a SAMPLE
+// token (NO binding write, NO ledger append, NO cap consumption), asserts the exact
+// payload forms mint would return, and does ONE read-only round-trip probe by
+// REUSING fetchSinkInteractions (inheriting blockInternalHosts:true,
+// followRedirects:false, no session egress proxy, and the frozen module-load config).
+// It NEVER calls buildAndSignOffensiveRow / appendOobTokenRecordHardened /
+// withSessionLock, so it is fenced out of the signing + binding paths entirely.
+async function oobSmoke(args = {}, { config = OOB_CONFIG, interaction_source = null } = {}) {
+  if (!config.configured) {
+    const reason = config.reason || "oob_sink_not_configured";
+    return {
+      ready: false,
+      configured: false,
+      reason,
+      hint: oobConfigHint(reason),
+      env_present: oobEnvPresence(),
+    };
+  }
+
+  // A SAMPLE token — same shape as a real nonce, but never bound and never counted.
+  const token = mintToken("oobsmoke");
+  // Build the payload forms EXACTLY as oobMint does, so the operator can confirm the
+  // shapes the agent would inject before relying on the sink.
+  const payloadDns = `${token}.${config.host}`;
+  const payloadHttp = `http://${config.host}/${token}`;
+  const payloadFormsOk =
+    payloadDns.endsWith(`.${config.host}`) &&
+    payloadHttp.startsWith(`http://${config.host}/`) &&
+    payloadHttp.endsWith(`/${token}`);
+
+  let parsed;
+  try {
+    parsed = await fetchSinkInteractions(config, token, interaction_source);
+  } catch {
+    return {
+      ready: false,
+      configured: true,
+      sink_reachable: false,
+      reason: "sink_unreachable",
+      hint: "poll URL set but the sink did not round-trip; verify BOB_OOB_POLL_URL and that the daemon is reachable over HTTPS",
+    };
+  }
+
+  // Success requires the sink to expose a parseable interactions array (the shape
+  // poll relies on). A reachable-but-malformed response is not ready.
+  if (!parsed || !Array.isArray(parsed.interactions)) {
+    return {
+      ready: false,
+      configured: true,
+      sink_reachable: true,
+      payload_forms_ok: payloadFormsOk,
+      reason: "sink_response_malformed",
+      hint: "the sink round-tripped but its response did not expose an `interactions` array; verify the poll daemon returns the expected JSON shape",
+    };
+  }
+
+  const selfEgressConfigured = !!config.selfEgressIp;
+  return {
+    ready: true,
+    configured: true,
+    sink_reachable: true,
+    payload_forms_ok: payloadFormsOk,
+    self_egress_configured: selfEgressConfigured,
+    note: selfEgressConfigured
+      ? "OOB sink round-trips; BOB_OOB_SELF_EGRESS_IP is set (HTTP self-hit attribution can be established)."
+      : "OOB sink round-trips; recommend setting BOB_OOB_SELF_EGRESS_IP for sound HTTP self-hit attribution — unset, HTTP positives cannot be proven target-caused and are capped to a lead.",
+  };
+}
+
 module.exports = {
   MINT_TOOL_ID,
   POLL_TOOL_ID,
@@ -653,6 +935,11 @@ module.exports = {
   OOB_METHODS,
   oobMint,
   oobPoll,
+  // Operator-owned readiness check + its single-source remediation hint (env/source
+  // injectable, matching the mint/poll test seams). oobSmoke performs NO audit-graded
+  // write and mints NO binding — validate/probe only, never self-provision.
+  oobSmoke,
+  oobConfigHint,
   // Exported for unit tests (env-injectable; no live sink / no live target).
   loadOobConfig,
   readOobTokenRecords,

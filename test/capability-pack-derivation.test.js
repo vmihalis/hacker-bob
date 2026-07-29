@@ -31,6 +31,7 @@ const {
   RECOMMENDED_READS_HARD_CAP,
   RECOMMENDED_READS_PER_SURFACE,
   WEB3_IDENTITY_HANDOFF_PACK_ID,
+  routabilityForSurfaceMetadata,
   buildOneHopGraphContext,
   derivePackForNode,
 } = require("../mcp/lib/capability-pack-derivation.js");
@@ -218,9 +219,9 @@ test("DEFAULT_CAPABILITY_PACK_ID is web", () => {
   assert.equal(DEFAULT_CAPABILITY_PACK_ID, "web");
 });
 
-test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is keyed on every shipped capability pack", () => {
-  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
-  for (const packId of Object.keys(CAPABILITY_PACKS)) {
+test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is keyed on every dispatchable capability pack", () => {
+  const { dispatchableCapabilityPacks } = require("../mcp/lib/capability-packs.js");
+  for (const packId of dispatchableCapabilityPacks().map((pack) => pack.id)) {
     assert.ok(
       Object.prototype.hasOwnProperty.call(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK, packId),
       `EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK missing key for ${packId}`,
@@ -236,20 +237,34 @@ function assertBundleListClosed(bundles, label) {
   assert.deepEqual(dead, [], `${label}: dead role bundles: ${dead.join(", ")}`);
 }
 
-test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is a faithful projection of CAPABILITY_PACKS[*].role_bundles", () => {
-  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK faithfully projects dispatchable packs only", () => {
+  const {
+    CAPABILITY_PACKS,
+    PHYSICAL_CAPABILITY_PACK,
+    dispatchableCapabilityPacks,
+  } = require("../mcp/lib/capability-packs.js");
+  const dispatchablePacks = dispatchableCapabilityPacks();
   assert.deepEqual(
     Object.keys(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK).sort(),
-    Object.keys(CAPABILITY_PACKS).sort(),
-    "derived map key set must equal CAPABILITY_PACKS key set",
+    dispatchablePacks.map((pack) => pack.id).sort(),
+    "derived map key set must equal the dispatchable capability-pack key set",
   );
-  for (const [packId, pack] of Object.entries(CAPABILITY_PACKS)) {
+  for (const pack of dispatchablePacks) {
+    const packId = pack.id;
     assert.deepEqual(
       EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK[packId],
       pack.role_bundles,
       `derived bundles for ${packId} must equal CAPABILITY_PACKS.${packId}.role_bundles`,
     );
   }
+  assert.equal(CAPABILITY_PACKS.physical, PHYSICAL_CAPABILITY_PACK);
+  assert.equal(PHYSICAL_CAPABILITY_PACK.dispatchable, false);
+  assert.deepEqual(PHYSICAL_CAPABILITY_PACK.role_bundles, ["evaluator-physical"]);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK, "physical"),
+    false,
+    "a registered inactive pack must not mint evaluator role/tool authority",
+  );
 });
 
 // CR-1 closure: keys existing is not enough — every VALUE (each derived role
@@ -407,6 +422,24 @@ test("derivePackForNode throws on unsupported kind", () => {
   );
 });
 
+test("derivePackForNode returns a stable pack for a cell node", () => {
+  const node = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}cell-alpha`,
+    kind: "cell",
+    surface_refs: ["surface:alpha"],
+  };
+  const result = derivePackForNode(node, {}, [], null);
+  assert.ok(Object.isFrozen(result));
+  assert.equal(result.brief_emphasis.node_kind, "cell");
+  assert.deepEqual(result.brief_emphasis.capability_pack_ids, []);
+  assert.ok(
+    result.allowed_tools_for_node.length > 0,
+    "cell carries the evaluator-shared baseline",
+  );
+  // X-P4 determinism: byte-identical across calls.
+  assert.deepEqual(derivePackForNode(node, {}, [], null), result);
+});
+
 test("derivePackForNode returns a frozen result with the documented keys", () => {
   const node = makeSurfaceNode("alpha", "surface:alpha");
   const result = derivePackForNode(node, {
@@ -510,6 +543,144 @@ test("Transition node pack UNIONs both endpoint families' tools", () => {
   assert.ok(allowed.includes("bob_foundry_run"), "transition pack must include the EVM runner");
   assert.ok(allowed.includes("bob_evm_call"), "transition pack must include the EVM read tool");
   assert.ok(allowed.includes("bob_evm_fetch_source"), "transition pack must include the EVM source fetch tool");
+});
+
+function smartContractUnroutableSurfaceMetadata(id) {
+  return {
+    id,
+    surface_type: "smart_contract",
+    chain_family: "dogechain",
+  };
+}
+
+test("Transition with a chain endpoint + an UNROUTABLE-SC endpoint contributes the chain pack + evaluator-shared baseline, never web", () => {
+  // The unroutable endpoint must NOT be laundered into the web pack (as
+  // deriveSurfacePack already refuses to do). It contributes only the read-only
+  // evaluator-shared baseline; the routable EVM endpoint still contributes its
+  // chain pack. bob_http_scan (the true web producer, absent from
+  // evaluator-shared) proves no web attack toolset leaked in.
+  const node = makeTransitionNode("evm-doge", "surface:evm", "surface:doge");
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:evm": smartContractEvmSurfaceMetadata("surface:evm"),
+      "surface:doge": smartContractUnroutableSurfaceMetadata("surface:doge"),
+    },
+  };
+  const result = derivePackForNode(node, graphContext, [], null);
+  // The unroutable endpoint contributes NO capability_pack id — only the EVM pack.
+  assert.deepEqual(result.brief_emphasis.endpoint_capability_packs, ["smart_contract_evm"]);
+  const allowed = result.allowed_tools_for_node;
+  // Chain tools present.
+  assert.ok(allowed.includes("bob_evm_call"), "chain endpoint still contributes its EVM read tool");
+  assert.ok(allowed.includes("bob_foundry_run"), "chain endpoint still contributes its EVM runner");
+  // Evaluator-shared baseline present (the unroutable endpoint's contribution).
+  const shared = toolNamesForRoleBundle("evaluator-shared");
+  for (const tool of shared) {
+    assert.ok(allowed.includes(tool), `evaluator-shared tool ${tool} must be in the union`);
+  }
+  // The web producer is NOT injected by the unroutable SC.
+  assert.ok(!allowed.includes("bob_http_scan"), "unroutable SC must not inject the web producer");
+});
+
+test("Transition with a GENUINE WEB endpoint + an unroutable-SC endpoint STILL includes web tools (web-regression guard — fix did not 'skip web')", () => {
+  // The trap: packIdForSurfaceMetadata returns "web" for BOTH a genuine web
+  // endpoint AND an unroutable SC. The fix must discriminate via routability so
+  // it does NOT drop a legitimate web endpoint. Prove bob_http_scan survives.
+  const node = makeTransitionNode("web-doge", "surface:web", "surface:doge");
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:web": webSurfaceMetadata("surface:web"),
+      "surface:doge": smartContractUnroutableSurfaceMetadata("surface:doge"),
+    },
+  };
+  const result = derivePackForNode(node, graphContext, [], null);
+  // The genuine web endpoint still contributes the web pack id (the unroutable
+  // one contributes none).
+  assert.deepEqual(result.brief_emphasis.endpoint_capability_packs, ["web"]);
+  const allowed = result.allowed_tools_for_node;
+  assert.ok(allowed.includes("bob_http_scan"), "genuine web endpoint STILL contributes the web producer");
+});
+
+test("Transition with BOTH endpoints unroutable yields the evaluator-shared baseline, never web", () => {
+  // The surface_refs-seen-but-all-unroutable path: the web fallback guard fires
+  // only when surface_refs is empty AND the tool set is empty, so a transition
+  // whose endpoints exist but are all unroutable must union to exactly the
+  // evaluator-shared baseline — no pack ids, no web fallback.
+  const node = makeTransitionNode("doge-doge2", "surface:doge", "surface:doge2");
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:doge": smartContractUnroutableSurfaceMetadata("surface:doge"),
+      "surface:doge2": smartContractUnroutableSurfaceMetadata("surface:doge2"),
+    },
+  };
+  const result = derivePackForNode(node, graphContext, [], null);
+  assert.deepEqual(result.brief_emphasis.endpoint_capability_packs, []);
+  const allowed = result.allowed_tools_for_node;
+  const shared = toolNamesForRoleBundle("evaluator-shared");
+  for (const tool of shared) {
+    assert.ok(allowed.includes(tool), `evaluator-shared tool ${tool} must be in the all-unroutable union`);
+  }
+  assert.ok(!allowed.includes("bob_http_scan"), "all-unroutable transition must not fall back to web");
+  assert.ok(!allowed.includes("bob_evm_call"), "all-unroutable transition carries no chain tools");
+});
+
+test("Transition CELL pack UNIONs both endpoint families' tools (cross-stack cell fix)", () => {
+  // A transition cell (kind 'cell', surface_refs=[from,to]) must get the SAME
+  // cross-stack union a transition NODE gets. Without it a web->EVM handoff cell
+  // gets only the web baseline (no bob_evm_*), so the cell agent's honest EVM work
+  // is rejected by the X.6 tool_constraint_violation check at bob_finalize_node.
+  const cellNode = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}cell-xstack`,
+    kind: "cell",
+    state: "contracted",
+    surface_refs: ["surface:auth", "surface:vault"],
+    contract_hash: null,
+    severity_floor: null,
+    priority: "medium",
+    ts_first: "2026-05-31T00:00:00.000Z",
+    ts_last: "2026-05-31T00:00:00.000Z",
+    source_events: ["FE-fixture-cell"],
+  };
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:auth": webSurfaceMetadata("surface:auth"),
+      "surface:vault": smartContractEvmSurfaceMetadata("surface:vault"),
+    },
+  };
+  const allowed = derivePackForNode(cellNode, graphContext, [], null).allowed_tools_for_node;
+  assert.ok(allowed.includes("bob_http_scan"), "cross-stack cell includes the web producer");
+  assert.ok(allowed.includes("bob_evm_call"), "cross-stack cell includes the EVM read tool (the fix)");
+  assert.ok(allowed.includes("bob_evm_fetch_source"), "cross-stack cell includes the EVM source fetch tool");
+});
+
+test("A single-surface cell keeps the evaluator-shared baseline (no cross-stack union)", () => {
+  const cellNode = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}cell-single`,
+    kind: "cell",
+    state: "contracted",
+    surface_refs: ["surface:web"],
+    contract_hash: null,
+    severity_floor: null,
+    priority: "medium",
+    ts_first: "2026-05-31T00:00:00.000Z",
+    ts_last: "2026-05-31T00:00:00.000Z",
+    source_events: ["FE-fixture-cell"],
+  };
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: { "surface:web": webSurfaceMetadata("surface:web") },
+  };
+  const allowed = derivePackForNode(cellNode, graphContext, [], null).allowed_tools_for_node;
+  assert.ok(!allowed.includes("bob_evm_call"), "a single-surface cell does NOT get cross-stack EVM tools");
 });
 
 test("Transition node ALWAYS includes web3_identity_handoff technique pack", () => {
@@ -904,4 +1075,119 @@ test("Claim node returns an evaluator-shared-only pack (wave-scheduled per X-D7)
   assert.ok(!result.allowed_tools_for_node.includes("bob_foundry_run"));
   assert.ok(!result.allowed_tools_for_node.includes("bob_anchor_run"));
   assert.equal(result.brief_emphasis.node_kind, "claim");
+});
+
+// ─── Surface routability: SC routes on chain_family; unroutable never web ──
+
+test("evm smart_contract surface derives the smart_contract_evm pack when surface_metadata_by_id is populated", () => {
+  const node = makeSurfaceNode("evm-vault", "surface:evm-vault");
+  const result = derivePackForNode(node, {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:evm-vault": smartContractEvmSurfaceMetadata("surface:evm-vault"),
+    },
+  }, [], null);
+  assert.equal(result.brief_emphasis.capability_pack, "smart_contract_evm");
+  assert.ok(
+    result.allowed_tools_for_node.includes("bob_evm_call"),
+    "evm SC surface must surface an on-chain read tool",
+  );
+  // Not the web toolset: a web-only attack producer must not appear.
+  assert.ok(
+    !result.allowed_tools_for_node.includes("bob_http_scan"),
+    "evm SC surface is not routed to the web pack",
+  );
+  const webNode = makeSurfaceNode("web-ref", "surface:web-ref");
+  const webResult = derivePackForNode(webNode, {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: { "surface:web-ref": webSurfaceMetadata("surface:web-ref") },
+  }, [], null);
+  assert.notDeepEqual(
+    result.allowed_tools_for_node.slice().sort(),
+    webResult.allowed_tools_for_node.slice().sort(),
+    "evm SC toolset differs from the web toolset",
+  );
+});
+
+test("unroutable smart_contract (unsupported chain_family) does NOT derive the web pack", () => {
+  const node = makeSurfaceNode("doge", "surface:doge");
+  const result = derivePackForNode(node, {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:doge": { id: "surface:doge", surface_type: "smart_contract", chain_family: "dogechain" },
+    },
+  }, [], null);
+  assert.equal(result.brief_emphasis.capability_pack, null);
+  assert.equal(result.brief_emphasis.routable, false);
+  assert.ok(
+    typeof result.brief_emphasis.unroutable_reason === "string"
+      && result.brief_emphasis.unroutable_reason.length > 0,
+    "unroutable SC carries a non-empty unroutable_reason",
+  );
+  assert.ok(
+    !result.allowed_tools_for_node.includes("bob_http_scan"),
+    "unroutable SC must not carry a web-only attack tool",
+  );
+});
+
+test("unroutable smart_contract (missing chain_family) does NOT derive the web pack", () => {
+  const node = makeSurfaceNode("no-chain", "surface:no-chain");
+  const result = derivePackForNode(node, {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:no-chain": { id: "surface:no-chain", surface_type: "smart_contract" },
+    },
+  }, [], null);
+  assert.equal(result.brief_emphasis.capability_pack, null);
+  assert.equal(result.brief_emphasis.routable, false);
+  assert.ok(
+    typeof result.brief_emphasis.unroutable_reason === "string"
+      && result.brief_emphasis.unroutable_reason.length > 0,
+    "missing-chain_family SC carries a non-empty unroutable_reason",
+  );
+  assert.ok(!result.allowed_tools_for_node.includes("bob_http_scan"));
+});
+
+test("web unknown-type surface still falls back to the web pack", () => {
+  const node = makeSurfaceNode("unknown", "surface:unknown");
+  const result = derivePackForNode(node, {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:unknown": { id: "surface:unknown", surface_type: "totally_unknown_type" },
+    },
+  }, [], null);
+  assert.equal(result.brief_emphasis.capability_pack, "web");
+  assert.ok(result.brief_emphasis.routable !== false, "web fallback is routable");
+});
+
+test("routabilityForSurfaceMetadata maps A1's classifier result for the three cases", () => {
+  const evm = routabilityForSurfaceMetadata(smartContractEvmSurfaceMetadata("s1"));
+  assert.equal(evm.routable, true);
+  assert.equal(evm.pack_id, "smart_contract_evm");
+  assert.equal(evm.reason, null);
+
+  const unsupported = routabilityForSurfaceMetadata({ surface_type: "smart_contract", chain_family: "dogechain" });
+  assert.equal(unsupported.routable, false);
+  assert.equal(unsupported.pack_id, null);
+  assert.equal(unsupported.surface_type, "smart_contract");
+  assert.ok(typeof unsupported.reason === "string" && unsupported.reason.length > 0);
+
+  const missing = routabilityForSurfaceMetadata({ surface_type: "smart_contract" });
+  assert.equal(missing.routable, false);
+  assert.equal(missing.pack_id, null);
+  assert.ok(typeof missing.reason === "string" && missing.reason.length > 0);
+
+  const web = routabilityForSurfaceMetadata({ surface_type: "totally_unknown_type" });
+  assert.equal(web.routable, true);
+  assert.equal(web.pack_id, "web");
+  assert.equal(web.reason, null);
+
+  const nonObject = routabilityForSurfaceMetadata(null);
+  assert.equal(nonObject.routable, true);
+  assert.equal(nonObject.pack_id, DEFAULT_CAPABILITY_PACK_ID);
 });

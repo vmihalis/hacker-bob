@@ -13,6 +13,9 @@ const {
   loadQueuePolicy,
   normalizeQueuePolicy,
 } = require("./queue-policy.js");
+const {
+  applyBeliefSchedulerPriority,
+} = require("./belief/scheduler-priority.js");
 
 function surfaceIdOf(value) {
   if (value == null) return null;
@@ -37,6 +40,13 @@ function isOpenForAssignment(surfaceOrId, state, options = {}) {
   if (options.surfaceIdSet && !options.surfaceIdSet.has(surfaceId)) return false;
   if (options.exploredSurfaceIds instanceof Set && options.exploredSurfaceIds.has(surfaceId)) return false;
   if (options.terminallyBlockedSurfaceIds instanceof Set && options.terminallyBlockedSurfaceIds.has(surfaceId)) return false;
+  // An unroutable-route surface (surface-routes.json disposition:"unroutable",
+  // set at route time and durable across waves) carries no capability pack and
+  // must never be (re-)scheduled — otherwise it stays "open" every wave and
+  // starves routable siblings. Symmetric to the explored/blocked legs; an empty
+  // set (no unroutable routes, or an unreadable routes file) is a no-op so
+  // routable planning stays byte-identical.
+  if (options.unroutableSurfaceIds instanceof Set && options.unroutableSurfaceIds.has(surfaceId)) return false;
   return true;
 }
 
@@ -241,6 +251,7 @@ function planNextWave({
   openRequeueSurfaceIds = null,
   taskQueueTasks = null,
   queuePolicy = null,
+  reservedSpawnTotal = 0,
   ...options
 } = {}) {
   const normalizedState = state || {};
@@ -271,8 +282,30 @@ function planNextWave({
   const cap = Number.isInteger(policy.max_concurrent_evaluators)
     ? policy.max_concurrent_evaluators
     : null;
-  const target = cap == null ? rawTarget : Math.min(rawTarget, cap);
-  const max = cap == null ? rawMax : Math.min(rawMax, cap);
+  let target = cap == null ? rawTarget : Math.min(rawTarget, cap);
+  let max = cap == null ? rawMax : Math.min(rawMax, cap);
+  // Session spawn governor as the binding BREADTH ceiling. The governor already
+  // bounds the nested-child DEPTH axis (assignment-brief width bound + the
+  // spawn-ledger reservation), but the wave evaluator count itself was clamped
+  // only by *_wave_target/max and max_concurrent_evaluators — so a lifted width
+  // with a sized governor could still place more roots in one wave than the
+  // session budget allows. When the governor is set, the remaining budget
+  // (max_total_spawned_agents minus the spawn-tree size already reserved by prior
+  // waves/roots, supplied by the impure caller as reservedSpawnTotal) clamps this
+  // wave's target AND max. RANK != BOUND: surfaces that do not fit this wave are
+  // NOT dropped — they ride the next wave once this one settles (waves dispatch
+  // sequentially, the same justification as the concurrency clamp above). A null
+  // governor leaves target/max untouched => byte-identical default-off.
+  let spawnBudgetRemaining = null;
+  if (Number.isInteger(policy.max_total_spawned_agents)) {
+    const reserved = Number.isInteger(reservedSpawnTotal) && reservedSpawnTotal > 0
+      ? reservedSpawnTotal
+      : 0;
+    const remainingBudget = Math.max(0, policy.max_total_spawned_agents - reserved);
+    spawnBudgetRemaining = remainingBudget;
+    target = Math.min(target, remainingBudget);
+    max = Math.min(max, remainingBudget);
+  }
   const nextWave = (Number.isInteger(normalizedState.evaluation_wave) ? normalizedState.evaluation_wave : 0) + 1;
 
   const basePlan = {
@@ -330,8 +363,60 @@ function planNextWave({
     leadSurfaceIds = [];
   }
 
-  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet };
-  const openSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
+  // Durable unroutable-coverage set. Sourced from surface-routes.json
+  // (persisted at route time, survives wave advance) rather than a transient
+  // wave-assignment doc, so a parked unroutable surface is never re-scheduled
+  // across waves. Accepts a pre-computed set (test/replay purity) like the
+  // explored/blocked legs above; otherwise projects the live target through the
+  // SINGLE shared derivation (deriveUnroutableSurfacesFromRoutes), so planner +
+  // wave-status agree on which surfaces are parked and on one corruption policy.
+  //   - Missing routes file (no routing yet) -> empty set, error null: FAIL-OPEN,
+  //     routable planning stays byte-identical to today.
+  //   - Corrupt/unreadable routes -> the helper returns error != null. The
+  //     planner then FAILS CLOSED: it must NOT proceed with an empty unroutable
+  //     set, because that would resurrect the parked surfaces a prior route
+  //     marked unroutable (the never-reschedule invariant). Return a no-plan
+  //     decision carrying the sanitized error instead of minting assignments off
+  //     a corrupt artifact.
+  let unroutableSurfaceIds = options.unroutableSurfaceIds instanceof Set
+    ? options.unroutableSurfaceIds
+    : new Set(Array.isArray(options.unroutableSurfaceIds) ? options.unroutableSurfaceIds : []);
+  if (options.unroutableSurfaceIds == null && typeof normalizedState.target === "string" && normalizedState.target) {
+    const { deriveUnroutableSurfacesFromRoutes } = require("./surface-router.js");
+    const derived = deriveUnroutableSurfacesFromRoutes(normalizedState.target);
+    if (derived.error != null) {
+      return {
+        ...basePlan,
+        decision: "routes_unreadable",
+        reason: derived.error.message,
+        routes_error: derived.error,
+      };
+    }
+    if (derived.malformed_route_count > 0) {
+      return {
+        ...basePlan,
+        decision: "routes_quarantined",
+        reason: `surface routing contains ${derived.malformed_route_count} quarantined row(s); regenerate routes before planning`,
+        routes_quarantine: {
+          malformed_route_count: derived.malformed_route_count,
+          repair_hint: derived.repair_hint,
+        },
+      };
+    }
+    unroutableSurfaceIds = derived.surfaceIds;
+  }
+
+  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet, unroutableSurfaceIds };
+  const rawOpenSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
+  const beliefPriority = applyBeliefSchedulerPriority({
+    target_domain: normalizedState.target,
+    surfaces: rawOpenSurfaces,
+    enabled: policy.belief_assisted_priority_enabled,
+    seed: policy.belief_assisted_priority_seed,
+    rank_limit: policy.belief_assisted_priority_rank_limit,
+  });
+  const openSurfaces = beliefPriority.surfaces;
+  const plannedSurfaceById = normalizeSurfaces(openSurfaces);
 
   const hasTaskQueueRows = Array.isArray(taskQueueTasks) && taskQueueTasks.length > 0;
 
@@ -345,7 +430,7 @@ function planNextWave({
       {
         name: "task_queue",
         overflow_to_max: true,
-        surfaces: surfacesForIds(orderedIds, surfaceById, normalizedState, policy, openOptions),
+        surfaces: surfacesForIds(orderedIds, plannedSurfaceById, normalizedState, policy, openOptions),
       },
     ];
     if (nextWave > 1) {
@@ -354,7 +439,7 @@ function planNextWave({
         overflow_to_max: true,
         surfaces: surfacesForIds(
           openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet, openOptions),
-          surfaceById,
+          plannedSurfaceById,
           normalizedState,
           policy,
           openOptions,
@@ -363,7 +448,7 @@ function planNextWave({
       bucketSpecs.splice(1, 0, {
         name: "lead_surface_ids",
         overflow_to_max: true,
-        surfaces: surfacesForIds(leadSurfaceIds, surfaceById, normalizedState, policy, openOptions),
+        surfaces: surfacesForIds(leadSurfaceIds, plannedSurfaceById, normalizedState, policy, openOptions),
       });
     }
   } else if (nextWave === 1) {
@@ -375,7 +460,7 @@ function planNextWave({
         overflow_to_max: true,
         surfaces: surfacesForIds(
           openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet, openOptions),
-          surfaceById,
+          plannedSurfaceById,
           normalizedState,
           policy,
           openOptions,
@@ -384,7 +469,7 @@ function planNextWave({
       {
         name: "lead_surface_ids",
         overflow_to_max: true,
-        surfaces: surfacesForIds(leadSurfaceIds, surfaceById, normalizedState, policy, openOptions),
+        surfaces: surfacesForIds(leadSurfaceIds, plannedSurfaceById, normalizedState, policy, openOptions),
       },
       ...priorityBuckets(openSurfaces, normalizedState, policy, openOptions),
     ];
@@ -400,6 +485,39 @@ function planNextWave({
     budget: { ...policy.default_wave_task_budget },
   }));
 
+  const candidateSurfaceIds = candidateSurfaces.map((surface) => surface.id);
+
+  // Lifetime spawn-budget exhaustion is a COVERAGE GAP, not a silent drop. When the
+  // operator's lifetime ceiling (max_total_spawned_agents) is fully consumed but
+  // open surfaces still want evaluators, the planner STOPS and names the uncovered
+  // surfaces — it never emits an over-budget wave and never silently drops the
+  // surfaces (RANK != BOUND: the ceiling is an external operator cost limit, and
+  // when hit it surfaces the gap rather than truncating coverage). This mirrors the
+  // no_assignable_candidates coverage-gap shape so the orchestrator handles both
+  // through one path. A null governor never reaches here (spawnBudgetRemaining stays
+  // null), so default-off is byte-identical.
+  if (spawnBudgetRemaining === 0 && assignments.length === 0 && candidateSurfaceIds.length > 0) {
+    return {
+      ...basePlan,
+      decision: "spawn_budget_exhausted",
+      reason: `spawn budget exhausted: max_total_spawned_agents (${policy.max_total_spawned_agents}) is fully reserved; ${candidateSurfaceIds.length} open surface(s) remain uncovered`,
+      buckets: buckets.map((bucket) => ({
+        name: bucket.name,
+        surface_ids: bucket.surface_ids,
+      })),
+      belief_assisted_priority: beliefPriority.metadata,
+      candidate_surface_ids: candidateSurfaceIds,
+      coverage_gap: {
+        kind: "spawn_budget_exhausted",
+        max_total_spawned_agents: policy.max_total_spawned_agents,
+        reserved_spawn_total: policy.max_total_spawned_agents - spawnBudgetRemaining,
+        remaining_budget: spawnBudgetRemaining,
+        uncovered_surface_ids: candidateSurfaceIds,
+      },
+      assignments: [],
+    };
+  }
+
   return {
     ...basePlan,
     decision: assignments.length > 0 ? "start_wave" : "no_assignable_candidates",
@@ -410,7 +528,8 @@ function planNextWave({
       name: bucket.name,
       surface_ids: bucket.surface_ids,
     })),
-    candidate_surface_ids: candidateSurfaces.map((surface) => surface.id),
+    belief_assisted_priority: beliefPriority.metadata,
+    candidate_surface_ids: candidateSurfaceIds,
     assignments,
   };
 }

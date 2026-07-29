@@ -27,3 +27,14 @@ Then run:
 ```text
 /skill:bob-evaluate target.com
 ```
+
+## Other commands
+
+```bash
+npx -y hacker-bob-kimi update /path/to/project
+npx -y hacker-bob-kimi check-update /path/to/project
+npx -y hacker-bob-kimi doctor /path/to/project
+npx -y hacker-bob-kimi uninstall /path/to/project
+```
+
+Explicit `--adapter` flags are respected, so multi-adapter installs continue to work.

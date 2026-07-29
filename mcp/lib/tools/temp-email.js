@@ -4,12 +4,14 @@ const { tempEmail } = require("../temp-email.js");
 
 module.exports = Object.freeze({
   name: "bob_temp_email",
-  aliases: ["bounty_temp_email"],
   description:
     "Manage temporary email addresses for automated account registration. Operations: create (new mailbox), poll (check inbox), extract (parse verification code/link from message).",
   inputSchema: {
     "type": "object",
     "properties": {
+      "target_domain": {
+        "type": "string"
+      },
       "operation": {
         "type": "string",
         "enum": [
@@ -36,16 +38,19 @@ module.exports = Object.freeze({
       }
     },
     "required": [
+      "target_domain",
       "operation"
     ]
   },
   handler: tempEmail,
   role_bundles: ["auth"],
+  capability_id: "S3_stepup_registration", // S3-cap: registry-typed step-up capability so capabilityToolMapFromRegistry can answer "does Bob own a tool for the email-OTP / account-registration step" (M6b ceiling)
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: true,
   session_artifacts_written: [],
+  required_session_axes: ["url"],
 });

@@ -45,6 +45,7 @@ const repoPrepareEnvTool = require("../mcp/lib/tools/repo-prepare-env.js");
 const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
 const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
 const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
 
 const {
@@ -71,6 +72,9 @@ const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
+  appendJsonlLine,
+} = require("../mcp/lib/storage.js");
+const {
   claimFreezePath,
   evidencePackPaths,
   gradeArtifactPaths,
@@ -83,6 +87,9 @@ const {
   taskQueuePath,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
+const {
+  seedGenuineReproPair,
+} = require("./helpers/repro-run-pair.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -445,6 +452,23 @@ async function driveOssRealizationFlow({
   assert.ok(fs.existsSync(evidencePackPaths(domain).json),
     "evidence-packs.json must be written");
 
+  // A reportable medium native code_module finding carries an executed arm: its
+  // differential-reproduction verified_pass (the O-P4 native binding), the same
+  // executed flip a real native finding records. Seed one per finding so the
+  // standalone finding-differential gate sees the native executed binding and
+  // grades through it.
+  for (const findingId of findingIds) {
+    // Seed a GENUINE flipping repro pair (repo-command-runs rows + matching capture files)
+    // + the verified_pass verdict line citing it, so readReproVerifiedSummary's read-time
+    // re-adjudication ADMITS the native executed binding at grade time.
+    seedGenuineReproPair(domain, {
+      findingId,
+      argv: ["sh", "-lc", `./harness ${findingId}.bin`],
+      vulnRunId: `repro-vuln-${findingId}`,
+      controlRunId: `repro-control-${findingId}`,
+    });
+  }
+
   // Step 13 — bob_advance_session(GRADE).
   const gradeAdvance = callTool(advanceSessionTool, {
     target_domain: domain,
@@ -456,7 +480,7 @@ async function driveOssRealizationFlow({
   // Step 14 — grade verdict. Per grade-verdict-store consistency rules the
   // per-finding total_score must equal the sum of its rubric scores and the
   // document total_score must equal the MAX per-finding total_score.
-  callTool(writeGradeVerdictTool, {
+  withIsolatedSigner(() => callTool(writeGradeVerdictTool, {
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
@@ -471,7 +495,7 @@ async function driveOssRealizationFlow({
       feedback: "OSS smoke: synthesized fixture finding is reproducible.",
     })),
     feedback: "Both OSS smoke findings are submission-ready against the synthesized fixture.",
-  });
+  }));
   assert.ok(fs.existsSync(gradeArtifactPaths(domain).json), "grade.json must be written");
 
   // Step 15 — bob_advance_session(REPORT).
