@@ -232,14 +232,21 @@ test("root release gates separate portable coverage from required Darwin arm64 q
   assert.doesNotMatch(packageJson.scripts["test:install"], /test:lifecycle-custodian-native/u);
   assert.doesNotMatch(packageJson.scripts["test:cli"], /test:lifecycle-custodian-native/u);
 
+  // What this job requires is an Apple-silicon runner, not one specific image:
+  // macos-13 and earlier are Intel, macos-14 and later are arm64. Pinning the
+  // exact label made a necessary image bump look like a policy violation — the
+  // SDK the natives compile against is a property of the image, so it has to be
+  // free to move forward while the arm64 guarantee stays asserted.
+  const ARM64_DARWIN_RUNNER =
+    /native-darwin-qualification:[\s\S]{0,800}?runs-on: macos-(?:1[4-9]|[2-9]\d)\b/u;
   const ciWorkflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
-  assert.match(ciWorkflow, /native-darwin-qualification:[\s\S]{0,300}?runs-on: macos-14/u);
+  assert.match(ciWorkflow, ARM64_DARWIN_RUNNER);
   assert.match(ciWorkflow, /run: npm run test:native-darwin/u);
   const releaseWorkflow = fs.readFileSync(
     path.join(ROOT, ".github", "workflows", "release.yml"),
     "utf8",
   );
-  assert.match(releaseWorkflow, /native-darwin-qualification:[\s\S]{0,300}?runs-on: macos-14/u);
+  assert.match(releaseWorkflow, ARM64_DARWIN_RUNNER);
   assert.match(releaseWorkflow, /publish:\n\s+needs: native-darwin-qualification/u);
   assert.match(releaseWorkflow, /run: npm run test:native-darwin/u);
   assert.deepEqual(
