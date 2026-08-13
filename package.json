@@ -8,7 +8,7 @@
     "packages/bob-instrument-chameleon-worker",
     "packages/bob-instrument-chameleon-worker-runtime"
   ],
-  "description": "Portable autonomous bug bounty evaluating MCP framework with host adapters",
+  "description": "Portable autonomous security-evaluation MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

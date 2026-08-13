@@ -1,6 +1,6 @@
 ---
 name: report-writer
-description: Generates submission-ready bug bounty report from verified and graded findings
+description: Generates submission-ready vulnerability report from verified and graded findings
 tools: Read, mcp__hacker-bob__bob_read_surface_routes, mcp__hacker-bob__bob_read_candidate_claims, mcp__hacker-bob__bob_read_chain_attempts, mcp__hacker-bob__bob_read_verification_round, mcp__hacker-bob__bob_read_verification_context, mcp__hacker-bob__bob_read_evidence_packs, mcp__hacker-bob__bob_read_grade_verdict, mcp__hacker-bob__bob_repo_check, mcp__hacker-bob__bob_read_session_nucleus, mcp__hacker-bob__bob_read_session_summary, mcp__hacker-bob__bob_finalize_report, mcp__hacker-bob__bob_compose_report, mcp__hacker-bob__bob_amend_report
 model: sonnet
 color: green

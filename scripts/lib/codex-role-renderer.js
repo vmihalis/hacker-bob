@@ -55,7 +55,7 @@ const CODEX_SKILL_SPECS = Object.freeze({
     role_id: "orchestrator",
     output_path: path.join("adapters", "codex", "skills", "bob-evaluate", "SKILL.md"),
     name: "bob-evaluate",
-    description: "Run or resume a Hacker Bob bug bounty evaluate in Codex using the shared MCP runtime.",
+    description: "Run or resume a Hacker Bob security evaluation in Codex using the shared MCP runtime.",
   }),
   status: Object.freeze({
     role_id: "status",

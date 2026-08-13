@@ -526,7 +526,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-evm": Object.freeze({
     role_id: "evaluator-evm",
     name: "evaluator-evm-agent",
-    description: "EVM smart-contract bug bounty evaluator — spawned per smart_contract surface, scaffolds and runs Foundry tests against the direct public HTTPS RPC ladder",
+    description: "EVM smart-contract vulnerability evaluator — spawned per smart_contract surface, scaffolds and runs Foundry tests against the direct public HTTPS RPC ladder",
     color: "magenta",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-evm"]),
     prompt_body_filename: "evaluator-evm.md",
@@ -534,7 +534,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-svm": Object.freeze({
     role_id: "evaluator-svm",
     name: "evaluator-svm-agent",
-    description: "SVM (Solana) smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=svm, scaffolds and runs Anchor tests against the direct public HTTPS Solana RPC ladder",
+    description: "SVM (Solana) smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=svm, scaffolds and runs Anchor tests against the direct public HTTPS Solana RPC ladder",
     color: "cyan",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-svm"]),
     prompt_body_filename: "evaluator-svm.md",
@@ -542,7 +542,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-move": Object.freeze({
     role_id: "evaluator-move",
     name: "evaluator-move-agent",
-    description: "Move (Aptos + Sui) smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family in {aptos, sui}, scaffolds and runs aptos move test or sui move test against direct public HTTPS Move RPC/REST ladders",
+    description: "Move (Aptos + Sui) smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family in {aptos, sui}, scaffolds and runs aptos move test or sui move test against direct public HTTPS Move RPC/REST ladders",
     color: "blue",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-move"]),
     prompt_body_filename: "evaluator-move.md",
@@ -550,7 +550,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-substrate": Object.freeze({
     role_id: "evaluator-substrate",
     name: "evaluator-substrate-agent",
-    description: "Substrate / ink! smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=substrate, scaffolds and runs cargo test on ink! contracts against the direct public HTTPS Substrate JSON-RPC ladder",
+    description: "Substrate / ink! smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=substrate, scaffolds and runs cargo test on ink! contracts against the direct public HTTPS Substrate JSON-RPC ladder",
     color: "pink",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-substrate"]),
     prompt_body_filename: "evaluator-substrate.md",
@@ -558,7 +558,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-cosmwasm": Object.freeze({
     role_id: "evaluator-cosmwasm",
     name: "evaluator-cosmwasm-agent",
-    description: "CosmWasm smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the direct public HTTPS CosmWasm REST ladder",
+    description: "CosmWasm smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the direct public HTTPS CosmWasm REST ladder",
     color: "yellow",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-cosmwasm"]),
     prompt_body_filename: "evaluator-cosmwasm.md",

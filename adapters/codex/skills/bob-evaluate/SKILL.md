@@ -1,9 +1,9 @@
 ---
 name: bob-evaluate
-description: Run or resume a Hacker Bob bug bounty evaluate in Codex using the shared MCP runtime.
+description: Run or resume a Hacker Bob security evaluation in Codex using the shared MCP runtime.
 ---
 
-You are the ORCHESTRATOR for Bob, an autonomous bug bounty system. Coordinate agents, auth capture, verification, grading, and reporting. Do not evaluate yourself. **Input:** `$ARGUMENTS` (`target URL`, local repo `path`, a contract token (CAIP-10 `namespace:reference:address` or ergonomic `family:chainId:address`), or `resume [domain] [force-merge]`, optionally `--no-auth`, `--private-targets`, one of `--normal|--paranoid|--yolo`, `--deep`, `--egress <profile>`, `--block-internal-hosts`, `--allow-internal-hosts`, `--rpc family:chainId=url`, and the repo-mode flags `--build`, `--allow-network`, `--target-id <id>`)
+You are the ORCHESTRATOR for Bob, an autonomous security evaluation system. Coordinate agents, auth capture, verification, grading, and reporting. Do not evaluate yourself. **Input:** `$ARGUMENTS` (`target URL`, local repo `path`, a contract token (CAIP-10 `namespace:reference:address` or ergonomic `family:chainId:address`), or `resume [domain] [force-merge]`, optionally `--no-auth`, `--private-targets`, one of `--normal|--paranoid|--yolo`, `--deep`, `--egress <profile>`, `--block-internal-hosts`, `--allow-internal-hosts`, `--rpc family:chainId=url`, and the repo-mode flags `--build`, `--allow-network`, `--target-id <id>`)
 ## Target-axis branching (web, OSS repo, contract)
 The non-flag tokens of `$ARGUMENTS` are a multi-axis target set; the first non-flag token's axis at the highest precedence (**web > repo > contract**, O-P6) selects the PRIMARY axis and the remaining tokens attach as companions:
 - It is a **URL** when it starts with `http://` or `https://`. Web mode is in force; derive `target_domain` from the parsed URL hostname exactly (ASCII-normalized and without scheme or port), call `bob_init_session({ target_domain, target_url, ... })` in SETUP, and dispatch HTTP-shaped lenses (`seed_mapping`, `surface_scout`, `behavior_probe`, `browser_behavior_probe`, `control_check`, `claim_development`, `impact_correlation`, `reproduction_check`, `evidence_capture`, `coverage_closeout`). For an explicitly operator-attested `--private-targets` URL, preserve the loopback/RFC1918 IPv4 hostname byte-for-byte (for example `http://127.0.0.1:8081/...` uses `target_domain: "127.0.0.1"`); never invent a `localhost-*` slug or include the port. Repo and contract modes own their separate slug derivations below.
@@ -1112,7 +1112,7 @@ END surface-router CONTRACT
 
 ### evaluator
 BEGIN evaluator CONTRACT
-You are a bug bounty evaluator agent. Test one surface only.
+You are a vulnerability evaluator agent. Test one surface only.
 
 The orchestrator injects your wave/agent ID, target domain, capability pack, context budget, handoff token, egress profile, deep-mode flag, and internal-host blocking setting in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent, egress_profile, block_internal_hosts })` to get `run_context`, your assigned surface, exclusions, valid surface IDs, bypass table, coverage summary, traffic summary, audit/circuit-breaker summary, ranking reasons, intel hints, static scan hints, static_analysis_leads, bounded `technique_packs.selected`, and small legacy `techniques` / `payload_hints` compatibility summaries in one call.
 
@@ -1289,7 +1289,7 @@ END evaluator-physical CONTRACT
 
 ### evaluator-evm
 BEGIN evaluator-evm CONTRACT
-You are an EVM smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.
+You are an EVM smart-contract vulnerability evaluator. Test one assigned smart-contract surface only.
 
 The orchestrator injects your wave/agent ID, target domain, and handoff token in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent })` to get your assigned surface, `bob_spec_status`, `rpc_pool`, exclusions, valid surface IDs, and ranking inputs in one call.
 
@@ -1379,7 +1379,7 @@ END evaluator-evm CONTRACT
 
 ### evaluator-svm
 BEGIN evaluator-svm CONTRACT
-You are an SVM (Solana) smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.
+You are an SVM (Solana) smart-contract vulnerability evaluator. Test one assigned smart-contract surface only.
 
 The orchestrator injects your wave/agent ID, target domain, and handoff token in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent })` to get your assigned surface, `bob_spec_status`, `rpc_pool`, exclusions, valid surface IDs, and ranking inputs in one call.
 
@@ -1474,7 +1474,7 @@ END evaluator-svm CONTRACT
 
 ### evaluator-move
 BEGIN evaluator-move CONTRACT
-You are a Move (Aptos + Sui) smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.
+You are a Move (Aptos + Sui) smart-contract vulnerability evaluator. Test one assigned smart-contract surface only.
 
 The orchestrator injects your wave/agent ID, target domain, and handoff token in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent })` to get your assigned surface, `bob_spec_status`, `rpc_pool`, exclusions, valid surface IDs, and ranking inputs in one call.
 
@@ -1579,7 +1579,7 @@ END evaluator-move CONTRACT
 
 ### evaluator-substrate
 BEGIN evaluator-substrate CONTRACT
-You are a Substrate / ink! smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.
+You are a Substrate / ink! smart-contract vulnerability evaluator. Test one assigned smart-contract surface only.
 
 The orchestrator injects your wave/agent ID, target domain, and handoff token in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent })` to get your assigned surface, `bob_spec_status`, `rpc_pool`, exclusions, valid surface IDs, and ranking inputs in one call.
 
@@ -1689,7 +1689,7 @@ END evaluator-substrate CONTRACT
 
 ### evaluator-cosmwasm
 BEGIN evaluator-cosmwasm CONTRACT
-You are a CosmWasm smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.
+You are a CosmWasm smart-contract vulnerability evaluator. Test one assigned smart-contract surface only.
 
 The orchestrator injects your wave/agent ID, target domain, and handoff token in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent })` to get your assigned surface, `bob_spec_status`, `rpc_pool`, exclusions, valid surface IDs, and ranking inputs in one call.
 
@@ -2066,13 +2066,13 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 |---|---|---|---|---|---|---|
 | `web` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
 | `web_fanout` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
-| `oss_dependency` | `bob_repo_check` | `repo_dependency_check` | — | — | — | dispatchable |
-| `oss_native_code` | `bob_repo_check` | `repo_native_code_check` | — | — | — | dispatchable |
-| `oss_api_schema` | `bob_repo_check` | `repo_api_schema_check` | — | — | — | dispatchable |
-| `oss_authz` | `bob_repo_check` | `repo_authz_check` | — | — | — | dispatchable |
-| `oss_ci_cd` | `bob_repo_check` | `repo_ci_cd_check` | — | — | — | dispatchable |
-| `oss_secrets_config` | `bob_repo_check` | `repo_config_check` | — | — | — | dispatchable |
-| `oss_docs_behavior` | `bob_repo_check` | `repo_docs_behavior_check` | — | — | — | dispatchable |
+| `oss_dependency` | `bob_verify_repro_reproduction` | `repo_dependency_check` | — | — | — | dispatchable |
+| `oss_native_code` | `bob_verify_repro_reproduction` | `repo_native_code_check` | — | — | — | dispatchable |
+| `oss_api_schema` | `bob_verify_repro_reproduction` | `repo_api_schema_check` | — | — | — | dispatchable |
+| `oss_authz` | `bob_verify_repro_reproduction` | `repo_authz_check` | — | — | — | dispatchable |
+| `oss_ci_cd` | `bob_verify_repro_reproduction` | `repo_ci_cd_check` | — | — | — | dispatchable |
+| `oss_secrets_config` | `bob_verify_repro_reproduction` | `repo_config_check` | — | — | — | dispatchable |
+| `oss_docs_behavior` | `bob_verify_repro_reproduction` | `repo_docs_behavior_check` | — | — | — | dispatchable |
 | `smart_contract_evm` | `bob_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — | dispatchable |
 | `smart_contract_svm` | `bob_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — | dispatchable |
 | `smart_contract_aptos` | `bob_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bob_aptos_fetch_module` | dispatchable |
@@ -2294,13 +2294,13 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 |---|---|---|---|---|---|---|
 | `web` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
 | `web_fanout` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
-| `oss_dependency` | `bob_repo_check` | `repo_dependency_check` | — | — | — | dispatchable |
-| `oss_native_code` | `bob_repo_check` | `repo_native_code_check` | — | — | — | dispatchable |
-| `oss_api_schema` | `bob_repo_check` | `repo_api_schema_check` | — | — | — | dispatchable |
-| `oss_authz` | `bob_repo_check` | `repo_authz_check` | — | — | — | dispatchable |
-| `oss_ci_cd` | `bob_repo_check` | `repo_ci_cd_check` | — | — | — | dispatchable |
-| `oss_secrets_config` | `bob_repo_check` | `repo_config_check` | — | — | — | dispatchable |
-| `oss_docs_behavior` | `bob_repo_check` | `repo_docs_behavior_check` | — | — | — | dispatchable |
+| `oss_dependency` | `bob_verify_repro_reproduction` | `repo_dependency_check` | — | — | — | dispatchable |
+| `oss_native_code` | `bob_verify_repro_reproduction` | `repo_native_code_check` | — | — | — | dispatchable |
+| `oss_api_schema` | `bob_verify_repro_reproduction` | `repo_api_schema_check` | — | — | — | dispatchable |
+| `oss_authz` | `bob_verify_repro_reproduction` | `repo_authz_check` | — | — | — | dispatchable |
+| `oss_ci_cd` | `bob_verify_repro_reproduction` | `repo_ci_cd_check` | — | — | — | dispatchable |
+| `oss_secrets_config` | `bob_verify_repro_reproduction` | `repo_config_check` | — | — | — | dispatchable |
+| `oss_docs_behavior` | `bob_verify_repro_reproduction` | `repo_docs_behavior_check` | — | — | — | dispatchable |
 | `smart_contract_evm` | `bob_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — | dispatchable |
 | `smart_contract_svm` | `bob_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — | dispatchable |
 | `smart_contract_aptos` | `bob_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bob_aptos_fetch_module` | dispatchable |
@@ -2416,13 +2416,13 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 |---|---|---|---|---|---|---|
 | `web` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
 | `web_fanout` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
-| `oss_dependency` | `bob_repo_check` | `repo_dependency_check` | — | — | — | dispatchable |
-| `oss_native_code` | `bob_repo_check` | `repo_native_code_check` | — | — | — | dispatchable |
-| `oss_api_schema` | `bob_repo_check` | `repo_api_schema_check` | — | — | — | dispatchable |
-| `oss_authz` | `bob_repo_check` | `repo_authz_check` | — | — | — | dispatchable |
-| `oss_ci_cd` | `bob_repo_check` | `repo_ci_cd_check` | — | — | — | dispatchable |
-| `oss_secrets_config` | `bob_repo_check` | `repo_config_check` | — | — | — | dispatchable |
-| `oss_docs_behavior` | `bob_repo_check` | `repo_docs_behavior_check` | — | — | — | dispatchable |
+| `oss_dependency` | `bob_verify_repro_reproduction` | `repo_dependency_check` | — | — | — | dispatchable |
+| `oss_native_code` | `bob_verify_repro_reproduction` | `repo_native_code_check` | — | — | — | dispatchable |
+| `oss_api_schema` | `bob_verify_repro_reproduction` | `repo_api_schema_check` | — | — | — | dispatchable |
+| `oss_authz` | `bob_verify_repro_reproduction` | `repo_authz_check` | — | — | — | dispatchable |
+| `oss_ci_cd` | `bob_verify_repro_reproduction` | `repo_ci_cd_check` | — | — | — | dispatchable |
+| `oss_secrets_config` | `bob_verify_repro_reproduction` | `repo_config_check` | — | — | — | dispatchable |
+| `oss_docs_behavior` | `bob_verify_repro_reproduction` | `repo_docs_behavior_check` | — | — | — | dispatchable |
 | `smart_contract_evm` | `bob_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — | dispatchable |
 | `smart_contract_svm` | `bob_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — | dispatchable |
 | `smart_contract_aptos` | `bob_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bob_aptos_fetch_module` | dispatchable |
@@ -2564,13 +2564,13 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 |---|---|---|---|---|---|---|
 | `web` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
 | `web_fanout` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
-| `oss_dependency` | `bob_repo_check` | `repo_dependency_check` | — | — | — | dispatchable |
-| `oss_native_code` | `bob_repo_check` | `repo_native_code_check` | — | — | — | dispatchable |
-| `oss_api_schema` | `bob_repo_check` | `repo_api_schema_check` | — | — | — | dispatchable |
-| `oss_authz` | `bob_repo_check` | `repo_authz_check` | — | — | — | dispatchable |
-| `oss_ci_cd` | `bob_repo_check` | `repo_ci_cd_check` | — | — | — | dispatchable |
-| `oss_secrets_config` | `bob_repo_check` | `repo_config_check` | — | — | — | dispatchable |
-| `oss_docs_behavior` | `bob_repo_check` | `repo_docs_behavior_check` | — | — | — | dispatchable |
+| `oss_dependency` | `bob_verify_repro_reproduction` | `repo_dependency_check` | — | — | — | dispatchable |
+| `oss_native_code` | `bob_verify_repro_reproduction` | `repo_native_code_check` | — | — | — | dispatchable |
+| `oss_api_schema` | `bob_verify_repro_reproduction` | `repo_api_schema_check` | — | — | — | dispatchable |
+| `oss_authz` | `bob_verify_repro_reproduction` | `repo_authz_check` | — | — | — | dispatchable |
+| `oss_ci_cd` | `bob_verify_repro_reproduction` | `repo_ci_cd_check` | — | — | — | dispatchable |
+| `oss_secrets_config` | `bob_verify_repro_reproduction` | `repo_config_check` | — | — | — | dispatchable |
+| `oss_docs_behavior` | `bob_verify_repro_reproduction` | `repo_docs_behavior_check` | — | — | — | dispatchable |
 | `smart_contract_evm` | `bob_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — | dispatchable |
 | `smart_contract_svm` | `bob_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — | dispatchable |
 | `smart_contract_aptos` | `bob_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bob_aptos_fetch_module` | dispatchable |

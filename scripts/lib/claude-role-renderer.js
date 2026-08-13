@@ -486,7 +486,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     kind: "agent",
     output_path: path.join(".claude", "agents", "report-writer.md"),
     name: "report-writer",
-    description: "Generates submission-ready bug bounty report from verified and graded findings",
+    description: "Generates submission-ready vulnerability report from verified and graded findings",
     model: "sonnet",
     color: "green",
     mcp_server: true,
