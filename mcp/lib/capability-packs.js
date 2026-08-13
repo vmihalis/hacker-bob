@@ -187,6 +187,23 @@ function selectWebEvaluatorPack(classification, { idBearing = false, highPriorit
  * evaluator-web, a separate and larger defect (see
  * capability-pack-derivation.js:94 for why the cheap path was taken 2026-06-17).
  */
+/*
+ * VERIFIER AND EVIDENCE ARE SEPARATE, and binding them to one argument was the
+ * second half of the same mistake (caught in review, 2026-08-14).
+ *
+ * verifier.replay_tool is a refute/confirm execution gate. evidence.runner
+ * builds a bounded proof bundle: representative_samples[], aggregate_counts,
+ * redacted snippets. bob_verify_repro_reproduction implements the gate contract
+ * and returns {result, reason}; it emits no samples and hard-requires
+ * control_ref commit hashes. Handing it to the evidence agent as a sampling
+ * runner means it cannot construct a valid evidence pack even for the native
+ * code case, which can block the GRADE transition.
+ *
+ * So evidence.runner stays bob_repo_check for all seven packs. Reading the tree
+ * is the correct way to SAMPLE evidence; it was only ever the wrong way to
+ * PROVE a memory-safety bug. Only oss_native_code's verifier moves.
+ */
+const OSS_EVIDENCE_RUNNER = "bob_repo_check";
 const OSS_DEFAULT_REPLAY_TOOL = "bob_repo_check";
 const OSS_NATIVE_CODE_REPLAY_TOOL = "bob_verify_repro_reproduction";
 
@@ -207,7 +224,7 @@ function ossCapabilityPack(id, sampleType, replayTool = OSS_DEFAULT_REPLAY_TOOL)
       replay_safety: DEFAULT_REPLAY_SAFETY,
     }),
     evidence: Object.freeze({
-      runner: replayTool,
+      runner: OSS_EVIDENCE_RUNNER,
       sample_type: sampleType,
     }),
     spawn: Object.freeze({
