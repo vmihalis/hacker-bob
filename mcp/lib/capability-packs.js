@@ -154,15 +154,34 @@ function ossCapabilityPack(id, sampleType) {
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
     completion_gate: "web_wave_handoff",
     context_budget: DEFAULT_CONTEXT_BUDGET,
+    // The verifier for an OSS native-code memory-safety finding cannot be
+    // bob_repo_check. That tool is a read-only evidence probe: file_exists,
+    // file_contains (literal substring), regex_match (per-line regex). Grepping
+    // the source for a pattern cannot distinguish a real heap overflow from a
+    // plausible-looking one, so every OSS finding graded through it was graded
+    // on a string match.
+    //
+    // bob_verify_repro_reproduction is the purpose-built gate: it re-runs the
+    // same PoC in two fresh sandboxed containers (vulnerable tree and
+    // upstream-fix tree), parses the sanitizer bytes it captured itself rather
+    // than any self-reported crash field, and mints verified_pass ONLY on a
+    // genuine flip (sanitizer crash with a /src root-cause frame on the
+    // vulnerable tree, quiet on the fix tree). A printf-forged banner fires on
+    // both trees and is refuted.
+    //
+    // Corrected 2026-08-02. Note this is only the verifier wiring: role_bundles
+    // below still resolves to evaluator-web, which is a separate and larger
+    // defect (see capability-pack-derivation.js:94 for why the cheap path was
+    // taken on 2026-06-17).
     verifier: Object.freeze({
-      replay_tool: "bob_repo_check",
+      replay_tool: "bob_verify_repro_reproduction",
       sample_type: sampleType,
       fresh_state_omit_field: null,
       disambiguation: null,
       replay_safety: DEFAULT_REPLAY_SAFETY,
     }),
     evidence: Object.freeze({
-      runner: "bob_repo_check",
+      runner: "bob_verify_repro_reproduction",
       sample_type: sampleType,
     }),
     spawn: Object.freeze({

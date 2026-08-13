@@ -133,13 +133,13 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 |---|---|---|---|---|---|---|
 | `web` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
 | `web_fanout` | `bob_http_scan` | `http_replay` | — | — | — | dispatchable |
-| `oss_dependency` | `bob_repo_check` | `repo_dependency_check` | — | — | — | dispatchable |
-| `oss_native_code` | `bob_repo_check` | `repo_native_code_check` | — | — | — | dispatchable |
-| `oss_api_schema` | `bob_repo_check` | `repo_api_schema_check` | — | — | — | dispatchable |
-| `oss_authz` | `bob_repo_check` | `repo_authz_check` | — | — | — | dispatchable |
-| `oss_ci_cd` | `bob_repo_check` | `repo_ci_cd_check` | — | — | — | dispatchable |
-| `oss_secrets_config` | `bob_repo_check` | `repo_config_check` | — | — | — | dispatchable |
-| `oss_docs_behavior` | `bob_repo_check` | `repo_docs_behavior_check` | — | — | — | dispatchable |
+| `oss_dependency` | `bob_verify_repro_reproduction` | `repo_dependency_check` | — | — | — | dispatchable |
+| `oss_native_code` | `bob_verify_repro_reproduction` | `repo_native_code_check` | — | — | — | dispatchable |
+| `oss_api_schema` | `bob_verify_repro_reproduction` | `repo_api_schema_check` | — | — | — | dispatchable |
+| `oss_authz` | `bob_verify_repro_reproduction` | `repo_authz_check` | — | — | — | dispatchable |
+| `oss_ci_cd` | `bob_verify_repro_reproduction` | `repo_ci_cd_check` | — | — | — | dispatchable |
+| `oss_secrets_config` | `bob_verify_repro_reproduction` | `repo_config_check` | — | — | — | dispatchable |
+| `oss_docs_behavior` | `bob_verify_repro_reproduction` | `repo_docs_behavior_check` | — | — | — | dispatchable |
 | `smart_contract_evm` | `bob_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — | dispatchable |
 | `smart_contract_svm` | `bob_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — | dispatchable |
 | `smart_contract_aptos` | `bob_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bob_aptos_fetch_module` | dispatchable |
