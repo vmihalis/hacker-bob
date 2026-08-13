@@ -6,7 +6,7 @@
 
 <p align="center"><i>A local MCP runtime that attacks what you own, and only reports what it proved.</i></p>
 
-<p align="center"><b>17 CVEs across 9 projects came out of this repo.</b> <a href="#receipts">See them</a>.</p>
+<p align="center"><b>17 CVEs across 9 projects were found or co-reported with this runtime.</b> <a href="#receipts">See them</a>.</p>
 
 <p align="center">
   <a href="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml/badge.svg" /></a>
@@ -26,9 +26,10 @@ Bob has to reproduce a finding before it reaches a report, and what counts as re
 
 ## Receipts
 
-Every ID below was produced by this repo, and is credited upstream wherever the
-CNA record carries a credit field; for the GitHub- and MITRE-assigned IDs the
-credit lives in the upstream advisory or changelog rather than the CVE record.
+Every ID below was found with this runtime, and is credited upstream wherever
+the CNA record carries a credit field; for the GitHub- and MITRE-assigned IDs
+the credit lives in the upstream advisory or changelog rather than the CVE
+record. Two were not found alone, and the line under the table says which.
 Two further IDs, both in one further project, are assigned but have no public
 record anywhere yet. They are counted in the total above and withheld here on
 purpose: naming the project alongside the IDs would disclose the pairing before
@@ -39,7 +40,7 @@ table when their records go public.
 | Project | CVEs |
 |---|---|
 | stable-diffusion.cpp | [47747](https://www.cve.org/CVERecord?id=CVE-2026-47747), [47748](https://www.cve.org/CVERecord?id=CVE-2026-47748), [47749](https://www.cve.org/CVERecord?id=CVE-2026-47749), [47750](https://www.cve.org/CVERecord?id=CVE-2026-47750) |
-| netatalk | [49387](https://netatalk.io/security), [49388](https://netatalk.io/security), [49389](https://netatalk.io/security), [49390](https://netatalk.io/security) |
+| netatalk | [49387](https://netatalk.io/security/CVE-2026-49387.html), [49388](https://netatalk.io/security/CVE-2026-49388.html), [49389](https://netatalk.io/security/CVE-2026-49389.html), [49390](https://netatalk.io/security/CVE-2026-49390.html) |
 | libcupsfilters | [64611](https://www.cve.org/CVERecord?id=CVE-2026-64611), [64612](https://www.cve.org/CVERecord?id=CVE-2026-64612) |
 | OpenSSH | [35388](https://www.cve.org/CVERecord?id=CVE-2026-35388) |
 | libheif | [49271](https://www.cve.org/CVERecord?id=CVE-2026-49271) |
