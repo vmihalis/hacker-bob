@@ -4,7 +4,9 @@
 
 <h1 align="center">Hacker Bob</h1>
 
-<p align="center"><i>Offensive security you run yourself — a local MCP workflow for authorized testing, in CI or against staging.</i></p>
+<p align="center"><i>A local MCP runtime that attacks what you own, and only reports what it proved.</i></p>
+
+<p align="center"><b>17 CVEs across 9 projects came out of this repo.</b> <a href="#receipts">See them</a>.</p>
 
 <p align="center">
   <a href="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml/badge.svg" /></a>
@@ -18,7 +20,29 @@
 
 Hacker Bob installs a local MCP runtime into a project directory and connects it to Claude Code, Codex, Kimi CLI, or another MCP-capable host. The runtime coordinates surface mapping, authentication setup, parallel surface testing, finding verification, grading, reporting, and local evidence handling.
 
-Bob runs offensive security on surfaces you control — your own code in CI, your staging and authorized live targets. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
+Bob runs offensive security on surfaces you control: your own code in CI, your staging, and authorized live targets. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
+
+A finding has to survive a differential before it reaches a report. On the web axis that is a control request, the same call without the attack, coming back different. On a repo it is the crash replayed against the upstream fix in a second container. Anything Bob cannot reproduce that way is a lead, not a finding.
+
+## Receipts
+
+Every ID below was produced by this repo and is credited upstream. Three are
+assigned but not public yet, so they are listed and not linked.
+
+| Project | CVEs |
+|---|---|
+| stable-diffusion.cpp | [47747](https://www.cve.org/CVERecord?id=CVE-2026-47747), [47748](https://www.cve.org/CVERecord?id=CVE-2026-47748), [47749](https://www.cve.org/CVERecord?id=CVE-2026-47749), [47750](https://www.cve.org/CVERecord?id=CVE-2026-47750) |
+| netatalk | [49387](https://netatalk.io/security), [49388](https://netatalk.io/security), [49389](https://netatalk.io/security), [49390](https://netatalk.io/security) |
+| libcupsfilters | [64611](https://www.cve.org/CVERecord?id=CVE-2026-64611), [64612](https://www.cve.org/CVERecord?id=CVE-2026-64612) |
+| libtirpc | CVE-2026-66714, CVE-2026-66715 |
+| OpenSSH | [35388](https://www.cve.org/CVERecord?id=CVE-2026-35388) |
+| libheif | [49271](https://www.cve.org/CVERecord?id=CVE-2026-49271) |
+| Samba | [3012](https://www.cve.org/CVERecord?id=CVE-2026-3012) |
+| rpcbind | [16277](https://www.cve.org/CVERecord?id=CVE-2026-16277) |
+| OpenEXR | CVE-2026-65979 |
+
+All CVE-2026-. rpcbind was co-reported with AISLE; on Samba, Bob's operator was
+an additional reporter alongside the DREAM team.
 
 ## Quickstart
 
@@ -201,7 +225,7 @@ plus a Check Run result on every PR.
    ```
 
    That is the complete file. `secrets: inherit` propagates the org-level
-   secrets automatically — no per-repo secret declarations required.
+   secrets automatically, so no per-repo secret declarations are required.
 
 ### Optional inputs
 
@@ -381,7 +405,7 @@ Bob stores local run state, telemetry, and evidence under a session root that al
 
 ### Session roots and concurrent engines
 
-Bob elects exactly one engine per session root, so two workspaces can only run engines at the same time if their session roots are **disjoint** — an engine sharing another engine's session state would enforce gates against state a second process is already moving. The installer therefore gives each workspace its own root, `~/hacker-bob-sessions-<workspace>-<hash>`, derived from the workspace path (stable across re-installs) and written as `BOB_SESSIONS_ROOT` into that workspace's `.mcp.json` server env and `.claude/settings.json` env. That is **operator configuration**: the engine reads it once at boot and freezes it, and no agent or MCP tool can change it — edit it yourself if you want a different root, keeping it absolute, private to your user, and never nested inside another root. A workspace that was already installed and still has sessions in the shared `~/hacker-bob-sessions/` keeps using it (nothing is orphaned); to move it onto its own root, run `mv ~/hacker-bob-sessions/<target-domain> ~/hacker-bob-sessions-<workspace>-<hash>/` — the installer prints the exact path — and re-run the installer. The standalone `hacker-bob dashboard` CLI reads whatever `BOB_SESSIONS_ROOT` its own shell exports (it is not tied to a workspace), so point it at one root explicitly: `BOB_SESSIONS_ROOT=~/hacker-bob-sessions-<workspace>-<hash> hacker-bob dashboard`. **Operator caution:** disjoint roots make concurrent engines safe, they do not make concurrent evaluations of the SAME target safe. Rate limits, circuit breakers, and request budgets are per-engine, so two engines hunting one target from two roots double the request volume that target sees and neither one knows it. Hunt different targets.
+Bob elects exactly one engine per session root, so two workspaces can only run engines at the same time if their session roots are **disjoint**: an engine sharing another engine's session state would enforce gates against state a second process is already moving. The installer therefore gives each workspace its own root, `~/hacker-bob-sessions-<workspace>-<hash>`, derived from the workspace path (stable across re-installs) and written as `BOB_SESSIONS_ROOT` into that workspace's `.mcp.json` server env and `.claude/settings.json` env. That is **operator configuration**: the engine reads it once at boot and freezes it, and no agent or MCP tool can change it. Edit it yourself if you want a different root, keeping it absolute, private to your user, and never nested inside another root. A workspace that was already installed and still has sessions in the shared `~/hacker-bob-sessions/` keeps using it (nothing is orphaned); to move it onto its own root, run `mv ~/hacker-bob-sessions/<target-domain> ~/hacker-bob-sessions-<workspace>-<hash>/` (the installer prints the exact path), and re-run the installer. The standalone `hacker-bob dashboard` CLI reads whatever `BOB_SESSIONS_ROOT` its own shell exports (it is not tied to a workspace), so point it at one root explicitly: `BOB_SESSIONS_ROOT=~/hacker-bob-sessions-<workspace>-<hash> hacker-bob dashboard`. **Operator caution:** disjoint roots make concurrent engines safe, they do not make concurrent evaluations of the SAME target safe. Rate limits, circuit breakers, and request budgets are per-engine, so two engines evaluating one target from two roots double the request volume that target sees and neither one knows it. Evaluate different targets.
 
 During an evaluation, Bob may make outbound HTTP requests, run local surface-discovery tools, import HTTP or static artifacts, and use host-side reasoning over the collected context. Optional third-party services and dependencies, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external surface-discovery tools, are used only when you configure the relevant dependencies or credentials.
 
