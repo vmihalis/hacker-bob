@@ -21,6 +21,17 @@ function renderCapabilityPackVerifierTable() {
     if (!v) continue;
     const replay = v.replay_tool;
     const sample = v.sample_type;
+    // The evidence runner is rendered as its own column because it is no longer
+    // always the verifier's tool. oss_native_code verifies through the
+    // two-container differential gate but still SAMPLES evidence with
+    // bob_repo_check, since the gate returns {result, reason} and emits no
+    // representative_samples. While the two agreed for every pack, the evidence
+    // agent could read `replay_tool` and be right by accident; evidence.md tells
+    // it to look up `runner` in this table, and until now there was no such
+    // column to look up.
+    const evidenceRunner = pack.evidence && pack.evidence.runner
+      ? `\`${pack.evidence.runner}\``
+      : "—";
     const fresh = v.fresh_state_omit_field == null ? "—" : `omit \`${v.fresh_state_omit_field}\``;
     const blockRef = v.block_reference_field
       ? `\`${v.block_reference_field}\` (${v.block_reference_label || "block"})`
@@ -29,7 +40,7 @@ function renderCapabilityPackVerifierTable() {
       ? `\`${v.disambiguation.tool}\``
       : "—";
     const dispatchState = pack.dispatchable === false ? "staged / non-dispatchable" : "dispatchable";
-    rows.push(`| \`${pack.id}\` | \`${replay}\` | \`${sample}\` | ${fresh} | ${blockRef} | ${disambig} | ${dispatchState} |`);
+    rows.push(`| \`${pack.id}\` | \`${replay}\` | ${evidenceRunner} | \`${sample}\` | ${fresh} | ${blockRef} | ${disambig} | ${dispatchState} |`);
     if (v.disambiguation && v.disambiguation.tool && v.disambiguation.fail_reason) {
       failReasonNotes.push(`- \`${pack.id}\` disambiguation deny reason: ${v.disambiguation.fail_reason}`);
     }
@@ -42,8 +53,8 @@ function renderCapabilityPackVerifierTable() {
     "",
     "Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.",
     "",
-    "| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |",
-    "|---|---|---|---|---|---|---|",
+    "| capability_pack | replay_tool | evidence runner | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |",
+    "|---|---|---|---|---|---|---|---|",
     ...rows,
     "",
     "Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):",
