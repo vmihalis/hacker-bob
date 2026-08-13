@@ -29,8 +29,12 @@ Bob has to reproduce a finding before it reaches a report, and what counts as re
 Every ID below was produced by this repo, and is credited upstream wherever the
 CNA record carries a credit field; for the GitHub- and MITRE-assigned IDs the
 credit lives in the upstream advisory or changelog rather than the CVE record.
-Two further IDs are assigned but have no public record anywhere yet, so they are
-counted in the total above and deliberately not listed here.
+Two further IDs, both in one further project, are assigned but have no public
+record anywhere yet. They are counted in the total above and withheld here on
+purpose: naming the project alongside the IDs would disclose the pairing before
+the CNA record exists. That is the 8 projects and 15 IDs in this table plus 1
+project and 2 IDs held back, which is where 9 and 17 come from. They go in the
+table when their records go public.
 
 | Project | CVEs |
 |---|---|
