@@ -43,8 +43,9 @@ counted in the total above and deliberately not listed here.
 | rpcbind | [16277](https://www.cve.org/CVERecord?id=CVE-2026-16277) |
 | OpenEXR | [65979](https://github.com/AcademySoftwareFoundation/openexr/security/advisories/GHSA-3j9c-j7c9-x293) |
 
-All CVE-2026-. rpcbind was co-reported with AISLE; on Samba, Bob's operator was
-an additional reporter alongside the DREAM team.
+Every ID above is a CVE-2026 number, shortened to its last digits in the table.
+rpcbind was co-reported with AISLE; on Samba, Bob's operator was an additional
+reporter alongside the DREAM team.
 
 ## Quickstart
 
