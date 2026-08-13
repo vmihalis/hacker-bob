@@ -22,24 +22,26 @@ Hacker Bob installs a local MCP runtime into a project directory and connects it
 
 Bob runs offensive security on surfaces you control: your own code in CI, your staging, and authorized live targets. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
 
-A finding has to survive a differential before it reaches a report. On the web axis that is a control request, the same call without the attack, coming back different. On a repo it is the crash replayed against the upstream fix in a second container. Anything Bob cannot reproduce that way is a lead, not a finding.
+Bob has to reproduce a finding before it reaches a report, and what counts as reproduction depends on the class. A web finding is usually held to a differential: the same call without the attack, run as a control, coming back different. Real responses move on their own through nonces, tokens and cache state, so the control is the evidence rather than a raw diff, and some classes carry a self-contained exploit run instead. A memory-safety bug in a repo is replayed in two containers and has to crash under a sanitizer in one and stay quiet in the other, the second tree being the upstream fix where one exists and the candidate patch where it does not. Logic bugs are not crashes and are held to their own reproduction. What Bob cannot reproduce is a lead, not a finding.
 
 ## Receipts
 
-Every ID below was produced by this repo and is credited upstream. Three are
-assigned but not public yet, so they are listed and not linked.
+Every ID below was produced by this repo, and is credited upstream wherever the
+CNA record carries a credit field; for the GitHub- and MITRE-assigned IDs the
+credit lives in the upstream advisory or changelog rather than the CVE record.
+Two further IDs are assigned but have no public record anywhere yet, so they are
+counted in the total above and deliberately not listed here.
 
 | Project | CVEs |
 |---|---|
 | stable-diffusion.cpp | [47747](https://www.cve.org/CVERecord?id=CVE-2026-47747), [47748](https://www.cve.org/CVERecord?id=CVE-2026-47748), [47749](https://www.cve.org/CVERecord?id=CVE-2026-47749), [47750](https://www.cve.org/CVERecord?id=CVE-2026-47750) |
 | netatalk | [49387](https://netatalk.io/security), [49388](https://netatalk.io/security), [49389](https://netatalk.io/security), [49390](https://netatalk.io/security) |
 | libcupsfilters | [64611](https://www.cve.org/CVERecord?id=CVE-2026-64611), [64612](https://www.cve.org/CVERecord?id=CVE-2026-64612) |
-| libtirpc | CVE-2026-66714, CVE-2026-66715 |
 | OpenSSH | [35388](https://www.cve.org/CVERecord?id=CVE-2026-35388) |
 | libheif | [49271](https://www.cve.org/CVERecord?id=CVE-2026-49271) |
 | Samba | [3012](https://www.cve.org/CVERecord?id=CVE-2026-3012) |
 | rpcbind | [16277](https://www.cve.org/CVERecord?id=CVE-2026-16277) |
-| OpenEXR | CVE-2026-65979 |
+| OpenEXR | [65979](https://github.com/AcademySoftwareFoundation/openexr/security/advisories/GHSA-3j9c-j7c9-x293) |
 
 All CVE-2026-. rpcbind was co-reported with AISLE; on Samba, Bob's operator was
 an additional reporter alongside the DREAM team.
