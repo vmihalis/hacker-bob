@@ -263,7 +263,7 @@ function loadPaths() {
 }
 
 function loadHandoffSigningKey() {
-  return require(path.join(projectRoot(), "mcp", "core", "ledger-integrity", "handoff-signing-key.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "ledger-integrity", "index.js"));
 }
 
 function loadWaveHandoffStore() {
