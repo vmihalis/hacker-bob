@@ -43,7 +43,7 @@ const {
 } = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   TOOL_REGISTRY,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   ToolError,
   ERROR_CODES,

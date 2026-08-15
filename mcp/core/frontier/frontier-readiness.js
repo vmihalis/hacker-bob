@@ -285,7 +285,7 @@ function computeFrontierReadiness(domain, state) {
   // signed bounded ledgers; an incomplete chain or honest terminal residue is
   // visible as a readiness blocker rather than collapsed into coverage.
   try {
-    const campaign = require("../../domains/physical/physical-campaign-coordinator.js")
+    const campaign = require("../physical-domain-runtime-ports.js")
       .physicalCampaignClosureReadiness(domain);
     if (campaign.active === true && campaign.satisfied !== true) {
       blockers.push(blocker(

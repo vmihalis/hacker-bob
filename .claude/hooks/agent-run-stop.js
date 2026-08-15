@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
+require("../../mcp/tools/tool-registry.js");
 const { FANOUT_ROLE_REGISTRY } = require("../../mcp/core/session/nested-spawn.js");
 
 const MARKER = "BOB_AGENT_RUN_DONE";

@@ -55,7 +55,7 @@ const {
   readSkillFile,
   discoverRoleMarkdownFiles,
 } = require("./lib/skill-parser.js");
-const { TOOL_REGISTRY } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_REGISTRY } = require("../mcp/tools/tool-registry.js");
 
 const ROOT = path.join(__dirname, "..");
 const REGISTERED_TOOL_NAMES = new Set(

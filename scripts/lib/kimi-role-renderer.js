@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+require("../../mcp/tools/tool-registry.js");
 const {
   roleDefinition,
 } = require("../../mcp/core/dispatch/role-model.js");

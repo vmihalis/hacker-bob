@@ -4,7 +4,7 @@ const {
   TOOL_MANIFEST,
   TOOLS,
   toolNamesForRoleBundle,
-} = require("../../mcp/core/dispatch/tool-registry.js");
+} = require("../../mcp/tools/tool-registry.js");
 const {
   mcpToolNamesForRole,
 } = require("../../mcp/core/dispatch/role-model.js");

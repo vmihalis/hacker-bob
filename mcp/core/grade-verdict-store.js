@@ -588,7 +588,7 @@ function writeGradeVerdict(args) {
   // severity, so the gate keys on the actually-bound set, not the narrower
   // reportable-severity set. Inert for signed/unmarked findings because
   // degradedReportableFindingIds is empty for them.
-  const { degradedReportableFindingIds } = require("../tools/record-candidate-claim.js");
+  const { degradedReportableFindingIds } = require("./claims/candidate-claim-recorder.js");
   const degraded = degradedReportableFindingIds(domain);
   if (degraded.size > 0) {
     const offending = [...seenIds].filter((id) => degraded.has(id));
@@ -813,7 +813,7 @@ function writeGradeVerdict(args) {
   // No-ops when no bucket is configured (every non-AWS-branch session);
   // never throws; never blocks this write.
   {
-    const { findingPayloadsFromClaims } = require("../tools/record-candidate-claim.js");
+    const { findingPayloadsFromClaims } = require("./claims/candidate-claim-recorder.js");
     writeGradeFreezeBundleSync({
       domain,
       document,

@@ -130,7 +130,7 @@ module.exports = Object.freeze({
   surfaceLeads: resolved("../../mcp/core/frontier/surface-leads.js"),
   targetClassPackDerivation: resolved("../../mcp/core/capability/target-class-pack-derivation.js"),
   techniquePackDerivation: resolved("../../mcp/core/capability/capability-pack-derivation.js"),
-  toolRegistry: resolved("../../mcp/core/dispatch/tool-registry.js"),
+  toolRegistry: resolved("../../mcp/tools/tool-registry.js"),
   transport: resolved("../../mcp/core/io/transport.js"),
   validation: resolved("../../mcp/core/io/validation.js"),
   verificationContracts: resolved("../../mcp/core/verification/verification-contracts.js"),

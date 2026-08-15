@@ -326,6 +326,9 @@ function buildPersistedPhysicalFindingRecord(input) {
   return normalizePhysicalFindingRecord(record, { expectedDomain: targetDomain });
 }
 
+require("../../core/physical-domain-runtime-ports.js")
+  .configurePhysicalDomainRuntimePorts({ normalizePhysicalFindingRecord });
+
 module.exports = Object.freeze({
   FORBIDDEN_WEB_FIELDS,
   PHYSICAL_FINDING_RECORD_ADAPTER,

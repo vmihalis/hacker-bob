@@ -601,7 +601,7 @@ function gateOpenFrontierToClaimFreeze(context) {
   // campaign authority and remain unaffected.
   let physicalCampaign;
   try {
-    physicalCampaign = require("../../domains/physical/physical-campaign-coordinator.js")
+    physicalCampaign = require("../physical-domain-runtime-ports.js")
       .physicalCampaignClosureReadiness(context.target_domain);
   } catch (error) {
     blockers.push({

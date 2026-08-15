@@ -10,7 +10,7 @@ const test = require("node:test");
 const {
   appendContract,
 } = require("../mcp/core/contract/index.js");
-const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 const prepareNodeModule = require("../mcp/tools/prepare-node.js");
 const {
   preparePhysicalResourceNode,

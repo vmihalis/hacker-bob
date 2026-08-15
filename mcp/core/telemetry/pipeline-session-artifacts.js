@@ -66,7 +66,7 @@ const {
 } = require("../session/session-authority.js");
 const {
   findingPayloadsFromClaims,
-} = require("../../tools/record-candidate-claim.js");
+} = require("../claims/candidate-claim-recorder.js");
 const {
   listArchivedVerificationAttempts,
   summarizeVerificationRoundStatus,

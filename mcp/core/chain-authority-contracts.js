@@ -27,6 +27,32 @@ const { classifyTargetToken } = require("./target-intake.js");
 const { CHAIN_FAMILY_VALUES } = require("./constants/shared-vocabulary.js");
 const { normalizeChainToken } = require("./constants/chain-token.js");
 const { ERROR_CODES, ToolError } = require("./io/envelope.js");
+const { isValidContractAddressShape } = require("./contract-address-shapes.js");
+
+function safeContractDomainSlug(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "contracts";
+}
+
+function contractAddressSlug(address) {
+  const lowered = String(address).toLowerCase();
+  const body = lowered.startsWith("0x") ? lowered.slice(2) : lowered;
+  const safe = body.replace(/[^a-z0-9]/g, "");
+  return (safe || "addr").slice(0, 8);
+}
+
+function deriveContractTargetDomain(normalizedContracts, authorityHash) {
+  if (normalizedContracts.length === 1) {
+    const { chain_family: chainFamily, chain_id: chainId, address } = normalizedContracts[0];
+    return safeContractDomainSlug(
+      `sc-${chainFamily}-${chainId}-${contractAddressSlug(address)}-${String(authorityHash).slice(0, 8)}`,
+    );
+  }
+  return safeContractDomainSlug(`contracts-${String(authorityHash).slice(0, 8)}`);
+}
 
 // Chain families whose address encoding is case-INSENSITIVE hex, so folding to
 // lowercase is safe and lets 0xABC and 0xabc collide. base58 (svm), SS58
@@ -139,6 +165,44 @@ function normalizeContractTupleStrict(raw, index) {
   }
   return { chain_family: chainFamily, chain_id: chainId, address };
 }
+
+function normalizeContracts(rawContracts) {
+  if (!Array.isArray(rawContracts) || rawContracts.length === 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "contracts must be a non-empty array of {chain_family, chain_id, address} bindings",
+    );
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (let i = 0; i < rawContracts.length; i += 1) {
+    const tuple = normalizeContractTupleStrict(rawContracts[i], i);
+    if (!isValidContractAddressShape(tuple.chain_family, tuple.address)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `contract binding at index ${i} carries an address that is not a valid ${tuple.chain_family} address shape`,
+        { index: i, chain_family: tuple.chain_family },
+      );
+    }
+    const endpoint = contractIdentityKey(tuple);
+    if (seen.has(endpoint)) continue;
+    seen.add(endpoint);
+    normalized.push(tuple);
+  }
+  return normalized;
+}
+
+function deriveContractSession(rawContracts) {
+  const normalizedContracts = normalizeContracts(rawContracts);
+  const authorityHash = chainAuthorityHash(normalizedContracts);
+  const domain = deriveContractTargetDomain(normalizedContracts, authorityHash);
+  return { normalizedContracts, authorityHash, domain };
+}
+
+Object.defineProperty(deriveContractTargetDomain, "deriveContractSession", {
+  value: deriveContractSession,
+  enumerable: false,
+});
 
 // Normalize one contracts entry into a canonical {chain_family, chain_id,
 // address} tuple, or null when the entry is not a valid contract tuple.
@@ -299,4 +363,7 @@ module.exports = {
   // THE single CAIP-10 identity-string builder — every family:chainId:address
   // key is built here so no site can hand-roll a divergent casing again.
   contractIdentityKey,
+  deriveContractSession,
+  deriveContractTargetDomain,
+  normalizeContracts,
 };

@@ -76,7 +76,7 @@ const {
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
-const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 // Every cross-stack invariant arm here runs the audited consuming template and is
 // container_isolated by default (the cross-stack adjudicator's template_id + isolation gates).

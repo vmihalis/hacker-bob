@@ -18,7 +18,7 @@ const path = require("path");
 
 const writeBase = require("../mcp/tools/_write-base.js");
 const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
-const { VALID_ROLE_BUNDLES } = require("../mcp/core/dispatch/tool-registry.js");
+const { VALID_ROLE_BUNDLES } = require("../mcp/tools/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

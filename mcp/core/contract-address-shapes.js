@@ -1,8 +1,8 @@
 "use strict";
 
 // Pure bind-time address-shape predicates. Keeping these beside the contract
-// target seam avoids loading transport clients (or the finding pipeline) just
-// to validate the contracts axis.
+// core authority seam avoids loading transport clients (or the finding pipeline)
+// just to validate the contracts axis.
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const SVM_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

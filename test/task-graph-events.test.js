@@ -53,7 +53,7 @@ const {
 const {
   TOOL_HANDLERS,
   getRegisteredTool,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 // X.3 Do step 3: bob_propose_transition validates both endpoints exist in
 // surface-index. Tests that exercise the tool roundtrip seed both endpoint

@@ -1520,7 +1520,7 @@ test("cloning or serializing runtime, reservation, execution, or terminal state 
 });
 
 test("no agent-facing tool or generic physical-button surface is introduced", () => {
-  const toolRegistry = require("../../../mcp/core/dispatch/tool-registry.js");
+  const toolRegistry = require("../../../mcp/tools/tool-registry.js");
   const serializedTools = JSON.stringify(toolRegistry.TOOL_MANIFEST || toolRegistry);
   assert.equal(/manual[_-]?action|arbitrary[_-]?button|press[_-]?button/ui.test(serializedTools), false);
   const exported = Object.keys(manual).join("\n");

@@ -53,7 +53,7 @@ const {
 } = require("./invariant-runner.js");
 const {
   readReproVerifiedSummary,
-} = require("../domains/repo/repro-replay-verifier.js");
+} = require("./repro-replay-verifier.js");
 // Cycle B: verify the keyed invariant-run row_mac at the proof-bundle gate, AFTER the
 // existing content-hash re-derivation. A present-but-invalid MAC rejects the bundle; an
 // old unsigned row is accepted-with-warning (still re-derived). Reuses Cycle A's

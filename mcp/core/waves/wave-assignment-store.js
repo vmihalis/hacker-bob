@@ -45,7 +45,7 @@ const { readAttackSurfaceStrict } = require("../frontier/attack-surface.js");
 const { currentSurfaces } = require("../frontier/frontier-projections.js");
 const {
   findingPayloadsFromClaims,
-} = require("../../tools/record-candidate-claim.js");
+} = require("../claims/candidate-claim-recorder.js");
 const {
   ERROR_CODES,
   ToolError,

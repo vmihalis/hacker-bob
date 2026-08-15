@@ -655,7 +655,7 @@ function normalizeEndpointPocFindingRecord(record, { expectedDomain = null, line
 // endpoint+PoC contract; a pack that declares an unknown adapter fails closed.
 const FINDING_RECORD_ADAPTER_LOADERS = Object.freeze({
   physical_verified_transition_finding_v1: () => (
-    require("../domains/physical/physical-finding-record-adapter.js").normalizePhysicalFindingRecord
+    require("./physical-domain-runtime-ports.js").normalizePhysicalFindingRecord
   ),
 });
 

@@ -381,7 +381,7 @@ test("`node mcp/server.js` refuses to start under an unsafe BOB_SESSIONS_ROOT", 
 // No agent-callable tool may relocate the session root: it is operator boot
 // config only. Guard the tool registry against a future regression.
 test("no MCP tool exposes a session-root override knob", () => {
-  const registry = require("../mcp/core/dispatch/tool-registry.js");
+  const registry = require("../mcp/tools/tool-registry.js");
   const serialized = JSON.stringify(registry.TOOL_MANIFEST || registry.TOOLS || []);
   assert.equal(
     /BOB_SESSIONS_ROOT|sessions_root|session_root/i.test(serialized),

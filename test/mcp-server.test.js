@@ -46,7 +46,7 @@ const {
   capabilityToolMapFromRegistry,
   defineTool,
   TOOL_REGISTRY,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   TOOL_MODULES,
 } = require("../mcp/tools/index.js");

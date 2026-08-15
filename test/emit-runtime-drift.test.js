@@ -32,7 +32,7 @@ const {
   TOOL_REGISTRY,
   toolNamesForRoleBundle,
   VALID_ROLE_BUNDLES,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   readFrontierEvents,
 } = require("../mcp/core/frontier/frontier-events.js");

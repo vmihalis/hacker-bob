@@ -9,6 +9,7 @@ const { spawnSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const MANIFEST_PATH = path.join(ROOT, "test", "mcp-test-manifest.json");
 const EGRESS_PROFILES_PATH = path.join(ROOT, ".claude", "bob", "egress-profiles.json");
+const TOOL_REGISTRY_COMPOSITION_ROOT = path.join(ROOT, "mcp", "tools", "tool-registry.js");
 
 function ensureEgressProfilesSeed() {
   if (fs.existsSync(EGRESS_PROFILES_PATH)) return null;
@@ -27,7 +28,12 @@ function main() {
   const cleanupSeed = ensureEgressProfilesSeed();
   let result;
   try {
-    result = spawnSync(process.execPath, ["--test", ...manifest], {
+    result = spawnSync(process.execPath, [
+      "--require",
+      TOOL_REGISTRY_COMPOSITION_ROOT,
+      "--test",
+      ...manifest,
+    ], {
       cwd: ROOT,
       env: process.env,
       stdio: "inherit",

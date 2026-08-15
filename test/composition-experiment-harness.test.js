@@ -47,7 +47,7 @@ const {
   compositionResultsJsonlPath,
 } = require("../mcp/core/io/paths.js");
 const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
-const { TOOL_MANIFEST, TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_MANIFEST, TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 const DOMAIN = "composition-experiment.test";
 

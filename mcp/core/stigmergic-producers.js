@@ -203,7 +203,7 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
   Object.freeze({
     producer_id: "claim_causal_support_payload",
     mcp_tool_or_artifact: "claims.jsonl payload.causal_support",
-    trace_shape_ref: "mcp/tools/record-candidate-claim.js#normalizeCausalSupport",
+    trace_shape_ref: "mcp/core/claims/candidate-claim-recorder.js#normalizeCausalSupport",
     registered_consumers: Object.freeze([
       "verification_adjudication_causal_reason_reader",
     ]),

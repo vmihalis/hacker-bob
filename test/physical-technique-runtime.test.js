@@ -18,7 +18,7 @@ const {
 } = require("../mcp/domains/physical/physical-technique-runtime.js");
 const {
   TOOL_REGISTRY,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 const digest = (label) => hashCanonicalJson({ label });
 

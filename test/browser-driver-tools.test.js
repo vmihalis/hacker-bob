@@ -26,7 +26,7 @@ const {
   TOOL_MANIFEST,
   TOOLS,
   toolNamesForRoleBundle,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
 } = require("../mcp/core/session/session-authority.js");

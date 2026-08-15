@@ -26,7 +26,7 @@ const {
 const {
   TOOL_MANIFEST,
   buildToolRegistry,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const { buildToolTelemetryEvent } = require("../mcp/core/telemetry/tool-telemetry.js");
 
 function rfTemplateDefinition() {

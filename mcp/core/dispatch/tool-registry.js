@@ -1,6 +1,5 @@
 "use strict";
 
-const { TOOL_MODULES } = require("../../tools/index.js");
 const { chainSpecificEvaluatorBundles } = require("../capability/capability-packs.js");
 const { normalizeEffectSurfaceMetadata } = require("../requested-effects.js");
 
@@ -214,8 +213,11 @@ function defineTool(entry) {
 }
 
 function buildToolRegistry({
-  toolModules = TOOL_MODULES,
+  toolModules,
 } = {}) {
+  if (!Array.isArray(toolModules)) {
+    throw new Error("buildToolRegistry requires an explicit toolModules array");
+  }
   const seenNames = new Set();
   const entries = [];
   for (const entry of toolModules) {
@@ -229,49 +231,21 @@ function buildToolRegistry({
   return Object.freeze(entries);
 }
 
-const TOOL_REGISTRY = buildToolRegistry();
+let activeRegistry = null;
 
-const TOOL_BY_NAME = new Map(TOOL_REGISTRY.map((tool) => [tool.name, tool]));
-
-function getRegisteredTool(name) {
-  return TOOL_BY_NAME.get(name) || null;
+function requireActiveRegistry() {
+  if (activeRegistry == null) {
+    throw new Error("tool registry is not installed; load mcp/tools/tool-registry.js at the composition root");
+  }
+  return activeRegistry;
 }
 
-// The public tools/list catalog advertises every registered tool under its
-// canonical bob_* name.
-const TOOLS = Object.freeze(TOOL_REGISTRY
-  .map((tool) => Object.freeze({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-  })));
-
-const TOOL_MANIFEST = Object.freeze(TOOL_REGISTRY.reduce((manifest, tool) => {
-  const base = {
-    role_bundles: frozenStringArray(tool.role_bundles),
-    mutating: tool.mutating,
-    global_preapproval: tool.global_preapproval,
-    network_access: tool.network_access,
-    browser_access: tool.browser_access,
-    scope_required: tool.scope_required,
-    sensitive_output: tool.sensitive_output,
-    session_artifacts_written: frozenStringArray(tool.session_artifacts_written),
-    capability_id: tool.capability_id,
-    scope_url_fields: frozenStringArray(tool.scope_url_fields),
-    required_session_axes: frozenStringArray(tool.required_session_axes),
-    effect_surface: frozenStringArray(tool.effect_surface),
-  };
-  manifest[tool.name] = Object.freeze(base);
-  return manifest;
-}, {}));
-
-const TOOL_HANDLERS = Object.freeze(TOOL_REGISTRY.reduce((handlers, tool) => {
-  handlers[tool.name] = tool.handler;
-  return handlers;
-}, {}));
+function getRegisteredTool(name) {
+  return requireActiveRegistry().TOOL_BY_NAME.get(name) || null;
+}
 
 function toolNamesForRoleBundle(roleBundle) {
-  return TOOL_REGISTRY
+  return requireActiveRegistry().TOOL_REGISTRY
     .filter((tool) => tool.role_bundles.includes(roleBundle))
     .map((tool) => tool.name);
 }
@@ -303,11 +277,11 @@ function aliasNamesForTool(toolName) {
 }
 
 function primaryToolName(toolName) {
-  const tool = TOOL_BY_NAME.get(toolName);
+  const tool = requireActiveRegistry().TOOL_BY_NAME.get(toolName);
   return tool ? tool.name : null;
 }
 
-function capabilityToolMapFromRegistry(registry = TOOL_REGISTRY) {
+function capabilityToolMapFromRegistry(registry = requireActiveRegistry().TOOL_REGISTRY) {
   const map = {};
   for (const tool of registry) {
     if (tool.capability_id == null) continue;
@@ -322,17 +296,64 @@ function capabilityToolMapFromRegistry(registry = TOOL_REGISTRY) {
   return Object.freeze(map);
 }
 
+function installToolRegistry(toolModules) {
+  if (activeRegistry != null) {
+    if (activeRegistry.toolModules === toolModules) return module.exports;
+    throw new Error("tool registry is already installed with a different module set");
+  }
+  const TOOL_REGISTRY = buildToolRegistry({ toolModules });
+  const TOOL_BY_NAME = new Map(TOOL_REGISTRY.map((tool) => [tool.name, tool]));
+  const TOOLS = Object.freeze(TOOL_REGISTRY.map((tool) => Object.freeze({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+  })));
+  const TOOL_MANIFEST = Object.freeze(TOOL_REGISTRY.reduce((manifest, tool) => {
+    manifest[tool.name] = Object.freeze({
+      role_bundles: frozenStringArray(tool.role_bundles),
+      mutating: tool.mutating,
+      global_preapproval: tool.global_preapproval,
+      network_access: tool.network_access,
+      browser_access: tool.browser_access,
+      scope_required: tool.scope_required,
+      sensitive_output: tool.sensitive_output,
+      session_artifacts_written: frozenStringArray(tool.session_artifacts_written),
+      capability_id: tool.capability_id,
+      scope_url_fields: frozenStringArray(tool.scope_url_fields),
+      required_session_axes: frozenStringArray(tool.required_session_axes),
+      effect_surface: frozenStringArray(tool.effect_surface),
+    });
+    return manifest;
+  }, {}));
+  const TOOL_HANDLERS = Object.freeze(TOOL_REGISTRY.reduce((handlers, tool) => {
+    handlers[tool.name] = tool.handler;
+    return handlers;
+  }, {}));
+  activeRegistry = Object.freeze({
+    toolModules,
+    TOOL_BY_NAME,
+    TOOL_HANDLERS,
+    TOOL_MANIFEST,
+    TOOL_REGISTRY,
+    TOOLS,
+  });
+  Object.assign(module.exports, {
+    TOOL_HANDLERS,
+    TOOL_MANIFEST,
+    TOOL_REGISTRY,
+    TOOLS,
+  });
+  return module.exports;
+}
+
 module.exports = {
-  TOOL_HANDLERS,
-  TOOL_MANIFEST,
-  TOOL_REGISTRY,
-  TOOLS,
   VALID_ROLE_BUNDLES,
   aliasNamesForTool,
   buildToolRegistry,
   capabilityToolMapFromRegistry,
   defineTool,
   getRegisteredTool,
+  installToolRegistry,
   isAliasName,
   primaryToolName,
   roleBundleResolvesToTools,

@@ -80,7 +80,7 @@ const {
 } = require("../mcp/core/io/storage.js");
 const {
   TOOL_HANDLERS,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   buildSessionNucleus,
 } = require("../mcp/core/governance/index.js");

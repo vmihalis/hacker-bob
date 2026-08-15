@@ -9,7 +9,7 @@ const INVENTORY_PATH = path.join(ROOT, "docs", "refactor-authority-inventory.md"
 
 const {
   TOOL_REGISTRY,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL: RUNTIME_AUTHORITY_CLASS_BY_TOOL,
 } = require("../mcp/core/session/session-authority.js");

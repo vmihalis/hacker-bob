@@ -23,7 +23,7 @@ const {
 } = require("../session/assignments.js");
 const {
   findingPayloadsFromClaims,
-} = require("../../tools/record-candidate-claim.js");
+} = require("../claims/candidate-claim-recorder.js");
 const {
   readHandoffSigningKey,
 } = require("../ledger-integrity/index.js");
