@@ -68,8 +68,8 @@ These are bidirectional call relationships, not directory-shape accidents:
 | session and frontier | `lifecycle-gates.js:28,115` consumes reachability; session state consumes frontier projections | `coverage-closure.js:49,84` consumes session-owned cell-floor derivation | Lifecycle transitions gate on frontier truth, while frontier closure is calculated from the session's dispatched obligations. |
 | session and waves | `agent-run-completion.js:13` consumes handoffs; `lifecycle-gates.js:458+` consumes scheduler preconditions | `wave-handoff-store.js:193` completes agent runs; scheduler preconditions consume assignment/session state | A handoff closes an agent run and run completion settles its handoff. Changing this to optional callbacks changes failure and persistence ordering. |
 | claims and waves | `claims.js:1857` reads handoff assignments | `wave-handoff-store.js:26` records candidate claims | Handoff completeness is part of claim depth, while the handoff is the producer boundary for the candidate claim. |
-| telemetry and lifecycle | scheduler preconditions call `pipeline-session-artifacts.js:168`; pipeline artifacts call evidence, claim-recorder, and verification at `:55,69,74` | grade/evidence/session producers emit the events that pipeline analytics reads | These artifacts are server-derived lifecycle projections, not passive logging. Moving them behind a best-effort telemetry callback would change gating behavior. |
-| belief and capability/waves | belief scheduler priority feeds capability derivation and wave brief ordering | belief model consumes the same claim model used by those producers | Priority is part of deterministic dispatch input, so duplicating it on a consumer side can change ordering and derived pack bytes. |
+| telemetry and lifecycle | scheduler preconditions call `pipeline-session-artifacts.js:168`; telemetry's import edges point into evidence, claim recording, and verification at `:55,69,74` | Lifecycle producers persist canonical session state, which `readSessionArtifactSummary()` reads back; this is a data read, not a return import edge. | The shared artifact reader supplies a server-derived lifecycle projection used by both analytics and a scheduler gate. Relocating it would fork `readSessionArtifactSummary()` or change gating behavior. |
+| belief and capability/waves | `capability-pack-derivation.js:770` derives the score map inside the pure fanout planner; `assignment-brief.js` is the impure producer that assembles and passes its belief inputs | All rank producers are members of the 37-module residual, so there is no external producer toward which to invert the dependency. | Priority is deterministic dispatch input. Moving the ranker would either duplicate the score-map derivation or pull I/O into the pure planner, risking changed ordering and derived pack bytes. |
 
 ## Inversions deliberately not taken
 
@@ -90,8 +90,16 @@ remaining candidate edges were reviewed in the required order and left intact:
    exception timing, or write ordering.
 4. **Telemetry.** The two residual modules build authoritative pipeline session
    artifacts used by scheduler preconditions. They read evidence, verification,
-   and claim-recording state; treating those reads as optional telemetry would be
-   a behavior change.
+   and claim-recording state. The apparent return is persisted-state data flow,
+   not an import edge; relocating the shared reader would fork
+   `readSessionArtifactSummary()`, while treating those reads as optional
+   telemetry would be a behavior change.
+5. **Belief.** Every producer of the dispatch rank is already inside the residual:
+   `assignment-brief.js` assembles the caller-owned inputs, and
+   `capability-pack-derivation.js:770` derives the score map inside the pure fanout
+   planner. Moving that calculation across the boundary would duplicate the rank
+   definition or introduce I/O into the pure planner, either of which can change
+   ordering and derived pack bytes.
 
 Those cuts are therefore classified as essential under N4's rule: if an
 inversion is not provably behavior-preserving, skip it rather than force a lower

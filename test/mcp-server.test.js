@@ -35,9 +35,6 @@ const {
 } = require("../mcp/core/dispatch/technique-packs.js");
 const egressProfiles = require("../mcp/core/egress-profiles.js");
 const {
-  TOOL_HANDLERS,
-} = require("../mcp/core/dispatch/dispatch.js");
-const {
   SHADOW_ACK_ENV,
   SHADOW_ACK_TOKEN,
 } = require("../mcp/core/enforcement-attest.js");
@@ -45,6 +42,7 @@ const {
   buildToolRegistry,
   capabilityToolMapFromRegistry,
   defineTool,
+  TOOL_HANDLERS,
   TOOL_REGISTRY,
 } = require("../mcp/tools/tool-registry.js");
 const {
@@ -2033,6 +2031,28 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
       meta: { tool: "__unknown_tool__", version: 1 },
     });
   });
+});
+
+test("role model loads before registry installation and validates lazily on first registry use", () => {
+  const probe = spawnSync(process.execPath, ["-e", [
+    "const roleModel = require('./mcp/core/dispatch/role-model.js');",
+    "if (!roleModel.ROLE_DEFINITIONS.orchestrator) throw new Error('role model did not load');",
+    "let protectedByRegistry = false;",
+    "try { roleModel.mcpToolNamesForRole('orchestrator'); }",
+    "catch (error) {",
+    "  if (!/tool registry is not installed/.test(error.message)) throw error;",
+    "  protectedByRegistry = true;",
+    "}",
+    "if (!protectedByRegistry) throw new Error('role-model assertion did not run lazily');",
+    "require('./mcp/tools/tool-registry.js');",
+    "if (!roleModel.mcpToolNamesForRole('orchestrator').includes('bob_read_session_nucleus')) {",
+    "  throw new Error('role model did not validate after composition-root installation');",
+    "}",
+  ].join("\n")], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
 });
 
 test("MCP tool manifest exposes required policy metadata for every tool", () => {

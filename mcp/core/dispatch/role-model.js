@@ -1,10 +1,10 @@
 "use strict";
 
 const path = require("path");
+const toolRegistry = require("./tool-registry.js");
 const {
-  TOOL_MANIFEST,
   toolNamesForRoleBundle,
-} = require("./tool-registry.js");
+} = toolRegistry;
 const { evaluatorRoleSpecs } = require("../capability/capability-packs.js");
 const { FANOUT_ROLE_REGISTRY } = require("../session/nested-spawn.js");
 
@@ -216,7 +216,7 @@ function allRoleDefinitions() {
   return Object.values(ROLE_DEFINITIONS);
 }
 
-function mcpToolNamesForRole(roleId) {
+function uncheckedMcpToolNamesForRole(roleId) {
   const role = roleDefinition(roleId);
   // A role may DENY specific tools its bundles would otherwise grant. This is
   // the only tool-subtraction primitive: bundle membership is per-tool and
@@ -231,17 +231,24 @@ function mcpToolNamesForRole(roleId) {
   ]).filter((toolName) => !denied.has(toolName));
 }
 
+let roleModelValidated = false;
+
 function assertRoleModel() {
+  if (roleModelValidated) return;
   for (const role of allRoleDefinitions()) {
-    for (const toolName of mcpToolNamesForRole(role.id)) {
-      if (!TOOL_MANIFEST[toolName]) {
+    for (const toolName of uncheckedMcpToolNamesForRole(role.id)) {
+      if (!toolRegistry.TOOL_MANIFEST[toolName]) {
         throw new Error(`Role ${role.id} references unknown MCP tool ${toolName}`);
       }
     }
   }
+  roleModelValidated = true;
 }
 
-assertRoleModel();
+function mcpToolNamesForRole(roleId) {
+  assertRoleModel();
+  return uncheckedMcpToolNamesForRole(roleId);
+}
 
 module.exports = {
   READ_ONLY_DEBUG_TOOLS,
