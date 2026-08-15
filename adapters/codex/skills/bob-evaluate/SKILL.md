@@ -96,7 +96,7 @@ Wait with `wait_agent` for all angle workers to drain, then spawn the `ANGLE=ass
 Then continue to the surface-router step below regardless of which recon path ran (the assembled `attack_surface.json` is the same surface either way).
 
 **Recon-producer floor (deterministic analog of the cell floor).** The recon fan-out also has a deterministic floor. Call `bob_materialize_producer_floor({ target_domain })` to emit one schedulable producer node per READY recon producer (root seed present, or an upstream artifact kind that satisfies a derived producer's `consumes`), then loop `bob_schedule_seed_producers({ target_domain })` to dispatch them, re-materializing until `producer_floor_at_fixpoint` (no new non-advisory producer). Derived producers whose upstream input is still absent are REPORTED in `producer_gaps[]` and do NOT block — gaps satisfy-and-report; only a READY non-advisory producer keeps the floor open. The `seed_producers_drained` gate refuses `OPEN_FRONTIER -> CLAIM_FREEZE` while any non-advisory producer remains ready.
-Recon-producer floor (source of truth `mcp/lib/producer-packs.js`; lookup by `producer_id`):
+Recon-producer floor (source of truth `mcp/core/dispatch/producer-packs.js`; lookup by `producer_id`):
 - `web_host_family` (host_family angle, root/web): consumes —; produces live_hosts, family_live, subdomains.
 - `web_urls` (urls angle, derived/web): consumes live_hosts, family_live; produces all_urls.
 - `web_nuclei` (nuclei angle, derived/web): consumes live_hosts, family_live; produces nuclei_results.
@@ -200,7 +200,7 @@ Smart-contract spawn dispatch:
 - If `assignment.brief_profile === "web"` or `assignment.brief_profile === "oss"` -> use the generic evaluator spawn template above; do not use the SC template below.
 - Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.
 
-Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.
+Pack metadata is the source of truth in `mcp/core/capability/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.
 ```text
 For each smart-contract assignment, use Codex spawn_agent with `agent_type: "worker"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Evaluator agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bob_read_assignment_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary, CLI dependency, and blocked_harness_runs[] kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.evaluator_agent] from Codex Worker Role Contracts.
 ```
@@ -2060,7 +2060,7 @@ Convention (all packs): evaluator proof tests ASSERT the bug exists. A test in `
 
 ## Capability pack verifier table
 
-Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+Generated from `mcp/core/capability/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
 
 | capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |
 |---|---|---|---|---|---|---|
@@ -2288,7 +2288,7 @@ Your final response must be compact summary-only, must not include raw requests,
 
 ## Capability pack verifier table
 
-Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+Generated from `mcp/core/capability/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
 
 | capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |
 |---|---|---|---|---|---|---|
@@ -2410,7 +2410,7 @@ Your final response must be compact summary-only, must not include raw requests,
 
 ## Capability pack verifier table
 
-Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+Generated from `mcp/core/capability/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
 
 | capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |
 |---|---|---|---|---|---|---|
@@ -2558,7 +2558,7 @@ Your final response after the readback must be compact summary-only, must not in
 
 ## Capability pack verifier table
 
-Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+Generated from `mcp/core/capability/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
 
 | capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |
 |---|---|---|---|---|---|---|

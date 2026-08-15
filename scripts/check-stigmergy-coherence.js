@@ -36,10 +36,10 @@ const path = require("path");
 const {
   STIGMERGIC_PRODUCERS,
   isKnownProducerId,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 const {
   STIGMERGIC_CONSUMERS,
-} = require("../mcp/lib/stigmergic-consumers.js");
+} = require("../mcp/core/stigmergic-consumers.js");
 
 const ROOT = path.join(__dirname, "..");
 

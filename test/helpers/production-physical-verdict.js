@@ -31,46 +31,46 @@ const {
   observerAttemptBindingDigest,
   rowAuthorizationContextDigest,
   signatureInputDigest,
-} = require("../../mcp/lib/physical-experiment-contract.js");
+} = require("../../mcp/domains/physical/physical-experiment-contract.js");
 const {
   assertReportSafePhysicalVerdict,
   projectReportSafePhysicalVerdict,
-} = require("../../mcp/lib/physical-capability-consumers.js");
+} = require("../../mcp/domains/physical/physical-capability-consumers.js");
 const {
   buildDurableReceiptTrustRegistry,
   buildExecutedEvidenceRegistry,
   createDurableEvidenceReceiptIssuer,
-} = require("../../mcp/lib/executed-evidence-registry.js");
+} = require("../../mcp/core/executed-evidence-registry.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../../mcp/lib/governance-contracts.js");
+} = require("../../mcp/core/governance/governance-contracts.js");
 const {
   buildEffectTemplateRegistry,
   normalizeRequestedEffect,
-} = require("../../mcp/lib/requested-effects.js");
-const { hashCanonicalJson } = require("../../mcp/lib/verification-contracts.js");
+} = require("../../mcp/core/requested-effects.js");
+const { hashCanonicalJson } = require("../../mcp/core/verification/verification-contracts.js");
 const {
   SANDBOX_AGENT_UID_ENV,
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../../mcp/lib/sandbox-isolation-attest.js");
+} = require("../../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
 const {
   openProductionPhysicalMonotonicOwner,
-} = require("../../mcp/lib/physical-monotonic-owner.js");
+} = require("../../mcp/domains/physical/physical-monotonic-owner.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../../mcp/lib/physical-trusted-clock.js");
+} = require("../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   PHYSICAL_TRUSTED_CLOCK_AUTHORITY_BUNDLE_DOMAIN,
   PHYSICAL_TRUSTED_CLOCK_AUTHORITY_FILE,
   PHYSICAL_TRUSTED_CLOCK_TRUST_DOMAIN,
   openProductionPhysicalTrustedClockPort,
   physicalClockTrustSigningMessage,
-} = require("../../mcp/lib/physical-trusted-clock-store.js");
+} = require("../../mcp/domains/physical/physical-trusted-clock-store.js");
 
 const DIGEST_RE = /^[a-f0-9]{64}$/u;
 

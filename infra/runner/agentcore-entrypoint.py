@@ -483,9 +483,9 @@ def _write_caller_auth_mcp_config(mcp_config_path: str, token: str) -> str:
 def _load_grade_verdict_hash(target_domain: str, env: dict, subprocess_run=subprocess.run):
     """fx-hmac-content: best-effort grade_verdict_hash for the just-completed GRADE stage.
 
-    Shells out to `node -e` against mcp/lib/report-finalize.js's already-exported
+    Shells out to `node -e` against mcp/core/report-finalize.js's already-exported
     loadGradeVerdictHash(target_domain) -- the exact node-shellout bridge pattern
-    mcp/lib/approval-store.js already uses to reach real AWS SDK v3 (Promise-only)
+    mcp/core/approval-store.js already uses to reach real AWS SDK v3 (Promise-only)
     calls from a synchronous caller. Here the reason is different but the pattern is
     identical: keep the sha256-over-canonical-JSON logic in ONE place
     (report-finalize.js / verification-contracts.js hashCanonicalJson) rather than
@@ -494,8 +494,8 @@ def _load_grade_verdict_hash(target_domain: str, env: dict, subprocess_run=subpr
     gradeArtifactPaths -- the same EFS-mounted session dir this file already reads
     report-snapshots.jsonl from; zero new filesystem access is introduced.
 
-    mcp/lib/report-finalize.js lives alongside mcp/agentcore-mcp-config.json (both
-    ship under the same mcp/ directory -- see Dockerfile's `COPY mcp/ ./mcp/` and the
+    mcp/core/report-finalize.js lives below mcp/agentcore-mcp-config.json (both ship
+    under the same mcp/ directory -- see Dockerfile's `COPY mcp/ ./mcp/` and the
     BOB_MCP_CONFIG env var it bakes in), so the module path is derived from
     env["BOB_MCP_CONFIG"]'s own directory rather than this file's own location
     (which differs between the Docker image layout and this repo's dev/test layout).
@@ -503,7 +503,7 @@ def _load_grade_verdict_hash(target_domain: str, env: dict, subprocess_run=subpr
     NEVER raises: any failure (missing grade.json, node unavailable, malformed
     output, BOB_MCP_CONFIG unset) yields None. This is a best-effort enrichment of
     the awaiting_verifier_gate sentinel returned to the state machine, NOT a gate -- the
-    real fail-closed content-binding happens downstream in mcp/lib/approval-store.js
+    real fail-closed content-binding happens downstream in mcp/core/approval-store.js
     (verifyApprovalArtifact) and .claude/hooks/bob-approval-gate-impl.py, which each
     independently resolve their own current grade_verdict_hash before admitting the
     GRADE -> REPORT transition."""
@@ -511,7 +511,7 @@ def _load_grade_verdict_hash(target_domain: str, env: dict, subprocess_run=subpr
         mcp_config = env.get("BOB_MCP_CONFIG")
         if not mcp_config:
             return None
-        report_finalize_js = os.path.join(os.path.dirname(mcp_config), "lib", "report-finalize.js")
+        report_finalize_js = os.path.join(os.path.dirname(mcp_config), "core", "report-finalize.js")
         # `node -e <script> arg0 arg1` puts arg0 at process.argv[1] (NOT [2] -- there is no
         # "[eval]" placeholder in process.argv itself, only in stack-trace text), so the module
         # path is argv[1] and target_domain is argv[2].

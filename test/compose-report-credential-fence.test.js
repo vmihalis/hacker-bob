@@ -22,15 +22,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { reportMarkdownPath, sessionDir, verificationRoundPaths } = require("../mcp/lib/paths.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { reportMarkdownPath, sessionDir, verificationRoundPaths } = require("../mcp/core/io/paths.js");
 const {
   MIN_FENCED_CREDENTIAL_LENGTH,
   buildReportCredentialFence,
   findCredentialExportLeaks,
   isFenceableCredentialValue,
-} = require("../mcp/lib/report-credential-fence.js");
+} = require("../mcp/core/redaction/report-credential-fence.js");
 
 const DOMAIN = "audit.example.com";
 

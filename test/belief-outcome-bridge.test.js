@@ -16,25 +16,25 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
-const { compositionVerifiedJsonlPath } = require("../mcp/lib/paths.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
+const { compositionVerifiedJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   verifyCompositionPath,
   RESULT_VERIFIED_PASS,
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
-} = require("../mcp/lib/composition-live-verifier.js");
+} = require("../mcp/core/differential/composition-live-verifier.js");
 const {
   buildBeliefWindow,
   stableId,
   requestEquivalenceScope,
-} = require("../mcp/lib/belief/belief-window.js");
+} = require("../mcp/core/belief/belief-window.js");
 const {
   queryBeliefSignals,
   writeBeliefSignalScratch,
   _internals,
-} = require("../mcp/lib/belief/authority.js");
+} = require("../mcp/core/belief/authority.js");
 
 const DOMAIN = "example.com";
 const BASE_URL = "https://example.com";
@@ -319,7 +319,7 @@ test("NO GATING: the audit-graded composition-verified.jsonl row is byte-identic
   });
 
   // Run 2: force the belief write to throw — the verified row must be identical.
-  const authority = require("../mcp/lib/belief/authority.js");
+  const authority = require("../mcp/core/belief/authority.js");
   const original = authority.writeBeliefSignalScratch;
   const recordB = await withTempHome(async () => {
     authority.writeBeliefSignalScratch = () => { throw new Error("forced belief write failure"); };

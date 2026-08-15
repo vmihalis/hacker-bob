@@ -13,8 +13,8 @@ const {
   joinUrl,
   normalizeEndpoints,
   normalizeProfiles,
-} = require("../mcp/lib/auth-differential-runner.js");
-const { deriveLineageEndpoints } = require("../mcp/lib/tools/run-auth-differential.js");
+} = require("../mcp/core/auth-differential-runner.js");
+const { deriveLineageEndpoints } = require("../mcp/tools/web/run-auth-differential.js");
 
 function uniqueDomain(prefix = "bob-authdiff-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -593,8 +593,8 @@ test("persisted per_endpoint rows carry a verifying ed25519 row_mac; results_has
       MAC_SCHEME_ED25519,
       OFFENSIVE_ROW_MAC_VERSION_V2,
       AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT,
-    } = require("../mcp/lib/offensive-row-mac.js");
-    const { readHandoffSigningPublicKey } = require("../mcp/lib/handoff-signing-key.js");
+    } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+    const { readHandoffSigningPublicKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
     // A genuine 2-tenant differential: each owner 2xx's its own id-bearing object, 401s the other's.
     const fetch_fn = async ({ auth_profile, endpoint }) => {
       const owns = (auth_profile === "victim" && endpoint === "/orders/1")
@@ -915,7 +915,7 @@ test("R1: an omitted deadline_ms runs the full sweep and emits no deadline keys 
 });
 
 test("R1: makePerCallHttpScanFetcher injects no-cache freshness headers only when freshness:true", async () => {
-  const { makePerCallHttpScanFetcher } = require("../mcp/lib/http-scan-adapter.js");
+  const { makePerCallHttpScanFetcher } = require("../mcp/core/http-scan-adapter.js");
   const calls = [];
   const httpScanFn = async (a) => {
     calls.push(a);

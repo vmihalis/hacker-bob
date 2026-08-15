@@ -17,10 +17,10 @@ const {
 } = require("../mcp/lib/physical-sensitive-material.js");
 const {
   redactTextSensitiveValues,
-} = require("../mcp/lib/sensitive-material.js");
+} = require("../mcp/core/redaction/sensitive-material.js");
 const {
   safeErrorMessage,
-} = require("../mcp/lib/tool-telemetry.js");
+} = require("../mcp/core/telemetry/tool-telemetry.js");
 
 test("physical field classifier distinguishes raw values from opaque metadata", () => {
   for (const field of [

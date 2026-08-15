@@ -24,12 +24,12 @@ const {
   readInvariantRuns,
   computeInvariantRunHash,
   invariantFoundryResultHash,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   verifyRowWithMac,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 
 function uniqueDomain() {
   return `inv-ci-${Math.random().toString(36).slice(2)}.example.com`;

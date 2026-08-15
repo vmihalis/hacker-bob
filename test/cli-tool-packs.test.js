@@ -15,17 +15,17 @@ const {
   normalizeCliToolPack,
   renderCliToolPackSnippet,
   selectCliToolPacks,
-} = require("../mcp/lib/cli-tool-packs.js");
+} = require("../mcp/core/dispatch/cli-tool-packs.js");
 const {
   CACHE_FILE_NAME,
   DEFAULT_CACHE_TTL_MS,
   checkCliToolInstallation,
   presenceCachePath,
-} = require("../mcp/lib/cli-tool-presence.js");
+} = require("../mcp/core/dispatch/cli-tool-presence.js");
 const {
   renderAvailableCliToolsSection,
   renderAvailableCliToolsSectionSync,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;

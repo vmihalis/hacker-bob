@@ -19,11 +19,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { statePath } = require("../mcp/lib/paths.js");
-const { readJsonFile } = require("../mcp/lib/storage.js");
-const { loadQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
-const setQueuePolicy = require("../mcp/lib/tools/set-queue-policy.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { statePath } = require("../mcp/core/io/paths.js");
+const { readJsonFile } = require("../mcp/core/io/storage.js");
+const { loadQueuePolicy, writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
+const setQueuePolicy = require("../mcp/tools/set-queue-policy.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -275,9 +275,9 @@ test("two contracts sharing an 8-hex address prefix derive DISTINCT target_domai
 });
 
 test("the companion path and the contracts-axis init path derive the SAME chain_authority_hash (uppercase family folds identically)", () => {
-  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  const { prepareContractCompanion } = require("../mcp/domains/blockchain/contract-target.js");
   const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
-  const initTool = require("../mcp/lib/tools/init-contract-session.js");
+  const initTool = require("../mcp/tools/blockchain/init-contract-session.js");
 
   const contract = {
     chain_family: "evm",
@@ -303,7 +303,7 @@ test("the companion path and the contracts-axis init path derive the SAME chain_
 });
 
 test("the companion path rejects a chain_id containing a colon (fail-closed, same as init)", () => {
-  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  const { prepareContractCompanion } = require("../mcp/domains/blockchain/contract-target.js");
   assert.throws(
     () => prepareContractCompanion([{
       chain_family: "evm",

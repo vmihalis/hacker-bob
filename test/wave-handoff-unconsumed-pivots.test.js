@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   computeUnconsumedPivots,
   pivotEdgeKey,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 // The transition-blind evaluator-fanout rides cross-surface pivots up as
 // handoff.discovered_pivots[]; the orchestrator is supposed to consume each via
@@ -101,19 +101,19 @@ test("malformed pivot entries are skipped without throwing", () => {
 // Integration-shaped: the merge surfacing must thread unconsumed_pivots through
 // the merge result and be NON-GATING (it adds a field; it asserts nothing).
 test("mergeWaveHandoffsInternal exposes unconsumed_pivots and the surfacing is purely additive", () => {
-  const store = require("../mcp/lib/wave-handoff-store.js");
+  const store = require("../mcp/core/waves/wave-handoff-store.js");
   // Source proof that the surfacing is wired and non-gating: the merge tool's
   // serialized output names unconsumed_pivots, and the field is read straight
   // off merge.unconsumed_pivots with no throw/assert around it.
   const src = require("fs").readFileSync(
-    require("path").join(__dirname, "..", "mcp", "lib", "wave-handoff-store.js"),
+    require("path").join(__dirname, "..", "mcp", "core", "waves", "wave-handoff-store.js"),
     "utf8",
   );
   assert.ok(src.includes("unconsumed_pivots: merge.unconsumed_pivots"), "merge tool output carries the advisory field");
   assert.ok(src.includes("unconsumed_pivots: unconsumedPivots"), "internal merge result carries the advisory field");
   // No new throw is introduced around the pivot surfacing (non-gating).
   const settlerSrc = require("fs").readFileSync(
-    require("path").join(__dirname, "..", "mcp", "lib", "waves", "wave-merge-settler.js"),
+    require("path").join(__dirname, "..", "mcp", "core", "waves", "wave-merge-settler.js"),
     "utf8",
   );
   assert.ok(settlerSrc.includes("unconsumed_pivots: merge.unconsumed_pivots"), "apply-wave-merge serialization carries the advisory field");

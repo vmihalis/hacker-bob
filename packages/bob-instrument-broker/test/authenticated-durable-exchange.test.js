@@ -34,7 +34,7 @@ const {
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return crypto.createHash("sha256").update(label).digest("hex");
@@ -1022,7 +1022,7 @@ test("the module initializes under a pre-existing numeric Array prototype setter
     const target = ${JSON.stringify(target)};
     const first = require(target);
     const verificationContracts = require(path.resolve(
-      path.dirname(target), "../../../mcp/lib/verification-contracts.js"));
+      path.dirname(target), "../../../mcp/core/verification/verification-contracts.js"));
     const source = fs.readFileSync(target, "utf8");
     const compiled = vm.runInThisContext(Module.wrap(source), { filename: target });
     const pairs = [
@@ -1056,7 +1056,7 @@ test("the module initializes under a pre-existing numeric Array prototype setter
       const localRequire = (specifier) => {
         if (specifier === "node:crypto") return crypto;
         if (specifier === "node:util") return util;
-        if (specifier === "../../../mcp/lib/verification-contracts.js") {
+        if (specifier === "../../../mcp/core/verification/verification-contracts.js") {
           return verificationContracts;
         }
         throw new Error("unexpected require: " + specifier);

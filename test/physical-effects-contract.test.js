@@ -14,7 +14,7 @@ const {
   physicalQuantityRegistryDigest,
   spatialEnvelopeDigest,
   stimulusSequenceDigest,
-} = require("../mcp/lib/physical-quantities.js");
+} = require("../mcp/domains/physical/physical-quantities.js");
 const {
   buildEffectTemplateRegistry,
   normalizeEffectSurfaceMetadata,
@@ -22,12 +22,12 @@ const {
   normalizeRequestedEffects,
   projectLegacyEffectFlags,
   requestedEffectDigest,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   TOOL_MANIFEST,
   buildToolRegistry,
-} = require("../mcp/lib/tool-registry.js");
-const { buildToolTelemetryEvent } = require("../mcp/lib/tool-telemetry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
+const { buildToolTelemetryEvent } = require("../mcp/core/telemetry/tool-telemetry.js");
 
 function rfTemplateDefinition() {
   return {

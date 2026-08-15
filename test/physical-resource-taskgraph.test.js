@@ -9,18 +9,18 @@ const test = require("node:test");
 const {
   appendContract,
   normalizeContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   selectNextExecutableNodes,
-} = require("../mcp/lib/graph-scheduler.js");
+} = require("../mcp/core/waves/graph-scheduler.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,
-} = require("../mcp/lib/task-graph-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/waves/task-graph-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 
 const digest = (label) => hashCanonicalJson({ label });
 

@@ -13,7 +13,7 @@ const crypto = require("node:crypto");
 const {
   classifyConsumableShape,
   mintShapeMatchedDecoyBytes,
-} = require("../mcp/lib/consumable-shape.js");
+} = require("../mcp/core/verification/consumable-shape.js");
 
 test("classifyConsumableShape assigns the expected encoding classes", () => {
   assert.equal(classifyConsumableShape(Buffer.from(JSON.stringify({ a: 1, token: "x" }))), "json");

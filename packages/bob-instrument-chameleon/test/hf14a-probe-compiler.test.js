@@ -11,7 +11,7 @@ const compiler = require("../lib/hf14a-probe-compiler.js");
 const operations = require("../lib/operations.js");
 const {
   assertNoPublicByteMaterial,
-} = require("../../../mcp/lib/instrument-provider-contract.js");
+} = require("../../../mcp/domains/physical/instrument-provider-contract.js");
 
 const {
   HF14A_PROBE_COMPILER_ID,

@@ -8,15 +8,15 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   currentBlockers,
   currentClosures,
   observationsForSurface,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

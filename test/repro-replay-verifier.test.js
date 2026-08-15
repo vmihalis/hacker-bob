@@ -12,8 +12,8 @@ const {
   RESULT_VERIFIED_PASS,
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
-} = require("../mcp/lib/repro-replay-verifier.js");
-const { reproVerifiedJsonlPath, isAuditGradedPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
+const { reproVerifiedJsonlPath, isAuditGradedPath } = require("../mcp/core/io/paths.js");
 const { persistingRunner } = require("./helpers/repro-run-pair.js");
 
 const DOMAIN = "repo-muparser-test";

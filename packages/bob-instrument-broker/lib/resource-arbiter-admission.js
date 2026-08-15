@@ -14,14 +14,14 @@ const {
   normalizePhysicalResourceArbiterCommand,
   normalizePhysicalResourceArbiterConfig,
   normalizePhysicalResourceQueueTicket,
-} = require("../../../mcp/lib/physical-resource-arbiter.js");
+} = require("../../../mcp/domains/physical/physical-resource-arbiter.js");
 const {
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
 } = require("../../../mcp/lib/physical-resource-contract.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   assertPhysicalResourceArbiterStore,
   commitPhysicalResourceArbiterTransition,

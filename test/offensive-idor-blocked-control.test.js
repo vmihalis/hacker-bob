@@ -15,17 +15,17 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { idorConfirm } = require("../mcp/lib/offensive-idor-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/lib/auth.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
-const { readOffensiveRunRecords } = require("../mcp/lib/claims.js");
+const { idorConfirm } = require("../mcp/domains/web/offensive-idor-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/auth.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
+const { readOffensiveRunRecords } = require("../mcp/core/claims/claims.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 const SURFACE_ID = "surface:accounts";
 const PATH_TEMPLATE = "/api/accounts/{id}";

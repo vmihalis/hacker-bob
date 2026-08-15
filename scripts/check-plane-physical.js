@@ -10,7 +10,7 @@ const {
 const {
   canonicalPlanePhysicalHyperedgeRegistry,
   canonicalPlanePhysicalNodeContractRegistry,
-} = require("../mcp/lib/plane-physical-release-contracts.js");
+} = require("../mcp/domains/physical/plane-physical-release-contracts.js");
 
 const ROOT = path.join(__dirname, "..");
 const DOCUMENTS = Object.freeze({

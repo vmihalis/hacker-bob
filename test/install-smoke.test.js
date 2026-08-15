@@ -17,8 +17,8 @@ const {
   installProject,
 } = require("../scripts/install.js");
 const { doctorProject } = require("../scripts/lifecycle.js");
-const update = require("../mcp/lib/update-check.js");
-const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+const update = require("../mcp/core/update-check.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/core/session/nested-spawn.js");
 const {
   CANONICAL_RUNTIME_PACKAGE_ROOTS,
   canonicalInstalledRuntimeFiles,
@@ -595,7 +595,7 @@ test("core installer and packed runtime start without a lifecycle-custodian prel
         "if (custodian.lifecycleCustodianStatus().available !== false) process.exit(61);",
         "const result = require(path.join(root, 'scripts/install.js')).installProject(target, { sourceRoot: root, adapter: 'generic-mcp', onAdapterResolution() {} });",
         "const server = require(path.join(target, 'mcp/server.js'));",
-        "const registry = require(path.join(target, 'mcp/lib/tool-registry.js'));",
+        "const registry = require(path.join(target, 'mcp/core/dispatch/tool-registry.js'));",
         "if (!Array.isArray(server.TOOLS) || server.TOOLS.length < 1) process.exit(62);",
         "if (JSON.stringify(server.TOOLS.map((tool) => tool.name)) !== JSON.stringify(registry.TOOLS.map((tool) => tool.name))) process.exit(63);",
         "const removed = require(path.join(root, 'scripts/lifecycle.js')).uninstallProject(target, { sourceRoot: root, adapter: 'generic-mcp', dryRun: false, onAdapterResolution() {} });",
@@ -808,9 +808,9 @@ test("installer copies a require-able complete MCP runtime", () => {
     for (const name of manifest) {
       assert.ok(fs.existsSync(path.join(workspace, "mcp", name)), `installer must copy top-level mcp/${name}`);
     }
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "egress-profiles.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "core", "dispatch", "dispatch.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "tools", "index.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "core", "egress-profiles.js")));
     for (const relativeRoot of CANONICAL_RUNTIME_PACKAGE_ROOTS) {
       const expected = sourceTreeFiles(ROOT, relativeRoot)
         .filter(isCanonicalRuntimePackageFile)
@@ -864,12 +864,7 @@ test("installer copies a require-able complete MCP runtime", () => {
     let runtimeCheck = runtimeDoctorCheck();
     assert.equal(runtimeCheck.status, "ok");
     assert.equal(runtimeCheck.detail.coverage, "bob_owned_runtime_only");
-    const installedCompatibilityStore = path.join(
-      workspace,
-      "mcp",
-      "lib",
-      "instrument-lease-store.js",
-    );
+    const installedCompatibilityStore = path.join(workspace, "mcp", "domains", "physical", "instrument-lease-store.js");
     const installedCanonicalStore = path.join(
       workspace,
       "packages",
@@ -1006,8 +1001,8 @@ test("installer copies a require-able complete MCP runtime", () => {
       assert.equal(m & 0o111, 0, "write-guard-tables.json must not be executable");
     }
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update-lib.js")));
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "update-check.js")));
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "bob-export.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "core", "update-check.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "core", "bob-export.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".hacker-bob", "knowledge", "evaluator-techniques.json")));
     assert.ok(fs.existsSync(path.join(workspace, ".hacker-bob", "bypass-tables", "rest-api.txt")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "knowledge")));
@@ -1141,7 +1136,7 @@ test("installer copies a require-able complete MCP runtime", () => {
       [
         "const server = require(process.argv[1]);",
         "const installedRequire = require('module').createRequire(process.argv[1]);",
-        "const installedRegistry = installedRequire('./lib/tool-registry.js');",
+        "const installedRegistry = installedRequire('./core/dispatch/tool-registry.js');",
         "installedRequire('psl');",
         "installedRequire('proxy-agent');",
         "if (!Array.isArray(server.TOOLS) || server.TOOLS.length < 1) process.exit(2);",
@@ -1480,7 +1475,7 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
       stdio: "pipe",
     });
     for (const authoringSurface of [
-      "mcp/lib/physical-provider-authoring.js",
+      "mcp/domains/physical/physical-provider-authoring.js",
       "packages/bob-instrument-deterministic/lib/orthogonal-fixture.js",
       ".hacker-bob/docs/provider-authoring.md",
     ]) {
@@ -1541,7 +1536,7 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
     });
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bob-evaluate-runner", "SKILL.md")));
-    assert.ok(!fs.existsSync(path.join(workspace, "mcp", "lib", "physical-provider-authoring.js")));
+    assert.ok(!fs.existsSync(path.join(workspace, "mcp", "domains", "physical", "physical-provider-authoring.js")));
     assert.ok(!fs.existsSync(path.join(
       workspace,
       "packages",
@@ -1592,9 +1587,8 @@ test("reinstall converges Bob-owned MCP surfaces while preserving mixed-ownershi
   //  - PRESERVE (Codex/glm round-4): the installer must NEVER delete a top-level mcp/*.js it did not
   //    place — the target is the user's project. (An earlier "converge to the manifest" cleanup deleted
   //    by negation, which would destroy user files; reverted.)
-  //  - CONVERGE: mcp/lib is wholly Bob-owned. v2.0.1 shipped two root migration
-  //    modules that are now intentionally absent; root files and whole directories
-  //    removed from the source must not survive a reinstall.
+  //  - CONVERGE: mcp/{core,domains,tools,fuzz,lib} are wholly Bob-owned. Removed
+  //    runtime files and nested directories must not survive an upgrade.
   //  - SHARE: mcp/node_modules has separate direct-copy ownership semantics, so a
   //    foreign dependency remains untouched while Bob's dependency graph refreshes.
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-userfile-"));
@@ -1649,14 +1643,14 @@ test("reinstall converges Bob-owned MCP surfaces while preserving mixed-ownershi
     const retiredV201Modules = [
       "session-root-migration.js",
       "telemetry-migration.js",
-    ].map((name) => path.join(workspace, "mcp", "lib", name));
+    ].map((name) => path.join(workspace, "mcp", "core", name));
     for (const retired of retiredV201Modules) {
       fs.writeFileSync(retired, "module.exports = { stale_v201_runtime: true };\n", "utf8");
     }
     const removedDirectoryFile = path.join(
       workspace,
       "mcp",
-      "lib",
+      "core",
       "removed-whole-directory",
       "stale-runtime.js",
     );
@@ -1700,13 +1694,13 @@ test("reinstall converges Bob-owned MCP surfaces while preserving mixed-ownershi
       "preserve-foreign-dependency\n",
       "reinstall must preserve foreign mcp/node_modules entries",
     );
-    const expectedLibFiles = canonicalInstalledRuntimeFiles(ROOT)
-      .filter((relativePath) => relativePath.startsWith("mcp/lib/"));
-    assert.deepEqual(
-      sourceTreeFiles(workspace, "mcp/lib"),
-      expectedLibFiles,
-      "installed Bob-owned mcp/lib must exactly match the current canonical runtime manifest",
-    );
+    for (const runtimeTree of ["core", "domains", "tools", "fuzz", "lib"]) {
+      assert.deepEqual(
+        sourceTreeFiles(workspace, path.join("mcp", runtimeTree)),
+        sourceTreeFiles(ROOT, path.join("mcp", runtimeTree)),
+        `installed Bob-owned mcp/${runtimeTree} must exactly match the source tree`,
+      );
+    }
     const refreshedOwnership = JSON.parse(fs.readFileSync(ownershipMetadataPath, "utf8"))
       .mcp_top_level_runtime_ownership;
     assert.equal(refreshedOwnership.version, 1);

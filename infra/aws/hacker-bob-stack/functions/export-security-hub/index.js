@@ -56,17 +56,7 @@
 const crypto = require("crypto");
 const path = require("path");
 
-const asffBuilderPath = process.env.ASFF_BUILDER_PATH || path.join(
-  __dirname,
-  "..",
-  "..",
-  "..",
-  "..",
-  "..",
-  "mcp",
-  "lib",
-  "asff-builder.js",
-);
+const asffBuilderPath = process.env.ASFF_BUILDER_PATH || path.join(__dirname, "..", "..", "..", "..", "..", "mcp", "domains", "repo", "asff-builder.js");
 
 const {
   buildAsffRecord,
@@ -75,17 +65,7 @@ const {
   s3UriFor,
 } = require(asffBuilderPath);
 
-const verificationContractsPath = process.env.VERIFICATION_CONTRACTS_PATH || path.join(
-  __dirname,
-  "..",
-  "..",
-  "..",
-  "..",
-  "..",
-  "mcp",
-  "lib",
-  "verification-contracts.js",
-);
+const verificationContractsPath = process.env.VERIFICATION_CONTRACTS_PATH || path.join(__dirname, "..", "..", "..", "..", "..", "mcp", "core", "verification", "verification-contracts.js");
 
 const {
   hashCanonicalJson,

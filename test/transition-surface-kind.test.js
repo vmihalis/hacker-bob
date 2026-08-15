@@ -36,22 +36,22 @@ const {
 } = require("../mcp/lib/constants.js");
 const {
   TASK_GRAPH_NODE_KIND_VALUES,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendTransitionProposal,
   TRANSITION_KIND_VALUES,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   surfaceIndexPath,
-} = require("../mcp/lib/paths.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/io/paths.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

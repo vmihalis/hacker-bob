@@ -27,7 +27,7 @@ const crypto = require("crypto");
 const lambda = require("../infra/aws/hacker-bob-stack/functions/export-security-hub/index.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 const PRODUCT_ARN = "arn:aws:securityhub:us-east-1:123456789012:product/123456789012/default";
 const BUCKET = "hacker-bob-evidence-test";

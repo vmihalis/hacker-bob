@@ -27,19 +27,19 @@ const {
   normalizeAttemptJournalEntry,
   normalizeEffectDispatchRecord,
   normalizeInstrumentLease,
-} = require("../../../mcp/lib/instrument-lease-contract.js");
+} = require("../../../mcp/domains/physical/instrument-lease-contract.js");
 const {
   assertDurableInstrumentLeaseBrokerPort,
 } = require("./instrument-lease-store.js");
 const {
   normalizeOpaqueRef,
-} = require("../../../mcp/lib/physical-quantities.js");
+} = require("../../../mcp/domains/physical/physical-quantities.js");
 const {
   assertVerifiedActivePhysicalExecutionGrant,
-} = require("../../../mcp/lib/physical-authority.js");
+} = require("../../../mcp/domains/physical/physical-authority.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const BROKER_VERSION = 1;
 const BROKER_OUTCOME_VALUES = Object.freeze([

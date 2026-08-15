@@ -16,27 +16,27 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   invariantVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {
@@ -208,7 +208,7 @@ test("a native(O-P4) finding renders WITHOUT a finding-differential arm (skip pa
     target_domain: domain, kind: "surface.observed", ts: "2026-05-27T00:00:00.000Z",
     surface_id: surfaceId, payload: { kind: "code_module", language: "c" },
   });
-  const { repoCommandRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { repoCommandRunsJsonlPath } = require("../mcp/core/io/paths.js");
   appendJsonlLine(repoCommandRunsJsonlPath(domain), {
     run_id: "grade-repro-run-1", command_hash: hex("b"), exit_code: 134,
     stdout_hash: hex("c"), stderr_hash: hex("d"), dry_run: false,

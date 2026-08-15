@@ -22,52 +22,52 @@ const {
   projectPhysicalScopeNucleusAxis,
   projectVerifiedPhysicalScopeImport,
   resolvePhysicalScopeCompatibility,
-} = require("../mcp/lib/physical-scope.js");
+} = require("../mcp/domains/physical/physical-scope.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
   normalizeScopePolicy,
   sessionNucleusHash,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/governance-contracts.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   executeTool,
-} = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/dispatch/dispatch.js");
 const {
   installPhysicalSessionBootstrapResolver,
   resolvePhysicalSessionBootstrapImport,
-} = require("../mcp/lib/physical-session-runtime.js");
+} = require("../mcp/domains/physical/physical-session-runtime.js");
 const {
   createTestPhysicalVerdictResolverPort,
   installPhysicalVerdictResolver,
   installTestPhysicalVerdictResolver,
   resolvePhysicalVerdict,
-} = require("../mcp/lib/physical-verdict-runtime.js");
+} = require("../mcp/domains/physical/physical-verdict-runtime.js");
 const {
   physicalSessionBootstrapPath,
   sessionNucleusPath,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readJsonFile,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   readVerifiedPhysicalSessionBootstrapJournal,
-} = require("../mcp/lib/physical-session-journal.js");
+} = require("../mcp/domains/physical/physical-session-journal.js");
 const {
   authorizeToolCall,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 const {
   getRegisteredTool,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   setOperatorNote,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;

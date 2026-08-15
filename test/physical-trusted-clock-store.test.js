@@ -12,12 +12,12 @@ const {
   compareAndSetPhysicalMonotonicOwnerState,
   openProductionPhysicalMonotonicOwner,
   readPhysicalMonotonicOwnerState,
-} = require("../mcp/lib/physical-monotonic-owner.js");
+} = require("../mcp/domains/physical/physical-monotonic-owner.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   FIXED_SOURCE_BLOCKER,
   PHYSICAL_TRUSTED_CLOCK_AUTHORITY_BUNDLE_DOMAIN,
@@ -32,19 +32,19 @@ const {
   openProductionPhysicalTrustedClockPort,
   physicalClockTrustSigningMessage,
   sampleRestartDurablePhysicalTrustedClock,
-} = require("../mcp/lib/physical-trusted-clock-store.js");
-const { sessionNucleusFromState } = require("../mcp/lib/governance-contracts.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/physical/physical-trusted-clock-store.js");
+const { sessionNucleusFromState } = require("../mcp/core/governance/governance-contracts.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
 const { normalizePhysicalScopeNucleusAxis } = require("../mcp/lib/physical-scope-axis.js");
-const { buildInitialSessionState } = require("../mcp/lib/session-state-contracts.js");
-const { writeSessionStateDocument } = require("../mcp/lib/session-state-store.js");
+const { buildInitialSessionState } = require("../mcp/core/session/session-state-contracts.js");
+const { writeSessionStateDocument } = require("../mcp/core/session/session-state-store.js");
 const {
   SANDBOX_AGENT_UID_ENV,
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 
 const CLOCK_CONTEXT = "hacker-bob/physical-trusted-clock-high-water/v1";
 
@@ -351,8 +351,8 @@ test("fixed trusted-clock adapter durably samples, cold-reopens in a new process
     assert.ok(second.monotonic_ms >= first.monotonic_ms);
     assert.ok(Date.parse(second.trusted_utc_earliest) >= Date.parse(first.trusted_utc_earliest));
 
-    const ownerModule = require.resolve("../mcp/lib/physical-monotonic-owner.js");
-    const storeModule = require.resolve("../mcp/lib/physical-trusted-clock-store.js");
+    const ownerModule = require.resolve("../mcp/domains/physical/physical-monotonic-owner.js");
+    const storeModule = require.resolve("../mcp/domains/physical/physical-trusted-clock-store.js");
     const childScript = `
       const { openProductionPhysicalMonotonicOwner } = require(${JSON.stringify(ownerModule)});
       const { openProductionPhysicalTrustedClockPort, sampleRestartDurablePhysicalTrustedClock } = require(${JSON.stringify(storeModule)});

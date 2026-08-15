@@ -9,24 +9,24 @@ const {
   normalizeLifecycleState,
   normalizePhysicalScopeNucleusAxis,
   sessionNucleusHash,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/governance-contracts.js");
 const {
   advanceSession,
   initSession,
   setOperatorNote,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   writeJsonDocument,
 } = require("../mcp/lib/fabric-common.js");
 const {
   sessionNucleusPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

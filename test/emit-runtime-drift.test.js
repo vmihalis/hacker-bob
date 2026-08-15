@@ -27,21 +27,21 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const emitRuntimeDriftTool = require("../mcp/lib/tools/emit-runtime-drift.js");
+const emitRuntimeDriftTool = require("../mcp/tools/emit-runtime-drift.js");
 const {
   TOOL_REGISTRY,
   toolNamesForRoleBundle,
   VALID_ROLE_BUNDLES,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   DETECTED_BY_VALUES,
-} = require("../mcp/lib/capability-observations.js");
+} = require("../mcp/core/capability/capability-observations.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

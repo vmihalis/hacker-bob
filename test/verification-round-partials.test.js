@@ -23,42 +23,42 @@ const path = require("node:path");
 
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   statePath,
   verificationRoundPaths,
   verificationRoundPartialDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   prepareVerificationEntry,
-} = require("../mcp/lib/verification.js");
+} = require("../mcp/core/verification/verification.js");
 const {
   commitVerificationRoundFromPartials,
   listCurrentRoundPartials,
   stageVerificationRoundPartial,
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   resolveEffectiveLeaseScope,
   normalizeReplayContext,
   replayExecutionPolicy,
   replayLeaseKey,
-} = require("../mcp/lib/verification-replay-safety.js");
+} = require("../mcp/core/verification/verification-replay-safety.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -15,7 +15,7 @@ const {
   normalizePhysicalResourceArbiterState,
   normalizePhysicalResourceQueueTicket,
   transitionPhysicalResourceArbiter,
-} = require("../../../mcp/lib/physical-resource-arbiter.js");
+} = require("../../../mcp/domains/physical/physical-resource-arbiter.js");
 const {
   RESOURCE_ARBITER_COMPACTION_CONTRACT,
   RESOURCE_ARBITER_DURABILITY_ASSURANCE,
@@ -33,7 +33,7 @@ const {
 } = require("../lib/resource-arbiter-store.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return crypto.createHash("sha256").update(label).digest("hex");

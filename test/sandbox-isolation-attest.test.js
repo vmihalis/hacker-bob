@@ -40,13 +40,13 @@ const {
   evaluateSandboxIsolation,
   recordSandboxIsolationAttestation,
   readSandboxIsolationAttestation,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
 const {
   isAuditGradedPath,
   sandboxIsolationPath,
   handoffSigningKeyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 // Set/clear the operator env controls (consent ack + declared signer uid +
 // declared agent uid) around fn. All three are restored afterward.
@@ -538,7 +538,7 @@ test("INERT: recording an attested:false artifact does not change a session init
   // must produce an identical init result, proving zero behavior change.
   function initAndStrip(domain, deleteArtifact) {
     return withTempHome((home) => {
-      const { initSession } = require("../mcp/lib/session-state.js");
+      const { initSession } = require("../mcp/core/session/session-state.js");
       const result = JSON.parse(initSession({
         target_domain: domain,
         target_url: `https://${domain}/`,

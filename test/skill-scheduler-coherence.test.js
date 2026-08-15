@@ -32,22 +32,22 @@ const {
 const {
   evaluateLifecycleTransition,
   TRANSITION_GATES,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   normalizeQueuePolicy,
   writeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 const {
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   TOOL_REGISTRY,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   ToolError,
   ERROR_CODES,
-} = require("../mcp/lib/envelope.js");
+} = require("../mcp/core/io/envelope.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

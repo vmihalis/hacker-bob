@@ -20,7 +20,7 @@ const {
   createInstrumentBootstrapBrokerCustodyBinding,
   createInstrumentBootstrapBrokerPort,
   createInstrumentBootstrapProviderRedemptionPort,
-} = require("../../../mcp/lib/instrument-bootstrap-store.js");
+} = require("../../../mcp/domains/physical/instrument-bootstrap-store.js");
 const {
   PHYSICAL_BOOTSTRAP_GRANT_DOMAIN,
   PHYSICAL_BOOTSTRAP_GRANT_KEY_USAGE,
@@ -29,16 +29,16 @@ const {
   normalizeMcpPhysicalExecutionRequest,
   physicalBootstrapGrantSignatureInputDigest,
   projectVerifiedPhysicalBootstrapGrant,
-} = require("../../../mcp/lib/physical-authority.js");
+} = require("../../../mcp/domains/physical/physical-authority.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../../../mcp/lib/governance-contracts.js");
+} = require("../../../mcp/core/governance/governance-contracts.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../../../mcp/lib/requested-effects.js");
+} = require("../../../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const BOOTSTRAP_OPERATIONS = Object.freeze([
   "instrument.inventory",

@@ -20,70 +20,70 @@ const {
   isCapabilityPackDispatchable,
   normalizeAssignmentRouteMetadata,
   techniqueCompatibilityPackId,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 const {
   EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK,
   derivePackForNode,
   routabilityForSurfaceMetadata,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   safeSurfaceRouteMap,
   surfaceMetadataFromRoute,
-} = require("../mcp/lib/dispatch-node-pack.js");
+} = require("../mcp/core/dispatch/dispatch-node-pack.js");
 const {
   buildSurfaceRoutesDocument,
   validateSurfaceRoute,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   getContextBudget,
-} = require("../mcp/lib/context-budget.js");
+} = require("../mcp/core/context-budget.js");
 const {
   SURFACE_TYPE_VALUES,
 } = require("../mcp/lib/constants.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   replayExecutionPolicy,
-} = require("../mcp/lib/verification-replay-safety.js");
+} = require("../mcp/core/verification/verification-replay-safety.js");
 const {
   renderCapabilityPackVerifierTable,
-} = require("../mcp/lib/capability-packs-rendering.js");
+} = require("../mcp/core/capability-packs-rendering.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   currentSurfaces,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 const {
   buildWaveBriefDerivation,
-} = require("../mcp/lib/wave-brief-derivation.js");
+} = require("../mcp/core/waves/wave-brief-derivation.js");
 const {
   appendHypothesisProposal,
   readNodeTransitions,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   sessionNucleusPath,
   surfaceRoutesPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   TOOL_HANDLERS,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   buildSessionNucleus,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/governance-contracts.js");
 const {
   normalizePhysicalScopeNucleusAxis,
 } = require("../mcp/lib/physical-scope-axis.js");

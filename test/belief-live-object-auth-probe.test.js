@@ -5,10 +5,10 @@ const assert = require("node:assert/strict");
 
 const {
   runObjectAuthControlProbe,
-} = require("../mcp/lib/belief/live-object-auth-probe.js");
+} = require("../mcp/core/belief/live-object-auth-probe.js");
 const {
   evaluateObjectAuthDifferential,
-} = require("../mcp/lib/belief/differential-tester.js");
+} = require("../mcp/core/belief/differential-tester.js");
 
 const VICTIM_URL = "/api/objects/victim";
 const VICTIM_CACHEBUST_URL = "/api/objects/victim?cb=1";

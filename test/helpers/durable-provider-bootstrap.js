@@ -12,17 +12,17 @@ const path = require("node:path");
 const {
   normalizeProviderBootstrapIntent,
   normalizeProviderBootstrapRequest,
-} = require("../../mcp/lib/instrument-provider-contract.js");
+} = require("../../mcp/domains/physical/instrument-provider-contract.js");
 const {
   createDurableInstrumentBootstrapStore,
   createInstrumentBootstrapBrokerCustodyBinding,
   createInstrumentBootstrapBrokerPort,
   createInstrumentBootstrapProviderRedemptionPort,
   readInstrumentBootstrapCustodyProjection,
-} = require("../../mcp/lib/instrument-bootstrap-store.js");
+} = require("../../mcp/domains/physical/instrument-bootstrap-store.js");
 const {
   hashCanonicalJson,
-} = require("../../mcp/lib/verification-contracts.js");
+} = require("../../mcp/core/verification/verification-contracts.js");
 
 function digest(label, value = null) {
   return hashCanonicalJson({

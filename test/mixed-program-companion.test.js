@@ -14,9 +14,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { statePath } = require("../mcp/lib/paths.js");
-const { readJsonFile } = require("../mcp/lib/storage.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { statePath } = require("../mcp/core/io/paths.js");
+const { readJsonFile } = require("../mcp/core/io/storage.js");
 const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
 
 const ADDR_IN = "0x0000000000000000000000000000000000000001";
@@ -116,7 +116,7 @@ test("an in-authority chain tuple on the mixed session is admitted past the gate
 });
 
 test("an UPPERCASE-family companion binding folds to the SAME chain_authority_hash as the lowercased init tuple (not the empty-set hash)", () => {
-  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  const { prepareContractCompanion } = require("../mcp/domains/blockchain/contract-target.js");
   // The contracts-axis normal form (tuple objects, family lowercased) is the
   // authoritative target hash for this single contract.
   const initHash = chainAuthorityHash([{ chain_family: "evm", chain_id: "1", address: ADDR_IN }]);
@@ -275,9 +275,9 @@ test("the handler guard skips the companion re-bind when initSession reports cre
     // a fresh copy of the tool that destructures the patched function. Without
     // the guard this would drive bindContractCompanion (a read-modify-write) and
     // overwrite target_contracts with the ADDR_OUT companion.
-    const sessionStateModule = require("../mcp/lib/session-state.js");
+    const sessionStateModule = require("../mcp/core/session/session-state.js");
     const original = sessionStateModule.initSession;
-    const toolPath = require.resolve("../mcp/lib/tools/init-session.js");
+    const toolPath = require.resolve("../mcp/tools/init-session.js");
     sessionStateModule.initSession = () => JSON.stringify({
       version: 1,
       created: false,
@@ -286,7 +286,7 @@ test("the handler guard skips the companion re-bind when initSession reports cre
     });
     delete require.cache[toolPath];
     try {
-      const tool = require("../mcp/lib/tools/init-session.js");
+      const tool = require("../mcp/tools/init-session.js");
       const out = tool.handler({
         target_domain: "example.com",
         target_url: "https://example.com",
@@ -311,7 +311,7 @@ test("the handler guard skips the companion re-bind when initSession reports cre
 });
 
 test("contract identity keys preserve base58/SS58 case and stay consistent across mint + membership", () => {
-  const { caip10Endpoint, contractSurfaceId } = require("../mcp/lib/contract-target.js");
+  const { caip10Endpoint, contractSurfaceId } = require("../mcp/domains/blockchain/contract-target.js");
   const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");
   // svm (base58, case-SENSITIVE): the minted CAIP-10 endpoint + surface id must
   // PRESERVE case (the pre-fix unconditional lowercase corrupted Solana identity

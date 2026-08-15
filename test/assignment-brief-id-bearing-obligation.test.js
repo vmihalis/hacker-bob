@@ -23,15 +23,15 @@ const {
   attackSurfacePath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   readAssignmentBrief,
   ID_BEARING_ENDPOINT_BRIEF_LIMIT,
-} = require("../mcp/lib/assignment-brief.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/session/assignment-brief.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

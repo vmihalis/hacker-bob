@@ -27,28 +27,28 @@ const path = require("path");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
-const { compositionVerifiedJsonlPath } = require("../mcp/lib/paths.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
+const { compositionVerifiedJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   verifyCompositionPath,
   RESULT_VERIFIED_PASS,
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
-} = require("../mcp/lib/composition-live-verifier.js");
+} = require("../mcp/core/differential/composition-live-verifier.js");
 const {
   buildBeliefWindow,
   stableId,
   requestEquivalenceScope,
   SIBLING_RAISE_CAP,
   RESOLUTION_THRESHOLD,
-} = require("../mcp/lib/belief/belief-window.js");
+} = require("../mcp/core/belief/belief-window.js");
 const {
   queryBeliefSignals,
-} = require("../mcp/lib/belief/authority.js");
+} = require("../mcp/core/belief/authority.js");
 const {
   compareGraphCandidates,
-} = require("../mcp/lib/graph-scheduler.js");
+} = require("../mcp/core/waves/graph-scheduler.js");
 
 const DOMAIN = "example.com";
 const BASE_URL = "https://example.com";
@@ -301,13 +301,13 @@ test("(3b) NO LEAKAGE INTO OUTPUT: the closure/grade/claim spine is belief-FREE 
   // verified_intervention OR import the belief/residual machinery.
   const beliefImport = /require\(\s*['"][^'"]*\/belief\/[^'"]*['"]\s*\)|require\(\s*['"][^'"]*residual[^'"]*['"]\s*\)/;
   const SPINE = [
-    "mcp/lib/scheduler-preconditions.js",
-    "mcp/lib/lifecycle-gates.js",
-    "mcp/lib/coverage-closure.js",
-    "mcp/lib/grade-verdict-store.js",
-    "mcp/lib/claims.js",
-    "mcp/lib/claim-freeze.js",
-    "mcp/lib/tools/record-candidate-claim.js",
+    "mcp/core/waves/scheduler-preconditions.js",
+    "mcp/core/session/lifecycle-gates.js",
+    "mcp/core/frontier/coverage-closure.js",
+    "mcp/core/grade-verdict-store.js",
+    "mcp/core/claims/claims.js",
+    "mcp/core/claims/claim-freeze.js",
+    "mcp/tools/record-candidate-claim.js",
   ];
   for (const rel of SPINE) {
     const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
@@ -320,6 +320,6 @@ test("(3b) positive control: the leakage guard BITES a module that DOES consume 
   // Prove the leak guard is non-vacuous: belief-window.js (the legitimate one-way
   // consumer) DOES read verified_intervention, so the same regex must fire — confirming
   // the guard would catch a closure/grade/claim module that grew such a read.
-  const src = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/belief/belief-window.js"), "utf8");
+  const src = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/belief/belief-window.js"), "utf8");
   assert.ok(/verified_intervention/.test(src), "belief-window consumes verified_intervention (else this leak guard is vacuous)");
 });

@@ -17,7 +17,7 @@ const { spawn } = require("child_process");
 const {
   createMcpMessageHandler,
   createStdioServer,
-} = require("../mcp/lib/transport.js");
+} = require("../mcp/core/io/transport.js");
 
 const SERVER_PATH = path.join(__dirname, "..", "mcp", "server.js");
 const VALID_TOKEN = "a".repeat(64);

@@ -19,8 +19,8 @@ const assert = require("node:assert/strict");
 const {
   planProducerFloor,
   isProducerFloorAtFixpoint,
-} = require("../mcp/lib/tools/materialize-producer-floor.js");
-const { PRODUCER_PACKS, isProducerReady } = require("../mcp/lib/producer-packs.js");
+} = require("../mcp/tools/materialize-producer-floor.js");
+const { PRODUCER_PACKS, isProducerReady } = require("../mcp/core/dispatch/producer-packs.js");
 
 function readyIds(plan) {
   return plan.ready.map((pack) => pack.producer_id).sort();

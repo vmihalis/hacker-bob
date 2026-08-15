@@ -7,10 +7,10 @@ const {
   FIXTURES,
   evaluateAllFixtures,
   evaluateOneFixture,
-} = require("../mcp/lib/capability-eval-harness.js");
+} = require("../mcp/core/capability/capability-eval-harness.js");
 const {
   capabilityToolMapFromRegistry,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 
 test("FIXTURES capabilities are backed by registry capability metadata", () => {
   const capabilityMap = capabilityToolMapFromRegistry();

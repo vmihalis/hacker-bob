@@ -15,13 +15,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const {
   computeFindingDedupeKey,
   normalizeFindingRecord,
   normalizeSignatureVerificationStatus,
-} = require("../mcp/lib/finding-contracts.js");
+} = require("../mcp/core/finding-contracts.js");
 const { SIGNATURE_VERIFICATION_STATUS_VALUES } = require("../mcp/lib/constants.js");
 
 function withTempHome(fn) {

@@ -11,16 +11,16 @@ const {
   safeAppendPipelineEventDirect,
   safeAppendPipelineEventWithSessionLock,
   assertGovernanceContext,
-} = require("../mcp/lib/pipeline-events.js");
+} = require("../mcp/core/telemetry/pipeline-events.js");
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,
-} = require("../mcp/lib/governance-context.js");
+} = require("../mcp/core/governance/governance-context.js");
 const {
   sessionDir,
   pipelineEventsJsonlPath,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -269,7 +269,7 @@ test("buildGovernanceContextFromNucleus pulls fields from the nucleus document",
   withTempHome(() => {
     const domain = "build-from-nucleus.example";
     const state = seedState(domain);
-    const nucleus = require("../mcp/lib/governance-contracts.js").sessionNucleusFromState(state);
+    const nucleus = require("../mcp/core/governance/governance-contracts.js").sessionNucleusFromState(state);
     const context = buildGovernanceContextFromNucleus(nucleus);
     assert.equal(context.nucleus_hash, nucleus.nucleus_hash);
     assert.equal(context.lifecycle_state, nucleus.lifecycle_state);

@@ -201,10 +201,10 @@ function migrationRun() {
   fs.appendFileSync(victimAbs, `\n${OPERATOR_MARK}\n`, "utf8");
 
   // 4. THE NEXT RELEASE. Change the shipped bytes of a release-sized set of
-  //    files: every runtime module under mcp/lib and every Claude agent
+  //    files: every runtime module under mcp and every Claude agent
   //    definition. Appending a comment line is syntactically inert in both.
   let mutated = 0;
-  walkFiles(path.join(source, "mcp", "lib"), (abs) => {
+  walkFiles(path.join(source, "mcp"), (abs) => {
     if (!abs.endsWith(".js")) return;
     fs.appendFileSync(abs, `\n// ${SHIPPED_MARK}\n`, "utf8");
     mutated += 1;
@@ -316,7 +316,7 @@ test("a first upgrade with no local edits is bounded and never claims the operat
   const swept = preserved.filter((entry) => entry.preserved_path.includes(`${PRESERVED_LOCAL_SUFFIX}/`));
   assert.ok(
     swept.length >= 100,
-    `only ${swept.length} files came from the wholesale mcp/lib replace; the bulk case is not covered`,
+    `only ${swept.length} files came from the wholesale mcp replace; the bulk case is not covered`,
   );
   const groupLines = lines.filter((line) => line.includes("diff -rq "));
   assert.ok(
@@ -328,7 +328,7 @@ test("a first upgrade with no local edits is bounded and never claims the operat
     `the notice spends ${groupLines.length} group lines on ${swept.length} swept files`,
   );
   assert.ok(
-    groupLines.some((line) => line.includes(`mcp/lib${PRESERVED_LOCAL_SUFFIX}`)),
+    groupLines.some((line) => line.includes(`mcp/core${PRESERVED_LOCAL_SUFFIX}`)),
     `the notice never names the tree it moved the runtime into\n--- notice ---\n${text}`,
   );
   // THE BOUND THAT MATTERS: not one of the swept files is listed individually.
@@ -524,7 +524,7 @@ test("the first-upgrade listing bound states what it left out instead of droppin
 });
 
 // The same gap on the other axis. A real install replaces exactly one tree
-// wholesale (mcp/lib), so the group bound never fires against the live fixture
+// wholesale (mcp), so the group bound never fires against the live fixture
 // either -- and an unexercised bound is how a silent cap gets shipped.
 test("the first-upgrade group bound states how many trees it left out", () => {
   const OVERFLOW = 3;
@@ -574,8 +574,8 @@ test("an attributable preserve keeps the original notice, even alongside a migra
     first_upgrade: false,
   };
   const migrated = {
-    original_path: "mcp/lib/waves/wave-scheduler.js",
-    preserved_path: `mcp/lib${PRESERVED_LOCAL_SUFFIX}/waves/wave-scheduler.js`,
+    original_path: "mcp/core/waves/wave-scheduler.js",
+    preserved_path: `mcp/core${PRESERVED_LOCAL_SUFFIX}/waves/wave-scheduler.js`,
     reason: "no_recorded_digest",
     first_upgrade: true,
   };

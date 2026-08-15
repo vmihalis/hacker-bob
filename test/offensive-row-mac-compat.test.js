@@ -13,7 +13,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("crypto");
 
-const { canonicalJson } = require("../mcp/lib/verification-contracts.js");
+const { canonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   signRowWithMac,
   verifyRowWithMac,
@@ -21,7 +21,7 @@ const {
   verifyOffensiveRunRowMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   MAC_SCHEME_ED25519,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 
 const CTX = OFFENSIVE_ROW_MAC_CONTEXT;
 

@@ -8,7 +8,7 @@ const test = require("node:test");
 
 const {
   buildExecutedEvidenceRegistry,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   INSTRUMENT_CAPABILITY_CLAIM_DOMAIN,
   INSTRUMENT_CAPABILITY_EVIDENCE_DOMAIN,
@@ -20,27 +20,27 @@ const {
   installInstrumentCapabilityIndexPort,
   instrumentCapabilitySignatureInputDigest,
   queryInstrumentCapabilityIndexPort,
-} = require("../mcp/lib/instrument-capabilities.js");
+} = require("../mcp/domains/physical/instrument-capabilities.js");
 const {
   chameleonCapabilityProofSignerBinding,
   createChameleonCapabilityExecutedEvidenceRegistry,
   createChameleonInstrumentCapabilitySemanticManifest,
   projectChameleonAlternativeSelection,
   projectChameleonReportedCommands,
-} = require("../mcp/lib/instrument-capabilities-chameleon.js");
+} = require("../mcp/domains/physical/instrument-capabilities-chameleon.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   createDeterministicProviderFixture,
 } = require("../packages/bob-instrument-deterministic/lib/fixtures.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
-const queryTool = require("../mcp/lib/tools/query-instrument-capabilities.js");
+} = require("../mcp/core/verification/verification-contracts.js");
+const queryTool = require("../mcp/tools/physical/query-instrument-capabilities.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });
@@ -687,7 +687,7 @@ test("an orthogonal deterministic provider uses the same index and query with no
   });
   assert.equal(result.total_matched, 1);
   assert.equal(result.records[0].requirements_status, "satisfied");
-  const source = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "instrument-capabilities.js"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "mcp", "domains", "physical", "instrument-capabilities.js"), "utf8");
   assert.doesNotMatch(source, /chameleon|command_id|reported_command|firmware_version/iu);
 });
 

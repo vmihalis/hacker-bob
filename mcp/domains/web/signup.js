@@ -1,0 +1,523 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const { execFile } = require("child_process");
+const { assertNonEmptyString } = require("../../core/io/validation.js");
+const { authStore } = require("../../core/auth/auth.js");
+const { ERROR_CODES, ToolError } = require("../../core/io/envelope.js");
+const { emailMatchesOperatorDenylist } = require("../../core/pii-detector.js");
+const { tempMailboxIsKnown } = require("../../core/temp-email.js");
+const {
+  assertSafeResolvedRequestUrl,
+  safeFetch,
+} = require("../../core/io/safe-fetch.js");
+const {
+  createProxyAgent,
+} = require("../../core/egress-profiles.js");
+const {
+  blockInternalHostsPolicyFields,
+} = require("../../core/session/session-state-contracts.js");
+const {
+  blockInternalHostsRequestPolicy,
+} = require("../../core/session/session-state-store.js");
+const {
+  resolveAndAssertSessionEgressIdentity,
+} = require("../../core/session/session-state.js");
+
+const SIGNUP_PATHS = [
+  "/register", "/signup", "/sign-up", "/join", "/create-account",
+  "/api/register", "/api/signup", "/api/auth/register", "/api/auth/signup",
+  "/api/v1/register", "/api/v1/signup", "/api/v1/auth/register",
+  "/auth/register", "/auth/signup", "/account/create",
+  "/free-trial", "/try", "/get-started", "/start", "/onboarding",
+  "/pricing", "/plans", "/account/signup", "/users/sign_up",
+];
+
+const CAPTCHA_INDICATORS = ["recaptcha", "hcaptcha", "turnstile", "captcha", "g-recaptcha", "cf-turnstile", "h-captcha"];
+
+const FORM_FIELD_PATTERNS = [
+  { name: "email", pattern: /name=["']?(?:email|e-mail|user_email|userEmail)["'\s>]/i },
+  { name: "password", pattern: /name=["']?(?:password|passwd|pass|user_password)["'\s>]/i },
+  { name: "username", pattern: /name=["']?(?:username|user_name|login|handle)["'\s>]/i },
+  { name: "name", pattern: /name=["']?(?:name|full_name|fullName|first_name|firstName)["'\s>]/i },
+  { name: "phone", pattern: /name=["']?(?:phone|telephone|mobile|tel)["'\s>]/i },
+];
+
+const AUTH_EVIDENCE_KEY_RE = /(sid|session|auth|token|jwt|access|refresh)/i;
+
+function manualSignupFallback(reason, message, extra = {}) {
+  return {
+    success: false,
+    fallback: "manual",
+    reason,
+    message,
+    ...extra,
+  };
+}
+
+function fallbackReasonFromMessage(message) {
+  const text = String(message || "");
+  if (/patchright not installed/i.test(text)) return "patchright_unavailable";
+  if (/browser launch failed/i.test(text)) return "browser_runtime_unavailable";
+  if (/timed out|timeout/i.test(text)) return "browser_timeout";
+  if (/invalid json|returned invalid json/i.test(text)) return "invalid_browser_output";
+  if (/not found/i.test(text)) return "browser_script_missing";
+  return "automation_unavailable";
+}
+
+function authEvidenceFromResult(result) {
+  const headers = result && result.headers && typeof result.headers === "object" ? result.headers : {};
+  const cookies = result && result.cookies && typeof result.cookies === "object" ? result.cookies : {};
+  const localStorage = result && result.local_storage && typeof result.local_storage === "object" ? result.local_storage : {};
+  const sessionStorage = result && result.session_storage && typeof result.session_storage === "object" ? result.session_storage : {};
+
+  return {
+    authorization_header: Object.keys(headers).some((name) => name.toLowerCase() === "authorization"),
+    cookie_keys: Object.keys(cookies).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+    local_storage_keys: Object.keys(localStorage).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+    session_storage_keys: Object.keys(sessionStorage).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+  };
+}
+
+function hasAuthEvidence(evidence) {
+  return !!(
+    evidence.authorization_header ||
+    evidence.cookie_keys.length ||
+    evidence.local_storage_keys.length ||
+    evidence.session_storage_keys.length
+  );
+}
+
+function normalizeUrlForSignupSuccess(urlValue) {
+  try {
+    const parsed = new URL(urlValue);
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return String(urlValue || "").replace(/#.*$/, "").replace(/\/+$/, "");
+  }
+}
+
+function normalizeAutoSignupResult(result, signupUrl) {
+  const normalized = result && typeof result === "object" ? result : {};
+  const evidence = authEvidenceFromResult(normalized);
+  const pageErrors = Array.isArray(normalized.page_errors) ? normalized.page_errors.filter(Boolean) : [];
+  const submitted = normalized.submitted === true;
+  const redirectUrl = normalized.redirect_url || null;
+  const redirected = redirectUrl
+    ? normalizeUrlForSignupSuccess(redirectUrl) !== normalizeUrlForSignupSuccess(signupUrl)
+    : false;
+  const evidencePresent = hasAuthEvidence(evidence);
+
+  normalized.auth_evidence = evidence;
+  normalized.page_errors = pageErrors;
+
+  if (normalized.success === true && submitted && pageErrors.length === 0 && evidencePresent && redirected) {
+    return normalized;
+  }
+
+  if (normalized.success === true || normalized.success == null) {
+    normalized.success = false;
+    normalized.fallback = "manual";
+  }
+
+  if (normalized.success === false && normalized.fallback === "manual") {
+    const message = normalized.message || normalized.error || "Automated signup did not produce usable authenticated session evidence.";
+    normalized.reason = normalized.reason || fallbackReasonFromMessage(message);
+    normalized.message = message;
+    delete normalized.error;
+    delete normalized.stack;
+  }
+
+  normalized.diagnostics = {
+    submitted,
+    page_errors: pageErrors,
+    filled_fields: normalized.filled_fields || {},
+    redirect_url: redirectUrl,
+    auth_evidence: evidence,
+  };
+  return normalized;
+}
+
+function operatorIdentifiersFromEnv() {
+  return String(process.env.BOB_OPERATOR_IDENTIFIERS || "")
+    .split(",")
+    .map((identifier) => identifier.trim())
+    .filter(Boolean);
+}
+
+function assertSignupEmailAllowed(email, options = {}) {
+  const operatorIdentifiers = Object.prototype.hasOwnProperty.call(options || {}, "operatorIdentifiers")
+    ? options.operatorIdentifiers
+    : operatorIdentifiersFromEnv();
+
+  if (emailMatchesOperatorDenylist(email, operatorIdentifiers)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "the supplied email matches a configured operator identifier and was refused",
+      { code: "auto_signup_operator_identifier_rejected" },
+    );
+  }
+
+  if (!tempMailboxIsKnown(email)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "bob_auto_signup requires an email created via bob_temp_email in this running MCP process; call bob_temp_email and pass the returned address verbatim (the match is exact and case-sensitive).",
+      { code: "auto_signup_email_not_temp_provisioned" },
+    );
+  }
+
+  return true;
+}
+
+async function signupDetect(args) {
+  const targetDomain = assertNonEmptyString(args.target_domain, "target_domain");
+  const targetUrl = assertNonEmptyString(args.target_url, "target_url").replace(/\/+$/, "");
+  const requestedEgressProfile = args.egress_profile == null
+    ? "default"
+    : assertNonEmptyString(args.egress_profile, "egress_profile");
+
+  let egressProfile;
+  let egressIdentity;
+  let internalHostPolicy;
+  let internalHostContext;
+  let egressAgent = null;
+  try {
+    const resolved = resolveAndAssertSessionEgressIdentity(targetDomain, requestedEgressProfile, {
+      source: "bob_signup_detect",
+    });
+    egressProfile = resolved.profile;
+    egressIdentity = resolved.identity;
+    internalHostPolicy = blockInternalHostsRequestPolicy(targetDomain, args);
+    internalHostContext = blockInternalHostsPolicyFields(internalHostPolicy);
+    if (internalHostPolicy.block_internal_hosts && egressProfile.proxy_configured) {
+      return JSON.stringify({
+        error: `block_internal_hosts cannot be enforced with proxy-backed egress_profile "${egressProfile.name}" because target DNS and routing may be resolved outside Bob. Use egress_profile "default" or disable block_internal_hosts.`,
+        scope_decision: "blocked",
+        ...egressIdentity,
+        ...internalHostContext,
+        endpoints_found: [],
+        form_fields: [],
+        has_captcha: false,
+        captcha_type: null,
+        oauth_only: false,
+        email_restrictions_detected: false,
+        signup_feasibility: "manual",
+        blocked_requests: [],
+      });
+    }
+    egressAgent = createProxyAgent(egressProfile.proxy_url);
+  } catch (error) {
+    if (error && error.code === "STATE_CONFLICT") throw error;
+    const message = error && error.message ? error.message : String(error);
+    return JSON.stringify({
+      error: `${message} — request was NOT sent.`,
+      scope_decision: "egress_error",
+      egress_profile: requestedEgressProfile,
+      block_internal_hosts: args.block_internal_hosts === true,
+      endpoints_found: [],
+      form_fields: [],
+      has_captcha: false,
+      captcha_type: null,
+      oauth_only: false,
+      email_restrictions_detected: false,
+      signup_feasibility: "manual",
+      blocked_requests: [],
+    });
+  }
+
+  const endpointsFound = [];
+  const blockedRequests = [];
+  const formFieldsSet = new Set();
+  let hasCaptcha = false;
+  let captchaType = null;
+  let oauthOnly = false;
+  let emailRestrictions = false;
+
+  for (const signupPath of SIGNUP_PATHS) {
+    try {
+      const url = `${targetUrl}${signupPath}`;
+      const resp = await safeFetch(url, {
+        method: "GET",
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; security-testing)", Accept: "text/html,application/json" },
+        followRedirects: true,
+        timeoutMs: 5000,
+        targetDomain,
+        blockInternalHosts: internalHostPolicy.block_internal_hosts,
+        agent: egressAgent,
+        maxResponseBytes: 20000,
+      });
+
+      if (resp.status >= 200 && resp.status < 400) {
+        const ct = resp.headers.get("content-type") || "";
+        let body = "";
+        if (ct.includes("text") || ct.includes("json") || ct.includes("html")) {
+          body = (await resp.text()).slice(0, 20000);
+        }
+
+        endpointsFound.push({ path: signupPath, method: "GET", status: resp.status, final_url: resp.url });
+
+        // Detect form fields
+        for (const { name, pattern } of FORM_FIELD_PATTERNS) {
+          if (pattern.test(body)) formFieldsSet.add(name);
+        }
+
+        // Detect CAPTCHA
+        const bodyLower = body.toLowerCase();
+        for (const indicator of CAPTCHA_INDICATORS) {
+          if (bodyLower.includes(indicator)) {
+            hasCaptcha = true;
+            captchaType = captchaType || indicator;
+          }
+        }
+
+        // Detect email restrictions
+        if (/disposable|temporary email|business email only|corporate email/i.test(body)) {
+          emailRestrictions = true;
+        }
+
+        // Detect OAuth-only
+        if (!formFieldsSet.has("email") && !formFieldsSet.has("password")) {
+          const hasOAuth = /oauth|google.*sign|facebook.*sign|github.*sign|sign.*with.*google|sign.*with.*github/i.test(body);
+          if (hasOAuth && endpointsFound.length === 1) oauthOnly = true;
+        }
+      }
+    } catch (error) {
+      if (error && error.scope_decision === "blocked") {
+        blockedRequests.push({ path: signupPath, error: error.message || String(error) });
+      }
+      // Timeout or connection error — skip this path
+    }
+  }
+
+  // Determine feasibility
+  let feasibility = "manual";
+  if (endpointsFound.length > 0) {
+    if (oauthOnly) {
+      feasibility = "manual";
+    } else if (hasCaptcha) {
+      feasibility = "assisted";
+    } else {
+      feasibility = "automated";
+    }
+  }
+
+  // Override: if OAuth-only was a premature guess and we found email fields later, correct it
+  if (formFieldsSet.has("email") && formFieldsSet.has("password")) {
+    oauthOnly = false;
+  }
+
+  return JSON.stringify({
+    endpoints_found: endpointsFound,
+    form_fields: [...formFieldsSet],
+    has_captcha: hasCaptcha,
+    captcha_type: captchaType,
+    oauth_only: oauthOnly,
+    email_restrictions_detected: emailRestrictions,
+    signup_feasibility: feasibility,
+    blocked_requests: blockedRequests,
+    ...egressIdentity,
+    ...internalHostContext,
+  });
+}
+
+async function autoSignup(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const signupUrl = assertNonEmptyString(args.signup_url, "signup_url");
+  const email = assertNonEmptyString(args.email, "email");
+  const password = assertNonEmptyString(args.password, "password");
+  assertSignupEmailAllowed(email);
+  const profileName = args.profile_name || "attacker";
+  const name = args.name || "Evaluator Test";
+  const requestedEgressProfile = args.egress_profile == null
+    ? "default"
+    : assertNonEmptyString(args.egress_profile, "egress_profile");
+
+  let egressProfile;
+  let egressIdentity;
+  let internalHostPolicy;
+  let internalHostContext;
+  try {
+    const resolved = resolveAndAssertSessionEgressIdentity(domain, requestedEgressProfile, {
+      source: "bob_auto_signup",
+    });
+    egressProfile = resolved.profile;
+    egressIdentity = resolved.identity;
+    internalHostPolicy = blockInternalHostsRequestPolicy(domain, args);
+    internalHostContext = blockInternalHostsPolicyFields(internalHostPolicy);
+  } catch (error) {
+    if (error && error.code === "STATE_CONFLICT") throw error;
+    const message = error && error.message ? error.message : String(error);
+    return JSON.stringify({
+      ...manualSignupFallback("egress_profile_unavailable", `${message} — browser was NOT launched.`),
+      scope_decision: "egress_error",
+      egress_profile: requestedEgressProfile,
+    });
+  }
+
+  const egressContext = {
+    ...egressIdentity,
+    ...internalHostContext,
+  };
+
+  try {
+    await assertSafeResolvedRequestUrl(signupUrl, domain, { blockInternalHosts: false });
+  } catch (error) {
+    if (error && error.scope_decision === "blocked") {
+      return JSON.stringify({
+        success: false,
+        error: error.message || String(error),
+        scope_decision: "blocked",
+        fallback: "manual",
+        ...egressContext,
+      });
+    }
+    return JSON.stringify({
+      ...manualSignupFallback(
+        fallbackReasonFromMessage(error && error.message ? error.message : String(error)),
+        error && error.message ? error.message : String(error),
+      ),
+      ...egressContext,
+    });
+  }
+
+  if (internalHostPolicy.block_internal_hosts) {
+    const message = "block_internal_hosts cannot be enforced for browser auto-signup because Chromium resolves network destinations outside Bob's safeFetch transport. Use manual signup or rerun without --block-internal-hosts.";
+    return JSON.stringify({
+      ...manualSignupFallback(
+        "strict_internal_hosts_unsupported_browser",
+        message,
+      ),
+      error: message,
+      scope_decision: "blocked",
+      ...egressContext,
+    });
+  }
+
+  // Check if patchright is available before spawning the script
+  let patchrightAvailable = false;
+  try {
+    require.resolve("patchright");
+    patchrightAvailable = true;
+  } catch {}
+
+  if (!patchrightAvailable) {
+    return JSON.stringify({
+      ...manualSignupFallback(
+        "patchright_unavailable",
+        "Patchright is not installed. Use manual signup or install optional browser automation with npm install and npx patchright install chromium.",
+        egressContext,
+      ),
+    });
+  }
+
+  const scriptPath = path.join(__dirname, "..", "..", "auto-signup.js");
+  if (!fs.existsSync(scriptPath)) {
+    return JSON.stringify({
+      ...manualSignupFallback(
+        "browser_script_missing",
+        "The auto-signup browser script was not found; use manual signup.",
+      ),
+      ...egressContext,
+    });
+  }
+
+  const config = {
+    target_domain: domain,
+    signup_url: signupUrl,
+    email,
+    password,
+    name,
+    capsolver_api_key: process.env.CAPSOLVER_API_KEY || null,
+    proxy: egressProfile.proxy_url,
+    timeout_ms: args.timeout_ms || 45000,
+    headless: args.headless !== undefined ? args.headless : false,
+    block_internal_hosts: false,
+    ...egressContext,
+  };
+
+  return new Promise((resolve) => {
+    const timeout = (config.timeout_ms || 45000) + 10000; // script timeout + buffer
+    const child = execFile(
+      process.execPath,
+      [scriptPath],
+      { timeout, maxBuffer: 5 * 1024 * 1024, env: { ...process.env } },
+      async (err, stdout, stderr) => {
+        if (err && !stdout) {
+          const message = err.message || String(err);
+          resolve(JSON.stringify(manualSignupFallback(
+            fallbackReasonFromMessage(message),
+            message,
+            { stderr: (stderr || "").slice(0, 500), ...egressContext },
+          )));
+          return;
+        }
+
+        let result;
+        try {
+          result = JSON.parse(stdout);
+        } catch {
+          resolve(JSON.stringify(manualSignupFallback(
+            "invalid_browser_output",
+            "Auto-signup returned invalid JSON; use manual signup.",
+            { raw_output: (stdout || "").slice(0, 500), ...egressContext },
+          )));
+          return;
+        }
+
+        result = normalizeAutoSignupResult(result, signupUrl);
+        Object.assign(result, egressContext);
+
+        // If signup succeeded with auth-shaped evidence, auto-store auth.
+        if (result.success === true && hasAuthEvidence(result.auth_evidence)) {
+          try {
+            await authStore({
+              target_domain: domain,
+              profile_name: profileName,
+              cookies: result.cookies || {},
+              headers: result.headers || {},
+              local_storage: result.local_storage || {},
+              credentials: { email, password },
+            }, {
+              // PR-PROV: stamp synthetic-identity provenance so the IDOR signed-row
+              // producer (bob_http_idor_confirm, mint condition #18) can use this
+              // identity. Sound to assert HERE because we are downstream of
+              // assertSignupEmailAllowed (signup.js:331 → tempMailboxIsKnown +
+              // emailMatchesOperatorDenylist): `email` (signup.js:329, the gated INPUT
+              // arg — never target-controlled result.*) is a live bob_temp_email mailbox
+              // this process itself minted, and is not an operator identifier. Passed as
+              // the 2nd positional arg, which the MCP tool dispatcher never supplies, so
+              // bob_auth_store can never forge these onto a real (operator-pasted) identity.
+              provenance: {
+                synthetic: true,
+                email_origin: "temp_email",
+                provisioned_via: "bob_auto_signup",
+                email,
+              },
+            });
+            result.auth_stored = true;
+            result.auth_profile = profileName;
+          } catch (storeErr) {
+            result.auth_stored = false;
+            result.auth_store_error = storeErr.message;
+          }
+        }
+
+        resolve(JSON.stringify(result));
+      }
+    );
+    child.stdin.end(JSON.stringify(config));
+  });
+}
+
+module.exports = {
+  assertSignupEmailAllowed,
+  authEvidenceFromResult,
+  autoSignup,
+  hasAuthEvidence,
+  manualSignupFallback,
+  normalizeAutoSignupResult,
+  signupDetect,
+};

@@ -9,12 +9,12 @@ const path = require("node:path");
 const {
   evaluateAgentCompletion,
   evaluateAuthDifferentialCompletionCoverage,
-} = require("../mcp/lib/agent-run-completion.js");
+} = require("../mcp/core/session/agent-run-completion.js");
 const {
   buildWaveReadiness,
   loadWaveArtifacts,
   mergeWaveHandoffs,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   attackSurfacePath,
   authDifferentialResultsPath,
@@ -22,26 +22,26 @@ const {
   surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SURFACE_ROUTES_VERSION,
   SURFACE_ROUTE_VERSION,
-} = require("../mcp/lib/surface-router.js");
-const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/frontier/surface-router.js");
+const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   sha256Hex,
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -192,8 +192,8 @@ function writeAuthDifferentialResultsRows(domain, rows) {
 function writeAuthDifferentialResults(domain) {
   const {
     signRowViaIsolatedSignerOrLocal,
-  } = require("../mcp/lib/handoff-signing-key.js");
-  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+  } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
   const row = buildFlipRow();
   // Sign the flipped row under the auth-differential context exactly as the runner does, so the
   // MAC-verifying finalize consumer (hasAuthDifferentialSweepForSurface) credits a genuine flip.
@@ -221,8 +221,8 @@ function seedTechniqueAttempt(domain, surfaceId) {
 function writeSignedFlipRowWithEffectiveUrl(domain, effectiveUrl) {
   const {
     signRowViaIsolatedSignerOrLocal,
-  } = require("../mcp/lib/handoff-signing-key.js");
-  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+  } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
   const row = buildFlipRow();
   row.effective_url = effectiveUrl;
   signRowViaIsolatedSignerOrLocal(domain, AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT, row);
@@ -234,7 +234,7 @@ function writeSignedFlipRowWithEffectiveUrl(domain, effectiveUrl) {
 // B1 mirror resolves the finding by), returning nothing — the first finding in a session mints id
 // "F-1". No exploit proof is required at record time.
 function recordCrownFinding(domain, cwe) {
-  const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+  const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
   recordFindingTool.handler({
     target_domain: domain,
     title: `finding ${cwe}`,
@@ -258,16 +258,16 @@ function recordCrownFinding(domain, cwe) {
 // these MAC-covered rows, so this is a genuine executed differential — its entry.surface_id is
 // re-derived from the signed positive row's surface_id.
 function seedVerifiedFindingDifferential(domain, findingId, surfaceId) {
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
   const {
     offensiveRowHash,
-  } = require("../mcp/lib/finding-differential-verifier.js");
+  } = require("../mcp/core/differential/finding-differential-verifier.js");
   const {
     offensiveRunsJsonlPath,
     findingDifferentialVerifiedJsonlPath,
-  } = require("../mcp/lib/paths.js");
-  const { appendJsonlLine } = require("../mcp/lib/storage.js");
+  } = require("../mcp/core/io/paths.js");
+  const { appendJsonlLine } = require("../mcp/core/io/storage.js");
   const key = ensureHandoffSigningKey(domain);
   const hex = (c) => c.repeat(64);
   const buildRow = (runId, outcome, cmd) => {
@@ -403,8 +403,8 @@ test("a TAMPERED flipped row does NOT clear the id-bearing surface at finalize (
     const handoff = { surface_status: "complete", blocked_prereqs: [], blocked_harness_runs: [] };
     const {
       signRowViaIsolatedSignerOrLocal,
-    } = require("../mcp/lib/handoff-signing-key.js");
-    const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+    } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+    const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 
     writeAttackSurface(domain);
     // Sign a genuine flip, then MUTATE surface_id after signing (the row_mac binds every field,

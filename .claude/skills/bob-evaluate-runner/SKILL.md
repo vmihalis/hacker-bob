@@ -207,7 +207,7 @@ Agent(subagent_type: "surface-discovery-agent", name: "recon-[angle.id]", run_in
 Then continue to the surface-router step below regardless of which recon path ran (the assembled `attack_surface.json` is the same surface either way).
 
 **Recon-producer floor (deterministic analog of the cell floor).** The recon fan-out also has a deterministic floor. Call `bob_materialize_producer_floor({ target_domain })` to emit one schedulable producer node per READY recon producer (root seed present, or an upstream artifact kind that satisfies a derived producer's `consumes`), then loop `bob_schedule_seed_producers({ target_domain })` to dispatch them, re-materializing until `producer_floor_at_fixpoint` (no new non-advisory producer). Derived producers whose upstream input is still absent are REPORTED in `producer_gaps[]` and do NOT block — gaps satisfy-and-report; only a READY non-advisory producer keeps the floor open. The `seed_producers_drained` gate refuses `OPEN_FRONTIER -> CLAIM_FREEZE` while any non-advisory producer remains ready.
-Recon-producer floor (source of truth `mcp/lib/producer-packs.js`; lookup by `producer_id`):
+Recon-producer floor (source of truth `mcp/core/dispatch/producer-packs.js`; lookup by `producer_id`):
 - `web_host_family` (host_family angle, root/web): consumes —; produces live_hosts, family_live, subdomains.
 - `web_urls` (urls angle, derived/web): consumes live_hosts, family_live; produces all_urls.
 - `web_nuclei` (nuclei angle, derived/web): consumes live_hosts, family_live; produces nuclei_results.
@@ -314,7 +314,7 @@ Smart-contract spawn dispatch:
 - If `assignment.brief_profile === "web"` or `assignment.brief_profile === "oss"` -> use the generic evaluator spawn template above; do not use the SC template below.
 - Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.
 
-Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.
+Pack metadata is the source of truth in `mcp/core/capability/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.
 ```
 Agent(subagent_type: "[assignment.evaluator_agent]", name: "[assignment.evaluator_agent]-w[wave]-a[agent]", run_in_background: true, prompt: "
 Domain: [domain]

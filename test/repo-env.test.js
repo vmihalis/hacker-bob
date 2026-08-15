@@ -29,7 +29,7 @@ const {
   initRepoSession,
   buildRepoInventory,
   SEED_CORPUS_SUMMARY_LIMIT,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   prepareRepoEnv,
   buildDockerfileBob,
@@ -47,14 +47,14 @@ const {
   NATIVE_FUZZ_EXTRA_APT_PACKAGES,
   ENV_SECRET_LEAK_RE,
   RECOMMENDED_COMMAND_ROLES,
-} = require("../mcp/lib/repo-env.js");
+} = require("../mcp/domains/repo/repo-env.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../mcp/lib/sensitive-material.js");
-const repoPrepareEnvTool = require("../mcp/lib/tools/repo-prepare-env.js");
+} = require("../mcp/core/redaction/sensitive-material.js");
+const repoPrepareEnvTool = require("../mcp/tools/repo/repo-prepare-env.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 
 // Async-aware temp HOME wrapper. The OSS prepare-env path is async because
 // it may exec docker build; we must hold HOME / cleanup until that promise
@@ -580,8 +580,8 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
   const m = withFuzz.match(/printf %s '([A-Za-z0-9+/=]+)' \| base64 -d > \/usr\/local\/bin\/bob-multitu-build\.sh/);
   assert.ok(m, "expected a base64 builder payload in the Dockerfile");
   const decoded = Buffer.from(m[1], "base64").toString("utf8");
-  const onDisk = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
-  assert.equal(decoded, onDisk, "baked builder must match mcp/lib/fuzz/bob-multitu-build.sh byte-for-byte");
+  const onDisk = fs.readFileSync(path.join(__dirname, "..", "mcp", "fuzz", "bob-multitu-build.sh"), "utf8");
+  assert.equal(decoded, onDisk, "baked builder must match mcp/fuzz/bob-multitu-build.sh byte-for-byte");
 });
 
 test("git + cmake ride the default C image; cbmc rides the native-fuzz extras", () => {
@@ -592,7 +592,7 @@ test("git + cmake ride the default C image; cbmc rides the native-fuzz extras", 
 });
 
 test("the multi-TU builder script holds the instrumentation split + layered build invariants", () => {
-  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "fuzz", "bob-multitu-build.sh"), "utf8");
   // Instrumentation split: library carries coverage (fuzzer-no-link), harness link
   // adds the libFuzzer driver/main (fuzzer, no -no-link) exactly once.
   assert.ok(sh.includes("-fsanitize=address,undefined,fuzzer-no-link"), "library must be built with fuzzer-no-link coverage");
@@ -623,7 +623,7 @@ test("the multi-TU builder script holds the instrumentation split + layered buil
 });
 
 test("the multi-TU builder honors a BOB_HARNESS override and fails closed on a bad one", () => {
-  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "fuzz", "bob-multitu-build.sh"), "utf8");
   // The override is read as an input (guarded for set -u), bypassing auto-selection.
   assert.ok(sh.includes("${BOB_HARNESS:-}"), "builder must read BOB_HARNESS as an override input");
   // Fail closed when the override names a non-existent file, listing the candidates.
@@ -632,7 +632,7 @@ test("the multi-TU builder honors a BOB_HARNESS override and fails closed on a b
 });
 
 test("the multi-TU builder ranks real libFuzzer harnesses (fuzz_* before app/config) and reports alternatives", () => {
-  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "fuzz", "bob-multitu-build.sh"), "utf8");
   // libFuzzer-named files rank ahead of unnamed ones ...
   assert.match(sh, /fuzz_\*\|\*_fuzz\.\*\|\*_fuzzer\.\*/);
   // ... and parser/txn topics ahead of app/config topics (do NOT blindly pick fuzz_fdctl_config).
@@ -642,7 +642,7 @@ test("the multi-TU builder ranks real libFuzzer harnesses (fuzz_* before app/con
 });
 
 test("the multi-TU builder auto-selects a parser harness over an app-config one and honors overrides (behavioral)", () => {
-  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "fuzz", "bob-multitu-build.sh"), "utf8");
   // Extract only the harness-discovery block (no /work staging, no clang) and run it
   // against a fixture tree so the ranking + override contract is exercised end-to-end.
   const start = sh.indexOf("_is_harness()");

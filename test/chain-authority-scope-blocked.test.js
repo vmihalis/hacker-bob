@@ -14,10 +14,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { authorizeToolCall } = require("../mcp/lib/session-authority.js");
-const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/lib/tool-registry.js");
-const { validateToolArguments } = require("../mcp/lib/tool-validation.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { authorizeToolCall } = require("../mcp/core/session/session-authority.js");
+const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/core/dispatch/tool-registry.js");
+const { validateToolArguments } = require("../mcp/core/dispatch/tool-validation.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;

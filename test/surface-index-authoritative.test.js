@@ -8,27 +8,27 @@ const path = require("node:path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   currentSurfaces,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 const {
   rankAttackSurfaces,
-} = require("../mcp/lib/ranking.js");
+} = require("../mcp/core/ranking.js");
 const {
   buildSurfaceRoutesDocument,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   attackSurfacePath,
   sessionDir,
   surfaceIndexPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -16,35 +16,35 @@ const {
   installPhysicalCompositionPort,
   PHYSICAL_BLAST_RADIUS_NODE_POLICY,
   physicalCompositionRuntimeReadiness,
-} = require("../mcp/lib/capability-pack-composition-adapters.js");
+} = require("../mcp/core/capability/capability-pack-composition-adapters.js");
 const {
   buildPhysicalGradeBinding,
   buildPhysicalFinding,
   closePhysicalCoverage,
   derivePhysicalAssignmentContextDigest,
   deriveVerifiedPhysicalCoverageTerminalWitnessDigest,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   buildDurableReceiptTrustRegistry,
   createDurableEvidenceReceiptIssuer,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/governance-contracts.js");
 const {
   PHYSICAL_SURFACE_NODE_TYPES,
   normalizePhysicalSurfaceLiveRevalidationPayload,
   normalizePhysicalSurfaceTransitionPayload,
   physicalSurfaceTransitionClaimPredicateDigest,
-} = require("../mcp/lib/physical-surface-transition.js");
+} = require("../mcp/domains/physical/physical-surface-transition.js");
 const {
   appendEdges,
   createPhysicalSurfaceGraphServerService,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   createProductionPhysicalVerdictFixture,
 } = require("./helpers/production-physical-verdict.js");

@@ -21,18 +21,18 @@ const {
   OWNER_AUTHORIZED_ENV,
   TOOL_ID,
   MASSREAD_DEMONSTRATED_CEILING,
-} = require("../mcp/lib/offensive-massread-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { authStore } = require("../mcp/lib/auth.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { attackSurfacePath, offensiveRunsJsonlPath, sessionDir } = require("../mcp/lib/paths.js");
-const { appendCandidateClaim, readOffensiveRunRecords, OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/lib/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
-const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/domains/web/offensive-massread-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { authStore } = require("../mcp/core/auth/auth.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { attackSurfacePath, offensiveRunsJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");
+const { appendCandidateClaim, readOffensiveRunRecords, OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/core/claims/claims.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
+const { resetForTests: resetMaterializationDebounce } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
-const PRODUCER_PATH = path.join(__dirname, "..", "mcp", "lib", "offensive-massread-producer.js");
+const PRODUCER_PATH = path.join(__dirname, "..", "mcp", "domains", "web", "offensive-massread-producer.js");
 const SURFACE_ID = "surface:listing";
 // A canary PII VALUE that must NEVER appear in the signed rail (only its field-name bucket may).
 const CANARY_EMAIL = "victim0@canary.example.test";
@@ -165,7 +165,7 @@ test("MASSREAD ceiling is a frozen HIGH that matches the authoritative registry 
 });
 
 test("buildAndSignOffensiveRow is NOT re-exported (no gate-bypassing signed-row path)", () => {
-  const mod = require("../mcp/lib/offensive-massread-producer.js");
+  const mod = require("../mcp/domains/web/offensive-massread-producer.js");
   assert.equal(typeof mod.buildAndSignOffensiveRow, "undefined");
 });
 
@@ -1532,7 +1532,7 @@ test("v2 → MEDIUM (#F): an anon denial that LEAKS the victim identity in unstr
 test("sign guard (#G): buildAndSignOffensiveRow with requireExplicitSeverity THROWS when the override is omitted", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain); // seeds session + signing key
-  const { buildAndSignOffensiveRow } = require("../mcp/lib/offensive-capture-writer.js");
+  const { buildAndSignOffensiveRow } = require("../mcp/domains/web/offensive-capture-writer.js");
   assert.throws(() => buildAndSignOffensiveRow(domain, {
     runIdPrefix: "massread", toolId: TOOL_ID, method: "GET",
     canonicalTarget: `https://${domain}/api/listing`, surfaceId: SURFACE_ID,

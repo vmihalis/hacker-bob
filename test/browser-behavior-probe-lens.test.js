@@ -35,24 +35,24 @@ const {
   TASK_LENSES,
   isTaskLens,
   normalizeTaskLens,
-} = require("../mcp/lib/task-lenses.js");
+} = require("../mcp/core/session/task-lenses.js");
 const {
   BROWSER_BEHAVIOR_PROBE_LENS,
   BROWSER_BEHAVIOR_PROBE_WORKFLOW_TEXT,
   partitionTechniquePacksByLensAffinity,
   readAssignmentBrief,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   attackSurfacePath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 

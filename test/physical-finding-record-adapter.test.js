@@ -6,15 +6,15 @@ const assert = require("node:assert/strict");
 const {
   derivePhysicalAssignmentContextDigest,
   derivePhysicalFindingDedupeKey,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   buildPersistedPhysicalFindingRecord,
   normalizePhysicalFindingRecord,
-} = require("../mcp/lib/physical-finding-record-adapter.js");
+} = require("../mcp/domains/physical/physical-finding-record-adapter.js");
 const {
   declaredFindingRecordAdapter,
   normalizeFindingRecord,
-} = require("../mcp/lib/finding-contracts.js");
+} = require("../mcp/core/finding-contracts.js");
 
 const NUCLEUS = "d".repeat(64);
 const PROJECTION = "b".repeat(64);

@@ -6,14 +6,14 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   readSchedulerDecisions,
   scheduleTasksFromQueue,
-} = require("../mcp/lib/scheduler-decisions.js");
+} = require("../mcp/core/waves/scheduler-decisions.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

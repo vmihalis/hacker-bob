@@ -32,40 +32,40 @@ const crypto = require("crypto");
 
 const {
   ARTIFACT_REF_PREFIX_VALUES,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   RESOLVERS,
   RESOLVER_PREFIXES,
   resolveArtifactBody,
-} = require("../mcp/lib/body-resolvers/index.js");
-const resolveBodyTool = require("../mcp/lib/tools/resolve-body.js");
+} = require("../mcp/core/body-resolvers/index.js");
+const resolveBodyTool = require("../mcp/tools/resolve-body.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   NEUTRALIZED_OPEN_SENTINEL,
   NEUTRALIZED_CLOSE_SENTINEL,
-} = require("../mcp/lib/untrusted-envelope.js");
+} = require("../mcp/core/untrusted-envelope.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   importHttpTraffic,
   buildHttpRecordObservedPayload,
   deriveTrafficRequestId,
   HTTP_RECORD_BODY_PREVIEW_MAX_CHARS,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 const {
   buildRepoCheckSummary,
   REPO_CHECK_SUMMARY_TOP_N,
   REPO_CHECK_SUMMARY_EXCERPT_MAX_CHARS,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   readFirstLine,
   REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS,
-} = require("../mcp/lib/repo-env.js");
+} = require("../mcp/domains/repo/repo-env.js");
 const {
   sessionDir,
   repoChecksJsonlPath,
@@ -74,14 +74,14 @@ const {
   claimsJsonlPath,
   evidencePackPaths,
   frontierEventsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeJsonDocument,
 } = require("../mcp/lib/fabric-common.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
-const { evmCallsJsonlPath } = require("../mcp/lib/body-resolvers/evm-call.js");
+} = require("../mcp/core/io/storage.js");
+const { evmCallsJsonlPath } = require("../mcp/core/body-resolvers/evm-call.js");
 
 const SUMMARY_HARD_CAP_BYTES = 2 * 1024; // X-P9 hard cap.
 

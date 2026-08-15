@@ -7,17 +7,17 @@ const path = require("path");
 const {
   computeAdjudicationPlanHash,
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/verification/verification-contracts.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const recordFinding = recordCandidateClaimTool.handler;
 const {
   normalizeCandidateClaim,
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   readGradeVerdict,
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   gradeArtifactPaths,
@@ -27,37 +27,37 @@ const {
   verificationAttemptsDir,
   verificationRoundPaths,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readSessionArtifactSummary,
-} = require("../mcp/lib/pipeline-session-artifacts.js");
+} = require("../mcp/core/telemetry/pipeline-session-artifacts.js");
 const {
   artifactDivergence,
   buildVerificationAdjudication,
   prepareVerificationEntry,
   readVerificationContext,
-} = require("../mcp/lib/verification.js");
+} = require("../mcp/core/verification/verification.js");
 const {
   listArchivedVerificationAttempts,
   summarizeVerificationRoundArtifact,
-} = require("../mcp/lib/verification-status-contracts.js");
+} = require("../mcp/core/verification/verification-status-contracts.js");
 const {
   readVerificationRound,
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   acquireSessionLock,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   normalizeSessionStateDocument,
-} = require("../mcp/lib/session-state-contracts.js");
+} = require("../mcp/core/session/session-state-contracts.js");
 const {
   readSessionStateStrict,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -109,13 +109,13 @@ test("session state contract normalizes and reads the shared state shape", () =>
 // offensive-runs rows, so seed a real signed exploited_safely positive +
 // blocked_by_defense control (high severity) + the verdict line binding them.
 function seedFindingDifferentialArm(domain, findingId = "F-1") {
-  const { appendJsonlLine } = require("../mcp/lib/storage.js");
+  const { appendJsonlLine } = require("../mcp/core/io/storage.js");
   const surfaceId = "surface:billing-profile";
-  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",

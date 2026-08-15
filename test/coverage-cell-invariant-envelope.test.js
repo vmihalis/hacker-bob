@@ -37,17 +37,17 @@ const fs = require("fs");
 const path = require("path");
 
 const REPO_ROOT = path.join(__dirname, "..");
-const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "lib", "tools");
+const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "tools");
 const AGENTS_DIR = path.join(REPO_ROOT, ".claude", "agents");
 
-const { cellNodeId } = require("../mcp/lib/task-graph-materializer.js");
-const { compareGraphCandidates } = require("../mcp/lib/graph-scheduler.js");
-const { DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+const { cellNodeId } = require("../mcp/core/waves/task-graph-materializer.js");
+const { compareGraphCandidates } = require("../mcp/core/waves/graph-scheduler.js");
+const { DEFAULT_QUEUE_POLICY } = require("../mcp/core/io/queue-policy.js");
 const {
   isAuditGradedPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const paths = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
+const paths = require("../mcp/core/io/paths.js");
 
 // ── coverage-cell tool registry (derived from source) ───────────────────────
 //
@@ -194,7 +194,7 @@ test("G2 (i): every spawn-capable role's GRANTED mcp tools are disjoint from the
   // role's resolved tool set (mcpToolNamesForRole, after deny) shares no member
   // with the cell-tool names. Because a nesting child's brief allowed_tools_for_node
   // is filtered to this granted set, the child brief is cell-tool-free too.
-  const { mcpToolNamesForRole } = require("../mcp/lib/role-model.js");
+  const { mcpToolNamesForRole } = require("../mcp/core/dispatch/role-model.js");
   const { spawnCapableAgentNames } = require("../scripts/lib/claude-role-renderer.js");
   const cellToolNames = new Set(coverageCellTools().map((t) => t.name));
   const spawners = spawnCapableAgentNames();
@@ -285,8 +285,8 @@ test("G2 (iii): cell node ids are deterministic content hashes of the real cell_
   // The FULL cell-id surface is real, not just surface cells: the A2 transition
   // edge token and the E2 re-probe key are deterministic hashes of REAL inputs
   // (endpoint surfaces / surface+bug_class+auth+residual), never synthetic.
-  const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
-  const { reprobeCellKey } = require("../mcp/lib/belief/residual-depth.js");
+  const { transitionEdgeToken } = require("../mcp/core/session/assignment-brief.js");
+  const { reprobeCellKey } = require("../mcp/core/belief/residual-depth.js");
   const edge = transitionEdgeToken("surface:l1", "surface:l2", "value_movement");
   assert.equal(edge, transitionEdgeToken("surface:l1", "surface:l2", "value_movement"), "edge token deterministic");
   assert.notEqual(edge, transitionEdgeToken("surface:l2", "surface:l1", "value_movement"), "direction-preserving (L1->L2 != L2->L1)");
@@ -377,10 +377,10 @@ test("G2 (iv): the closure gate, closure stat, and grade are belief-FREE at the 
   // gate/closure/grade module would turn an advisory into a gate — caught here.
   const beliefImport = /require\(\s*['"][^'"]*\/belief\/[^'"]*['"]\s*\)|require\(\s*['"][^'"]*residual[^'"]*['"]\s*\)/;
   for (const rel of [
-    "mcp/lib/scheduler-preconditions.js",
-    "mcp/lib/lifecycle-gates.js",
-    "mcp/lib/coverage-closure.js",
-    "mcp/lib/grade-verdict-store.js",
+    "mcp/core/waves/scheduler-preconditions.js",
+    "mcp/core/session/lifecycle-gates.js",
+    "mcp/core/frontier/coverage-closure.js",
+    "mcp/core/grade-verdict-store.js",
   ]) {
     const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
     assert.ok(
@@ -400,9 +400,9 @@ test("G2 (iv): the closure gate, closure stat, and grade are belief-FREE at the 
 test("INV-12 extension: the claim-minting spine is belief-FREE at the source", () => {
   const beliefImport = /require\(\s*['"][^'"]*\/belief\/[^'"]*['"]\s*\)|require\(\s*['"][^'"]*residual[^'"]*['"]\s*\)/;
   const claimSpine = [
-    "mcp/lib/tools/record-candidate-claim.js",
-    "mcp/lib/claims.js",
-    "mcp/lib/claim-freeze.js",
+    "mcp/tools/record-candidate-claim.js",
+    "mcp/core/claims/claims.js",
+    "mcp/core/claims/claim-freeze.js",
   ];
   for (const rel of claimSpine) {
     const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
@@ -422,7 +422,7 @@ test("INV-12 extension positive control: the claim-spine belief-free leg BITES a
   // graph-scheduler.js lazily requires ./belief/cell-scheduler-priority.js — a
   // require string carrying the /belief/ path segment the wall regex anchors on.
   const beliefBearing = fs.readFileSync(
-    path.join(REPO_ROOT, "mcp/lib/graph-scheduler.js"),
+    path.join(REPO_ROOT, "mcp/core/waves/graph-scheduler.js"),
     "utf8",
   );
   assert.ok(
@@ -450,10 +450,10 @@ test("INV-12 narrow exemptions: the two belief<->executed boundary modules consu
   //       executed-control belief, it never dispatches from belief.
   const DISPATCH_BELIEF_IMPORT = /require\(\s*['"][^'"]*(scheduler-priority|intervention-calculus|factor-graph)[^'"]*['"]\s*\)/;
 
-  const verifier = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/composition-live-verifier.js"), "utf8");
+  const verifier = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/differential/composition-live-verifier.js"), "utf8");
   // Non-vacuity: the loop-breaker REALLY routes through the template registry, which is
   // where the executed-probe re-execution lives after the dispatcher relocation.
-  const registry = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/mechanism-template-registry.js"), "utf8");
+  const registry = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/mechanism-template-registry.js"), "utf8");
   assert.match(verifier, /require\(\s*['"][^'"]*mechanism-template-registry[^'"]*['"]\s*\)/, "verifier dispatches through the mechanism-template registry");
   assert.match(registry, /require\(\s*['"][^'"]*\/belief\/live-object-auth-probe[^'"]*['"]\s*\)/, "the object-auth template imports the live-object-auth probe (executed)");
   assert.match(registry, /require\(\s*['"][^'"]*\/belief\/differential-tester[^'"]*['"]\s*\)/, "the object-auth template imports the differential tester (executed)");
@@ -466,7 +466,7 @@ test("INV-12 narrow exemptions: the two belief<->executed boundary modules consu
     "mechanism-template-registry must NOT import scheduler-priority/intervention-calculus/factor-graph — the executed re-execution path it hosts does not dispatch belief",
   );
 
-  const window = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/belief/belief-window.js"), "utf8");
+  const window = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/belief/belief-window.js"), "utf8");
   // Non-vacuity: the window REALLY consumes the verified_intervention provenance.
   assert.match(window, /verified_intervention/, "belief-window consumes verified_intervention (the audit->belief edge it is exempt for)");
   assert.ok(
@@ -483,9 +483,9 @@ test("INV-12 narrow exemptions: the two belief<->executed boundary modules consu
 // GRAPH comparator (INV-11), which stays intra-band. Belief ON here is LOCAL to the
 // test; no production default is touched.
 test("wave cross-band: belief ON can raise a LOW surface across a band, and the surface SET is preserved (reorder/decorate, never drop/add)", () => {
-  const { applyBeliefSchedulerPriority } = require("../mcp/lib/belief/scheduler-priority.js");
-  const { appendEdges } = require("../mcp/lib/surface-graph.js");
-  const { sessionDir } = require("../mcp/lib/paths.js");
+  const { applyBeliefSchedulerPriority } = require("../mcp/core/belief/scheduler-priority.js");
+  const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+  const { sessionDir } = require("../mcp/core/io/paths.js");
 
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(require("os").tmpdir(), "bob-crossband-"));
@@ -561,7 +561,7 @@ test("wave cross-band: belief ON can raise a LOW surface across a band, and the 
     // STRUCTURAL PRECONDITION: the wave-planner exposes the open_requeue +
     // lead_surface_ids re-queue buckets that make a cross-band raise safe (a raised
     // surface is re-queued, never lost). Assert those bucket names exist in source.
-    const wavePlanner = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/wave-planner.js"), "utf8");
+    const wavePlanner = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/waves/wave-planner.js"), "utf8");
     assert.match(wavePlanner, /name:\s*["']open_requeue["']/, "wave-planner exposes the open_requeue bucket (cross-band re-queue safety)");
     assert.match(wavePlanner, /name:\s*["']lead_surface_ids["']/, "wave-planner exposes the lead_surface_ids bucket (cross-band re-queue safety)");
   } finally {

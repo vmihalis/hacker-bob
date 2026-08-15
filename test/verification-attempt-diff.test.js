@@ -11,7 +11,7 @@ const {
   diffVerificationAttempts,
   describeAttempt,
   diffFileMaps,
-} = require("../mcp/lib/verification-attempt-diff.js");
+} = require("../mcp/core/verification/verification-attempt-diff.js");
 
 function uniqueDomain() {
   return `bob-diff-attempts-${crypto.randomBytes(4).toString("hex")}.local`;

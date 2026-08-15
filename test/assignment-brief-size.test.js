@@ -11,14 +11,14 @@ const {
   attackSurfacePath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   buildBriefExtrasFromRegistry,
   readAssignmentBrief,
   ASSIGNMENT_BRIEF_SLICE_REGISTRY,
   UNTRUSTED_CONTENT_POLICY,
   UNTRUSTED_FENCE_OVERHEAD_CHARS,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
@@ -26,22 +26,22 @@ const {
   KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS,
   fenceOverheadForLabel,
   wrapUntrusted,
-} = require("../mcp/lib/untrusted-envelope.js");
+} = require("../mcp/core/untrusted-envelope.js");
 const {
   RESOLVER_PREFIXES,
-} = require("../mcp/lib/body-resolvers/index.js");
+} = require("../mcp/core/body-resolvers/index.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   ingestSchemaDoc,
-} = require("../mcp/lib/schema-contracts-store.js");
+} = require("../mcp/core/schema-contracts-store.js");
 const {
   appendEdges,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 
 const BRIEF_SIZE_BUDGET_CHARS = 30_000;
 const WEB_UNTRUSTED_SLICE_KEYS = Object.freeze([

@@ -19,31 +19,31 @@ const {
   appendCandidateClaim,
   evidenceReferenceLookupKey,
   normalizeEvidenceReferenceShape,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   assertCompletenessAgainstFreeze,
   buildClaimFreeze,
   iterateFrozenEvidenceRefs,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   assertEvidenceCompletenessForFreeze,
   normalizeEvidencePacksDocument,
   readFrozenEvidenceFindingIdSet,
   renderEvidencePacksMarkdown,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   sessionDir,
   repoCommandRunsJsonlPath,
   repoRunsDir,
-} = require("../mcp/lib/paths.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/io/paths.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

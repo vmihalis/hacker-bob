@@ -23,18 +23,18 @@ const {
   signRowViaIsolatedSignerOrLocal,
   ensureHandoffSigningKey,
   readHandoffSigningPublicKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   verifyRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   CLAIM_FREEZE_MAC_CONTEXT,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   handoffSigningKeyPath,
   handoffSigningPrivateKeyPath,
   handoffSigningPublicKeyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

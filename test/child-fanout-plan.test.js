@@ -5,10 +5,10 @@ const {
   deriveChildFanoutPlan,
   fanoutPlanningKey,
   CHILD_FANOUT_HARD_CAP,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   toolNamesForRoleBundle,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 
 function dedupeSorted(values) {
   return Array.from(new Set(values.filter((v) => typeof v === "string" && v.length > 0))).sort();
@@ -35,7 +35,7 @@ test("OSS surfaces fan out (sanitizer-class x input-class) cells, no auth axis",
     isOssSurfaceMetadata,
     OSS_SANITIZER_CLASS_AXIS,
     OSS_INPUT_CLASS_AXIS,
-  } = require("../mcp/lib/capability-packs.js");
+  } = require("../mcp/core/capability/capability-packs.js");
   const ossMeta = { surface_type: "oss_native_code" };
   assert.equal(isOssSurfaceMetadata(ossMeta), true);
   assert.equal(isOssSurfaceMetadata({ capability_pack: "web" }), false);

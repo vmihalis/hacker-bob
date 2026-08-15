@@ -7,43 +7,43 @@ const path = require("path");
 const {
   normalizePipelineEvent,
   normalizePipelineEventForRead,
-} = require("../mcp/lib/pipeline-events.js");
+} = require("../mcp/core/telemetry/pipeline-events.js");
 const {
   CROSS_SESSION_ANALYTICS_MAX_SESSIONS,
   readPipelineAnalytics,
   readPipelineEvents,
-} = require("../mcp/lib/pipeline-analytics.js");
+} = require("../mcp/core/telemetry/pipeline-analytics.js");
 const {
   HANDOFF_ANALYTICS_MAX_FILES,
   WAVE_READINESS_MAX_ASSIGNMENT_FILES,
   readSessionArtifactSummary,
-} = require("../mcp/lib/pipeline-session-artifacts.js");
+} = require("../mcp/core/telemetry/pipeline-session-artifacts.js");
 const {
   attackSurfacePath,
   pipelineEventsJsonlPath,
   statePath,
   surfaceRoutesPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendToolTelemetryEvent,
   readToolTelemetryEvents,
   toolTelemetryPath,
   TOOL_TELEMETRY_MAX_RECORDS,
-} = require("../mcp/lib/tool-telemetry.js");
+} = require("../mcp/core/telemetry/tool-telemetry.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   sha256Hex,
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

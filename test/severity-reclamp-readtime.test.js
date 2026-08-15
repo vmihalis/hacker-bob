@@ -16,41 +16,41 @@ const path = require("node:path");
 const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   writeVerificationRound,
   reclampSeveritiesAgainstFreeze,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   finalSeverityByFinding,
-} = require("../mcp/lib/reachability-ceiling.js");
+} = require("../mcp/core/frontier/reachability-ceiling.js");
 const {
   requireFinalReportableSeveritySet,
-} = require("../mcp/lib/grade-verdict-store.js");
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
+} = require("../mcp/core/grade-verdict-store.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
-const { initSession } = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/io/storage.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

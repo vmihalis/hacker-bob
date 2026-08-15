@@ -21,7 +21,7 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 test("no inline contract-address lowercase in the SC-identity modules", () => {
   // contract-target.js and lead-promotion.js are smart-contract identity code:
   // an address is never lowercased inline — it routes through the shared normalizer.
-  for (const f of ["mcp/lib/contract-target.js", "mcp/lib/lead-promotion.js"]) {
+  for (const f of ["mcp/domains/blockchain/contract-target.js", "mcp/core/frontier/lead-promotion.js"]) {
     assert.ok(
       !/\baddress\.toLowerCase\(\)/.test(read(f)),
       `${f}: address lowercased inline — use chain-authority.normalizeContractAddress / contractIdentityKey`,
@@ -34,10 +34,10 @@ test("no hand-rolled CAIP-10 identity with inline lowercase in the SC path", () 
   // anti-pattern — the CAIP-10 identity must be built by contractIdentityKey.
   const CAIP_INLINE = /`[^`]*\$\{[^}]+\}:\$\{[^}]+\}:\$\{[^}]*\.toLowerCase\(\)\}/;
   for (const f of [
-    "mcp/lib/tools/finalize-node.js",
-    "mcp/lib/contract-target.js",
-    "mcp/lib/lead-promotion.js",
-    "mcp/lib/tools/materialize-producer-floor.js",
+    "mcp/tools/finalize-node.js",
+    "mcp/domains/blockchain/contract-target.js",
+    "mcp/core/frontier/lead-promotion.js",
+    "mcp/tools/materialize-producer-floor.js",
   ]) {
     assert.ok(
       !CAIP_INLINE.test(read(f)),
@@ -48,7 +48,7 @@ test("no hand-rolled CAIP-10 identity with inline lowercase in the SC path", () 
 
 test("every contract-identity producer agrees and preserves base58/SS58 case", () => {
   const { contractIdentityKey, normalizeOneTuple } = require("../mcp/lib/chain-authority.js");
-  const { caip10Endpoint } = require("../mcp/lib/contract-target.js");
+  const { caip10Endpoint } = require("../mcp/domains/blockchain/contract-target.js");
   // base58 (svm) is case-SENSITIVE: the shared key preserves case, and the CAIP-10
   // endpoint + the membership normalizer agree with it (no divergent hand-rolled form).
   const svm = { chain_family: "svm", chain_id: "mainnet", address: "AbCdEf1234" };
@@ -74,7 +74,7 @@ test("producer-emitted SC surface_id uses the seed path's sc- slug builder (fold
   // emission) must share ONE surface_id, or the materializer folds them into two
   // surface records. The producer emission must therefore use contractSurfaceId,
   // NOT the CAIP-10 colon identity (contractIdentityKey), which never folds.
-  const finalizeSrc = read("mcp/lib/tools/finalize-node.js");
+  const finalizeSrc = read("mcp/tools/finalize-node.js");
   assert.ok(
     /surfaceId = contractSurfaceId\(/.test(finalizeSrc),
     "finalize-node must build the SC surface_id via contractSurfaceId (the seed-path sc- slug)",
@@ -83,7 +83,7 @@ test("producer-emitted SC surface_id uses the seed path's sc- slug builder (fold
     !/surfaceId = contractIdentityKey\(/.test(finalizeSrc),
     "finalize-node must NOT set surface_id to the CAIP-10 colon identity (it never folds with the seed sc- slug)",
   );
-  const { contractSurfaceId } = require("../mcp/lib/contract-target.js");
+  const { contractSurfaceId } = require("../mcp/domains/blockchain/contract-target.js");
   const id = contractSurfaceId({ chainFamily: "svm", chainId: "mainnet", address: "AbCdEf1234" });
   assert.ok(id.startsWith("sc-"), "surface_id is the sc- slug form");
   assert.ok(id.endsWith("AbCdEf1234"), "sc- slug preserves base58 case");

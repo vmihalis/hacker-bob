@@ -10,24 +10,24 @@ const {
   initRepoSession,
   readRepoSession,
   deriveRepoTargetDomain,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   readSessionStateStrict,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
   REPO_TARGET_DOMAIN_PATTERN,
   authorizeToolCall,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 const {
   normalizeScopePolicy,
   buildSessionNucleus,
-} = require("../mcp/lib/governance-contracts.js");
-const initRepoSessionTool = require("../mcp/lib/tools/init-repo-session.js");
-const initSessionTool = require("../mcp/lib/tools/init-session.js");
+} = require("../mcp/core/governance/governance-contracts.js");
+const initRepoSessionTool = require("../mcp/tools/repo/init-repo-session.js");
+const initSessionTool = require("../mcp/tools/init-session.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

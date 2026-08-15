@@ -21,19 +21,19 @@ const path = require("node:path");
 const {
   reverifyReproRecord,
   readReproVerifiedSummary,
-} = require("../mcp/lib/repro-replay-verifier.js");
-const { repoCommandRunsJsonlPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
+const { repoCommandRunsJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   signRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../mcp/lib/handoff-signing-key.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const {
   seedGenuineReproPair,
 } = require("./helpers/repro-run-pair.js");

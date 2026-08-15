@@ -8,10 +8,10 @@
 const {
   normalizeOpaqueRef,
   normalizeQuantityBound,
-} = require("./physical-quantities.js");
+} = require("../domains/physical/physical-quantities.js");
 const {
   hashCanonicalJson,
-} = require("./verification-contracts.js");
+} = require("../core/verification/verification-contracts.js");
 
 const PHYSICAL_RESOURCE_BUNDLE_VERSION = 1;
 const PHYSICAL_RESOURCE_BUNDLE_BINDING_VERSION = 1;

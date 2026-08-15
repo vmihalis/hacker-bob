@@ -11,10 +11,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const readClaimsTool = require("../mcp/lib/tools/read-candidate-claims.js");
-const listClaimsTool = require("../mcp/lib/tools/list-candidate-claims.js");
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const readClaimsTool = require("../mcp/tools/read-candidate-claims.js");
+const listClaimsTool = require("../mcp/tools/list-candidate-claims.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 
 const DOMAIN = "degraded-reader.example.com";
 

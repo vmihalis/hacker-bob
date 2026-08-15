@@ -18,8 +18,8 @@ const {
   ERROR_CODES,
   ToolError,
   errorEnvelope,
-} = require("../mcp/lib/envelope.js");
-const { executeTool } = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/io/envelope.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;

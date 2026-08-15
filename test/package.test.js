@@ -77,7 +77,7 @@ test("canonical package declares PSL as a runtime dependency without vendoring i
 });
 
 test("durable instrument store has one broker-owned implementation and an exact MCP alias", () => {
-  const compatibilityPath = path.join(ROOT, "mcp", "lib", "instrument-lease-store.js");
+  const compatibilityPath = path.join(ROOT, "mcp", "domains", "physical", "instrument-lease-store.js");
   const canonicalPath = path.join(
     ROOT,
     "packages",
@@ -171,9 +171,12 @@ test("canonical package declares the MCP runtime through a deny-by-default file 
     "mcp/auto-signup.js",
     "mcp/redaction.js",
     "mcp/browser-driver.js",
-    "mcp/lib/**/*.js",
-    "mcp/lib/fuzz/bob-multitu-build.sh",
-    "mcp/lib/offensive-image.json",
+    "mcp/core/**/*.js",
+    "mcp/domains/**/*.js",
+    "mcp/tools/**/*.js",
+    "mcp/lib/*.js",
+    "mcp/fuzz/bob-multitu-build.sh",
+    "mcp/offensive-image.json",
   ]) {
     assert.ok(packageJson.files.includes(expected), `${expected} should be explicitly packed`);
   }
@@ -484,7 +487,7 @@ test("canonical package excludes internal design docs and scratch topology", () 
     "packages/bob-artifact-vault/index.js",
     "packages/bob-artifact-vault/worker.js",
     "packages/bob-artifact-vault/operator.js",
-    "mcp/lib/physical-provider-authoring.js",
+    "mcp/domains/physical/physical-provider-authoring.js",
     "packages/bob-instrument-deterministic/lib/orthogonal-fixture.js",
     "docs/provider-authoring.md",
   ]) {
@@ -598,12 +601,7 @@ test("real canonical tarball has a closed all-export physical runtime dependency
       JSON.parse(fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8")).name,
       "hacker-bob",
     );
-    const extractedCompatibilityStore = path.join(
-      runtimeRoot,
-      "mcp",
-      "lib",
-      "instrument-lease-store.js",
-    );
+    const extractedCompatibilityStore = path.join(runtimeRoot, "mcp", "domains", "physical", "instrument-lease-store.js");
     const extractedCanonicalStore = path.join(
       runtimeRoot,
       "packages",
@@ -667,7 +665,8 @@ test("package policy excludes denied files even if they exist in the source tree
     fs.mkdirSync(path.join(root, "docs", "plane-delta", "detail"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs", "plane-delta", "verification"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs", "plane-physical"), { recursive: true });
-    fs.mkdirSync(path.join(root, "mcp", "lib", "fuzz"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "lib"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "fuzz"), { recursive: true });
     fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
     fs.mkdirSync(path.join(root, "scripts", "replay-prompts"), { recursive: true });
     fs.mkdirSync(path.join(root, "testing", "policy-replay"), { recursive: true });
@@ -683,7 +682,7 @@ test("package policy excludes denied files even if they exist in the source tree
     fs.writeFileSync(path.join(root, "docs", "plane-physical", "nodes.json"), "{}\n");
     fs.writeFileSync(path.join(root, "mcp", "server.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(root, "mcp", "lib", "runtime.js"), "module.exports = {};\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "exit 0\n");
+    fs.writeFileSync(path.join(root, "mcp", "fuzz", "bob-multitu-build.sh"), "exit 0\n");
     fs.writeFileSync(path.join(root, "mcp", "lib", "hil-evidence.json"), "{}\n");
     fs.writeFileSync(path.join(root, "mcp", "lib", "operator-private.pem"), "secret\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-refusal.js"), "stale\n");
@@ -705,7 +704,7 @@ test("package policy excludes denied files even if they exist in the source tree
     assert.ok(!expectedFiles.includes("testing/policy-replay/LIVE_SMOKE_DESIGN.md"));
     assert.ok(expectedFiles.includes("mcp/server.js"));
     assert.ok(expectedFiles.includes("mcp/lib/runtime.js"));
-    assert.ok(expectedFiles.includes("mcp/lib/fuzz/bob-multitu-build.sh"));
+    assert.ok(expectedFiles.includes("mcp/fuzz/bob-multitu-build.sh"));
     assert.ok(!expectedFiles.includes("mcp/lib/hil-evidence.json"));
     assert.ok(!expectedFiles.includes("mcp/lib/operator-private.pem"));
     for (const excluded of EXCLUDED_CANONICAL_PACKAGE_FILES) {

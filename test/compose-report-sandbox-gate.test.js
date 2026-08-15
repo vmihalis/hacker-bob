@@ -18,25 +18,25 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,
   reportMarkdownPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/lib/sandbox-isolation-attest.js");
-const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/io/paths.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+const { resetForTests: resetMaterializationDebounce } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";

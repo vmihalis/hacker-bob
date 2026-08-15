@@ -20,7 +20,7 @@ const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-const custody = require("../mcp/lib/signing-key-custody.js");
+const custody = require("../mcp/core/ledger-integrity/signing-key-custody.js");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const LAUNCHER = path.join(REPO_ROOT, "scripts", "launch-bob-signer.sh");

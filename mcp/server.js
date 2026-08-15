@@ -5,18 +5,18 @@
 
 const {
   executeTool,
-} = require("./lib/dispatch.js");
+} = require("./core/dispatch/dispatch.js");
 const {
   TOOL_MANIFEST,
   TOOLS,
-} = require("./lib/tool-registry.js");
+} = require("./core/dispatch/tool-registry.js");
 const {
   startStdioServer,
-} = require("./lib/transport.js");
+} = require("./core/io/transport.js");
 const {
   acquireEngineSingletonLock,
   releaseEngineSingletonLock,
-} = require("./lib/engine-lock.js");
+} = require("./core/io/engine-lock.js");
 
 // fx-gate-bypass defense 1: refuse to serve at all if another `node
 // mcp/server.js` instance already holds the whole-engine singleton lock for

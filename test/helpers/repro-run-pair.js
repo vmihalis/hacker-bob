@@ -19,9 +19,9 @@ const {
   repoCommandRunsJsonlPath,
   repoRunsDir,
   reproVerifiedJsonlPath,
-} = require("../../mcp/lib/paths.js");
-const { appendJsonlLine } = require("../../mcp/lib/storage.js");
-const { hashCanonicalJson } = require("../../mcp/lib/verification-contracts.js");
+} = require("../../mcp/core/io/paths.js");
+const { appendJsonlLine } = require("../../mcp/core/io/storage.js");
+const { hashCanonicalJson } = require("../../mcp/core/verification/verification-contracts.js");
 // Cycle B: an admitted LIVE repo-command-runs row now carries a domain-separated
 // row_mac. The {sign} opt mints it the way the producer (repo-env.js) does so a test
 // that drives reverifyReproRecord through the keyed read path admits the pair; default
@@ -29,11 +29,11 @@ const { hashCanonicalJson } = require("../../mcp/lib/verification-contracts.js")
 const {
   signRowWithMac,
   REPO_COMMAND_RUN_MAC_CONTEXT,
-} = require("../../mcp/lib/offensive-row-mac.js");
+} = require("../../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../../mcp/lib/handoff-signing-key.js");
+} = require("../../mcp/core/ledger-integrity/handoff-signing-key.js");
 
 // A real ASAN crash with a /src root-cause frame (the muparser/oss-fuzz shape).
 const DEFAULT_VULN_STDERR = `==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511

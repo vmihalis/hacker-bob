@@ -35,16 +35,16 @@ const {
   producerRunSet,
   buildProducerRunLedgerCache,
   STUCK_PRODUCER_DISPATCH_THRESHOLD,
-} = require("../mcp/lib/producer-run-ledger.js");
+} = require("../mcp/core/producer-run-ledger.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
-const { appendNodeTransition } = require("../mcp/lib/task-graph-events.js");
-const { appendContract } = require("../mcp/lib/contracts.js");
-const { materializeTaskGraph } = require("../mcp/lib/task-graph-materializer.js");
-const finalizeNode = require("../mcp/lib/tools/finalize-node.js");
-const { evaluateSchedulerPrecondition } = require("../mcp/lib/scheduler-preconditions.js");
+} = require("../mcp/core/frontier/frontier-events.js");
+const { appendNodeTransition } = require("../mcp/core/waves/task-graph-events.js");
+const { appendContract } = require("../mcp/core/contract/contracts.js");
+const { materializeTaskGraph } = require("../mcp/core/waves/task-graph-materializer.js");
+const finalizeNode = require("../mcp/tools/finalize-node.js");
+const { evaluateSchedulerPrecondition } = require("../mcp/core/waves/scheduler-preconditions.js");
 const {
   reconcileOrphanExecutedProducers,
   reconcileStaleDispatchProducers,
@@ -54,10 +54,10 @@ const {
   handler: materializeProducerFloor,
   ORPHAN_EXECUTED_RECONCILE_PASS_THRESHOLD,
   STALE_DISPATCH_GRACE_MS,
-} = require("../mcp/lib/tools/materialize-producer-floor.js");
-const { PRODUCER_PACKS } = require("../mcp/lib/producer-packs.js");
-const { statePath, trafficJsonlPath } = require("../mcp/lib/paths.js");
-const { currentSurfaces } = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/tools/materialize-producer-floor.js");
+const { PRODUCER_PACKS } = require("../mcp/core/dispatch/producer-packs.js");
+const { statePath, trafficJsonlPath } = require("../mcp/core/io/paths.js");
+const { currentSurfaces } = require("../mcp/core/frontier/frontier-projections.js");
 const { checkLegH } = require("../scripts/check-producer-coherence.js");
 
 // Drive a producer node to `dispatched` with a known prep_token — the same path
@@ -964,7 +964,7 @@ test("the floor handler wraps its whole read -> plan -> append -> reconcile body
     seedWebSession(domain);
     const key = "web_host_family"; // the only ready root producer under the target seed
 
-    const storage = require("../mcp/lib/storage.js");
+    const storage = require("../mcp/core/io/storage.js");
     const realWithSessionLock = storage.withSessionLock;
     let handlerLockCalls = 0;
     let appendLandedInsideHold = false;
@@ -978,16 +978,16 @@ test("the floor handler wraps its whole read -> plan -> append -> reconcile body
 
     // Re-require the handler so its top-level destructure binds the spied
     // withSessionLock (the already-loaded copy captured the real one at module load).
-    const handlerPath = require.resolve("../mcp/lib/tools/materialize-producer-floor.js");
+    const handlerPath = require.resolve("../mcp/tools/materialize-producer-floor.js");
     delete require.cache[handlerPath];
     let out;
     try {
-      const freshHandler = require("../mcp/lib/tools/materialize-producer-floor.js").handler;
+      const freshHandler = require("../mcp/tools/materialize-producer-floor.js").handler;
       out = JSON.parse(freshHandler({ target_domain: domain }));
     } finally {
       storage.withSessionLock = realWithSessionLock;
       delete require.cache[handlerPath];
-      require("../mcp/lib/tools/materialize-producer-floor.js");
+      require("../mcp/tools/materialize-producer-floor.js");
     }
 
     assert.equal(out.tier1_producers_emitted, 1, "the ready root producer is emitted once");

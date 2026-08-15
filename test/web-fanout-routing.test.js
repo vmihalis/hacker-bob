@@ -12,12 +12,12 @@ const {
   getCapabilityPack,
   selectWebEvaluatorPack,
   techniqueCompatibilityPackId,
-} = require("../mcp/lib/capability-packs.js");
-const { buildSurfaceRoutesDocument } = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/capability/capability-packs.js");
+const { buildSurfaceRoutesDocument } = require("../mcp/core/frontier/surface-router.js");
 const {
   surfaceExposesIdBearingCollection,
   surfaceIdBearingEndpoints,
-} = require("../mcp/lib/offensive-idor-producer.js");
+} = require("../mcp/domains/web/offensive-idor-producer.js");
 
 function withClaudeHost(fn, { agentTeams = true } = {}) {
   // The router gates the reroute on the HOST-AWARE effective spawn depth (effectiveSpawnDepth
@@ -81,7 +81,7 @@ test("technique compatibility targets are closed, known, and self-resolving for 
 });
 
 test("technique compatibility is directed from consumer to canonical target, not variant equivalence", () => {
-  const { assertTechniquePackMatchesCapability } = require("../mcp/lib/technique-packs.js");
+  const { assertTechniquePackMatchesCapability } = require("../mcp/core/dispatch/technique-packs.js");
   const canonicalWebTechnique = { id: "canonical-web", capability_packs: ["web"] };
   const variantTaggedTechnique = { id: "variant-only", capability_packs: ["web_fanout"] };
 
@@ -197,9 +197,9 @@ test("bob_write_wave_handoff PERSISTS discovered_pivots (the transition-blind fa
   const prevHome = process.env.HOME;
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "web-fanout-pivots-"));
   try {
-    const paths = require("../mcp/lib/paths.js");
-    const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-    const { startWave, writeWaveHandoff } = require("../mcp/lib/waves.js");
+    const paths = require("../mcp/core/io/paths.js");
+    const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+    const { startWave, writeWaveHandoff } = require("../mcp/core/waves/waves.js");
     const domain = "pivots.example.com";
     JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
     fs.writeFileSync(paths.attackSurfacePath(domain), JSON.stringify({ surfaces: [
@@ -229,8 +229,8 @@ test("child_fanout_plan is nesting-level aware — a nested re-read DECREMENTS a
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "web-fanout-depth-"));
   process.env.BOB_CLIENT = "claude";
   try {
-    const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
-    const { initSession } = require("../mcp/lib/session-state.js");
+    const { buildChildFanoutPlanForSurface } = require("../mcp/core/session/assignment-brief.js");
+    const { initSession } = require("../mcp/core/session/session-state.js");
     const domain = "nest-depth.example.com";
     JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
     const surfaceObj = { id: "S-1", uri: `https://${domain}/api/orders/1`, bug_class_hints: ["idor"] };
@@ -254,7 +254,7 @@ test("child_fanout_plan is nesting-level aware — a nested re-read DECREMENTS a
 });
 
 test("selectTechniquePacksForSurface treats web_fanout as web (no technique-guidance loss on reroute)", () => {
-  const { selectTechniquePacksForSurface } = require("../mcp/lib/technique-packs.js");
+  const { selectTechniquePacksForSurface } = require("../mcp/core/dispatch/technique-packs.js");
   const surface = { id: "S-1", uri: "https://x.example.com/api/orders/123", hosts: ["https://x.example.com"] };
   const web = selectTechniquePacksForSurface(surface, { capabilityPack: "web" });
   const fanout = selectTechniquePacksForSurface(surface, { capabilityPack: "web_fanout" });
@@ -271,18 +271,18 @@ test("web_fanout technique compatibility survives select -> full read -> complet
   process.env.BOB_CLIENT = "claude";
   process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
   try {
-    const paths = require("../mcp/lib/paths.js");
-    const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-    const { startWave, writeWaveHandoff } = require("../mcp/lib/waves.js");
+    const paths = require("../mcp/core/io/paths.js");
+    const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+    const { startWave, writeWaveHandoff } = require("../mcp/core/waves/waves.js");
     const {
       logTechniqueAttempt,
       readTechniquePackForTool,
       readTechniquePackReadRecordsFromJsonl,
       selectTechniquePacks,
-    } = require("../mcp/lib/technique-packs.js");
-    const { finalizeAgentRun } = require("../mcp/lib/agent-run-completion.js");
-    const { mergeWaveHandoffsInternal } = require("../mcp/lib/wave-handoff-store.js");
-    const { ERROR_CODES, ToolError } = require("../mcp/lib/envelope.js");
+    } = require("../mcp/core/dispatch/technique-packs.js");
+    const { finalizeAgentRun } = require("../mcp/core/session/agent-run-completion.js");
+    const { mergeWaveHandoffsInternal } = require("../mcp/core/waves/wave-handoff-store.js");
+    const { ERROR_CODES, ToolError } = require("../mcp/core/io/envelope.js");
 
     const domain = "web-fanout-techniques.example.com";
     JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));

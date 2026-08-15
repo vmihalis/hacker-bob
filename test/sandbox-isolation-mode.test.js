@@ -16,7 +16,7 @@ const assert = require("node:assert/strict");
 const {
   resolveSandboxAttestationMode,
   SANDBOX_ATTESTATION_MODE_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
 
 test("explicit enforce is honored on darwin (operator opt-in)", () => {
   const r = resolveSandboxAttestationMode({ [SANDBOX_ATTESTATION_MODE_ENV]: "enforce" }, "darwin");

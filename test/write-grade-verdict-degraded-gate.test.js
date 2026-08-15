@@ -15,16 +15,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { writeGradeVerdict } = require("../mcp/lib/grade-verdict-store.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { writeGradeVerdict } = require("../mcp/core/grade-verdict-store.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { gradeArtifactPaths, findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { gradeArtifactPaths, findingDifferentialVerifiedJsonlPath } = require("../mcp/core/io/paths.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 
 // A standalone web (IDOR) finding is an executable-flip class; seed the
 // finding-differential verified_pass arm the grade-time standalone gate requires so a
@@ -33,11 +33,11 @@ const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 // against MAC-covered offensive-runs rows, so seed a real signed exploited_safely
 // positive + blocked_by_defense control (high severity) + the verdict line binding them.
 function seedFindingDifferentialArm(domain, findingId, surfaceId = "surface:billing-profile") {
-  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
@@ -62,7 +62,7 @@ function seedFindingDifferentialArm(domain, findingId, surfaceId = "surface:bill
 }
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

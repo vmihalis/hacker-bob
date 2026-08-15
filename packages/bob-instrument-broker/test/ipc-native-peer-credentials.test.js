@@ -6,7 +6,7 @@ const crypto = require("node:crypto");
 
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   NATIVE_IPC_PEER_CREDENTIAL_SNAPSHOT_DOMAIN,
   PLATFORM_PROFILES,

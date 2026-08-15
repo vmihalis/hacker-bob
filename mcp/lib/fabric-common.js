@@ -7,19 +7,19 @@ const {
   assertNonEmptyString,
   normalizeOptionalText,
   normalizeStringArray,
-} = require("./validation.js");
+} = require("../core/io/validation.js");
 const {
   cloneJson,
   hashCanonicalJson,
   isPlainObject,
-} = require("./verification-contracts.js");
+} = require("../core/verification/verification-contracts.js");
 const {
   readFileUtf8,
   writeFileAtomic,
-} = require("./storage.js");
+} = require("../core/io/storage.js");
 const {
   validateNoSensitiveMaterial,
-} = require("./sensitive-material.js");
+} = require("../core/redaction/sensitive-material.js");
 
 function normalizeIsoTimestamp(value, fieldName = "ts", fallback = new Date()) {
   if (value == null) {

@@ -27,24 +27,24 @@ const {
   attackSurfacePath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readAssignmentBrief,
   AVAILABLE_CLI_TOOLS_HEADER,
   AVAILABLE_CLI_TOOLS_MAX,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   CLI_TOOL_PACKS,
-} = require("../mcp/lib/cli-tool-packs.js");
+} = require("../mcp/core/dispatch/cli-tool-packs.js");
 const {
   presenceCachePath,
-} = require("../mcp/lib/cli-tool-presence.js");
+} = require("../mcp/core/dispatch/cli-tool-presence.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -257,7 +257,7 @@ test("top-5 cap holds when >= 6 packs would otherwise apply", () => {
     //   below, with a forged observations summary.
     const {
       renderAvailableCliToolsSectionSync,
-    } = require("../mcp/lib/assignment-brief.js");
+    } = require("../mcp/core/session/assignment-brief.js");
     const everyTrigger = {
       routes_count: 5,
       observed_endpoints: ["/login"],
@@ -304,7 +304,7 @@ test("cli_tools key is absent when zero packs apply (no empty header)", () => {
     // for `gowitness` to fail via a non-web fingerprint.
     const {
       renderAvailableCliToolsSectionSync,
-    } = require("../mcp/lib/assignment-brief.js");
+    } = require("../mcp/core/session/assignment-brief.js");
     const md = renderAvailableCliToolsSectionSync({
       surface_fingerprint: { kind: "smart_contract", host: "sc.example" },
       task_lens: "behavior_probe",

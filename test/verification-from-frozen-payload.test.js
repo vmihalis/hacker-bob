@@ -14,34 +14,34 @@ const path = require("path");
 
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   buildVerificationSnapshot,
   assertFreshVerificationSnapshot,
   findingIdSetFromSnapshot,
   claimIdSetFromSnapshot,
-} = require("../mcp/lib/verification-snapshot-contracts.js");
+} = require("../mcp/core/verification/verification-snapshot-contracts.js");
 const {
   findingIdSetForVerificationContext,
   claimIdSetFromFindingIds,
-} = require("../mcp/lib/verification-finding-id-adapter.js");
+} = require("../mcp/core/verification/verification-finding-id-adapter.js");
 const {
   claimFreezePath,
   claimsJsonlPath,
   sessionDir,
   verificationSnapshotPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/io/storage.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

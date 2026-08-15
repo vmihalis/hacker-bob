@@ -15,17 +15,17 @@
 
 // hashCanonicalJson (verification-contracts.js) is the single canonical hashing
 // primitive — no parallel hash implementation is introduced here.
-const { hashCanonicalJson } = require("./verification-contracts.js");
+const { hashCanonicalJson } = require("../core/verification/verification-contracts.js");
 // classifyTargetToken (target-intake.js) is the single canonical string-token
 // parser; it is already load-time-asserted against CHAIN_FAMILY_VALUES, so this
 // module never redefines or hardcodes the chain-family vocabulary.
-const { classifyTargetToken } = require("./target-intake.js");
+const { classifyTargetToken } = require("../core/target-intake.js");
 // CHAIN_FAMILY_VALUES (constants.js) is the single known-chain-family authority,
 // the same set the Y-D21 append funnel checks; ToolError/ERROR_CODES (envelope.js)
 // are the canonical fail-closed error carriers. Both are pure, I/O-free modules,
 // so the strict bind-time normalizer keeps this module's dependency-light posture.
 const { CHAIN_FAMILY_VALUES } = require("./constants.js");
-const { ERROR_CODES, ToolError } = require("./envelope.js");
+const { ERROR_CODES, ToolError } = require("../core/io/envelope.js");
 
 // Chain families whose address encoding is case-INSENSITIVE hex, so folding to
 // lowercase is safe and lets 0xABC and 0xabc collide. base58 (svm), SS58

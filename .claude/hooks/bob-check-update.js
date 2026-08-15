@@ -3,7 +3,7 @@
 
 const path = require("path");
 const { spawn } = require("child_process");
-const update = require(path.join(__dirname, "..", "..", "mcp", "lib", "update-check.js"));
+const update = require(path.join(__dirname, "..", "..", "mcp", "core", "update-check.js"));
 
 function main() {
   const projectDir = process.argv[2] || process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();

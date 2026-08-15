@@ -13,7 +13,7 @@ const { types: utilTypes } = require("node:util");
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 // Capture the small primordial surface used while traversing caller records.
 // In particular, never append through Array.prototype: a numeric prototype

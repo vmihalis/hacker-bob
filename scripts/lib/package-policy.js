@@ -95,7 +95,7 @@ const CANONICAL_RUNTIME_PACKAGE_ROOTS = Object.freeze([
   "packages/bob-instrument-principal-acl-darwin",
 ]);
 const CANONICAL_RUNTIME_OWNED_ROOTS = Object.freeze([
-  "mcp/lib",
+  "mcp",
   ...CANONICAL_RUNTIME_PACKAGE_ROOTS,
 ]);
 const CANONICAL_RUNTIME_PACKAGE_ROOT_SET = new Set(CANONICAL_RUNTIME_PACKAGE_ROOTS);
@@ -140,11 +140,11 @@ const REQUIRED_SUPPORT_SURFACES = Object.freeze([
   ".hacker-bob/bypass-tables/oauth-oidc.txt",
   "bin/hacker-bob.js",
   "mcp/server.js",
-  "mcp/lib/bob-export.js",
-  "mcp/lib/cve-feed-parser.js",
-  "mcp/lib/cve-scope-matcher.js",
-  "mcp/lib/egress-profiles.js",
-  "mcp/lib/update-check.js",
+  "mcp/core/bob-export.js",
+  "mcp/domains/repo/cve-feed-parser.js",
+  "mcp/domains/repo/cve-scope-matcher.js",
+  "mcp/core/egress-profiles.js",
+  "mcp/core/update-check.js",
   "docs/provider-authoring.md",
   "prompts/playbooks/C2_doc_vs_behavior.md",
   "prompts/playbooks/C4_multi_account_differential.md",
@@ -322,10 +322,11 @@ function isPackableBobResource(file) {
 
 function isPackableMcpRuntimeFile(file) {
   if (typeof file !== "string") return false;
-  if (MCP_TOP_LEVEL_RUNTIME_FILES.some((name) => file === `mcp/${name}`)) return true;
-  if (/^mcp\/lib\/(?:[^/]+\/)*[^/]+\.js$/.test(file)) return true;
-  return file === "mcp/lib/fuzz/bob-multitu-build.sh"
-    || file === "mcp/lib/offensive-image.json";
+  if (/^mcp\/[^/]+\.js$/.test(file)) return true;
+  if (/^mcp\/(?:core|domains|tools|fuzz)\/(?:[^/]+\/)*[^/]+\.js$/.test(file)) return true;
+  if (/^mcp\/lib\/[^/]+\.js$/.test(file)) return true;
+  return file === "mcp/fuzz/bob-multitu-build.sh"
+    || file === "mcp/offensive-image.json";
 }
 
 function isPackedTextFile(file) {
@@ -390,7 +391,7 @@ function expectedCanonicalFiles(root = DEFAULT_ROOT) {
 function canonicalInstalledRuntimeFiles(root = DEFAULT_ROOT) {
   return Object.freeze(Array.from(new Set([
     ...MCP_TOP_LEVEL_RUNTIME_FILES.map((name) => `mcp/${name}`),
-    ...sourceTreeFiles(root, "mcp/lib").filter(isPackableMcpRuntimeFile),
+    ...sourceTreeFiles(root, "mcp").filter(isPackableMcpRuntimeFile),
     ...CANONICAL_RUNTIME_PACKAGE_ROOTS.flatMap((relativeRoot) => (
       sourceTreeFiles(root, relativeRoot).filter(isCanonicalRuntimePackageFile)
     )),

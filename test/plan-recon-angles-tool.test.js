@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const planReconAngles = require("../mcp/lib/tools/plan-recon-angles.js");
+const planReconAngles = require("../mcp/tools/plan-recon-angles.js");
 
 function withEnv(overrides, fn) {
   const previous = {};

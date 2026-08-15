@@ -12,7 +12,7 @@ const {
   buildWaveReadiness,
   loadWaveArtifacts,
   mergeWaveHandoffs,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   attackSurfacePath,
   liveDeadEndsJsonlPath,
@@ -20,35 +20,35 @@ const {
   surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   initSession,
   advanceSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   prepareWaveAssignments,
   writeWaveAssignmentsDocument,
-} = require("../mcp/lib/waves/wave-assignment-store.js");
+} = require("../mcp/core/waves/wave-assignment-store.js");
 const {
   waveStatus,
-} = require("../mcp/lib/waves/wave-prereq-snapshots.js");
+} = require("../mcp/core/waves/wave-prereq-snapshots.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   sha256Hex,
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

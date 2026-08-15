@@ -447,7 +447,13 @@ function doctorProject(projectDir, options = {}) {
     sourceRoot,
     targetRoot: targetAbs,
     runtimeFiles: canonicalInstalledRuntimeFiles(sourceRoot),
-    ownedRoots: CANONICAL_RUNTIME_OWNED_ROOTS,
+    // mcp/ itself is mixed ownership. Inspect its wholly Bob-owned subtrees
+    // recursively while top-level runtime files remain individually manifest-bound.
+    ownedRoots: CANONICAL_RUNTIME_OWNED_ROOTS.flatMap((root) => (
+      root === "mcp"
+        ? ["mcp/core", "mcp/domains", "mcp/tools", "mcp/fuzz", "mcp/lib"]
+        : [root]
+    )),
   });
   addCheck(
     checks,
@@ -770,8 +776,8 @@ function pruneManagedDirs(targetAbs, result, { adapterIds, removeShared }) {
       path.join(BOB_RESOURCE_DIR, "knowledge"),
       path.join(BOB_RESOURCE_DIR, "docs"),
       BOB_RESOURCE_DIR,
-      path.join("mcp", "lib", "tools"),
-      path.join("mcp", "lib", "body-resolvers"),
+      path.join("mcp", "tools"),
+      path.join("mcp", "core", "body-resolvers"),
       path.join("mcp", "lib"),
       "mcp",
     );

@@ -26,12 +26,12 @@ const {
   resolveAuthJsonPath,
   listAuthProfiles,
   PROFILE_METADATA_KEYS,
-} = require("../mcp/lib/auth.js");
-const { profileHasProvenance } = require("../mcp/lib/offensive-idor-producer.js");
-const { toolNamesForRoleBundle } = require("../mcp/lib/tool-registry.js");
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { ERROR_CODES, ToolError } = require("../mcp/lib/envelope.js");
+} = require("../mcp/core/auth/auth.js");
+const { profileHasProvenance } = require("../mcp/domains/web/offensive-idor-producer.js");
+const { toolNamesForRoleBundle } = require("../mcp/core/dispatch/tool-registry.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { ERROR_CODES, ToolError } = require("../mcp/core/io/envelope.js");
 
 // The exact frozen contract the producer's mint condition #18 requires
 // (offensive-idor-producer.js REQUIRED_PROVENANCE :140-144).

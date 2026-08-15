@@ -19,27 +19,27 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   appendCandidateClaim,
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   advanceSession,
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   claimsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

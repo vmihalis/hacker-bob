@@ -10,13 +10,13 @@ const {
   clearOperatorNote,
   initSession,
   setOperatorNote,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   readSessionEvents,
-} = require("../mcp/lib/session-events.js");
+} = require("../mcp/core/session/session-events.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

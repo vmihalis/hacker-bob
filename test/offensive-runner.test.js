@@ -16,9 +16,9 @@ const {
   offensiveInfraFailurePath,
   MAX_OFFENSIVE_RUNS,
   MAX_OFFENSIVE_INFRA_FAILURES,
-} = require("../mcp/lib/offensive-runner.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { repoRunsDir, httpAuditJsonlPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/web/offensive-runner.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { repoRunsDir, httpAuditJsonlPath } = require("../mcp/core/io/paths.js");
 
 const DIGEST = "ghcr.io/bobnetsec/bob-offense@sha256:" + "b".repeat(64);
 

@@ -19,27 +19,27 @@ const {
   mergeWaveHandoffs,
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   sessionDir,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   sha256Hex,
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

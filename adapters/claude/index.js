@@ -574,7 +574,7 @@ function install({
   const {
     ensureEgressProfilesConfig,
     ensureEgressProfilesExample,
-  } = require("../../mcp/lib/egress-profiles.js");
+  } = require("../../mcp/core/egress-profiles.js");
   ensureEgressProfilesExample(targetAbs);
   ensureEgressProfilesConfig(targetAbs);
 
@@ -739,7 +739,7 @@ function doctor({
     egressProfilesPath,
     egressProfilesExamplePath,
     normalizeEgressProfilesDocument,
-  } = require("../../mcp/lib/egress-profiles.js");
+  } = require("../../mcp/core/egress-profiles.js");
   const egressExample = egressProfilesExamplePath(targetAbs);
   if (fileExists(egressExample)) {
     addCheck(checks, "ok", checkId("egress_profiles_example"), ".claude/bob/egress-profiles.example.json is installed");
@@ -970,7 +970,7 @@ function removeGeneratedEgressConfig(targetAbs, result) {
   const {
     egressProfilesPath,
     isUntouchedGeneratedEgressConfig,
-  } = require("../../mcp/lib/egress-profiles.js");
+  } = require("../../mcp/core/egress-profiles.js");
   const configPath = egressProfilesPath(targetAbs);
   const relativePath = path.join(".claude", "bob", "egress-profiles.json");
   if (!fs.existsSync(configPath)) return;

@@ -8,19 +8,19 @@ const path = require("node:path");
 
 const {
   derivePhysicalAssignmentContextDigest,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   claimsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   getRegisteredTool,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   classForTool,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 const {
   validateToolArguments,
-} = require("../mcp/lib/tool-validation.js");
+} = require("../mcp/core/dispatch/tool-validation.js");
 
 function assignmentFixture() {
   const assignment = {

@@ -7,7 +7,7 @@ const projectRoot = path.resolve(__dirname, "..", "..");
 const {
   COMMANDS,
   runCli,
-} = require(path.join(projectRoot, "mcp", "lib", "egress-cli.js"));
+} = require(path.join(projectRoot, "mcp", "core", "egress-cli.js"));
 
 const args = process.argv.slice(2);
 if (

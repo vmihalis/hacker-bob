@@ -8,7 +8,7 @@ const {
   extractRoutesFromFiles,
   detectLanguage,
   SUPPORTED_FRAMEWORKS,
-} = require("../mcp/lib/route-extractor.js");
+} = require("../mcp/core/route-extractor.js");
 
 test("detectLanguage maps file extensions to language tags", () => {
   assert.equal(detectLanguage("app.js"), "js");

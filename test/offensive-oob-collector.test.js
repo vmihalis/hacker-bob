@@ -15,7 +15,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const COLLECTOR_PATH = path.join(__dirname, "..", "mcp", "lib", "oob-collector.js");
+const COLLECTOR_PATH = path.join(__dirname, "..", "mcp", "domains", "web", "oob-collector.js");
 const {
   oobMint,
   oobPoll,
@@ -27,30 +27,30 @@ const {
   countLiveBindings,
   POLL_TOOL_ID,
   MINT_TOOL_ID,
-} = require("../mcp/lib/oob-collector.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/domains/web/oob-collector.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   attackSurfacePath,
   offensiveRunsJsonlPath,
   offensiveRunsDir,
   oobTokensJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendCandidateClaim,
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
-} = require("../mcp/lib/claims.js");
-const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyFindingDifferential } = require("../mcp/lib/finding-differential-verifier.js");
-const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claims.js");
+const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { verifyFindingDifferential } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

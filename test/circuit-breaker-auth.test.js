@@ -13,7 +13,7 @@ const {
   isHardBlockFailure,
   isUnauthenticatedForbidden,
   isCircuitBreakerFailure,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 
 const T0 = "2026-06-20T10:00:00.000Z"; // unauthenticated phase (earlier)
 const T1 = "2026-06-20T11:00:00.000Z"; // authenticated phase (later)

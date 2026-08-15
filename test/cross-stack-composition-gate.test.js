@@ -30,25 +30,25 @@ const crypto = require("node:crypto");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendTransitionProposal,
   appendHypothesisProposal,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
   normalizeContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   appendCandidateClaim,
   crossStackPathGapForReportableFindings,
   normalizeEvidenceReferenceShape,
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
-const compositionLiveVerifier = require("../mcp/lib/composition-live-verifier.js");
+} = require("../mcp/core/claims/claims.js");
+const compositionLiveVerifier = require("../mcp/core/differential/composition-live-verifier.js");
 const {
   verifyCompositionPath,
 } = compositionLiveVerifier;
@@ -57,13 +57,13 @@ const {
   offensiveRunsDir,
   surfaceRoutesPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   seedInvariantRunRow: seedInvariantRunRowRaw,
 } = require("./helpers/invariant-run-seed.js");
@@ -75,8 +75,8 @@ const {
 } = require("./helpers/cross-stack-decoy.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 
 // Every cross-stack invariant arm here runs the audited consuming template and is
 // container_isolated by default (the cross-stack adjudicator's template_id + isolation gates).

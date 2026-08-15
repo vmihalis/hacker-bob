@@ -18,7 +18,7 @@ const {
   hasRefutedForgeryOnRecord,
   hasHumanConfirmedControl,
   evaluatePromotion,
-} = require("../mcp/lib/mechanism-promotion-gate.js");
+} = require("../mcp/core/mechanism-promotion-gate.js");
 
 // A tier-3 advisory candidate, the only kind that is a promotion subject. Shaped
 // like the markers in authorization-differential-family.js (tier 3,

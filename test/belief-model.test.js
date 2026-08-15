@@ -6,20 +6,20 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const {
   beliefModelInfoPath,
   gradeArtifactPaths,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   _internals,
   readBeliefModelInfo,
   trainBeliefModel,
-} = require("../mcp/lib/belief/model.js");
-const trainBeliefModelTool = require("../mcp/lib/tools/train-belief-model.js");
-const readBeliefModelInfoTool = require("../mcp/lib/tools/read-belief-model-info.js");
+} = require("../mcp/core/belief/model.js");
+const trainBeliefModelTool = require("../mcp/tools/train-belief-model.js");
+const readBeliefModelInfoTool = require("../mcp/tools/read-belief-model-info.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

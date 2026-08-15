@@ -12,7 +12,7 @@ const EGRESS_PROFILES_PATH = path.join(ROOT, ".claude", "bob", "egress-profiles.
 
 function ensureEgressProfilesSeed() {
   if (fs.existsSync(EGRESS_PROFILES_PATH)) return null;
-  const egress = require(path.join(ROOT, "mcp", "lib", "egress-profiles.js"));
+  const egress = require(path.join(ROOT, "mcp", "core", "egress-profiles.js"));
   fs.mkdirSync(path.dirname(EGRESS_PROFILES_PATH), { recursive: true });
   egress.writeEgressProfilesDocument(ROOT, egress.defaultEgressProfilesDocument());
   return () => fs.rmSync(EGRESS_PROFILES_PATH, { force: true });

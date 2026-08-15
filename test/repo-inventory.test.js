@@ -10,17 +10,17 @@ const {
   initRepoSession,
   buildRepoInventory,
   REPO_WALK_MAX_FILES,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../mcp/lib/sensitive-material.js");
+} = require("../mcp/core/redaction/sensitive-material.js");
 const {
   repoInventoryPath,
-} = require("../mcp/lib/paths.js");
-const repoInventoryTool = require("../mcp/lib/tools/repo-inventory.js");
+} = require("../mcp/core/io/paths.js");
+const repoInventoryTool = require("../mcp/tools/repo/repo-inventory.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -204,7 +204,7 @@ test("buildRepoInventory rejects repos that exceed REPO_WALK_MAX_FILES", () => {
     // Create a fake top-level fixture, then monkey-patch the walker through
     // a smaller cap to make the test fast. We avoid synthesizing 50,001
     // files just to test the cap.
-    const { initRepoSession: initRepo, buildRepoInventory: buildInv } = require("../mcp/lib/repo-target.js");
+    const { initRepoSession: initRepo, buildRepoInventory: buildInv } = require("../mcp/domains/repo/repo-target.js");
     write(repoRoot, "small.js", "// 1");
     write(repoRoot, "med.js", "// 2");
     const init = initRepo({ repo_path: repoRoot });
@@ -228,7 +228,7 @@ test("buildRepoInventory surfaces repo_too_large structured error when cap excee
     // the cap. Since the constant is frozen at module load, we exercise the
     // RepoTooLargeError path via the walker directly through a fake test
     // helper.
-    const repoTarget = require("../mcp/lib/repo-target.js");
+    const repoTarget = require("../mcp/domains/repo/repo-target.js");
     // We can't lower REPO_WALK_MAX_FILES at runtime; instead, simulate the
     // condition by generating > 50k files would be too slow. We verify the
     // error class and code instead — that the structured ToolError code

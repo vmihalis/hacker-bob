@@ -28,7 +28,7 @@ const {
 } = require("./lib/skill-parser.js");
 const {
   SCHEDULER_PRECONDITION_VALUES,
-} = require("../mcp/lib/scheduler-preconditions.js");
+} = require("../mcp/core/waves/scheduler-preconditions.js");
 
 const ROOT = path.join(__dirname, "..");
 

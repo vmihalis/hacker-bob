@@ -25,11 +25,11 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { authStore, listAuthProfiles } = require("../mcp/lib/auth.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { httpAuditJsonlPath, sessionDir } = require("../mcp/lib/paths.js");
-const { makeCredentialRedactor } = require("../mcp/lib/auth-placeholders.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { authStore, listAuthProfiles } = require("../mcp/core/auth/auth.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { httpAuditJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");
+const { makeCredentialRedactor } = require("../mcp/core/auth/auth-placeholders.js");
 
 const PASSWORD = "Pa55w0rd-With-Sp@ce & \"quote\"";
 const EMAIL = "victim-under-test@example.test";

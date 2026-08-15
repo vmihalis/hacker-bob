@@ -3,7 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { FANOUT_ROLE_REGISTRY } = require("../../mcp/lib/nested-spawn.js");
+const { FANOUT_ROLE_REGISTRY } = require("../../mcp/core/session/nested-spawn.js");
 
 const MARKER = "BOB_AGENT_RUN_DONE";
 const CHILD_MARKER = "BOB_CHILD_CELL_DONE";
@@ -247,27 +247,27 @@ function seedConfiguredSessionsRoot() {
 }
 
 function loadAgentCompletion() {
-  return require(path.join(projectRoot(), "mcp", "lib", "agent-run-completion.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "agent-run-completion.js"));
 }
 
 function loadAgentRuns() {
-  return require(path.join(projectRoot(), "mcp", "lib", "agent-runs.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "agent-runs.js"));
 }
 
 function loadAssignments() {
-  return require(path.join(projectRoot(), "mcp", "lib", "assignments.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "assignments.js"));
 }
 
 function loadPaths() {
-  return require(path.join(projectRoot(), "mcp", "lib", "paths.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "io", "paths.js"));
 }
 
 function loadHandoffSigningKey() {
-  return require(path.join(projectRoot(), "mcp", "lib", "handoff-signing-key.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "ledger-integrity", "handoff-signing-key.js"));
 }
 
 function loadWaveHandoffStore() {
-  return require(path.join(projectRoot(), "mcp", "lib", "wave-handoff-store.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "waves", "wave-handoff-store.js"));
 }
 
 // Step 2a: the maximum number of `failed` rows the stop hook will append for a

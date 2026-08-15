@@ -24,9 +24,9 @@ const {
   DEFAULT_SCANNERS,
   scanTranscript,
   normalizeOperatorScanner,
-} = require("../mcp/lib/friction-scanners.js");
-const scanTool = require("../mcp/lib/tools/scan-transcript-for-friction.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/friction-scanners.js");
+const scanTool = require("../mcp/tools/scan-transcript-for-friction.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

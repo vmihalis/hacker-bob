@@ -18,12 +18,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { buildAndSignOffensiveRow } = require("../mcp/lib/offensive-capture-writer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { withSessionLock } = require("../mcp/lib/storage.js");
+const { buildAndSignOffensiveRow } = require("../mcp/domains/web/offensive-capture-writer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { withSessionLock } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -19,17 +19,17 @@ const {
   assertProductionPhysicalMonotonicOwnerPort,
   compareAndSetPhysicalMonotonicOwnerState,
   readPhysicalMonotonicOwnerState,
-} = require("../../../mcp/lib/physical-monotonic-owner.js");
+} = require("../../../mcp/domains/physical/physical-monotonic-owner.js");
 const {
   assertProductionPhysicalTrustedClockPort,
   assertRestartDurablePhysicalTrustedClockPort,
   assertRestartDurablePhysicalTrustedClockSample,
   sampleRestartDurablePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock-store.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock-store.js");
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const CREATE_PUBLIC_KEY = crypto.createPublicKey.bind(crypto);
 const VERIFY_SIGNATURE = crypto.verify.bind(crypto);

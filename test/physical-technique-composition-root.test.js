@@ -7,7 +7,7 @@ const test = require("node:test");
 
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   assertProductionPhysicalTechniqueCompositionRoot,
   assertTestPhysicalTechniqueCompositionRoot,
@@ -16,11 +16,11 @@ const {
   describeTestPhysicalTechniqueCompositionRoot,
   executeProductionPhysicalTechniqueCompositionRoot,
   executeTestPhysicalTechniqueCompositionRoot,
-} = require("../mcp/lib/physical-technique-composition-root.js");
+} = require("../mcp/domains/physical/physical-technique-composition-root.js");
 const {
   createProductionPhysicalTechniqueExecutionPort,
   normalizePhysicalTechniqueExecutionResult,
-} = require("../mcp/lib/physical-technique-runtime.js");
+} = require("../mcp/domains/physical/physical-technique-runtime.js");
 
 const digest = (label) => hashCanonicalJson({ label });
 
@@ -212,7 +212,7 @@ test("qualified dependencies cannot bypass the worker-vault production spine", (
   // private component assertions report fully qualified. Production execution
   // must still stop before either the legacy dispatch callback path or an
   // independently invoked worker transaction can cause a physical effect.
-  const target = path.resolve(__dirname, "../mcp/lib/physical-technique-composition-root.js");
+  const target = path.resolve(__dirname, "../mcp/domains/physical/physical-technique-composition-root.js");
   const dispatchTarget = path.resolve(
     __dirname,
     "../packages/bob-instrument-broker/lib/physical-provider-dispatch.js",
@@ -225,7 +225,7 @@ test("qualified dependencies cannot bypass the worker-vault production spine", (
     "use strict";
     const assert = require("node:assert/strict");
     const { hashCanonicalJson } = require(${JSON.stringify(
-      path.resolve(__dirname, "../mcp/lib/verification-contracts.js"),
+      path.resolve(__dirname, "../mcp/core/verification/verification-contracts.js"),
     )});
     const target = ${JSON.stringify(target)};
     const dispatchTarget = ${JSON.stringify(dispatchTarget)};

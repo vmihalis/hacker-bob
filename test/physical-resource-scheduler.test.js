@@ -11,7 +11,7 @@ const {
   MAX_RESOURCE_INVENTORY_VALIDITY_MS,
   normalizePhysicalResourceInventory,
   planPhysicalResourceBundle,
-} = require("../mcp/lib/physical-resource-scheduler.js");
+} = require("../mcp/domains/physical/physical-resource-scheduler.js");
 const {
   MAX_UNCERTAINTY_MS,
   TRUSTED_CLOCK_MAPPING_DOMAIN,
@@ -19,10 +19,10 @@ const {
   physicalClockMappingSigningMessage,
   publicKeyDigest,
   samplePhysicalTrustedClock,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 const digest = (label) => hashCanonicalJson({ label });
 

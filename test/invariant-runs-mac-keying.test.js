@@ -25,16 +25,16 @@ const {
   verifyInvariantDifferential,
   reverifyInvariantVerifiedRecord,
   readInvariantVerifiedSummary,
-} = require("../mcp/lib/invariant-runner.js");
-const { invariantRunsJsonlPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/invariant-runner.js");
+const { invariantRunsJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   signRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   seedInvariantRunRow,
   seedInvariantRunPair,
@@ -129,7 +129,7 @@ test("(c) a forged row with a recomputed content-hash but NO valid mac is exclud
     tree_ref: "fixed",
     checkout_kind: "upstream_fix",
     outcome: "test_passed",
-    foundry_result_hash: require("../mcp/lib/invariant-runner.js").invariantFoundryResultHash({ tests: [{ success: true }] }),
+    foundry_result_hash: require("../mcp/core/invariant-runner.js").invariantFoundryResultHash({ tests: [{ success: true }] }),
     foundry_result: { tests: [{ success: true }] },
     dry_run: false,
   };

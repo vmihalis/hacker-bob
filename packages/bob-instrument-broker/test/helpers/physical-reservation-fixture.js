@@ -34,17 +34,17 @@ const {
 } = require("../../../../mcp/lib/physical-resource-contract.js");
 const {
   normalizePhysicalResourceInventory,
-} = require("../../../../mcp/lib/physical-resource-scheduler.js");
+} = require("../../../../mcp/domains/physical/physical-resource-scheduler.js");
 const {
   MAX_UNCERTAINTY_MS,
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../../../../mcp/lib/verification-contracts.js");
+} = require("../../../../mcp/core/verification/verification-contracts.js");
 
 const clone = (value) => structuredClone(value);
 const digest = (label) => hashCanonicalJson({ label });

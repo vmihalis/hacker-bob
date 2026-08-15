@@ -10,7 +10,7 @@ const crypto = require("node:crypto");
 const {
   mergePriorClaimMatches,
   uniquePriorClaimKey,
-} = require("../mcp/lib/claim-clusters.js");
+} = require("../mcp/core/claims/claim-clusters.js");
 
 test("mergePriorClaimMatches keeps same-target anchor when cross-target window is saturated", () => {
   // Simulates the saturation scenario from the legacy findings-index test:

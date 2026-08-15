@@ -23,16 +23,16 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { verifyCompositionPath } = require("../mcp/lib/composition-live-verifier.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/lib/sandbox-isolation-gate.js");
-const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/lib/paths.js");
-const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { verifyCompositionPath } = require("../mcp/core/differential/composition-live-verifier.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/sandbox-isolation-gate.js");
+const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/core/io/paths.js");
+const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
 const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
 const {
   CONSUME_TEMPLATE_ID,
@@ -42,7 +42,7 @@ const {
 } = require("./helpers/cross-stack-decoy.js");
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
 
 // Every cross-stack invariant arm here runs the audited consuming template and is
 // container_isolated by default (the cross-stack adjudicator's template_id + isolation gates).

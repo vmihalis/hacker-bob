@@ -31,8 +31,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { evaluateEvidenceCompletion } = require("../mcp/lib/agent-run-completion.js");
-const { sessionDir, statePath } = require("../mcp/lib/paths.js");
+const { evaluateEvidenceCompletion } = require("../mcp/core/session/agent-run-completion.js");
+const { sessionDir, statePath } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

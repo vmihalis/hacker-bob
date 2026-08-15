@@ -16,27 +16,27 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const PRODUCER_PATH = path.join(__dirname, "..", "mcp", "lib", "offensive-xss-exec-producer.js");
+const PRODUCER_PATH = path.join(__dirname, "..", "mcp", "domains", "web", "offensive-xss-exec-producer.js");
 const {
   confirmXssExecution,
   XSS_EXEC_DEMONSTRATED_CEILING,
-} = require("../mcp/lib/offensive-xss-exec-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { attackSurfacePath, offensiveRunsJsonlPath, httpAuditJsonlPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/web/offensive-xss-exec-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { attackSurfacePath, offensiveRunsJsonlPath, httpAuditJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   appendCandidateClaim,
   readCandidateClaims,
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claims.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -137,7 +137,7 @@ test("XSS_EXEC ceiling is a frozen hard HIGH", () => {
 });
 
 test("buildAndSignOffensiveRow is NOT re-exported (no gate-bypassing signed-row path)", () => {
-  const mod = require("../mcp/lib/offensive-xss-exec-producer.js");
+  const mod = require("../mcp/domains/web/offensive-xss-exec-producer.js");
   assert.equal(typeof mod.buildAndSignOffensiveRow, "undefined");
 });
 

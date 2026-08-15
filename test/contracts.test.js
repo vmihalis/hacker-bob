@@ -46,17 +46,17 @@ const {
   assertContractSatisfiable,
   collectContractArtifactRefs,
   normalizeContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,
   appendNodeTransition,
   readNodeTransitions,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -1049,7 +1049,7 @@ test("bob_attach_contract supports the optional allowed_tools_for_node argument 
 // ─── Registered tool metadata ────────────────────────────────────────────
 
 test("bob_attach_contract has role_bundles per X-D10 (orchestrator + evaluator-shared + chain after Y.11)", () => {
-  const { TOOL_REGISTRY } = require("../mcp/lib/tool-registry.js");
+  const { TOOL_REGISTRY } = require("../mcp/core/dispatch/tool-registry.js");
   const tool = TOOL_REGISTRY.find((t) => t.name === "bob_attach_contract");
   assert.ok(tool, "bob_attach_contract must be registered");
   // Y.11 (rev 4.1 defect 3) widens role_bundles[] with `chain` so the

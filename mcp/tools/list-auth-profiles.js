@@ -1,0 +1,29 @@
+"use strict";
+
+const { listAuthProfiles } = require("../core/auth/auth.js");
+
+module.exports = Object.freeze({
+  name: "bob_list_auth_profiles",
+  description:
+    "Return redacted auth profile status for a target. Shows profile names, header/cookie key names, credential presence, and expiry/staleness hints without token, cookie, localStorage, or password values.",
+  inputSchema: {
+    "type": "object",
+    "properties": {
+      "target_domain": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "target_domain"
+    ]
+  },
+  handler: listAuthProfiles,
+  role_bundles: ["auth","evaluator-web","verifier","orchestrator","chain","evidence"],
+  mutating: false,
+  global_preapproval: true,
+  network_access: false,
+  browser_access: false,
+  scope_required: false,
+  sensitive_output: false,
+  session_artifacts_written: [],
+});

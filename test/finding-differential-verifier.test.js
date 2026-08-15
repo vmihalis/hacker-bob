@@ -17,25 +17,25 @@ const {
   verifyFindingDifferential,
   readFindingDifferentialVerifiedSummary,
   offensiveRowHash,
-} = require("../mcp/lib/finding-differential-verifier.js");
+} = require("../mcp/core/differential/finding-differential-verifier.js");
 const {
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   offensiveRunsJsonlPath,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   buildAndSignOffensiveRow,
-} = require("../mcp/lib/offensive-capture-writer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { withSessionLock } = require("../mcp/lib/storage.js");
+} = require("../mcp/domains/web/offensive-capture-writer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { withSessionLock } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -291,7 +291,7 @@ test("ledger record shape + results_hash determinism, and the reader summary", (
   }
   assert.equal(rec.source, "offensive_runs");
   // results_hash is over the body (excluding results_hash itself); recompute is stable.
-  const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+  const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
   const body = { ...rec };
   delete body.results_hash;
   assert.equal(rec.results_hash, hashCanonicalJson(body));
@@ -334,7 +334,7 @@ function appendVerdictLine(domain, over = {}) {
     control_run_id: over.control_run_id || "fd-control-1",
     control_row_hash: over.control_row_hash || hex("2"),
   };
-  const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+  const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
   const record = { ...body, results_hash: hashCanonicalJson(body) };
   fs.mkdirSync(path.dirname(findingDifferentialVerifiedJsonlPath(domain)), { recursive: true });
   fs.appendFileSync(findingDifferentialVerifiedJsonlPath(domain), `${JSON.stringify(record)}\n`);

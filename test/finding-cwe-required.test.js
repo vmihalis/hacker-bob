@@ -18,27 +18,27 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   findingPayloadsFromClaims,
-} = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/tools/record-candidate-claim.js");
 const {
   canonicalizeExploitTarget,
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   claimsJsonlPath,
   offensiveRunsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 // A novel-mechanism reportable finding records only when an executed
 // differential backs it. The most direct executed-proof channel at the claim

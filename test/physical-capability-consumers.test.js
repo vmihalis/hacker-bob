@@ -3,9 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const PHYSICAL_CONSUMER_API = require("../mcp/lib/physical-capability-consumers.js");
-const PHYSICAL_CAPABILITY_MANIFEST = require("../mcp/lib/physical-capability-manifest.js");
-const PHYSICAL_FINDING_CONTRACT = require("../mcp/lib/physical-finding-contract.js");
+const PHYSICAL_CONSUMER_API = require("../mcp/domains/physical/physical-capability-consumers.js");
+const PHYSICAL_CAPABILITY_MANIFEST = require("../mcp/domains/physical/physical-capability-manifest.js");
+const PHYSICAL_FINDING_CONTRACT = require("../mcp/domains/physical/physical-finding-contract.js");
 const {
   PHYSICAL_CAPABILITY_CONSUMERS,
   PHYSICAL_CAPABILITY_PACK_DISPATCH_BLOCK_REASON,
@@ -23,23 +23,23 @@ const {
 const {
   physicalVerdictRuntimeReadiness,
   resolvePhysicalVerdict,
-} = require("../mcp/lib/physical-verdict-runtime.js");
+} = require("../mcp/domains/physical/physical-verdict-runtime.js");
 const {
   PHYSICAL_CAPABILITY_PACK,
   EVALUATOR_ROLES,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 const {
   mcpToolNamesForRole,
-} = require("../mcp/lib/role-model.js");
+} = require("../mcp/core/dispatch/role-model.js");
 const {
   CLAUDE_ROLE_SPECS,
 } = require("../scripts/lib/claude-role-renderer.js");
 const {
   getRegisteredTool,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   classForTool,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -322,7 +322,7 @@ test("physical finding, grade, and report reject lookalikes while production bac
   assert.equal(PHYSICAL_CAPABILITY_CONSUMERS.report.production_backend_available, false);
   assert.equal(
     Object.prototype.hasOwnProperty.call(
-      require("../mcp/lib/physical-capability-consumers.js"),
+      require("../mcp/domains/physical/physical-capability-consumers.js"),
       "issueTestReportSafePhysicalVerdict",
     ),
     false,

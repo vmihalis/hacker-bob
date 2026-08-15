@@ -8,14 +8,14 @@
 const {
   assertInteger,
   assertNonEmptyString,
-} = require("./validation.js");
+} = require("../core/io/validation.js");
 const {
   withDocumentHash,
 } = require("./fabric-common.js");
 const {
   validateNoSensitiveMaterial,
   validateNoPhysicalSensitiveMaterial,
-} = require("./sensitive-material.js");
+} = require("../core/redaction/sensitive-material.js");
 
 const PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION = 1;
 const PHYSICAL_SCOPE_POLICY_VERSION = 1;

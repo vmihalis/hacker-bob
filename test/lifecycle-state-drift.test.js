@@ -25,15 +25,15 @@ const path = require("path");
 const {
   advanceSession,
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   statePath,
   verificationSnapshotPath,
-} = require("../mcp/lib/paths.js");
-const verificationModule = require("../mcp/lib/verification.js");
+} = require("../mcp/core/io/paths.js");
+const verificationModule = require("../mcp/core/verification/verification.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

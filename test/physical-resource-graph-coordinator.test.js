@@ -9,25 +9,25 @@ const test = require("node:test");
 
 const {
   appendContract,
-} = require("../mcp/lib/contracts.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
-const prepareNodeModule = require("../mcp/lib/tools/prepare-node.js");
+} = require("../mcp/core/contract/contracts.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const prepareNodeModule = require("../mcp/tools/prepare-node.js");
 const {
   preparePhysicalResourceNode,
 } = prepareNodeModule;
 const {
   selectNextExecutableNodes,
-} = require("../mcp/lib/graph-scheduler.js");
+} = require("../mcp/core/waves/graph-scheduler.js");
 const {
   cancelPreparedPhysicalGraphReservation,
   createPhysicalResourceGraphCoordinator,
   projectPhysicalResourceGraphHandle,
   reserveAndPreparePhysicalGraphNode,
   transferPreparedPhysicalGraphReservationToProviderBridge,
-} = require("../mcp/lib/physical-resource-graph-coordinator.js");
+} = require("../mcp/domains/physical/physical-resource-graph-coordinator.js");
 const {
   createDeterministicMockDispatchAuthorityPort,
-} = require("../mcp/lib/physical-dispatch-authority.js");
+} = require("../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   bindPhysicalResourceBundle,
   normalizePhysicalReservationRequest,
@@ -35,36 +35,36 @@ const {
 } = require("../mcp/lib/physical-resource-contract.js");
 const {
   normalizePhysicalResourceInventory,
-} = require("../mcp/lib/physical-resource-scheduler.js");
+} = require("../mcp/domains/physical/physical-resource-scheduler.js");
 const {
   MAX_UNCERTAINTY_MS,
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   sessionLockPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,
   appendNodeTransition,
   expireStaleDispatchedNodes,
   readNodeTransitions,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   cancelPhysicalResourceReservation,
   createInitialPhysicalResourceReservationState,

@@ -10,13 +10,13 @@ const crypto = require("node:crypto");
 const {
   registerMechanismCandidates,
   readMechanismCandidates,
-} = require("../mcp/lib/mechanism-candidate-store.js");
+} = require("../mcp/core/mechanism/mechanism-candidate-store.js");
 const {
   mechanismCandidatesJsonlPath,
   isAuditGradedPath,
   WRITE_GUARD_TABLES,
-} = require("../mcp/lib/paths.js");
-const { TOOL_MODULES } = require("../mcp/lib/tools/index.js");
+} = require("../mcp/core/io/paths.js");
+const { TOOL_MODULES } = require("../mcp/tools/index.js");
 
 function uniqueDomain(prefix = "bob-mech-candidate-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

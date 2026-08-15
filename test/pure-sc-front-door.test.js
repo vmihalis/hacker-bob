@@ -24,13 +24,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { normalizeScopePolicy } = require("../mcp/lib/governance-contracts.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { normalizeScopePolicy } = require("../mcp/core/governance/governance-contracts.js");
 const {
   attackSurfacePath,
   httpAuditJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 const EVM_CONTRACT = Object.freeze({
   chain_family: "evm",

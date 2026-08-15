@@ -2,10 +2,10 @@
 
 const {
   normalizeOpaqueRef,
-} = require("./physical-quantities.js");
+} = require("../domains/physical/physical-quantities.js");
 const {
   hashCanonicalJson,
-} = require("./verification-contracts.js");
+} = require("../core/verification/verification-contracts.js");
 
 const PHYSICAL_SESSION_IDENTITY_VERSION = 1;
 const PHYSICAL_SESSION_IDENTITY_DOMAIN = "hacker-bob/physical-session-identity/v1";

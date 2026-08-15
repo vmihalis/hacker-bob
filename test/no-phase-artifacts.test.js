@@ -205,7 +205,7 @@ test("diff parser maps ADDED lines to correct new-side line numbers", () => {
 });
 
 test("isScannablePath scans source, skips narrative homes, fixtures, and non-source", () => {
-  assert.equal(isScannablePath("mcp/lib/paths.js"), true, "source is scanned");
+  assert.equal(isScannablePath("mcp/core/io/paths.js"), true, "source is scanned");
   assert.equal(isScannablePath("CHANGELOG.md"), true, "CHANGELOG stays scanned");
   assert.equal(isScannablePath("README.md"), false, "README is a narrative home");
   assert.equal(isScannablePath("docs/capability-hypergraph.md"), false, "docs/ is a narrative home");

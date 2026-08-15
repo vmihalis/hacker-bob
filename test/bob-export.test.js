@@ -7,12 +7,12 @@ const {
   BUNDLE_FILES,
   exportBobReleaseBundle,
   renderExportResult,
-} = require("../mcp/lib/bob-export.js");
+} = require("../mcp/core/bob-export.js");
 const {
   pipelineEventsJsonlPath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });

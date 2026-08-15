@@ -34,7 +34,7 @@ const {
   aliasNamesForTool,
   primaryToolName,
   toolNamesForRoleBundle,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const { ADAPTERS, getAdapter } = require("../adapters/index.js");
 const {
   FANOUT_CHILD_SCOPE_GUARD_MATCHER,
@@ -51,7 +51,7 @@ const {
   mcpToolNamesForRole,
   roleDefinition,
   ROLE_DEFINITIONS,
-} = require("../mcp/lib/role-model.js");
+} = require("../mcp/core/dispatch/role-model.js");
 const {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
@@ -60,7 +60,7 @@ const {
   renderClaudeRole,
   spawnCapableAgentNames,
 } = require("../scripts/lib/claude-role-renderer.js");
-const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/core/session/nested-spawn.js");
 const {
   CODEX_SKILL_SPECS,
   CODEX_WORKER_CONTRACT_ROLE_IDS,
@@ -84,11 +84,11 @@ const {
   SMART_CONTRACT_CONTEXT_BUDGET,
   dispatchableCapabilityPacks,
   evaluatorAgentNamesForCapabilityPacks,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 const {
   LIFECYCLE_STATE_VALUES,
-} = require("../mcp/lib/governance-contracts.js");
-const claimsModule = require("../mcp/lib/claims.js");
+} = require("../mcp/core/governance/governance-contracts.js");
+const claimsModule = require("../mcp/core/claims/claims.js");
 const { BRUTALIST_MCP_SERVER } = require("../scripts/merge-claude-config.js");
 
 const ROOT = path.join(__dirname, "..");
@@ -209,11 +209,13 @@ function handlerWritesCandidateClaim(toolName) {
   // load-bearing structural invariant: any future renaming of the public
   // tool name is fine, but the handler must still validate against the
   // CandidateClaim schema exposed by claims.js.
+  const slug = toolName.replace(/^bob_/, "");
   const candidates = [
-    `mcp/lib/tools/${toolName.replace(/^bob_/, "")}.js`,
-    `mcp/lib/tools/${toolName}.js`,
-    "mcp/lib/tools/record-candidate-claim.js",
-    "mcp/lib/tools/record-finding.js",
+    `mcp/tools/${slug}.js`,
+    `mcp/tools/${toolName}.js`,
+    ...["web", "blockchain", "repo", "physical"].map((domain) => `mcp/tools/${domain}/${slug}.js`),
+    "mcp/tools/record-candidate-claim.js",
+    "mcp/tools/record-finding.js",
   ];
   for (const candidate of candidates) {
     const absolute = path.join(ROOT, candidate);
@@ -247,7 +249,7 @@ test("public-facing surfaces use Hacker Bob branding, not the retired product na
 
 test("MCP server advertises itself with the Hacker Bob name", () => {
   const server = readFile("mcp/server.js");
-  const transport = readFile("mcp/lib/transport.js");
+  const transport = readFile("mcp/core/io/transport.js");
   // The transport publishes the canonical product name; the registry-derived
   // permission prefix is independent and is enforced elsewhere.
   assert.match(transport, /\bhacker-bob\b/);
@@ -563,7 +565,7 @@ test("grader severity_accuracy axis cites the CVSS band as an explicitly non-gat
 });
 
 test("reporter smart-contract family table mirrors SMART_CONTRACT_FAMILY_CWE", () => {
-  const { SMART_CONTRACT_FAMILY_CWE } = require("../mcp/lib/cwe-catalog.js");
+  const { SMART_CONTRACT_FAMILY_CWE } = require("../mcp/core/scoring/cwe-catalog.js");
   const reporterPrompt = readFile("prompts/roles/reporter.md");
   const tableStart = reporterPrompt.indexOf("SMART_CONTRACT_FAMILY_CWE");
   const tableEnd = reporterPrompt.indexOf("Chain + Address", tableStart);
@@ -1237,7 +1239,7 @@ test("EVALUATOR_ROLES is the single source of truth across consumers", () => {
 });
 
 test("dispatchable capability packs expose versioned context budgets and complete spawn metadata", () => {
-  const { BLOCKED_HARNESS_RUN_KINDS } = require("../mcp/lib/capability-packs-rendering.js");
+  const { BLOCKED_HARNESS_RUN_KINDS } = require("../mcp/core/capability-packs-rendering.js");
   for (const pack of dispatchableCapabilityPacks()) {
     assert.equal(pack.capability_pack_version, 1);
     assert.ok(pack.evaluator_agent);
@@ -1286,9 +1288,9 @@ test("every dispatchable capability pack declares replay + evidence runners that
 });
 
 test("BLOCKED_HARNESS_RUN_KINDS, schema enum, and runtime normalizer stay in sync", () => {
-  const { BLOCKED_HARNESS_RUN_KINDS } = require("../mcp/lib/capability-packs-rendering.js");
-  const { BLOCKED_HARNESS_KIND_VALUES } = require("../mcp/lib/wave-handoff-contracts.js");
-  const schema = require("../mcp/lib/tools/write-wave-handoff.js").inputSchema;
+  const { BLOCKED_HARNESS_RUN_KINDS } = require("../mcp/core/capability-packs-rendering.js");
+  const { BLOCKED_HARNESS_KIND_VALUES } = require("../mcp/core/waves/wave-handoff-contracts.js");
+  const schema = require("../mcp/tools/write-wave-handoff.js").inputSchema;
   const sorted = (arr) => [...arr].sort();
   assert.deepEqual(
     sorted(BLOCKED_HARNESS_RUN_KINDS),
@@ -1298,9 +1300,9 @@ test("BLOCKED_HARNESS_RUN_KINDS, schema enum, and runtime normalizer stay in syn
 });
 
 test("BLOCKED_PREREQ_KINDS, schema enum, and runtime normalizer stay in sync", () => {
-  const { BLOCKED_PREREQ_KINDS } = require("../mcp/lib/capability-packs-rendering.js");
-  const { BLOCKED_PREREQ_KIND_VALUES } = require("../mcp/lib/wave-handoff-contracts.js");
-  const schema = require("../mcp/lib/tools/write-wave-handoff.js").inputSchema;
+  const { BLOCKED_PREREQ_KINDS } = require("../mcp/core/capability-packs-rendering.js");
+  const { BLOCKED_PREREQ_KIND_VALUES } = require("../mcp/core/waves/wave-handoff-contracts.js");
+  const schema = require("../mcp/tools/write-wave-handoff.js").inputSchema;
   const sorted = (arr) => [...arr].sort();
   assert.deepEqual(
     sorted(BLOCKED_PREREQ_KINDS),
@@ -1310,8 +1312,8 @@ test("BLOCKED_PREREQ_KINDS, schema enum, and runtime normalizer stay in sync", (
 });
 
 test("identifier_hint and bypass_attempt min lengths match between schema and runtime", () => {
-  const wavecontract = require("../mcp/lib/wave-handoff-contracts.js");
-  const schema = require("../mcp/lib/tools/write-wave-handoff.js").inputSchema;
+  const wavecontract = require("../mcp/core/waves/wave-handoff-contracts.js");
+  const schema = require("../mcp/tools/write-wave-handoff.js").inputSchema;
   const identifierHint = schema.properties.blocked_prereqs.items.properties.identifier_hint;
   assert.equal(wavecontract.BLOCKED_PREREQ_IDENTIFIER_HINT_PATTERN.source, identifierHint.pattern);
   assert.equal(wavecontract.BLOCKED_PREREQ_IDENTIFIER_HINT_LONG_HEX_PATTERN.source, identifierHint.not.pattern);
@@ -1337,8 +1339,8 @@ test("rendered orchestrator catalogue lists every smart-contract pack exactly on
 test("chain-specific identifiers are not duplicated across registry consumers", () => {
   const chainBundles = ["evaluator-evm", "evaluator-svm", "evaluator-move", "evaluator-substrate", "evaluator-cosmwasm"];
   const consumers = [
-    "mcp/lib/role-model.js",
-    "mcp/lib/tool-registry.js",
+    "mcp/core/dispatch/role-model.js",
+    "mcp/core/dispatch/tool-registry.js",
     "scripts/lib/claude-role-renderer.js",
     "scripts/lib/codex-role-renderer.js",
     "adapters/codex/role-specs.js",
@@ -1705,7 +1707,7 @@ test("Claude adapter config never leaks into the neutral MCP runtime", () => {
 
 test("CLAUDE_PROJECT_DIR appears only in adapter-scoped or compatibility-scoped modules", () => {
   const allowed = new Set([
-    path.join("mcp", "lib", "runtime-resources.js"),
+    path.join("mcp", "core", "io", "runtime-resources.js"),
     path.join("scripts", "lib", "claude-role-renderer.js"),
     path.join("bin", "hacker-bob.js"),
     // generate-claude-settings.js only emits the literal "${CLAUDE_PROJECT_DIR:-$PWD}"

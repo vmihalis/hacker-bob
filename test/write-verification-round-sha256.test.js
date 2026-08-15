@@ -9,7 +9,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
+const writeVerificationRoundTool = require("../mcp/tools/write-verification-round.js");
 
 function getArtifactHashesPattern() {
   const schema = writeVerificationRoundTool.inputSchema;

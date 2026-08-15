@@ -37,39 +37,39 @@ const {
 } = require("../adapters/claude/config.js");
 const {
   TOOL_MANIFEST,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 const {
   ROLE_DEFINITIONS,
   mcpToolNamesForRole,
-} = require("../mcp/lib/role-model.js");
+} = require("../mcp/core/dispatch/role-model.js");
 const {
   OSS_LENSES,
   REPO_WORKFLOW_TEXT,
   buildBriefExtrasForProfile,
   readAssignmentBrief,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   initRepoSession,
   buildRepoInventory,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   prepareRepoEnv,
-} = require("../mcp/lib/repo-env.js");
+} = require("../mcp/domains/repo/repo-env.js");
 const {
   routeSurfaces,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   advanceSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   currentSurfaces,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 
 const ROOT = path.join(__dirname, "..");
 

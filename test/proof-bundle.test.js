@@ -10,20 +10,20 @@ const path = require("node:path");
 const {
   normalizeProofBundlesDocument,
   writeProofBundles,
-} = require("../mcp/lib/proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
 const {
   computeInvariantRunHash,
   invariantFoundryResultHash,
   verifyInvariantDifferential,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   verifyReproReproduction,
-} = require("../mcp/lib/repro-replay-verifier.js");
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   pipelineEventsJsonlPath,
   proofBundlePaths,
@@ -33,13 +33,13 @@ const {
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const { persistingRunner } = require("./helpers/repro-run-pair.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
@@ -94,11 +94,11 @@ function seedFinding(domain, overrides = {}) {
 // compose fixtures (they render a final-reportable high finding). A real MAC-signed
 // exploited_safely positive + blocked_by_defense control + the verdict line that binds them.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface-a") {
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",

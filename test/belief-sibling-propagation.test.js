@@ -23,12 +23,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   verifyCompositionPath,
   RESULT_VERIFIED_PASS,
-} = require("../mcp/lib/composition-live-verifier.js");
+} = require("../mcp/core/differential/composition-live-verifier.js");
 const {
   buildBeliefWindow,
   stableId,
@@ -37,7 +37,7 @@ const {
   SIBLING_PROPAGATION_WEIGHT,
   SIBLING_RAISE_CAP,
   RESOLUTION_THRESHOLD,
-} = require("../mcp/lib/belief/belief-window.js");
+} = require("../mcp/core/belief/belief-window.js");
 
 const DOMAIN = "example.com";
 const BASE_URL = "https://example.com";

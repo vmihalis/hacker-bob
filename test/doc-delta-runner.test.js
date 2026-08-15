@@ -12,10 +12,10 @@ const {
   readResults,
   joinUrl,
   MAX_LIMIT,
-} = require("../mcp/lib/doc-delta-runner.js");
+} = require("../mcp/domains/repo/doc-delta-runner.js");
 const {
   ingestSchemaDoc,
-} = require("../mcp/lib/schema-contracts-store.js");
+} = require("../mcp/core/schema-contracts-store.js");
 
 function uniqueDomain(prefix = "bob-doc-delta-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

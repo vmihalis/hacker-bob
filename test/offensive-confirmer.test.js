@@ -10,58 +10,58 @@ const path = require("node:path");
 
 const {
   executeTool,
-} = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/dispatch/dispatch.js");
 const {
   assertReadOnlyPath,
   classifyDifferential,
   normalizePathTemplate,
-} = require("../mcp/lib/offensive-confirmer.js");
+} = require("../mcp/domains/web/offensive-confirmer.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   offensiveRunsJsonlPath,
   attackSurfacePath,
   statePath,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   signOffensiveRunRow,
   verifyOffensiveRunRowMac,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   readHttpAuditRecordsFromJsonl,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 const {
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   routeSurfaces,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   buildVerificationAdjudication,
   prepareVerificationEntry,
-} = require("../mcp/lib/verification.js");
+} = require("../mcp/core/verification/verification.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/verification/verification-round-store.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

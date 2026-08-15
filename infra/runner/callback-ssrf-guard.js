@@ -10,7 +10,7 @@
 
 const net = require('net');
 const dns = require('dns');
-const { isBlockedInternalHost } = require('../../mcp/lib/url-surface.js');
+const { isBlockedInternalHost } = require('../../mcp/core/url-surface.js');
 
 // Mirrors mcp/lib/safe-fetch.js:86-96 — wraps dns.lookup(hostname, { all: true }, cb) in a
 // Promise. Overridable via options.lookup so tests can inject a stub (DNS-rebind scenario)

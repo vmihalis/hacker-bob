@@ -46,14 +46,14 @@ const {
   claimPhysicalDispatchExecutionAuthority,
   projectCurrentPhysicalDispatchExecutionAuthority,
   takePhysicalDispatchExecutionAuthorityClaimOwnership,
-} = require("../../../mcp/lib/physical-dispatch-authority.js");
+} = require("../../../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizeResourceAllocation,
 } = require("../../../mcp/lib/physical-resource-contract.js");
 const {
   assertPhysicalTrustedClockPort,
   samplePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   assertCurrentPhysicalResourceReservationCredential,
   assertPhysicalResourceEffectAuthorizedNow,

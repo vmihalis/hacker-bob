@@ -2,8 +2,8 @@
 
 This directory anchors the FP-rate budget for Y-P14c
 (`check:stigmergy-coherence`). The canonical 6-pair corpus is the live
-manifest itself (`mcp/lib/stigmergic-producers.js` paired with
-`mcp/lib/stigmergic-consumers.js`); synthetic drift fixtures are
+manifest itself (`mcp/core/stigmergic-producers.js` paired with
+`mcp/core/stigmergic-consumers.js`); synthetic drift fixtures are
 constructed inline in `test/stigmergy-coherence.test.js` (drift kinds
 (i)–(iv)).
 

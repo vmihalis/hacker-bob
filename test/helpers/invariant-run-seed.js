@@ -14,17 +14,17 @@
 const {
   computeInvariantRunHash,
   invariantFoundryResultHash,
-} = require("../../mcp/lib/invariant-runner.js");
-const { appendJsonlLine } = require("../../mcp/lib/storage.js");
-const { invariantRunsJsonlPath } = require("../../mcp/lib/paths.js");
+} = require("../../mcp/core/invariant-runner.js");
+const { appendJsonlLine } = require("../../mcp/core/io/storage.js");
+const { invariantRunsJsonlPath } = require("../../mcp/core/io/paths.js");
 const {
   signRowWithMac,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("../../mcp/lib/offensive-row-mac.js");
+} = require("../../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../../mcp/lib/handoff-signing-key.js");
+} = require("../../mcp/core/ledger-integrity/handoff-signing-key.js");
 
 // A valid matching cross-stack target binding for seeds (executed bytecode sha256 ===
 // on-chain bytecode sha256, a fixed in-fork address). A cross-stack arm seeded with

@@ -27,10 +27,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,
@@ -38,21 +38,21 @@ const {
   appendTransitionProposal,
   expireStaleDispatchedNodes,
   readNodeTransitions,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   importHttpTraffic,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 const {
   appendContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   escapeRegExp,
-} = require("../mcp/lib/untrusted-envelope.js");
+} = require("../mcp/core/untrusted-envelope.js");
 
 function parseFencedBriefJson(value, label) {
   const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>$/);
@@ -401,8 +401,8 @@ test("X.6 by construction: prepare-node and finalize-node derive the IDENTICAL a
     // What bob_finalize_node re-derives to run the tool_constraint_violation
     // check: the SAME shared helper over the same node + document + contract.
     // The single source is what makes these equal by construction.
-    const { deriveDispatchNodePack } = require("../mcp/lib/dispatch-node-pack.js");
-    const { findAttachedContract } = require("../mcp/lib/task-graph-events.js");
+    const { deriveDispatchNodePack } = require("../mcp/core/dispatch/dispatch-node-pack.js");
+    const { findAttachedContract } = require("../mcp/core/waves/task-graph-events.js");
     const document = materializeTaskGraph(domain, { write: false }).document;
     const node = document.nodes.find((n) => n.node_id === nodeId);
     const attached = findAttachedContract(domain, nodeId);
@@ -776,7 +776,7 @@ test("recommended_reads inlines the distilled http_record summary; the http body
         body: JSON.stringify({ message: distinctiveBody, sub: "0xWALLET" }),
       }],
     });
-    const { readFrontierEvents } = require("../mcp/lib/frontier-events.js");
+    const { readFrontierEvents } = require("../mcp/core/frontier/frontier-events.js");
     const events = readFrontierEvents(domain);
     const recordEvent = events.find(
       (e) => e.kind === "observation.recorded"
@@ -918,8 +918,8 @@ test("prepare_node surfaces a non-null chain-specific family_tag for a smart_con
     const domain = "c2-sc-chainfamily.example.com";
     seedSession(domain);
 
-    const { routeSurfacesInternal, readSurfaceRoutesStrict } = require("../mcp/lib/surface-router.js");
-    const { surfaceRoutesPath } = require("../mcp/lib/paths.js");
+    const { routeSurfacesInternal, readSurfaceRoutesStrict } = require("../mcp/core/frontier/surface-router.js");
+    const { surfaceRoutesPath } = require("../mcp/core/io/paths.js");
 
     // Persist the routed smart_contract surface the way the router produces it:
     // classifySurfaceCapability resolves the evm chain and writes chain_family

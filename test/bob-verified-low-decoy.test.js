@@ -13,23 +13,23 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

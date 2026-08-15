@@ -23,8 +23,8 @@ const {
   matchJsonRpcResponse,
   buildCallerHeaders,
   cswshArmHeaders,
-} = require("../mcp/lib/ws-probe.js");
-const { applyAuthProfileHeaders, PROFILE_METADATA_KEYS } = require("../mcp/lib/auth.js");
+} = require("../mcp/domains/web/ws-probe.js");
+const { applyAuthProfileHeaders, PROFILE_METADATA_KEYS } = require("../mcp/core/auth/auth.js");
 
 test("CSWSH: no auth_profile never flags vulnerable, even on an accepted foreign-Origin handshake", () => {
   const accepted = classifyCswsh({ hasAuth: false, authedAccepted: true, controlAccepted: null });

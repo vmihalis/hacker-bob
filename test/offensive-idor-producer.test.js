@@ -37,32 +37,32 @@ const {
   templatizeIdBearingEndpoint,
   surfaceExposesIdBearingCollection,
   surfaceIdBearingEndpoints,
-} = require("../mcp/lib/offensive-idor-producer.js");
-const { assertCreateCollectionShapeSafe } = require("../mcp/lib/offensive-http-common.js");
-const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
-const idorDescriptor = require("../mcp/lib/tools/bob-http-idor-confirm.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/domains/web/offensive-idor-producer.js");
+const { assertCreateCollectionShapeSafe } = require("../mcp/domains/web/offensive-http-common.js");
+const { validateAgainstSchema } = require("../mcp/core/dispatch/tool-validation.js");
+const idorDescriptor = require("../mcp/tools/web/bob-http-idor-confirm.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/core/auth/auth.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 
 // New offensive rows are ed25519 (v2); the verifier bundle (public key + symmetric
 // key) verifies them with the PUBLIC key while still accepting any legacy v1 hmac row.
 function rowMacVerifies(domain, row) {
   return verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain));
 }
-const { attackSurfacePath, offensiveRunsJsonlPath, offensiveRunsDir } = require("../mcp/lib/paths.js");
+const { attackSurfacePath, offensiveRunsJsonlPath, offensiveRunsDir } = require("../mcp/core/io/paths.js");
 const {
   appendCandidateClaim,
   readCandidateClaims,
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
-const { projectExploitRunObservedRef, readOffensiveCaptureBytesSecure } = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claims.js");
+const { projectExploitRunObservedRef, readOffensiveCaptureBytesSecure } = require("../mcp/core/claims/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

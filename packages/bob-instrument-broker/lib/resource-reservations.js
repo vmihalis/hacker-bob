@@ -27,17 +27,17 @@ const {
 const {
   normalizePhysicalResourceInventory,
   planPhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-scheduler.js");
+} = require("../../../mcp/domains/physical/physical-resource-scheduler.js");
 const {
   assertPhysicalTrustedClockPort,
   samplePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   normalizeOpaqueRef,
-} = require("../../../mcp/lib/physical-quantities.js");
+} = require("../../../mcp/domains/physical/physical-quantities.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   RESOURCE_CHECKPOINT_TRUST_PORT_CONTRACT,
   RESOURCE_INVENTORY_TRUST_PORT_CONTRACT,

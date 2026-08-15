@@ -14,9 +14,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { DEFAULT_QUEUE_POLICY, LEAN_PROFILE, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
-const { FANOUT_ROLE_REGISTRY, worstCaseTreeSize } = require("../mcp/lib/nested-spawn.js");
-const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
+const { DEFAULT_QUEUE_POLICY, LEAN_PROFILE, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
+const { FANOUT_ROLE_REGISTRY, worstCaseTreeSize } = require("../mcp/core/session/nested-spawn.js");
+const { buildChildFanoutPlanForSurface } = require("../mcp/core/session/assignment-brief.js");
 
 const SURFACE = { id: "surface:api", bug_class_hints: ["idor", "ssrf", "xss", "ssti", "auth_bypass"] };
 
@@ -77,7 +77,7 @@ test("E2: the breaker — an exhausted spawn budget degrades the plan to flat (n
     const domain = "e2-breaker.example.com";
     // Reserve the only lifetime slot first. The read path then sees zero remaining
     // budget, chooses branching 0, and emits no child plan.
-    require("../mcp/lib/spawn-ledger.js").appendSpawnLedgerEntry(domain, {
+    require("../mcp/core/session/spawn-ledger.js").appendSpawnLedgerEntry(domain, {
       ts: "2026-01-01T00:00:00.000Z",
       wave: "w0",
       parent_agent: "a0",

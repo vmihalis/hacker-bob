@@ -34,23 +34,23 @@ const {
   routabilityForSurfaceMetadata,
   buildOneHopGraphContext,
   derivePackForNode,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   WEB3_IDENTITY_HANDOFF_TECHNIQUE_PACK,
   TECHNIQUE_PACKS_BY_ID,
   getTechniquePackById,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   normalizeContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   VALID_ROLE_BUNDLES,
   toolNamesForRoleBundle,
   roleBundleResolvesToTools,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/dispatch/tool-registry.js");
 
 // ─── Fixtures ────────────────────────────────────────────────────────────
 
@@ -220,7 +220,7 @@ test("DEFAULT_CAPABILITY_PACK_ID is web", () => {
 });
 
 test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is keyed on every dispatchable capability pack", () => {
-  const { dispatchableCapabilityPacks } = require("../mcp/lib/capability-packs.js");
+  const { dispatchableCapabilityPacks } = require("../mcp/core/capability/capability-packs.js");
   for (const packId of dispatchableCapabilityPacks().map((pack) => pack.id)) {
     assert.ok(
       Object.prototype.hasOwnProperty.call(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK, packId),
@@ -242,7 +242,7 @@ test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK faithfully projects dispatchable
     CAPABILITY_PACKS,
     PHYSICAL_CAPABILITY_PACK,
     dispatchableCapabilityPacks,
-  } = require("../mcp/lib/capability-packs.js");
+  } = require("../mcp/core/capability/capability-packs.js");
   const dispatchablePacks = dispatchableCapabilityPacks();
   assert.deepEqual(
     Object.keys(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK).sort(),
@@ -325,10 +325,10 @@ test("the derivation module's purity guard ran at load time without throwing", (
   // would have thrown. Re-require with cache invalidation to exercise the
   // load path a second time so a future regression that adds Date.now()
   // (or similar) trips the guard in CI.
-  const modulePath = require.resolve("../mcp/lib/capability-pack-derivation.js");
+  const modulePath = require.resolve("../mcp/core/capability/capability-pack-derivation.js");
   delete require.cache[modulePath];
   assert.doesNotThrow(() => {
-    require("../mcp/lib/capability-pack-derivation.js");
+    require("../mcp/core/capability/capability-pack-derivation.js");
   });
 });
 
@@ -337,7 +337,7 @@ test("the derivation module's source body contains no forbidden patterns under p
   // test-time. Belt-and-suspenders: if a regression sneaks in via a path the
   // load-time guard misses (e.g., dynamic require) the test still catches it.
   const source = fs.readFileSync(
-    path.join(__dirname, "..", "mcp", "lib", "capability-pack-derivation.js"),
+    path.join(__dirname, "..", "mcp", "core", "capability", "capability-pack-derivation.js"),
     "utf8",
   );
   const divider = "─── Per-node-kind derivations ───";

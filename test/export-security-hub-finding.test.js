@@ -8,38 +8,38 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const exportSecurityHubTool = require("../mcp/lib/tools/export-security-hub-finding.js");
-const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const exportSecurityHubTool = require("../mcp/tools/export-security-hub-finding.js");
+const finalizeReportTool = require("../mcp/tools/finalize-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   readGradeVerdict,
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const {
   loadGradeVerdictHash,
   resolveReportFinalizationHashes,
-} = require("../mcp/lib/report-finalize.js");
+} = require("../mcp/core/report-finalize.js");
 const {
   _setApprovalBackendForTest,
   _setApprovalHmacKeyForTest,
-} = require("../mcp/lib/approval-store.js");
+} = require("../mcp/core/approval-store.js");
 const {
   gradeFreezeS3Key,
   _setSyncPutObjectForTest,
-} = require("../mcp/lib/grade-freeze-store.js");
+} = require("../mcp/core/grade-freeze-store.js");
 const {
   readReportSnapshots,
-} = require("../mcp/lib/report-snapshots.js");
+} = require("../mcp/core/report-snapshots.js");
 const {
   findingPayloadsFromClaims,
-} = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/tools/record-candidate-claim.js");
 const {
   proofBundlePaths,
   repoCommandRunsJsonlPath,
@@ -49,29 +49,29 @@ const {
   statePath,
   verificationRoundPaths,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   finalVerificationHash,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   deriveCvss31,
-} = require("../mcp/lib/cvss31.js");
+} = require("../mcp/core/scoring/cvss31.js");
 const {
   normalizeProofBundlesDocument,
-} = require("../mcp/lib/proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
 const {
   verifyReproReproduction,
-} = require("../mcp/lib/repro-replay-verifier.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   persistingRunner,
 } = require("./helpers/repro-run-pair.js");
@@ -148,11 +148,11 @@ function installApprovalArtifact(domain) {
 }
 
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface:billing-profile") {
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-  const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
@@ -729,7 +729,7 @@ test("export-security-hub-finding loads without AWS SDK packages at require time
       }
       return originalLoad.apply(this, arguments);
     };
-    const tool = require("./mcp/lib/tools/export-security-hub-finding.js");
+    const tool = require("./mcp/tools/export-security-hub-finding.js");
     if (tool.name !== "bob_export_security_hub_finding") process.exit(2);
   `;
   const result = spawnSync(process.execPath, ["-e", script], {

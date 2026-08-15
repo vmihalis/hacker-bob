@@ -22,11 +22,11 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   COMPOSITION_EXPERIMENT_RESULT_KINDS,
   EVIDENCE_BINDING_REF_PATTERN,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   COMPOSITION_RESULTS_MAX_RECORDS,
   REFUSAL_INVALID_PAYLOAD,
@@ -42,12 +42,12 @@ const {
   replayObservationRefusal,
   resolveSynthesizedDifferentialVerdict,
   runPathCompositionExperiment,
-} = require("../mcp/lib/composition-experiment-harness.js");
+} = require("../mcp/core/differential/composition-experiment-harness.js");
 const {
   compositionResultsJsonlPath,
-} = require("../mcp/lib/paths.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
-const { TOOL_MANIFEST, TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/io/paths.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
+const { TOOL_MANIFEST, TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 
 const DOMAIN = "composition-experiment.test";
 

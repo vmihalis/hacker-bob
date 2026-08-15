@@ -44,8 +44,8 @@ const {
   assertSafeResolvedRequestUrl,
   assertSafeRequestUrl,
   resolveSafeAddress,
-} = require("./lib/safe-fetch.js");
-const { isBlockedInternalHost } = require("./lib/url-surface.js");
+} = require("./core/io/safe-fetch.js");
+const { isBlockedInternalHost } = require("./core/url-surface.js");
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const HARD_TIMEOUT_MS = 30 * 60 * 1000;

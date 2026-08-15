@@ -16,19 +16,19 @@ const {
   normalizeCandidateClaim,
   normalizeEvidenceReferenceShape,
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   claimsJsonlPath,
   isAuditGradedPath,
   offensiveRunsJsonlPath,
   repoCommandRunsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

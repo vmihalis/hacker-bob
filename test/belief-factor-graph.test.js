@@ -6,16 +6,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
-const { buildBeliefWindow } = require("../mcp/lib/belief/belief-window.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
+const { buildBeliefWindow } = require("../mcp/core/belief/belief-window.js");
 const {
   buildFactorGraphSample,
   readBeliefSamples,
   runBeliefSampler,
-} = require("../mcp/lib/belief/factor-graph.js");
-const runBeliefSamplerTool = require("../mcp/lib/tools/run-belief-sampler.js");
-const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
+} = require("../mcp/core/belief/factor-graph.js");
+const runBeliefSamplerTool = require("../mcp/tools/run-belief-sampler.js");
+const elicitBeliefTool = require("../mcp/tools/elicit-belief.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

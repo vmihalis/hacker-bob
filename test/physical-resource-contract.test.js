@@ -17,8 +17,8 @@ const {
 const {
   PHYSICAL_QUANTITY_REGISTRY,
   physicalQuantityRegistryDigest,
-} = require("../mcp/lib/physical-quantities.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/domains/physical/physical-quantities.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 
 const digest = (label) => hashCanonicalJson({ label });
 

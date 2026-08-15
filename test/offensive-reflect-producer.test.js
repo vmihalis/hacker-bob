@@ -18,33 +18,33 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const PRODUCER_PATH = path.join(__dirname, "..", "mcp", "lib", "offensive-reflect-producer.js");
+const PRODUCER_PATH = path.join(__dirname, "..", "mcp", "domains", "web", "offensive-reflect-producer.js");
 const {
   reflectXss,
   REFLECT_DEMONSTRATED_CEILING,
   htmlContextAt,
   recordedQueryParamNames,
-} = require("../mcp/lib/offensive-reflect-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/web/offensive-reflect-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   appendCandidateClaim,
   readCandidateClaims,
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claims.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   mintSensitiveShapeSafeToken,
   sensitiveShapesPresent,
-} = require("../mcp/lib/offensive-http-common.js");
+} = require("../mcp/domains/web/offensive-http-common.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

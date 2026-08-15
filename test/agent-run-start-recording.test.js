@@ -22,25 +22,25 @@ const {
   attackSurfacePath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readAgentRuns,
   latestAgentRunForWaveAgent,
   settleAgentRunFromHandoff,
   syntheticTaskIdForWaveAssignment,
-} = require("../mcp/lib/agent-runs.js");
+} = require("../mcp/core/session/agent-runs.js");
 const {
   startWave,
   writeWaveHandoff,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   buildWaveReadiness,
   loadWaveArtifacts,
   mergeWaveHandoffsInternal,
-} = require("../mcp/lib/wave-handoff-store.js");
-const { readAssignmentBrief } = require("../mcp/lib/assignment-brief.js");
-const { logTechniqueAttempt } = require("../mcp/lib/technique-packs.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
+const { readAssignmentBrief } = require("../mcp/core/session/assignment-brief.js");
+const { logTechniqueAttempt } = require("../mcp/core/dispatch/technique-packs.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -248,8 +248,8 @@ test("start-recording on an already-settled run is a no-op (does not resurrect r
       content: "# Handoff\n\nbody",
     }));
 
-    const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
     const assignment = loadWaveAssignments(domain, 1).assignmentByAgent.get("a1");
     const handoffJson = JSON.parse(fs.readFileSync(
       path.join(sessionDir(domain), "handoff-w1-a1.json"), "utf8",

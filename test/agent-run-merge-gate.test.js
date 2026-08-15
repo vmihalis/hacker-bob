@@ -11,38 +11,38 @@ const {
   agentRunsJsonlPath,
   attackSurfacePath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readAgentRuns,
   appendWaveAssignmentAgentRun,
   markAgentRunTerminal,
   settleAgentRunFromHandoff,
   syntheticTaskIdForWaveAssignment,
-} = require("../mcp/lib/agent-runs.js");
+} = require("../mcp/core/session/agent-runs.js");
 const {
   buildWaveHandoffsDocument,
   buildWaveReadiness,
   loadWaveArtifacts,
   mergeWaveHandoffsInternal,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   startWave,
   applyWaveMerge,
   writeWaveHandoff,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   initSession,
   advanceSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   logTechniqueAttempt,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 const {
   evaluateAgentCompletion,
-} = require("../mcp/lib/agent-run-completion.js");
+} = require("../mcp/core/session/agent-run-completion.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -133,8 +133,8 @@ test("SubagentStop with valid handoff settles the AgentRun row through the merge
     // Simulate the SubagentStop hook's settle path: it reads the assignment +
     // handoff JSON, calls settleAgentRunFromHandoff, which validates signed
     // provenance and appends a `settled` row.
-    const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
     const assignments = loadWaveAssignments(domain, 1);
     const assignment = assignments.assignmentByAgent.get("a1");
     const handoffJsonPath = path.join(sessionDir(domain), "handoff-w1-a1.json");
@@ -179,7 +179,7 @@ test("a started (running) agent with a provenance-valid handoff merges via the l
     const domain = "agent-runs-started-merges.example.com";
     const start = driveWaveStart(domain, ["surface-a", "surface-b"]);
     const assignmentTokenA = start.assignments[0].handoff_token;
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
 
     // Agent a1's first surface-scoped tool call recorded `running` (universal
     // MCP-side start-recording, or the SubagentStart hook), and it wrote a
@@ -239,7 +239,7 @@ test("a started (running) agent with NO handoff on disk stays missing (genuine d
   withTempHome(() => {
     const domain = "agent-runs-started-no-handoff.example.com";
     driveWaveStart(domain, ["surface-a"]);
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
 
     // a1 started but died before writing any handoff. The started lifecycle is
     // present, but with no handoff to validate the surface stays missing.
@@ -260,7 +260,7 @@ test("a started (running) agent with a forged/unsigned handoff stays out of rece
   withTempHome(() => {
     const domain = "agent-runs-started-forged.example.com";
     driveWaveStart(domain, ["surface-a"]);
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
     markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
 
     // A handoff JSON with no valid HMAC provenance is on disk. The started
@@ -491,8 +491,8 @@ test("a fully driven wave yields N settled rows in agent-runs.jsonl", () => {
     const surfaces = ["surface-a", "surface-b", "surface-c", "surface-d"];
     const start = driveWaveStart(domain, surfaces);
 
-    const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
     const assignmentsInfo = loadWaveAssignments(domain, 1);
     const signingKey = readHandoffSigningKey(domain);
 
@@ -636,10 +636,10 @@ test("depth gate: a started run's SC handoff lacking completion-substance is rej
       assignments: [{ agent: "a1", surface_id: "surface-sc" }],
     }));
 
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
-    const { signHandoffProvenance } = require("../mcp/lib/wave-handoff-contracts.js");
-    const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
+    const { signHandoffProvenance } = require("../mcp/core/waves/wave-handoff-contracts.js");
+    const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 
     markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-sc" });
 
@@ -786,7 +786,7 @@ test("Test D: provenance-verified handoff is honored even after a `failed` row, 
 // readiness deadlock, on the recovery path.
 test("Test D + finding: a finding-bearing handoff is honored on the recovery path", () => {
   withTempHome(() => {
-    const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+    const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
     const domain = "agent-runs-failed-but-verified-finding.example.com";
     const start = driveWaveStart(domain, ["surface-a"]);
     const assignmentToken = start.assignments[0].handoff_token;
@@ -1235,7 +1235,7 @@ test("crash window: a started run's valid handoff with NO technique attempt is r
   withTempHome(() => {
     const domain = "agent-runs-crash-window-refused.example.com";
     const start = driveWaveStart(domain, ["surface-a"]);
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
 
     // a1 started (running) and wrote a valid handoff, but logged no technique
     // attempt and never reached SubagentStop (no terminal row).
@@ -1272,7 +1272,7 @@ test("crash window: a started run's valid handoff with NO technique attempt MERG
   withTempHome(() => {
     const domain = "agent-runs-crash-window-lead.example.com";
     const start = driveWaveStart(domain, ["lead-a"]);
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
 
     markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "lead-a" });
     JSON.parse(writeWaveHandoff({
@@ -1304,7 +1304,7 @@ test("crash window: a started run with a matching technique attempt MERGES (ordi
   withTempHome(() => {
     const domain = "agent-runs-crash-window-attempt.example.com";
     const start = driveWaveStart(domain, ["surface-a"]);
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
 
     markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
     JSON.parse(writeWaveHandoff({
@@ -1348,7 +1348,7 @@ test("the finalize gate and the merge gate agree on the technique-attempt requir
   withTempHome(() => {
     const domain = "agent-runs-gates-agree.example.com";
     const start = driveWaveStart(domain, ["surface-a"]);
-    const { markAgentRunRunning } = require("../mcp/lib/agent-runs.js");
+    const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
 
     markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-a" });
     JSON.parse(writeWaveHandoff({

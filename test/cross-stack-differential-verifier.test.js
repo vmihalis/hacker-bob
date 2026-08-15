@@ -46,17 +46,17 @@ const {
   verifyCompositionPath,
   readCompositionVerifiedSummary,
   resolveCompositionPathSynthVerdict,
-} = require("../mcp/lib/composition-live-verifier.js");
+} = require("../mcp/core/differential/composition-live-verifier.js");
 const {
   isBindLeaf,
   isShapeValidEdgeType,
   resolveBoundDifferentialLeaf,
   reverifyCrossStackLeaf,
-} = require("../mcp/lib/cross-stack-differential-verifier.js");
+} = require("../mcp/core/differential/cross-stack-differential-verifier.js");
 const {
   canonicalizeExploitTarget,
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const crypto = require("node:crypto");
 const {
   offensiveRunsJsonlPath,
@@ -64,22 +64,22 @@ const {
   compositionVerifiedJsonlPath,
   offensiveRunsDir,
   surfaceRoutesPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
 const {
   classifySurfaceCapability,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 const {
   seedInvariantRunRow,
 } = require("./helpers/invariant-run-seed.js");
 const {
   validateToolArguments,
-} = require("../mcp/lib/tool-validation.js");
+} = require("../mcp/core/dispatch/tool-validation.js");
 // Single source of truth for the cross-stack decoy fixtures, shared with the four sibling
 // suites (cross-stack-consumed-binding / -producer-consume-endtoend / -composition-gate /
 // sandbox-isolation-composition-path). Imported here so the constants never drift between
@@ -335,7 +335,7 @@ function noHttp() {
 const BIND_DEPS = { httpScanFn: noHttp };
 const BASE_URL = "https://stack.example.com";
 
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 
 // A well-shaped open-vocab synthesized observation that passes replayObservationRefusal:
 // a discriminating differential (verdict flips against the negative control, distinct

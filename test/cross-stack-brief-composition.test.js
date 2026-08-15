@@ -24,34 +24,34 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   TRANSITION_KIND_VALUES,
   appendHypothesisProposal,
   appendNodeTransition,
   appendTransitionProposal,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 const {
   TRANSITION_KIND_HUNTING_VOCAB,
   TRANSITION_KIND_CONTRACT_TEMPLATES,
   transitionKindBriefContent,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 const {
   surfaceRoutesPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 const KNOWN_TOOL = "bob_http_scan";
 

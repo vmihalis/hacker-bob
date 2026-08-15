@@ -12,11 +12,11 @@ const {
   normalizeKnowledgeBatch,
   candidateDedupKey,
   buildAdvisoryEvidence,
-} = require("../mcp/lib/mechanism-template-ingest.js");
+} = require("../mcp/core/mechanism/mechanism-template-ingest.js");
 
 const {
   loadMechanismTemplates,
-} = require("../mcp/lib/invariant-template-corpus.js");
+} = require("../mcp/core/mechanism/invariant-template-corpus.js");
 
 // The validated target shape: a candidate must satisfy the same loader the live
 // corpus uses, so the abstraction is real and not a parallel format.

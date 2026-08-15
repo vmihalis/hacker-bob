@@ -13,10 +13,10 @@ const {
 } = require("../../../mcp/lib/physical-resource-contract.js");
 const {
   normalizePhysicalResourceQueueTicket,
-} = require("../../../mcp/lib/physical-resource-arbiter.js");
+} = require("../../../mcp/domains/physical/physical-resource-arbiter.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   assertPhysicalResourceArbiterAdmissionPort,
   derivePhysicalResourceArbiterBatchKey,

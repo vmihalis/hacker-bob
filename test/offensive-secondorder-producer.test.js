@@ -23,26 +23,26 @@ const {
   ORACLE_KIND_VALUES,
   MINT_TOOL_ID,
   REREAD_TOOL_ID,
-} = require("../mcp/lib/offensive-secondorder-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/domains/web/offensive-secondorder-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
 const {
   attackSurfacePath,
   offensiveRunsJsonlPath,
   secondorderTokensJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
-} = require("../mcp/lib/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyFindingDifferential } = require("../mcp/lib/finding-differential-verifier.js");
+} = require("../mcp/core/claims/claims.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { verifyFindingDifferential } = require("../mcp/core/differential/finding-differential-verifier.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -120,7 +120,7 @@ test("ceiling registry: bob_secondorder_reread is a hard MEDIUM; bob_secondorder
 });
 
 test("the module never requires child_process (strictly in-process + safeFetch)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "offensive-secondorder-producer.js"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "domains", "web", "offensive-secondorder-producer.js"), "utf8");
   assert.ok(!/child_process/.test(src), "must not reference child_process");
 });
 

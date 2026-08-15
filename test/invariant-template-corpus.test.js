@@ -11,8 +11,8 @@ const {
   getTemplatesForClass,
   suggestInvariantsForFinding,
   suggestInvariantsForReport,
-} = require("../mcp/lib/invariant-template-corpus.js");
-const { buildTestSource } = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/mechanism/invariant-template-corpus.js");
+const { buildTestSource } = require("../mcp/core/invariant-runner.js");
 
 test("SUPPORTED_CLASSES covers the smart-contract bug classes IP4 emits", () => {
   for (const cls of [
@@ -148,7 +148,7 @@ test("a SEALED template is not agent-substituted (fillSlots returns the marker);
   assert.ok(!/execute|capturedAuth|0xab/.test(filled.foundry_test), "no agent slot value substituted into the sealed marker");
   // The live consume helper + the gated call are produced by the SEALED GENERATOR from the DATA
   // slots (covered fully in sealed-cross-stack-harness.test.js); confirm the wiring aligns here.
-  const sealed = require("../mcp/lib/sealed-cross-stack-harness.js").buildSealedTestSource({
+  const sealed = require("../mcp/core/differential/sealed-cross-stack-harness.js").buildSealedTestSource({
     contractName: "BobInvariantTest_consume",
     testFunctionName: "testBobInvariant_consume",
     targetAddress: `0x${"ab".repeat(20)}`,

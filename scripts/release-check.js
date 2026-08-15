@@ -30,12 +30,12 @@ const {
 const {
   evaluatePackagedPlanePhysicalReleaseReadiness,
   evaluatePlanePhysicalReleaseReadiness,
-} = require("../mcp/lib/plane-physical-release-readiness.js");
+} = require("../mcp/domains/physical/plane-physical-release-readiness.js");
 const {
   PLANE_PHYSICAL_PACKAGED_RELEASE_SNAPSHOT,
   assertPackagedPlanePhysicalReleaseSnapshot,
   compilePlanePhysicalReleaseSnapshot,
-} = require("../mcp/lib/plane-physical-release-snapshot.js");
+} = require("../mcp/domains/physical/plane-physical-release-snapshot.js");
 
 const ROOT = path.join(__dirname, "..");
 const WRAPPER_PACKAGES = wrapperPackages(ROOT);

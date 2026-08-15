@@ -11,64 +11,64 @@ const {
   advanceSession,
   deriveAdvanceAuthContext,
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   authStore,
-} = require("../mcp/lib/auth.js");
+} = require("../mcp/core/auth/auth.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/governance-store.js");
 const {
   gradeArtifactPaths,
   repoInventoryPath,
   sessionEventsJsonlPath,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readSessionEvents,
-} = require("../mcp/lib/session-events.js");
+} = require("../mcp/core/session/session-events.js");
 const {
   loadGradeVerdictHash,
-} = require("../mcp/lib/report-finalize.js");
+} = require("../mcp/core/report-finalize.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   allowedTargetsFor,
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   _setApprovalBackendForTest,
   _setApprovalHmacKeyForTest,
-} = require("../mcp/lib/approval-store.js");
+} = require("../mcp/core/approval-store.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/claims/claims.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   writeChainAttempt,
-} = require("../mcp/lib/chain-attempts.js");
+} = require("../mcp/core/chain-attempts.js");
 const {
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   buildRepoInventory,
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   evaluateEvidenceCompletion,
-} = require("../mcp/lib/agent-run-completion.js");
+} = require("../mcp/core/session/agent-run-completion.js");
 
 // fx-hmac-content test helper: the same HMAC-SHA256(`${target_domain}|${grade_verdict_hash}`,
 // key) content-bound scheme mcp/lib/approval-store.js's verifyApprovalArtifact (and the

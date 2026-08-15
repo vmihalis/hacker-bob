@@ -27,16 +27,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const logCapabilityFrictionTool = require("../mcp/lib/tools/log-capability-friction.js");
-const logProtocolDriftTool = require("../mcp/lib/tools/log-protocol-drift.js");
+const logCapabilityFrictionTool = require("../mcp/tools/log-capability-friction.js");
+const logProtocolDriftTool = require("../mcp/tools/log-protocol-drift.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
   FRONTIER_EVENT_KINDS,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -508,10 +508,10 @@ test("drift idempotency: runtime-emit (no skill_path) collapses onto <runtime> s
 // control-byte joiner fixes the collisions the old `|` / `""` joiners allowed.
 const {
   frictionKeyForDedupe,
-} = require("../mcp/lib/friction-selection.js");
+} = require("../mcp/core/friction-selection.js");
 const {
   frictionIdempotencyKey,
-} = require("../mcp/lib/friction-mechanization.js");
+} = require("../mcp/core/friction-mechanization.js");
 
 test("single-source: log / selection / mechanization derive the IDENTICAL Y-P3 key", () => {
   const identity = {

@@ -13,22 +13,22 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
   capabilityFrictionPayloads,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

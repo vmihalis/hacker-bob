@@ -176,7 +176,7 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     assert.ok(!result.checks.some((check) => check.id.startsWith("claude_")));
 
     const egressOutput = execFileSync(process.execPath, [
-      path.join(workspace, "mcp", "lib", "egress-cli.js"),
+      path.join(workspace, "mcp", "core", "egress-cli.js"),
       workspace,
       "add",
       "operator",
@@ -193,7 +193,7 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     });
     assert.equal(JSON.parse(egressOutput).profile.name, "operator");
     const egressList = JSON.parse(execFileSync(process.execPath, [
-      path.join(workspace, "mcp", "lib", "egress-cli.js"),
+      path.join(workspace, "mcp", "core", "egress-cli.js"),
       workspace,
       "list",
       "--json",
