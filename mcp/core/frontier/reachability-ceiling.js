@@ -3,8 +3,10 @@
 const fs = require("fs");
 const {
   ATTACK_VECTOR_VALUES,
+} = require("../constants/finding-vocabulary.js");
+const {
   SEVERITY_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 const {
   repoInventoryPath,
   verificationRoundPaths,

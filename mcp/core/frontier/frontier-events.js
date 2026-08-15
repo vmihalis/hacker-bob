@@ -17,16 +17,20 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   hashDocumentExcluding,
+  withDocumentHash,
+} = require("../verification/document-hash.js");
+const {
   normalizeId,
   normalizeIsoTimestamp,
   normalizeOptionalId,
   normalizeOptionalObject,
   normalizeOptionalTextArray,
   normalizePlainObject,
+} = require("../io/validation.js");
+const {
   readJsonlStrict,
-  withDocumentHash,
-} = require("../../lib/fabric-common.js");
-const { CHAIN_FAMILY_VALUES } = require("../../lib/constants.js");
+} = require("../io/storage.js");
+const { CHAIN_FAMILY_VALUES } = require("../constants/shared-vocabulary.js");
 const { ToolError, ERROR_CODES } = require("../io/envelope.js");
 
 const FRONTIER_EVENT_VERSION = 1;

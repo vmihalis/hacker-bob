@@ -56,11 +56,15 @@ const {
 } = require("../mcp/core/io/transport.js");
 const {
   COVERAGE_LOG_MAX_RECORDS,
+} = require("../mcp/core/frontier/coverage-vocabulary.js");
+const {
   HTTP_AUDIT_LOG_MAX_RECORDS,
-  STATIC_ARTIFACT_MAX_CHARS,
   TRAFFIC_IMPORT_MAX_ENTRIES,
   TRAFFIC_LOG_MAX_RECORDS,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/io/http-traffic-limits.js");
+const {
+  STATIC_ARTIFACT_MAX_CHARS,
+} = require("../mcp/core/io/static-analysis-limits.js");
 const {
   appendHttpAuditRecord,
 } = require("../mcp/core/io/http-records.js");
@@ -132,7 +136,7 @@ const {
 } = serverModule;
 const {
   SESSION_LOCK_STALE_MS,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/session/session-state-vocabulary.js");
 const {
   assertSafeDomain,
   attackSurfacePath,
@@ -1121,7 +1125,7 @@ function syncNucleusFromStateJson(domain) {
     const nucleus = JSON.parse(fs.readFileSync(nucleusPath, "utf8"));
     if (nucleus.lifecycle_state === expectedState) return;
     const { buildSessionNucleus } = require("../mcp/core/governance/governance-contracts.js");
-    const { writeJsonDocument } = require("../mcp/lib/fabric-common.js");
+    const { writeJsonDocument } = require("../mcp/core/io/storage.js");
     const next = buildSessionNucleus({
       target_domain: nucleus.target_domain,
       target_url: nucleus.scope_policy && nucleus.scope_policy.target_url,
@@ -1262,7 +1266,7 @@ function seedSessionState(domain, overrides = {}) {
     const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
     if (!fs.existsSync(nucleusPath)) {
       const { buildSessionNucleus } = require("../mcp/core/governance/governance-contracts.js");
-      const { writeJsonDocument } = require("../mcp/lib/fabric-common.js");
+      const { writeJsonDocument } = require("../mcp/core/io/storage.js");
       const lifecycleState = state.lifecycle_state
         || LEGACY_PHASE_TO_LIFECYCLE_STATE[state.phase]
         || "SETUP";

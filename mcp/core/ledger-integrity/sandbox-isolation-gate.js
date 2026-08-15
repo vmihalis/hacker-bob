@@ -224,7 +224,7 @@ function reportableMediumPlusFindingIds(domain) {
 // (the gate is then inert).
 function readFinalVerificationByFinding(domain) {
   const { verificationRoundPaths } = require("../io/paths.js");
-  const { SEVERITY_VALUES } = require("../../lib/constants.js");
+  const { SEVERITY_VALUES } = require("../constants/shared-vocabulary.js");
   const out = new Map();
   let paths;
   try {

@@ -6,7 +6,7 @@ const {
   COVERAGE_STATUS_VALUES,
   COVERAGE_SUMMARY_MAX_ITEMS,
   COVERAGE_UNFINISHED_STATUS_VALUES,
-} = require("../../lib/constants.js");
+} = require("./coverage-vocabulary.js");
 const {
   assertEnumValue,
   assertInteger,

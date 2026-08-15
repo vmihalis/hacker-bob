@@ -13,7 +13,7 @@
 // task-graph-events.js appendCellProposal/readCellProposals. There is no new
 // frontier-event top-level kind (producer_run is already a member of the frozen
 // PRODUCER_OBSERVATION_SUBTYPES set), no new ledger file, and no direct
-// storage.js / fabric-common.js call — the append+read path is reached
+// storage.js helper call — the append+read path is reached
 // transitively through frontier-events.js.
 //
 // Status vocabulary:

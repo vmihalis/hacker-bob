@@ -61,8 +61,10 @@ const {
 } = require("../../core/io/envelope.js");
 const {
   writeJsonDocument,
+} = require("../../core/io/storage.js");
+const {
   hashDocumentExcluding,
-} = require("../../lib/fabric-common.js");
+} = require("../../core/verification/document-hash.js");
 const {
   appendJsonlLine,
   withSessionLock,

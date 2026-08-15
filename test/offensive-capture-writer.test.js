@@ -268,7 +268,7 @@ test("SEVERITY_VALUES is DESCENDING (most-severe first) — the invariant the ca
   // = less severe, so Math.max picks the less-severe value). If anyone reorders it or inserts a tier,
   // the clamp would silently invert and an override could RAISE the signed ceiling. Lock the ordering
   // so a regression fails loudly HERE, not by mis-signing a row in production.
-  const { SEVERITY_VALUES } = require("../mcp/lib/constants.js");
+  const { SEVERITY_VALUES } = require("../mcp/core/constants/shared-vocabulary.js");
   assert.deepEqual(
     SEVERITY_VALUES,
     ["critical", "high", "medium", "low", "info"],

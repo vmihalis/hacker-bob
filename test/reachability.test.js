@@ -13,7 +13,7 @@ const {
 } = require("../mcp/core/frontier/reachability.js");
 const {
   VERIFICATION_ROUND_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/constants/shared-vocabulary.js");
 const {
   capabilityBlockerCeilingViolations,
   computeReachabilityDisposition,

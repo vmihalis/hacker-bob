@@ -20,7 +20,7 @@ const {
 } = require("../mcp/core/governance/governance-store.js");
 const {
   writeJsonDocument,
-} = require("../mcp/lib/fabric-common.js");
+} = require("../mcp/core/io/storage.js");
 const {
   sessionNucleusPath,
 } = require("../mcp/core/io/paths.js");

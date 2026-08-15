@@ -11,7 +11,7 @@
 const {
   HARNESS_LOG_MAX_RECORDS,
   HARNESS_MAX_CHARS,
-} = require("../lib/constants.js");
+} = require("./fuzzing-artifact-limits.js");
 const {
   assertEnumValue,
   assertInteger,

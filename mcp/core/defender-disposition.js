@@ -31,7 +31,7 @@
 const {
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
-} = require("../lib/constants.js");
+} = require("./grading-vocabulary.js");
 
 const DEFENDER_DISPOSITION_VALUES = Object.freeze([
   "fix_now",

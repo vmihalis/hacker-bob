@@ -10,7 +10,7 @@
 // is restricted to the X-D3 closed enum (identity_propagation,
 // value_movement, trust_handoff, state_dependency, oracle_dependency,
 // message_passing). X.3 promotes "transition" to a first-class surface kind
-// (SURFACE_KIND_VALUES in mcp/lib/constants.js) and wires endpoint-existence
+// (SURFACE_KIND_VALUES in mcp/core/waves/task-graph-scheduling.js) and wires endpoint-existence
 // validation into this handler: both from_surface and to_surface must already
 // be known to the session's materialized surface-index before a transition
 // can be proposed. The check prevents a wave of bogus transitions referencing

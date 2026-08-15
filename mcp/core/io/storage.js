@@ -7,7 +7,7 @@ const path = require("path");
 const {
   SESSION_LOCK_NAME,
   SESSION_LOCK_STALE_MS,
-} = require("../../lib/constants.js");
+} = require("../session/session-state-vocabulary.js");
 const {
   sessionDir,
   sessionLockPath,
@@ -21,6 +21,31 @@ const DEFAULT_ARTIFACT_READ_MAX_BYTES = 16 * 1024 * 1024;
 const activeSessionLocks = new Map();
 const activeSessionLockDirectoryIdentities = new Map();
 const sessionLockReleaseHooks = [];
+
+function ensureParentDir(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function readJsonlStrict(filePath, label, normalizeRecord) {
+  if (!fs.existsSync(filePath)) return [];
+  const raw = readFileUtf8(filePath, { label });
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const records = [];
+  for (let i = 0; i < lines.length; i++) {
+    let parsed;
+    try {
+      parsed = JSON.parse(lines[i]);
+    } catch (error) {
+      throw new Error(`Malformed ${label} at line ${i + 1}: ${error.message || String(error)}`);
+    }
+    records.push(normalizeRecord ? normalizeRecord(parsed, i) : parsed);
+  }
+  return records;
+}
+
+function writeJsonDocument(filePath, document) {
+  writeFileAtomic(filePath, `${JSON.stringify(document, null, 2)}\n`);
+}
 
 function registerSessionLockReleaseHook(callback) {
   if (typeof callback !== "function") {
@@ -631,12 +656,14 @@ module.exports = {
   appendJsonlLine,
   appendJsonlLines,
   appendMarkdownMirror,
+  ensureParentDir,
   isSessionDirEffectivelyEmpty,
   ensureSafeSessionDirectory,
   assertSafeSessionDirectoryIdentity,
   loadJsonDocumentStrict,
   readFileUtf8,
   readJsonFile,
+  readJsonlStrict,
   registerSessionLockReleaseHook,
   trimJsonlFile,
   readSessionLockSnapshot,
@@ -645,5 +672,6 @@ module.exports = {
   withSessionLock,
   writeFileAtomic,
   writeFileExclusiveAtomic,
+  writeJsonDocument,
   writeMarkdownMirror,
 };

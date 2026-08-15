@@ -22,7 +22,7 @@ const {
   normalizeFindingRecord,
   normalizeSignatureVerificationStatus,
 } = require("../mcp/core/finding-contracts.js");
-const { SIGNATURE_VERIFICATION_STATUS_VALUES } = require("../mcp/lib/constants.js");
+const { SIGNATURE_VERIFICATION_STATUS_VALUES } = require("../mcp/core/constants/finding-vocabulary.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

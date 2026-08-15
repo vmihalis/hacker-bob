@@ -17,14 +17,18 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   hashDocumentExcluding,
+  withDocumentHash,
+} = require("../verification/document-hash.js");
+const {
   normalizeId,
   normalizeIsoTimestamp,
   normalizeOptionalId,
   normalizeOptionalObject,
   normalizePlainObject,
+} = require("../io/validation.js");
+const {
   readJsonlStrict,
-  withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../io/storage.js");
 
 const SESSION_EVENT_VERSION = 1;
 const SESSION_EVENTS_MAX_RECORDS = 20000;

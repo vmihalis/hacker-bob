@@ -20,11 +20,11 @@ const { hashCanonicalJson } = require("../core/verification/verification-contrac
 // parser; it is already load-time-asserted against CHAIN_FAMILY_VALUES, so this
 // module never redefines or hardcodes the chain-family vocabulary.
 const { classifyTargetToken } = require("../core/target-intake.js");
-// CHAIN_FAMILY_VALUES (constants.js) is the single known-chain-family authority,
+// CHAIN_FAMILY_VALUES (shared-vocabulary.js) is the single known-chain-family authority,
 // the same set the Y-D21 append funnel checks; ToolError/ERROR_CODES (envelope.js)
 // are the canonical fail-closed error carriers. Both are pure, I/O-free modules,
 // so the strict bind-time normalizer keeps this module's dependency-light posture.
-const { CHAIN_FAMILY_VALUES } = require("./constants.js");
+const { CHAIN_FAMILY_VALUES } = require("../core/constants/shared-vocabulary.js");
 const { ERROR_CODES, ToolError } = require("../core/io/envelope.js");
 
 // Chain families whose address encoding is case-INSENSITIVE hex, so folding to

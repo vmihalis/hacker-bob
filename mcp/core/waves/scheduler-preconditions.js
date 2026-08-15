@@ -284,7 +284,7 @@ const PRECONDITION_CHECKS = Object.freeze({
       throw new Error("seed_producers_drained: target_domain is required");
     }
     const { materializeTaskGraph } = require("./task-graph-materializer.js");
-    const { PRODUCER_NODE_KIND } = require("../../lib/constants.js");
+    const { PRODUCER_NODE_KIND } = require("./task-graph-scheduling.js");
     const doc = materializeTaskGraph(targetDomain, { write: false }).document;
     const hasProducerFloor = doc.nodes.some((node) => node.kind === PRODUCER_NODE_KIND);
     if (!hasProducerFloor) {
@@ -339,7 +339,7 @@ const PRECONDITION_CHECKS = Object.freeze({
       throw new Error("unscanned_bodies_drained: target_domain is required");
     }
     const { materializeTaskGraph } = require("./task-graph-materializer.js");
-    const { PRODUCER_NODE_KIND } = require("../../lib/constants.js");
+    const { PRODUCER_NODE_KIND } = require("./task-graph-scheduling.js");
     const doc = materializeTaskGraph(targetDomain, { write: false }).document;
     const hasProducerFloor = doc.nodes.some((node) => node.kind === PRODUCER_NODE_KIND);
     if (!hasProducerFloor) {

@@ -16,7 +16,7 @@ const {
 const {
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/grading-vocabulary.js");
 
 test("the four defender words are exactly the allowed vocabulary", () => {
   assert.deepEqual(DEFENDER_DISPOSITION_VALUES, ["fix_now", "worth_fixing", "watch", "held"]);

@@ -11,7 +11,7 @@ const {
   STATIC_SCAN_FINDING_MAX_ITEMS,
   STATIC_SCAN_HINT_MAX_ITEMS,
   STATIC_SCAN_RESULTS_MAX_RECORDS,
-} = require("../../lib/constants.js");
+} = require("../../core/io/static-analysis-limits.js");
 const {
   assertEnumValue,
   assertInteger,

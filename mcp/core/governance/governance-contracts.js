@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   AUTH_STATUS_VALUES,
-} = require("../../lib/constants.js");
+} = require("../session/session-state-vocabulary.js");
 const {
   assertBoolean,
   assertEnumValue,
@@ -20,9 +20,11 @@ const {
 } = require("../session/session-state-contracts.js");
 const {
   hashDocumentExcluding,
-  normalizeOptionalObject,
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../verification/document-hash.js");
+const {
+  normalizeOptionalObject,
+} = require("../io/validation.js");
 const {
   validateNoSensitiveMaterial,
 } = require("../redaction/sensitive-material.js");

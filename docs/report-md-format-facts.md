@@ -124,7 +124,7 @@ positive control for that second count.
 negative: `grep -rn 'FINDING_ID_RE\|parseFindingId' mcp/lib --include='*.js'` returns
 **48** hits across the tree (the control — the pattern is live) and **0** of them are
 in `compose-report.js`. `FINDING_ID_RE` itself resolves at only four sites:
-`mcp/lib/constants.js:3` (definition), `:251` (export), `mcp/lib/validation.js:5`
+`mcp/core/io/identifier-contracts.js` (definition/export), `mcp/core/io/validation.js`
 (import) and `:163` (its sole `.test()`), inside `parseFindingId`
 (`mcp/lib/validation.js:161-167`). So a `section_id` is arbitrary non-empty text at
 runtime and is not required to lead with, contain, or resolve to a finding id.
@@ -163,7 +163,7 @@ pattern:  [A-Za-z]{1,3} | [a-zA-Z]{1,3} | [A-Z]{1,3} | [a-z]{1,3} | \w{1,3} | [A
 hits(target family) = 0
 POSITIVE CONTROL, same grep -rnE shape, same --include/--exclude:
 pattern:  [1-9]\d*
-hits(control)       = 13   (mcp/lib/constants.js:3,4,5,135,141, …)
+hits(control)       = 13   (domain constant homes such as mcp/core/io/identifier-contracts.js, …)
 ```
 
 That command is blind to `\w{1,3}` written another way, to a runtime-built `RegExp`,
@@ -202,7 +202,7 @@ document said "exactly one", citing only `FINDING_ID_RE`. Counted:
 
 ```
 /^F-([1-9]\d*)$/          (JS RegExp literal)         sites=3
-    mcp/lib/constants.js:3                          (FINDING_ID_RE)
+    mcp/core/io/identifier-contracts.js             (FINDING_ID_RE)
     mcp/lib/tools/record-candidate-claim.js:194     (independent inline copy)
     mcp/lib/wave-handoff-contracts.js:484           (independent inline copy)
 ^F-[1-9][0-9]*$           (JSON-schema spelling)      sites=7

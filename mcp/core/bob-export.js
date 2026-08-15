@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   VERIFICATION_ROUND_VALUES,
-} = require("../lib/constants.js");
+} = require("./constants/shared-vocabulary.js");
 const {
   toolInvocationTelemetryPath,
   readToolInvocationTelemetryEvents,

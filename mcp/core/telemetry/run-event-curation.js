@@ -40,7 +40,7 @@ const {
 } = require("../frontier/frontier-events.js");
 const {
   COVERAGE_STATUS_VALUES,
-} = require("../../lib/constants.js");
+} = require("../frontier/coverage-vocabulary.js");
 const {
   PIPELINE_EVENT_TYPES,
 } = require("./pipeline-events.js");

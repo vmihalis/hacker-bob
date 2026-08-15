@@ -6,16 +6,20 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   APTOS_NETWORK_VALUES,
-  ATTACK_VECTOR_VALUES,
-  CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
-  SEVERITY_VALUES,
-  SIGNATURE_VERIFICATION_STATUS_VALUES,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
-  SURFACE_TYPE_VALUES,
   SVM_CLUSTER_VALUES,
-} = require("../lib/constants.js");
+} = require("./constants/chain-network-vocabulary.js");
+const {
+  ATTACK_VECTOR_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
+  SURFACE_TYPE_VALUES,
+} = require("./constants/finding-vocabulary.js");
+const {
+  CHAIN_FAMILY_VALUES,
+  SEVERITY_VALUES,
+} = require("./constants/shared-vocabulary.js");
 const {
   assertBoolean,
   assertCwe,

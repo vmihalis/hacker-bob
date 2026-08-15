@@ -28,7 +28,7 @@ const {
 } = require("../mcp/core/claims/claim-freeze.js");
 const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const { claimFreezePath } = require("../mcp/core/io/paths.js");
-const { hashDocumentExcluding } = require("../mcp/lib/fabric-common.js");
+const { hashDocumentExcluding } = require("../mcp/core/verification/document-hash.js");
 const {
   signRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,

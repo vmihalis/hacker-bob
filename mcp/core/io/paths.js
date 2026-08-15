@@ -5,13 +5,21 @@ const os = require("os");
 const path = require("path");
 const {
   ENGINE_LOCK_NAME,
+  SESSION_LOCK_NAME,
+} = require("../session/session-state-vocabulary.js");
+const {
   HARNESS_ID_RE,
   SEED_CORPUS_ID_RE,
-  SESSION_LOCK_NAME,
+} = require("../fuzzing-artifact-limits.js");
+const {
   STATIC_ARTIFACT_ID_RE,
+} = require("./static-analysis-limits.js");
+const {
   VERIFICATION_ROUND_FILE_MAP,
+} = require("../verification/verification-vocabulary.js");
+const {
   VERIFICATION_ROUND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 const {
   assertEnumValue,
   assertNonEmptyString,

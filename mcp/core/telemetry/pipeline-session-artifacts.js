@@ -5,10 +5,16 @@ const path = require("path");
 const {
   CHAIN_ATTEMPT_OUTCOME_VALUES,
   CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES,
+} = require("../constants/chain-network-vocabulary.js");
+const {
   COVERAGE_STATUS_VALUES,
+} = require("../frontier/coverage-vocabulary.js");
+const {
   TECHNIQUE_ATTEMPT_STATUS_VALUES,
+} = require("../dispatch/technique-vocabulary.js");
+const {
   VERIFICATION_ROUND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 const {
   assertNonEmptyString,
   normalizeStringArray,

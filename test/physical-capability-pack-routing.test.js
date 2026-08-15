@@ -39,7 +39,7 @@ const {
 } = require("../mcp/core/context-budget.js");
 const {
   SURFACE_TYPE_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/constants/finding-vocabulary.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
 } = require("../mcp/core/waves/task-graph-events.js");

@@ -9,8 +9,10 @@ const {
 } = require("./validation.js");
 const {
   normalizePositiveInteger,
+} = require("./validation.js");
+const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("./storage.js");
 const {
   normalizeTaskLens,
 } = require("../session/task-lenses.js");
@@ -21,7 +23,7 @@ const {
   DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
   DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
   DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
-} = require("../../lib/constants.js");
+} = require("../waves/task-graph-scheduling.js");
 
 const TASK_PRIORITY_VALUES = Object.freeze(["critical", "high", "medium", "low"]);
 const QUEUE_STATUS_VALUES = Object.freeze(["queued", "assigned", "running", "blocked", "closed", "dismissed"]);

@@ -4,7 +4,7 @@ const fs = require("fs");
 const {
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,
-} = require("../../lib/constants.js");
+} = require("./public-intel-limits.js");
 const {
   assertInteger,
   assertNonEmptyString,

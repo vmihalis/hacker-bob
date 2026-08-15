@@ -21,9 +21,13 @@ const {
   normalizeOptionalId,
   normalizeOptionalTextArray,
   normalizeReferenceArray,
+} = require("./io/validation.js");
+const {
   readJsonlStrict,
+} = require("./io/storage.js");
+const {
   withDocumentHash,
-} = require("../lib/fabric-common.js");
+} = require("./verification/document-hash.js");
 
 const REPORT_SNAPSHOT_VERSION = 1;
 const REPORT_SNAPSHOTS_MAX_RECORDS = 10000;

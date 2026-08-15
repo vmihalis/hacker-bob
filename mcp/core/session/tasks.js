@@ -17,8 +17,10 @@ const {
   normalizeOptionalTextArray,
   normalizePositiveInteger,
   normalizeReferenceArray,
+} = require("../io/validation.js");
+const {
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../verification/document-hash.js");
 const {
   normalizeTaskLens,
 } = require("./task-lenses.js");

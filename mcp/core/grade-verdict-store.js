@@ -5,8 +5,10 @@ const {
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
   GRADE_VERDICT_VALUES,
+} = require("./grading-vocabulary.js");
+const {
   SEVERITY_VALUES,
-} = require("../lib/constants.js");
+} = require("./constants/shared-vocabulary.js");
 const {
   assertEnumValue,
   assertInteger,

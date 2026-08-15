@@ -50,8 +50,10 @@ const {
 } = require("../../core/io/envelope.js");
 const {
   hashDocumentExcluding,
+} = require("../../core/verification/document-hash.js");
+const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("../../core/io/storage.js");
 const {
   readSessionStateStrict,
   writeSessionStateDocument,

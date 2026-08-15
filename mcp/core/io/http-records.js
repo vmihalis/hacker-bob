@@ -10,7 +10,7 @@ const {
   TRAFFIC_IMPORT_MAX_ENTRIES,
   TRAFFIC_LOG_MAX_RECORDS,
   TRAFFIC_SUMMARY_MAX_ITEMS,
-} = require("../../lib/constants.js");
+} = require("./http-traffic-limits.js");
 const {
   assertBoolean,
   assertInteger,

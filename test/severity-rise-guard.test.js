@@ -17,7 +17,7 @@ const {
 } = require("../mcp/core/claims/claims.js");
 const {
   VERIFICATION_CONFIDENCE_REASON_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/verification/verification-vocabulary.js");
 const {
   ensureHandoffSigningKey,
 } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
@@ -39,7 +39,7 @@ const {
 } = require("../mcp/core/io/paths.js");
 const {
   SEVERITY_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/constants/shared-vocabulary.js");
 const {
   signOffensiveRunRow,
 } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");

@@ -24,9 +24,13 @@ const {
   normalizeOptionalId,
   normalizeOptionalObject,
   normalizeReferenceArray,
+} = require("../io/validation.js");
+const {
   readJsonlStrict,
+} = require("../io/storage.js");
+const {
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../verification/document-hash.js");
 
 const AGENT_RUN_VERSION = 1;
 const AGENT_RUN_STATUSES = Object.freeze(["assigned", "running", "completed", "failed", "abandoned", "settled"]);

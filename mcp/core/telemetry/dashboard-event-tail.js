@@ -9,7 +9,7 @@
 //
 // Doctrine:
 //  * READ-ONLY (S2): never writes session state.
-//  * TOLERANT: unlike readJsonlStrict (fabric-common.js), a malformed or
+//  * TOLERANT: unlike readJsonlStrict (io/storage.js), a malformed or
 //    partial trailing line is SKIPPED, never thrown — the route tails files
 //    being concurrently appended to.
 //  * NO LEAK (S1/S7): frontier payloads are surfaced through a strict KEY

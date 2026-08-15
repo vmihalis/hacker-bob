@@ -29,7 +29,7 @@ const {
 } = require("../../core/io/storage.js");
 const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("../../core/io/storage.js");
 const {
   buildInitialSessionState,
   publicSessionState,

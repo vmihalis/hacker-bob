@@ -28,9 +28,13 @@ const {
   normalizeOptionalObject,
   normalizeOptionalTextArray,
   normalizeReferenceArray,
+} = require("../io/validation.js");
+const {
   readJsonlStrict,
+} = require("../io/storage.js");
+const {
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../verification/document-hash.js");
 const {
   normalizeTaskLens,
 } = require("../session/task-lenses.js");
@@ -49,10 +53,12 @@ const {
 } = require("../ledger-integrity/offensive-row-mac.js");
 const {
   SEVERITY_VALUES,
+} = require("../constants/shared-vocabulary.js");
+const {
   OFFENSIVE_OUTCOME_VALUES,
   SAFE_ORACLE_KINDS,
   OFFENSIVE_ROW_ORACLE_KIND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/offensive-run-vocabulary.js");
 
 // A stamped oracle_kind marks an offensive-runs row whose evidence is NOT a self-
 // contained executed binding — an out-of-band callback (out_of_band_interaction) or a
