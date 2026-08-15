@@ -34,7 +34,7 @@ const {
   assertContractSatisfiable,
   INVARIANT_STATEMENT_MAX_CHARS,
   WITNESS_KIND_VALUES,
-} = require("../core/contract/contracts.js");
+} = require("../core/contract/index.js");
 const {
   assertTaskGraphNodeId,
 } = require("../core/waves/task-graph-events.js");

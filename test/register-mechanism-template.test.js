@@ -10,7 +10,7 @@ const crypto = require("node:crypto");
 const {
   registerMechanismCandidates,
   readMechanismCandidates,
-} = require("../mcp/core/mechanism/mechanism-candidate-store.js");
+} = require("../mcp/core/mechanism/index.js");
 const {
   mechanismCandidatesJsonlPath,
   isAuditGradedPath,

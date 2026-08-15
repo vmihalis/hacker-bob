@@ -147,7 +147,7 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
     mcp_tool_or_artifact:
       "OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE / MECHANISM_TEMPLATES",
     trace_shape_ref:
-      "mcp/core/mechanism/invariant-template-corpus.js#OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE",
+      "mcp/core/mechanism/index.js#OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE",
     registered_consumers: Object.freeze([
       "mechanism_template_loader_object_authorization",
     ]),

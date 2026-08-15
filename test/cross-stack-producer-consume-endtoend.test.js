@@ -32,7 +32,7 @@ const crypto = require("node:crypto");
 const { idorConfirm } = require("../mcp/domains/web/offensive-idor-producer.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
-const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/auth.js");
+const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/index.js");
 const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
 const {

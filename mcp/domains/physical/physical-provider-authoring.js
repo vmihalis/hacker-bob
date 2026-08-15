@@ -21,7 +21,7 @@ const {
 const {
   RESOURCE_KIND_VALUES,
   normalizePhysicalResourceBundle,
-} = require("../../lib/physical-resource-contract.js");
+} = require("../../core/physical-resource-contracts.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");

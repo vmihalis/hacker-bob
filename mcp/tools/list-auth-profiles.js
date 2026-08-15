@@ -1,6 +1,6 @@
 "use strict";
 
-const { listAuthProfiles } = require("../core/auth/auth.js");
+const { listAuthProfiles } = require("../core/auth/index.js");
 
 module.exports = Object.freeze({
   name: "bob_list_auth_profiles",

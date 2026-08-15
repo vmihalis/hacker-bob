@@ -70,7 +70,7 @@ const {
 } = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   sessionNucleusPath,
   surfaceRoutesPath,
@@ -83,10 +83,10 @@ const {
 } = require("../mcp/core/dispatch/tool-registry.js");
 const {
   buildSessionNucleus,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/physical-scope-axis.js");
+} = require("../mcp/core/session/physical-scope-axis-contract.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

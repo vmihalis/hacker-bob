@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readVerificationContext } = require("../core/verification/verification.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_verification_context",
   description:
     "Read schema-aware verification attempt context, round/adjudication/evidence freshness, replay policy, and next action.",
@@ -15,11 +17,4 @@ module.exports = Object.freeze({
   },
   handler: readVerificationContext,
   role_bundles: ["orchestrator", "verifier", "evidence", "grader", "reporter"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

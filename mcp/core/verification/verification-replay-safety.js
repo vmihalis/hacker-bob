@@ -41,7 +41,7 @@ const {
 } = require("../telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 
 const VERIFICATION_REPLAY_LEASE_TTL_MS = 15 * 60 * 1000;
 const VERIFICATION_REPLAY_LEASE_HEARTBEAT_MS = Math.max(1_000, Math.floor(VERIFICATION_REPLAY_LEASE_TTL_MS / 3));

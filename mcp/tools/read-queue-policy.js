@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   assertNonEmptyString,
 } = require("../core/io/validation.js");
@@ -17,7 +19,7 @@ function handler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_queue_policy",
   description:
     "Read the persisted QueuePolicy for a target_domain. Returns the normalized policy " +
@@ -36,11 +38,5 @@ module.exports = Object.freeze({
   },
   handler,
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

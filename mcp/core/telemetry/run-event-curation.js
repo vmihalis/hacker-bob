@@ -34,7 +34,7 @@
 
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 const {
   FRONTIER_EVENT_KINDS,
 } = require("../frontier/frontier-events.js");

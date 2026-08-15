@@ -100,7 +100,7 @@ const {
   resolveAuthProfile,
   buildHeaderProfile,
   PROFILE_METADATA_KEYS,
-} = require("../../core/auth/auth.js");
+} = require("../../core/auth/index.js");
 const {
   withSessionLock,
 } = require("../../core/io/storage.js");

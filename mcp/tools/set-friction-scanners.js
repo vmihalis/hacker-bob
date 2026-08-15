@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineSetTool } = require("./_archetypes.js");
+
 // Y.3 Stage c — `bob_set_friction_scanners` (Y-D6 / D16).
 //
 // Operator-extensible friction-scanner registry. Defaults (`bash_curl`,
@@ -73,7 +75,7 @@ function handler(args) {
 
 const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = wrapWriteTool({
+module.exports = wrapWriteTool(defineSetTool({
   name: "bob_set_friction_scanners",
   description:
     "Persist operator-extensible friction scanners into queue-policy.json (Y-D6 / D16). Defaults live frozen in mcp/core/friction-scanners.js; this tool only mutates the operator-added union. Y-P9 demoted framing: best-effort tripwire, NOT a closed adversarial defense.",
@@ -104,11 +106,5 @@ module.exports = wrapWriteTool({
   handler,
   role_bundles: ["orchestrator"],
   capability_id: "Y_self_reporting",
-  mutating: true,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["queue-policy.json"],
-});
+}));

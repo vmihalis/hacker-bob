@@ -30,13 +30,13 @@ const {
 } = require("../egress-profiles.js");
 const {
   hasUsableAuthProfile,
-} = require("../auth/auth.js");
+} = require("../auth/index.js");
 const {
   buildSessionNucleus,
   LIFECYCLE_STATE_VALUES,
   normalizeLifecycleState,
   normalizeOperatorConstraint,
-} = require("../governance/governance-contracts.js");
+} = require("../governance/index.js");
 const {
   appendSessionEvent,
 } = require("./session-events.js");
@@ -51,7 +51,7 @@ const {
 } = require("./lifecycle-gates.js");
 const {
   readSessionNucleus,
-} = require("../governance/governance-store.js");
+} = require("../governance/index.js");
 const {
   hashCanonicalJson,
 } = require("../verification/verification-contracts.js");
@@ -68,7 +68,7 @@ const {
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 const {
   assertHttpScopeDomain,
   validateHttpScanScope,
@@ -1053,7 +1053,7 @@ function clearTerminalBlock(args) {
   // attacker auth profile with cookie SESS=eyJabc..." cannot leak the
   // cookie into bob_read_session_state output.
   try {
-    require("../redaction/sensitive-material.js").validateNoSensitiveMaterial(reason, "reason");
+    require("../redaction/index.js").validateNoSensitiveMaterial(reason, "reason");
   } catch (error) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message);
   }

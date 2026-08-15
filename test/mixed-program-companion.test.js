@@ -17,7 +17,7 @@ const path = require("path");
 const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 const { statePath } = require("../mcp/core/io/paths.js");
 const { readJsonFile } = require("../mcp/core/io/storage.js");
-const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
+const { chainAuthorityHash } = require("../mcp/core/chain-authority-contracts.js");
 
 const ADDR_IN = "0x0000000000000000000000000000000000000001";
 const ADDR_OUT = "0x0000000000000000000000000000000000000002";
@@ -312,7 +312,7 @@ test("the handler guard skips the companion re-bind when initSession reports cre
 
 test("contract identity keys preserve base58/SS58 case and stay consistent across mint + membership", () => {
   const { caip10Endpoint, contractSurfaceId } = require("../mcp/domains/blockchain/contract-target.js");
-  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");
+  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/core/chain-authority-contracts.js");
   // svm (base58, case-SENSITIVE): the minted CAIP-10 endpoint + surface id must
   // PRESERVE case (the pre-fix unconditional lowercase corrupted Solana identity
   // and desynced the persisted target_contracts[] from the membership tuple).

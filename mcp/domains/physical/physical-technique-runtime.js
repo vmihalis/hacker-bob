@@ -12,7 +12,7 @@ const { types: utilTypes } = require("node:util");
 
 const {
   readVerifiedSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");

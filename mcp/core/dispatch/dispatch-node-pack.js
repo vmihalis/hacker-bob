@@ -31,7 +31,7 @@ const {
 } = require("../frontier/frontier-projections.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../governance/governance-store.js");
+} = require("../governance/index.js");
 
 function surfaceMetadataFromRoute(route) {
   const surfaceId = route && typeof route.surface_id === "string"

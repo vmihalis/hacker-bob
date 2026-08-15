@@ -21,7 +21,7 @@ const {
 } = require("../../core/io/storage.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 const {
   buildPhysicalFinding,
   normalizePhysicalAssignmentContext,
@@ -47,7 +47,7 @@ const {
 } = require("../../core/telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../../core/governance/governance-context.js");
+} = require("../../core/governance/index.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");

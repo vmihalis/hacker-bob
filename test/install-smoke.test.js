@@ -15,6 +15,7 @@ const { getAdapter } = require("../adapters/index.js");
 const {
   copyRuntimeNodeDependencies,
   installProject,
+  isInstallableMcpRuntimeTreeFile,
 } = require("../scripts/install.js");
 const { doctorProject } = require("../scripts/lifecycle.js");
 const update = require("../mcp/core/update-check.js");
@@ -46,6 +47,16 @@ process.env.NODE_OPTIONS = [
   `--require=${LIFECYCLE_CUSTODIAN_TEST_PRELOAD}`,
   ORIGINAL_NODE_OPTIONS,
 ].filter(Boolean).join(" ");
+
+test("installer runtime subtree predicate is exactly package-policy scoped", () => {
+  assert.equal(isInstallableMcpRuntimeTreeFile("core", "nested/runtime.js"), true);
+  assert.equal(isInstallableMcpRuntimeTreeFile("fuzz", "bob-multitu-build.sh"), true);
+  assert.equal(isInstallableMcpRuntimeTreeFile("fuzz", "future-builder.sh"), false);
+  assert.equal(isInstallableMcpRuntimeTreeFile("fuzz", "nested/bob-multitu-build.sh"), false);
+  assert.equal(isInstallableMcpRuntimeTreeFile("core", "offensive-image.json"), false);
+  assert.equal(isInstallableMcpRuntimeTreeFile("other", "runtime.js"), false);
+  assert.equal(isInstallableMcpRuntimeTreeFile("core", "../fuzz/bob-multitu-build.sh"), false);
+});
 test.after(() => {
   if (ORIGINAL_NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
   else process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;

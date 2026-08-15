@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readChainAttempts } = require("../core/chain-attempts.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_chain_attempts",
   description:
     "Read structured CHAIN-phase impact proof-chain attempts and outcome counts from MCP-owned chain-attempts.jsonl.",
@@ -15,11 +17,4 @@ module.exports = Object.freeze({
   },
   handler: readChainAttempts,
   role_bundles: ["chain", "verifier", "grader", "reporter", "orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

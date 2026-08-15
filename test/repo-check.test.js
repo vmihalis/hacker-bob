@@ -30,7 +30,7 @@ const {
 const {
   redactTextSensitiveValues,
   validateNoSensitiveMaterial,
-} = require("../mcp/core/redaction/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const {
   repoChecksJsonlPath,
 } = require("../mcp/core/io/paths.js");

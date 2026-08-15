@@ -16,7 +16,7 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 
 function assertNonEmptyString(value, fieldName) {
   if (typeof value !== "string" || !value.trim()) {

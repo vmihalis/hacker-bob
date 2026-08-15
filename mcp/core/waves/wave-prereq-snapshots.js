@@ -1,7 +1,7 @@
 "use strict";
 
 const { assertNonEmptyString } = require("../io/validation.js");
-const { listAuthProfiles } = require("../auth/auth.js");
+const { listAuthProfiles } = require("../auth/index.js");
 const { listEgressProfiles } = require("../egress-profiles.js");
 const { ERROR_CODES, ToolError } = require("../io/envelope.js");
 const {

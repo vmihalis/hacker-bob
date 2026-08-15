@@ -19,7 +19,7 @@ const {
 const { surfaceLeadsPath } = require("../io/paths.js");
 const { hashCanonicalJson } = require("../verification/verification-contracts.js");
 const { withSessionLock } = require("../io/storage.js");
-const { contractIdentityKey } = require("../../lib/chain-authority.js");
+const { contractIdentityKey } = require("../chain-authority-contracts.js");
 const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 const {
@@ -56,7 +56,7 @@ const { isStdlibRepoRef } = require("../../domains/repo/oss-repo-ref-denylist.js
 const { ERROR_CODES, ToolError } = require("../io/envelope.js");
 const { loadQueuePolicy } = require("../io/queue-policy.js");
 const { safeAppendPipelineEventDirect } = require("../telemetry/pipeline-events.js");
-const { safeGovernanceContextForDomain } = require("../governance/governance-context.js");
+const { safeGovernanceContextForDomain } = require("../governance/index.js");
 
 const PROMOTED_SURFACE_LEAD_LABEL = "promoted_surface_lead";
 

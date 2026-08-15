@@ -12,7 +12,7 @@ const {
 } = require("../mcp/domains/repo/repo-env.js");
 const {
   assertRepoRootPath,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const initRepoSessionTool = require("../mcp/tools/repo/init-repo-session.js");
 const repoPrepareEnvTool = require("../mcp/tools/repo/repo-prepare-env.js");
 const repoDockerRunTool = require("../mcp/tools/repo/repo-docker-run.js");

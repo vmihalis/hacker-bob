@@ -35,7 +35,7 @@ const {
 } = require("./mechanism-template-ingest.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 
 // The advisory tier a registered candidate carries. A corpus template is tier-2
 // (confirmed, validated, trusted reuse); a registered candidate is tier-3 and

@@ -2,14 +2,14 @@
 
 const {
   normalizeKnowledgeBatch,
-} = require("../core/mechanism/mechanism-template-ingest.js");
+} = require("../core/mechanism/index.js");
 const {
   instantiateFamily,
   toCorpusRecord,
 } = require("../core/authorization-differential-family.js");
 const {
   registerMechanismCandidates,
-} = require("../core/mechanism/mechanism-candidate-store.js");
+} = require("../core/mechanism/index.js");
 
 // Build the candidate template list to register from the tool args. Three input
 // channels, any combination of which may be supplied:

@@ -16,7 +16,7 @@ const {
 } = require("./physical-experiment-contract.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 
 const RESOLVER_REQUEST_FIELDS = Object.freeze([
   "asset_locator",

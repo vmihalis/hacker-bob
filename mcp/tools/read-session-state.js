@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readSessionState } = require("../core/session/session-state.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_session_state",
   description:
     "Read normalized orchestrator session state from authoritative storage.",
@@ -19,11 +21,4 @@ module.exports = Object.freeze({
   },
   handler: readSessionState,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

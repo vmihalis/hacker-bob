@@ -86,7 +86,7 @@ const {
 } = require("../core/dispatch/technique-packs.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../core/governance/governance-store.js");
+} = require("../core/governance/index.js");
 const {
   withSessionLock,
 } = require("../core/io/storage.js");

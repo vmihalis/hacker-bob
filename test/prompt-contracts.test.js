@@ -87,7 +87,7 @@ const {
 } = require("../mcp/core/capability/capability-packs.js");
 const {
   LIFECYCLE_STATE_VALUES,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const claimsModule = require("../mcp/core/claims/claims.js");
 const { BRUTALIST_MCP_SERVER } = require("../scripts/merge-claude-config.js");
 

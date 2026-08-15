@@ -26,10 +26,10 @@ const {
 } = require("../../core/io/storage.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 const {
   sessionNucleusFromState,
-} = require("../../core/governance/governance-contracts.js");
+} = require("../../core/governance/index.js");
 const {
   readSessionStateStrict,
 } = require("../../core/session/session-state-store.js");

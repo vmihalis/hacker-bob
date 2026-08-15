@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 // Plane X Cycle X.2 — bob_read_task_graph.
 //
 // Returns the materialized task-graph.json view. Per Do step 3 the view
@@ -41,7 +43,7 @@ function handler(args) {
   return JSON.stringify(document);
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_task_graph",
   description:
     "Read the materialized task-graph.json view. view: \"raw\" returns the full "
@@ -87,11 +89,5 @@ module.exports = Object.freeze({
   // evaluator-shared (which renders briefs in X.5/X.8) + verifier (which
   // resolves the graph_context_hash for adjudication grounding).
   role_bundles: ["orchestrator", "evaluator-shared", "evaluator-physical", "verifier"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

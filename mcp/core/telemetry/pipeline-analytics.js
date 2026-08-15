@@ -6,7 +6,7 @@ const {
 } = require("../constants/shared-vocabulary.js");
 const {
   LIFECYCLE_STATE_VALUES,
-} = require("../governance/governance-contracts.js");
+} = require("../governance/index.js");
 const {
   deriveLifecycleStateFromLegacyPhase,
 } = require("../session/session-state-contracts.js");

@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineWriteTool } = require("./_archetypes.js");
+
 const { writeHandoff } = require("../core/waves/waves.js");
 
-module.exports = Object.freeze({
+module.exports = defineWriteTool({
   name: "bob_write_handoff",
   description:
     "Write session handoff for context rotation.",
@@ -99,11 +101,6 @@ module.exports = Object.freeze({
   },
   handler: writeHandoff,
   role_bundles: ["orchestrator"],
-  mutating: true,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["SESSION_HANDOFF.md"],
 });

@@ -36,7 +36,7 @@ const {
   sessionsRoot,
 } = require("../io/paths.js");
 const { hashCanonicalJson } = require("../verification/verification-contracts.js");
-const { redactTextSensitiveValues, SENSITIVE_VALUE_RE } = require("../redaction/sensitive-material.js");
+const { redactTextSensitiveValues, SENSITIVE_VALUE_RE } = require("../redaction/index.js");
 const {
   normalizePipelineEventForRead,
   timestampMs,

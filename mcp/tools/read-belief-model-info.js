@@ -1,10 +1,12 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   readBeliefModelInfo,
 } = require("../core/belief/model.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_belief_model_info",
   capability_id: "CB-B5_calibrated_factor_model",
   description:
@@ -18,11 +20,5 @@ module.exports = Object.freeze({
   },
   handler: readBeliefModelInfo,
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

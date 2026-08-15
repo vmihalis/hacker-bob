@@ -13,7 +13,7 @@ const {
 } = require("./io/http-records.js");
 const {
   summarizePublicIntelForSurface,
-} = require("./intel/public-intel.js");
+} = require("./intel/index.js");
 const {
   currentSurfaces,
 } = require("./frontier/frontier-projections.js");

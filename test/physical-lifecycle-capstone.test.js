@@ -12,6 +12,9 @@ const {
   createProductionPhysicalCompositionPort,
   installPhysicalCompositionPort,
 } = require("../mcp/core/capability/capability-pack-composition-adapters.js");
+// Production installs the plane-owned adapters from the folded physical tool
+// composition root; this direct capstone installs the same wiring explicitly.
+require("../mcp/domains/physical/capability-pack-runtime-wiring.js");
 const {
   buildClaimFreeze,
 } = require("../mcp/core/claims/claim-freeze.js");

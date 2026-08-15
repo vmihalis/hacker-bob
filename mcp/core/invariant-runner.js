@@ -16,7 +16,7 @@ const {
 const {
   suggestInvariantsForFinding,
   CROSS_STACK_CONSUME_TEMPLATE_ID,
-} = require("./mechanism/invariant-template-corpus.js");
+} = require("./mechanism/index.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
   appendJsonlLine,

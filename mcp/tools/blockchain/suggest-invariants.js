@@ -1,6 +1,6 @@
 "use strict";
 
-const { suggestInvariantsForFinding } = require("../../core/mechanism/invariant-template-corpus.js");
+const { suggestInvariantsForFinding } = require("../../core/mechanism/index.js");
 
 function suggestInvariantsHandler(args) {
   return suggestInvariantsForFinding(args.finding, {

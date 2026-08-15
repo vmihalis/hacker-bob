@@ -19,7 +19,7 @@ const {
 } = require("../core/telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../core/governance/governance-context.js");
+} = require("../core/governance/index.js");
 const {
   ERROR_CODES,
   ToolError,

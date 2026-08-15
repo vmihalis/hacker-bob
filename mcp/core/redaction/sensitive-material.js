@@ -11,7 +11,7 @@ const {
   redactPhysicalSensitiveValues,
   redactPhysicalStructuredOutput,
   validateNoPhysicalSensitiveMaterial,
-} = require("../../lib/physical-sensitive-material.js");
+} = require("../physical-sensitive-material-contracts.js");
 
 const DEFAULT_MAX_TEXT_CHARS = 4000;
 

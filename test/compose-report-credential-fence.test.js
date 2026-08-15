@@ -30,7 +30,8 @@ const {
   buildReportCredentialFence,
   findCredentialExportLeaks,
   isFenceableCredentialValue,
-} = require("../mcp/core/redaction/report-credential-fence.js");
+} = require("../mcp/core/redaction/index.js");
+const { sessionCredentialMaterial } = require("../mcp/core/auth/index.js");
 
 const DOMAIN = "audit.example.com";
 
@@ -316,7 +317,7 @@ test("isFenceableCredentialValue enforces the documented precision floors", () =
 
 test("an inactive fence scans nothing and reports nothing", () => {
   withTempHome(() => {
-    const fence = buildReportCredentialFence(DOMAIN);
+    const fence = buildReportCredentialFence(DOMAIN, sessionCredentialMaterial);
     assert.equal(fence.active, false);
     assert.deepEqual(findCredentialExportLeaks(fence, [{ location: "x", text: "anything at all" }]), []);
   });
@@ -325,7 +326,7 @@ test("an inactive fence scans nothing and reports nothing", () => {
 test("findCredentialExportLeaks dedupes per (label, location) and never returns the value", () => {
   withTempHome(() => {
     storePassword(DOMAIN, STORED_PASSWORD);
-    const fence = buildReportCredentialFence(DOMAIN);
+    const fence = buildReportCredentialFence(DOMAIN, sessionCredentialMaterial);
     assert.equal(fence.active, true);
 
     const hits = findCredentialExportLeaks(fence, [

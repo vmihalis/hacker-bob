@@ -27,7 +27,7 @@ const {
 const {
   resolveAuthProfile,
   applyAuthProfileHeaders,
-} = require("../../core/auth/auth.js");
+} = require("../../core/auth/index.js");
 const {
   resolveHttpScanTargetDomain,
 } = require("../../core/scope.js");

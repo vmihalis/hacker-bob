@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineSetTool } = require("./_archetypes.js");
+
 const {
   assertNonEmptyString,
 } = require("../core/io/validation.js");
@@ -54,7 +56,7 @@ function handler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineSetTool({
   name: "bob_set_queue_policy",
   description:
     "Apply a PARTIAL (PATCH) QueuePolicy update for a target_domain, persisted to " +
@@ -177,11 +179,5 @@ module.exports = Object.freeze({
   },
   handler,
   role_bundles: ["orchestrator"],
-  mutating: true,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["queue-policy.json"],
 });

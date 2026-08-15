@@ -9,7 +9,7 @@ const test = require("node:test");
 
 const {
   appendContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
 const prepareNodeModule = require("../mcp/tools/prepare-node.js");
 const {
@@ -32,7 +32,7 @@ const {
   bindPhysicalResourceBundle,
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
-} = require("../mcp/lib/physical-resource-contract.js");
+} = require("../mcp/core/physical-resource-contracts.js");
 const {
   normalizePhysicalResourceInventory,
 } = require("../mcp/domains/physical/physical-resource-scheduler.js");
@@ -45,7 +45,7 @@ const {
 } = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   sessionLockPath,
 } = require("../mcp/core/io/paths.js");

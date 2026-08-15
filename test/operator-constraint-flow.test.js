@@ -13,7 +13,7 @@ const {
 } = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   readSessionEvents,
 } = require("../mcp/core/session/session-events.js");

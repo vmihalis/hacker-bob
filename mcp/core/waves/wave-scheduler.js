@@ -36,7 +36,7 @@ const { scheduleTasksFromQueue } = require("./scheduler-decisions.js");
 const { appendWaveAssignmentAgentRun } = require("../session/agent-runs.js");
 const { ERROR_CODES, ToolError } = require("../io/envelope.js");
 const { safeAppendPipelineEventDirect } = require("../telemetry/pipeline-events.js");
-const { buildGovernanceContext } = require("../governance/governance-context.js");
+const { buildGovernanceContext } = require("../governance/index.js");
 const {
   prepareWaveAssignments,
   removeWaveAssignmentsDocument,

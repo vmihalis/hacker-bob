@@ -31,11 +31,11 @@ const crypto = require("crypto");
 const {
   mechanicalVerify,
   extractByJsonPath,
-} = require("../mcp/core/contract/contract-verifier.js");
+} = require("../mcp/core/contract/index.js");
 const {
   WITNESS_KIND_VALUES,
   normalizeContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   appendFrontierEvent,
 } = require("../mcp/core/frontier/frontier-events.js");
@@ -679,7 +679,7 @@ test("mechanicalVerify accumulates multiple witness failures distinctly", () => 
 // ─── 7-evaluator coverage assertion (Reviewer-grep target) ───────────────
 
 test("EVALUATORS table covers every X-D4 witness kind", () => {
-  const { EVALUATORS } = require("../mcp/core/contract/contract-verifier.js");
+  const { EVALUATORS } = require("../mcp/core/contract/index.js");
   for (const kind of WITNESS_KIND_VALUES) {
     assert.equal(typeof EVALUATORS[kind], "function", `evaluator for ${kind} missing`);
   }

@@ -1,7 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
-const { getMechanismTemplate } = require("../mechanism/invariant-template-corpus.js");
+const { getMechanismTemplate } = require("../mechanism/index.js");
 const { buildBeliefWindow } = require("./belief-window.js");
 const { _internals } = require("./authority.js");
 

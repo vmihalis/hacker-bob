@@ -15,7 +15,7 @@ const {
 } = require("../io/envelope.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 const {
   canonicalJson,
   hashCanonicalJson,

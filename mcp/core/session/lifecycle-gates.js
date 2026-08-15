@@ -19,7 +19,7 @@
 
 const {
   LIFECYCLE_STATE_VALUES,
-} = require("../governance/governance-contracts.js");
+} = require("../governance/index.js");
 const {
   readSessionStateStrict,
 } = require("./session-state-store.js");

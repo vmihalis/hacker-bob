@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineQueryTool } = require("./_archetypes.js");
+
 const { queryAuditReports } = require("../core/audit-report-parser.js");
 
 function queryAuditReportsHandler(args) {
@@ -11,7 +13,7 @@ function queryAuditReportsHandler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineQueryTool({
   name: "bob_query_audit_reports",
   description:
     "Query the persisted audit-report corpus for a target. Filters by severity (critical/high/medium/low/informational/info) and vulnerability_class (reentrancy, access_control, arithmetic_overflow, etc.). Use to enumerate audit findings before generating invariants for a Foundry harness.",
@@ -27,11 +29,4 @@ module.exports = Object.freeze({
   },
   handler: queryAuditReportsHandler,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

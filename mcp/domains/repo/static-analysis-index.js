@@ -44,7 +44,7 @@ const {
 const {
   redactTextSensitiveValues,
   validateNoSensitiveMaterial,
-} = require("../../core/redaction/sensitive-material.js");
+} = require("../../core/redaction/index.js");
 
 const STATIC_ANALYSIS_INDEX_VERSION = 1;
 const STATIC_ANALYSIS_INDEX_MAX_RECORDS = 500;

@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { MECHANISM_TEMPLATES, TEMPLATES } = require("../mechanism/invariant-template-corpus.js");
+const { MECHANISM_TEMPLATES, TEMPLATES } = require("../mechanism/index.js");
 const { beliefSamplesJsonlPath } = require("../io/paths.js");
 const { assertBeliefScratchWritePath, _internals } = require("./authority.js");
 const { buildBeliefWindow } = require("./belief-window.js");

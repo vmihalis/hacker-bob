@@ -13,15 +13,9 @@
 
 const { types: utilTypes } = require("node:util");
 
-const {
-  assertPhysicalFinding,
-} = require("../../domains/physical/physical-finding-contract.js");
-const {
-  PHYSICAL_CAPABILITY_CONSUMERS,
-} = require("../../domains/physical/physical-capability-manifest.js");
-const {
-  PHYSICAL_SURFACE_NODE_TYPES,
-} = require("../../domains/physical/physical-surface-transition.js");
+let assertPhysicalFinding;
+let PHYSICAL_CAPABILITY_CONSUMERS;
+let PHYSICAL_SURFACE_NODE_TYPES;
 const {
   assertSafeDomain,
 } = require("../io/paths.js");
@@ -33,11 +27,44 @@ const {
 const {
   hashCanonicalJson,
 } = require("../verification/verification-contracts.js");
-const {
-  assertProductionPhysicalExperimentLedger,
-  assertVerifiedPhysicalClaimProjection,
-  describeProductionPhysicalExperimentLedger,
-} = require("../../domains/physical/physical-experiment-contract.js");
+let assertProductionPhysicalExperimentLedger;
+let assertVerifiedPhysicalClaimProjection;
+let describeProductionPhysicalExperimentLedger;
+
+let compositionPortsConfigured = false;
+function configureCapabilityPackCompositionPorts(ports) {
+  if (compositionPortsConfigured) {
+    throw new Error("capability-pack composition ports are already configured");
+  }
+  ({
+    assertPhysicalFinding,
+    physicalCapabilityConsumers: PHYSICAL_CAPABILITY_CONSUMERS,
+    physicalSurfaceNodeTypes: PHYSICAL_SURFACE_NODE_TYPES,
+    assertProductionPhysicalExperimentLedger,
+    assertVerifiedPhysicalClaimProjection,
+    describeProductionPhysicalExperimentLedger,
+  } = ports || {});
+  if (typeof assertPhysicalFinding !== "function"
+      || !PHYSICAL_CAPABILITY_CONSUMERS
+      || !Array.isArray(PHYSICAL_SURFACE_NODE_TYPES)
+      || typeof assertProductionPhysicalExperimentLedger !== "function"
+      || typeof assertVerifiedPhysicalClaimProjection !== "function"
+      || typeof describeProductionPhysicalExperimentLedger !== "function") {
+    throw new Error("capability-pack composition ports are incomplete");
+  }
+  const ontologyTypes = [...PHYSICAL_SURFACE_NODE_TYPES].sort();
+  const policyTypes = Object.keys(PHYSICAL_BLAST_RADIUS_NODE_POLICY).sort();
+  if (JSON.stringify(ontologyTypes) !== JSON.stringify(policyTypes)) {
+    throw new Error("physical blast-radius policy must cover the exact SurfaceGraph ontology");
+  }
+  compositionPortsConfigured = true;
+}
+
+function ensureCompositionPorts() {
+  if (!compositionPortsConfigured) {
+    throw new Error("capability-pack composition ports are not configured");
+  }
+}
 
 const PHYSICAL_COMPOSITION_ADAPTER_VERSION = 1;
 const PHYSICAL_COMPOSITION_ADAPTER_ID = "physical_surface_transition_v1";
@@ -86,12 +113,6 @@ const CRITICAL_CATEGORY_PAIRS = Object.freeze([
   Object.freeze(["control", "safety_control"]),
   Object.freeze(["safety_control", "zone"]),
 ]);
-
-const ontologyTypes = [...PHYSICAL_SURFACE_NODE_TYPES].sort();
-const policyTypes = Object.keys(PHYSICAL_BLAST_RADIUS_NODE_POLICY).sort();
-if (JSON.stringify(ontologyTypes) !== JSON.stringify(policyTypes)) {
-  throw new Error("physical blast-radius policy must cover the exact SurfaceGraph ontology");
-}
 
 const PRODUCTION_PORTS = new WeakSet();
 const PRODUCTION_PORT_STATE = new WeakMap();
@@ -170,6 +191,7 @@ function assertManifestRegistration() {
 }
 
 function createProductionPhysicalCompositionPort(input) {
+  ensureCompositionPorts();
   const fields = readExactDataFields(
     input,
     "production physical composition port",
@@ -243,6 +265,7 @@ function createProductionPhysicalCompositionPort(input) {
 }
 
 function installPhysicalCompositionPort(port) {
+  ensureCompositionPorts();
   if (!port || !PRODUCTION_PORTS.has(port) || !PRODUCTION_PORT_STATE.has(port)
       || port.production_ready !== true) {
     throw new Error("physical composition runtime requires a production-qualified port");
@@ -264,6 +287,7 @@ function installPhysicalCompositionPort(port) {
 }
 
 function physicalCompositionRuntimeReadiness(targetDomain = null) {
+  ensureCompositionPorts();
   if (targetDomain == null) {
     const domains = [...INSTALLED_PORTS.keys()].sort();
     return deepFreeze({
@@ -629,6 +653,7 @@ function transitionLeaf(edge, invariant) {
 }
 
 function buildPhysicalCompositionProjection(targetDomain, findingInput) {
+  ensureCompositionPorts();
   const domain = assertSafeDomain(targetDomain);
   assertManifestRegistration();
   const finding = assertPhysicalFinding(findingInput);
@@ -882,6 +907,7 @@ function buildPhysicalCompositionProjection(targetDomain, findingInput) {
 }
 
 function assertPhysicalCompositionProjection(value) {
+  ensureCompositionPorts();
   const state = value && PHYSICAL_COMPOSITION_PROJECTION_STATE.get(value);
   if (!value || !PHYSICAL_COMPOSITION_PROJECTIONS.has(value) || !state
       || value.production_ready !== true) {
@@ -977,6 +1003,7 @@ function assertPhysicalCompositionProjection(value) {
 }
 
 function bindPhysicalSeverityToVerifiedBlastRadius(compositionInput, verifiedSeverity) {
+  ensureCompositionPorts();
   if (!Object.prototype.hasOwnProperty.call(SEVERITY_RANK, verifiedSeverity)) {
     throw new Error("physical blast-radius grade severity is invalid");
   }
@@ -1056,6 +1083,7 @@ function bindPhysicalSeverityToVerifiedBlastRadius(compositionInput, verifiedSev
 }
 
 function assertPhysicalBlastRadiusGradeBinding(value) {
+  ensureCompositionPorts();
   const state = value && PHYSICAL_BLAST_RADIUS_GRADE_BINDING_STATE.get(value);
   if (!value || !state || !PHYSICAL_BLAST_RADIUS_GRADE_BINDINGS.has(value)
       || value.production_ready !== true) {
@@ -1088,6 +1116,7 @@ module.exports = Object.freeze({
   bindPhysicalSeverityToVerifiedBlastRadius,
   buildPhysicalCompositionProjection,
   createProductionPhysicalCompositionPort,
+  configureCapabilityPackCompositionPorts,
   installPhysicalCompositionPort,
   physicalCompositionRuntimeReadiness,
 });

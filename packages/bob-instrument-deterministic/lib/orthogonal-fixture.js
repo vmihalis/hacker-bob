@@ -15,7 +15,7 @@ const {
 } = require("../../../mcp/core/requested-effects.js");
 const {
   normalizePhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 
 const PUBLIC_SUMMARY_CODES = Object.freeze([
   "operation_failed",

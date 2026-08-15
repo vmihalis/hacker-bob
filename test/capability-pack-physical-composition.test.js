@@ -17,6 +17,8 @@ const {
   PHYSICAL_BLAST_RADIUS_NODE_POLICY,
   physicalCompositionRuntimeReadiness,
 } = require("../mcp/core/capability/capability-pack-composition-adapters.js");
+// The folded physical tool composition root performs this wiring in production.
+require("../mcp/domains/physical/capability-pack-runtime-wiring.js");
 const {
   buildPhysicalGradeBinding,
   buildPhysicalFinding,
@@ -31,7 +33,7 @@ const {
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   PHYSICAL_SURFACE_NODE_TYPES,
   normalizePhysicalSurfaceLiveRevalidationPayload,

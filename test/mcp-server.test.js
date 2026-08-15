@@ -84,7 +84,7 @@ const {
 } = require("../mcp/core/io/safe-fetch.js");
 const {
   fetchTextWithTimeout,
-} = require("../mcp/core/intel/public-intel.js");
+} = require("../mcp/core/intel/index.js");
 const {
   normalizeAutoSignupResult,
 } = require("../mcp/domains/web/signup.js");
@@ -108,13 +108,13 @@ const {
 } = require("../mcp/core/io/runtime-resources.js");
 const {
   candidateAuthDomains,
-} = require("../mcp/core/auth/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   appendPipelineEventDirect,
 } = require("../mcp/core/telemetry/pipeline-events.js");
 const {
   buildGovernanceContext,
-} = require("../mcp/core/governance/governance-context.js");
+} = require("../mcp/core/governance/index.js");
 const {
   attachHandoffOrigin,
   BLOCKED_PREREQ_KIND_VALUES,
@@ -351,7 +351,7 @@ const {
   migrateAuthJson,
   readAuthJson,
   resolveAuthJsonPath,
-} = require("../mcp/core/auth/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   tempEmail,
 } = require("../mcp/core/temp-email.js");
@@ -1124,7 +1124,7 @@ function syncNucleusFromStateJson(domain) {
     if (!fs.existsSync(nucleusPath)) return;
     const nucleus = JSON.parse(fs.readFileSync(nucleusPath, "utf8"));
     if (nucleus.lifecycle_state === expectedState) return;
-    const { buildSessionNucleus } = require("../mcp/core/governance/governance-contracts.js");
+    const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
     const { writeJsonDocument } = require("../mcp/core/io/storage.js");
     const next = buildSessionNucleus({
       target_domain: nucleus.target_domain,
@@ -1265,7 +1265,7 @@ function seedSessionState(domain, overrides = {}) {
   try {
     const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
     if (!fs.existsSync(nucleusPath)) {
-      const { buildSessionNucleus } = require("../mcp/core/governance/governance-contracts.js");
+      const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
       const { writeJsonDocument } = require("../mcp/core/io/storage.js");
       const lifecycleState = state.lifecycle_state
         || LEGACY_PHASE_TO_LIFECYCLE_STATE[state.phase]
@@ -12168,13 +12168,21 @@ test("smart-contract source fetch errors redact Etherscan API keys from response
 });
 
 test("every smart-contract client and fork runner uses the shared DNS-aware egress policy", () => {
-  const policyFiles = [
+  const jsonRpcClientFiles = [
     "mcp/domains/blockchain/smart-contracts/evm-client.js",
     "mcp/domains/blockchain/smart-contracts/svm-client.js",
-    "mcp/domains/blockchain/smart-contracts/aptos-client.js",
     "mcp/domains/blockchain/smart-contracts/sui-client.js",
     "mcp/domains/blockchain/smart-contracts/substrate-client.js",
+  ];
+  for (const file of jsonRpcClientFiles) {
+    const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+    assert.match(source, /makeJsonRpcClient/, `${file} must compose the shared JSON-RPC transport`);
+    assert.doesNotMatch(source, /filter\(isPublicHttpsUrl\)/, `${file} must not silently drop back to sync-only endpoint filtering`);
+  }
+  const policyFiles = [
+    "mcp/domains/blockchain/smart-contracts/aptos-client.js",
     "mcp/domains/blockchain/smart-contracts/cosmwasm-client.js",
+    "mcp/domains/blockchain/smart-contracts/json-rpc-transport.js",
     "mcp/domains/blockchain/smart-contracts/foundry-runner.js",
     "mcp/domains/blockchain/smart-contracts/anchor-runner.js",
     "mcp/domains/blockchain/smart-contracts/aptos-runner.js",
@@ -12189,12 +12197,9 @@ test("every smart-contract client and fork runner uses the shared DNS-aware egre
     assert.doesNotMatch(source, /filter\(isPublicHttpsUrl\)/, `${file} must not silently drop back to sync-only endpoint filtering`);
   }
   const nodeHttpFiles = [
-    "mcp/domains/blockchain/smart-contracts/evm-client.js",
-    "mcp/domains/blockchain/smart-contracts/svm-client.js",
     "mcp/domains/blockchain/smart-contracts/aptos-client.js",
-    "mcp/domains/blockchain/smart-contracts/sui-client.js",
-    "mcp/domains/blockchain/smart-contracts/substrate-client.js",
     "mcp/domains/blockchain/smart-contracts/cosmwasm-client.js",
+    "mcp/domains/blockchain/smart-contracts/json-rpc-transport.js",
     "mcp/domains/blockchain/smart-contracts/evm-source.js",
   ];
   for (const file of nodeHttpFiles) {

@@ -8,14 +8,14 @@
 const {
   assertInteger,
   assertNonEmptyString,
-} = require("../core/io/validation.js");
+} = require("../io/validation.js");
 const {
   withDocumentHash,
-} = require("../core/verification/document-hash.js");
+} = require("../verification/document-hash.js");
 const {
   validateNoSensitiveMaterial,
   validateNoPhysicalSensitiveMaterial,
-} = require("../core/redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 
 const PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION = 1;
 const PHYSICAL_SCOPE_POLICY_VERSION = 1;

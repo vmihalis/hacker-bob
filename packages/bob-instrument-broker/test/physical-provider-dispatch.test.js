@@ -36,7 +36,7 @@ const {
 const {
   normalizePhysicalResourceBundle,
   normalizeResourceAllocation,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   clone,
   createPhysicalReservationFixture,

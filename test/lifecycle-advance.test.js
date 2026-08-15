@@ -14,10 +14,10 @@ const {
 } = require("../mcp/core/session/session-state.js");
 const {
   authStore,
-} = require("../mcp/core/auth/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   readSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   gradeArtifactPaths,
   repoInventoryPath,

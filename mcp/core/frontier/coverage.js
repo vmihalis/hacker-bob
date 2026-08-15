@@ -32,7 +32,7 @@ const {
 } = require("../telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 const {
   appendFrontierEvent,
 } = require("./frontier-events.js");

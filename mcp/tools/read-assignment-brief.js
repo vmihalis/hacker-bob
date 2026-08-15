@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readAssignmentBrief } = require("../core/session/assignment-brief.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_assignment_brief",
   description:
     "Return everything a evaluator needs to start testing: assigned surface, exclusions, valid surface IDs, coverage summary, ranking summary, run context budget, plus profile-specific context. Web evaluators get bypass tables, bounded technique_packs.selected with registry warnings, small legacy technique/payload hint summaries, traffic/audit/circuit-breaker summaries, public intel, and static scan hints. Smart-contract evaluators get bob_spec_status (filtered to their surface) and the chain rpc_pool. Evaluators call this once on startup instead of receiving everything via spawn prompt.",
@@ -42,12 +44,6 @@ module.exports = Object.freeze({
   },
   handler: readAssignmentBrief,
   role_bundles: ["evaluator-shared", "evaluator-physical"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   // The brief read records a best-effort idempotent `running` marker into the
   // MCP-owned agent-runs.jsonl ledger (the universal first surface-scoped tool
   // call — see assignment-brief.js readAssignmentBrief). That write is declared

@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineLogTool } = require("./_archetypes.js");
+
 const { logDeadEnds } = require("../core/waves/waves.js");
 
-module.exports = Object.freeze({
+module.exports = defineLogTool({
   name: "bob_log_dead_ends",
   description:
     "Append dead ends and WAF-blocked endpoints discovered so far. Call periodically (~every 30 turns) so terrain survives if the evaluator hits maxTurns. Validated against wave assignments.",
@@ -45,11 +47,5 @@ module.exports = Object.freeze({
   },
   handler: logDeadEnds,
   role_bundles: ["evaluator-shared"],
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["live-dead-ends-wN-aN.jsonl"],
 });

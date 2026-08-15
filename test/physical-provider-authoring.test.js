@@ -19,7 +19,7 @@ const {
 } = require("../mcp/domains/physical/physical-provider-authoring.js");
 const {
   normalizePhysicalResourceBundle,
-} = require("../mcp/lib/physical-resource-contract.js");
+} = require("../mcp/core/physical-resource-contracts.js");
 const {
   MAX_RESOURCE_INVENTORY_VALIDITY_MS,
   planPhysicalResourceBundle,

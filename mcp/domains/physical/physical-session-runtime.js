@@ -7,7 +7,7 @@
 
 const {
   normalizePhysicalScopeImportRef,
-} = require("../../lib/physical-session-identity.js");
+} = require("../../core/session/synthetic-session-identity-contracts.js");
 const { types: utilTypes } = require("node:util");
 
 const REQUIRED_RESULT_FIELDS = Object.freeze([

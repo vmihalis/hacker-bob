@@ -3,7 +3,7 @@
 const { advanceSession } = require("../core/session/session-state.js");
 const {
   LIFECYCLE_STATE_VALUES,
-} = require("../core/governance/governance-contracts.js");
+} = require("../core/governance/index.js");
 const {
   AUTH_STATUS_VALUES,
 } = require("../core/session/session-state-vocabulary.js");

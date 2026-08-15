@@ -14,7 +14,7 @@ const {
 } = require("../io/validation.js");
 const {
   listAuthProfiles,
-} = require("../auth/auth.js");
+} = require("../auth/index.js");
 const {
   loadQueuePolicy,
 } = require("../io/queue-policy.js");

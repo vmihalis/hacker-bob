@@ -46,7 +46,7 @@ const {
   assertContractSatisfiable,
   collectContractArtifactRefs,
   normalizeContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,

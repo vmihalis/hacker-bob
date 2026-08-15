@@ -22,7 +22,7 @@ const {
   createPhysicalCampaignEd25519VerifierPort,
   normalizePhysicalCampaignClosurePreflight,
 } = require("./physical-campaign-closure.js");
-const { readVerifiedSessionNucleus } = require("../../core/governance/governance-store.js");
+const { readVerifiedSessionNucleus } = require("../../core/governance/index.js");
 const {
   assertDurableInstrumentLeaseBrokerPort,
   readDurableInstrumentLeaseBrokerClosureState,

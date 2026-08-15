@@ -33,7 +33,7 @@ const {
 } = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   GRAPH_SCHEDULED_KINDS,
   selectNextExecutableNodes,
@@ -879,7 +879,7 @@ const {
 } = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   buildCellCoverageContract: buildCellCoverageContractE1,
-} = require("../mcp/core/contract/cell-contract.js");
+} = require("../mcp/core/contract/index.js");
 const {
   materializeFrontier: materializeFrontierE1,
 } = require("../mcp/core/frontier/frontier-materializer.js");

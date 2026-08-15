@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 function readCapabilityMetricsHandler(args) {
   const { readCapabilityMetrics } = require("../core/capability/capability-metrics.js");
   return readCapabilityMetrics({
@@ -7,7 +9,7 @@ function readCapabilityMetricsHandler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_capability_metrics",
   description:
     "Aggregate tool telemetry by capability (C2 doc-vs-behavior, C4 multi-account, I6 findings index, I1 surface graph, I7 chain state tree, X2 verification attempt diff). Returns per-capability call counts, success rate, average latency, last-called timestamp, plus per-tool breakdown. Pass target_domain to scope to one session; omit for cross-target.",
@@ -19,11 +21,5 @@ module.exports = Object.freeze({
   },
   handler: readCapabilityMetricsHandler,
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

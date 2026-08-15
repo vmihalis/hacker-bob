@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineWriteTool } = require("./_archetypes.js");
+
 const {
   CALLER_PROOF_BUNDLE_KINDS,
   writeProofBundles,
@@ -10,7 +12,7 @@ const {
 } = require("../core/evidence.js");
 const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = wrapWriteTool({
+module.exports = wrapWriteTool(defineWriteTool({
   name: "bob_write_proof_bundle",
   writes_audit_graded: true,
   description:
@@ -91,11 +93,6 @@ module.exports = wrapWriteTool({
   handler: writeProofBundles,
   // Keep role-bundle access narrow; final-verifier gets an explicit role-model grant.
   role_bundles: ["orchestrator"],
-  mutating: true,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["proof-bundles.json", "proof-bundles.md", "verification-manifest.json"],
-});
+}));

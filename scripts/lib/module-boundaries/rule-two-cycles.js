@@ -35,16 +35,18 @@ const ALLOWLIST_MODULE_CYCLES = frozenMap("ALLOWLIST_MODULE_CYCLES", [
   [
     "core/auth-differential-runner.js",
     {
-      size: 232,
+      size: 243,
       argument:
-        "PRE-DIP COMPOSITION-RUNTIME CYCLE, re-derived after N3 bounding as 232 members. The component spans "
+        "PRE-DIP COMPOSITION-RUNTIME CYCLE, re-derived after the N5 runtime-port inversion and registry-manifest fold as 243 members. The component spans "
         + "belief, capability, claims, contract, differential, dispatch, frontier, ledger-integrity, session, "
         + "telemetry, verification, and wave core modules; blockchain, physical, repo, and web domain runtimes; "
-        + "and their composition tools. N3 routed consumers through differential/index.js and "
-        + "ledger-integrity/index.js, and those public boundaries joined the same component because their concrete "
-        + "implementations retain live return edges through the legacy registries, domains, and tools. Deferred "
-        + "requires are still graph edges, so the one-door reroutes enlarged rather than broke the SCC. This entry "
-        + "records that merged structural debt honestly; N5 owns the dependency inversions that shrink it.",
+        + "and their composition tools. N5 removed nine core-to-physical edges by routing generic capability adapters "
+        + "through configured runtime ports. The physical runtime wiring and artifact implementation remain in the "
+        + "same live composition component through the tool registry. The eight concept manifests also remain in that "
+        + "component, without restoring any of the severed core-to-plane edges: concrete physical and blockchain tools "
+        + "are still named only by the established tools/index.js composition root. Deferred requires are still graph "
+        + "edges, so the public seam indexes and "
+        + "runtime wiring do not themselves split this pre-existing SCC. This records that residual debt honestly.",
     },
   ],
   [

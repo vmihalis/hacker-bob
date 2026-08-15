@@ -17,13 +17,13 @@ const crypto = require("node:crypto");
 
 const {
   normalizePhysicalReservationRequest,
-} = require("../../lib/physical-resource-contract.js");
+} = require("../../core/physical-resource-contracts.js");
 const {
   GRAPH_SCHEDULED_KINDS,
 } = require("../../core/waves/graph-scheduler.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 const {
   materializeTaskGraph,
 } = require("../../core/waves/task-graph-materializer.js");

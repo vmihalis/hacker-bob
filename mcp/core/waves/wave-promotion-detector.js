@@ -157,7 +157,7 @@ function currentWaveBlockersFromHistory(historyBySurface, currentWave) {
 }
 
 function readAuthProfileHandles(targetDomain) {
-  const { listAuthProfiles } = require("../auth/auth.js");
+  const { listAuthProfiles } = require("../auth/index.js");
   const parsed = JSON.parse(listAuthProfiles({ target_domain: targetDomain }));
   const handles = new Set();
   for (const p of (Array.isArray(parsed.profiles) ? parsed.profiles : [])) {

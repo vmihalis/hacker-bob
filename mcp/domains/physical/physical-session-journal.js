@@ -16,10 +16,10 @@ const {
 } = require("../../core/verification/document-hash.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../../lib/physical-scope-axis.js");
+} = require("../../core/session/physical-scope-axis-contract.js");
 const {
   isPhysicalSessionTargetDomain,
-} = require("../../lib/physical-session-identity.js");
+} = require("../../core/session/synthetic-session-identity-contracts.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");

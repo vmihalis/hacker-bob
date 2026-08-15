@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   readCapabilityPlaybook,
 } = require("../core/capability/capability-playbooks.js");
@@ -8,7 +10,7 @@ function readCapabilityPlaybookHandler(args) {
   return readCapabilityPlaybook(args && args.capability_id);
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_capability_playbook",
   description:
     "Read an externalized orchestrator capability playbook from prompts/playbooks/<capability_id>.md. Returns the markdown guidance for a registered capability without exposing unrelated prompt bodies.",
@@ -24,12 +26,5 @@ module.exports = Object.freeze({
   },
   handler: readCapabilityPlaybookHandler,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
   readCapabilityPlaybook,
 });

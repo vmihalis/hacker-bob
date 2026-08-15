@@ -127,7 +127,7 @@ function safeAppendPipelineEvent(domain, type, fields, governanceContext) {
 }
 
 function governanceContextForDomain(domain) {
-  return require("../governance/governance-context.js").safeGovernanceContextForDomain(domain);
+  return require("../governance/index.js").safeGovernanceContextForDomain(domain);
 }
 
 function verificationSourceFiles(domain) {

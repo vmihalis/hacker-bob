@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   readSurfaceRoutesStrict,
   countRoutesByCapabilityPack,
@@ -29,7 +31,7 @@ function readSurfaceRoutes(args) {
   return JSON.stringify(payload);
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_surface_routes",
   description:
     "Read the MCP-owned surface-routes.json: per-surface capability_pack, evaluator_agent, brief_profile, confidence, and reasons. Use to dispatch verifier/chain/evidence/reporter prompts on assignment.capability_pack without re-deriving from surface_type or chain_family.",
@@ -46,11 +48,4 @@ module.exports = Object.freeze({
   // writes. Downstream consumers (orchestrator + verifier/chain/evidence/
   // reporter) read via this tool.
   role_bundles: ["orchestrator", "verifier", "chain", "evidence", "reporter"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

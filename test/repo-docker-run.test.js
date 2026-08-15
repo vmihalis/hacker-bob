@@ -45,7 +45,7 @@ const {
 } = require("../mcp/domains/repo/repo-env.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../mcp/core/redaction/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const {
   repoCheckoutDir,
   repoCommandRunsJsonlPath,

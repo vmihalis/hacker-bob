@@ -26,7 +26,7 @@ const path = require("path");
 
 const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
-const { normalizeScopePolicy } = require("../mcp/core/governance/governance-contracts.js");
+const { normalizeScopePolicy } = require("../mcp/core/governance/index.js");
 const {
   attackSurfacePath,
   httpAuditJsonlPath,

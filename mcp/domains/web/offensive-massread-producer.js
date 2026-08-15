@@ -120,7 +120,7 @@ const {
 } = require("./browser-tools-shared.js");
 const {
   resolveAuthProfile,
-} = require("../../core/auth/auth.js");
+} = require("../../core/auth/index.js");
 const {
   detectPiiShapes,
   normalizeEmailForComparison,

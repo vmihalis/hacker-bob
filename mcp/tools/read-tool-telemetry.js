@@ -1,10 +1,12 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   readToolTelemetry,
 } = require("../core/telemetry/tool-telemetry.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_tool_telemetry",
   description:
     "Read diagnostic MCP tool-call telemetry summaries. Returns counts, success rates, latency percentiles, error histograms, authority decision aggregates, last calls, and recent failures without raw tool arguments or payloads.",
@@ -31,12 +33,6 @@ module.exports = Object.freeze({
   },
   handler: readToolTelemetry,
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
   readToolTelemetry,
 });

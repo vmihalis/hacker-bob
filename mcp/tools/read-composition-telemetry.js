@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   summarizeTaskGraph,
 } = require("../core/waves/task-graph-materializer.js");
@@ -10,7 +12,7 @@ const {
   assertSafeDomain,
 } = require("../core/io/paths.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_composition_telemetry",
   description:
     "Read composition telemetry for a session: surface/hypothesis/transition/claim counts, edge count, hypotheses-per-surface and transitions-per-hypothesis rates, and whether the graph has composed past flat surface enumeration. Also reports live_verification — the SC1 confirm-half split (verified_pass_count from the MCP-write-only composition-verified.jsonl ledger vs the offline shape-pass), since SC1 is graded on verified_pass, never on shape-pass. Summary-only; derived from the materialized task graph + the verified ledger, never written.",
@@ -31,11 +33,5 @@ module.exports = Object.freeze({
     };
   },
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

@@ -13,7 +13,7 @@ const {
   normalizePhysicalResourceBundleBinding,
   normalizeResourceRequirement,
   projectPhysicalReservationState,
-} = require("../mcp/lib/physical-resource-contract.js");
+} = require("../mcp/core/physical-resource-contracts.js");
 const {
   PHYSICAL_QUANTITY_REGISTRY,
   physicalQuantityRegistryDigest,

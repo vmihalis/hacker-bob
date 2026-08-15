@@ -338,7 +338,7 @@ function writeTextFile(filePath, content) {
   recordInstalledFile(filePath, guard);
 }
 
-function copyDirRecursive(sourceDir, destinationDir, predicate) {
+function copyDirRecursive(sourceDir, destinationDir, predicate, relativeRoot = sourceDir) {
   fs.mkdirSync(destinationDir, { recursive: true });
   const copied = [];
   for (const name of fs.readdirSync(sourceDir).sort()) {
@@ -347,11 +347,11 @@ function copyDirRecursive(sourceDir, destinationDir, predicate) {
     const stat = fs.statSync(source);
     if (stat.isDirectory()) {
       if (name === "node_modules") continue;
-      copied.push(...copyDirRecursive(source, destination, predicate));
+      copied.push(...copyDirRecursive(source, destination, predicate, relativeRoot));
       continue;
     }
     if (!stat.isFile()) continue;
-    const relative = path.relative(sourceDir, source);
+    const relative = path.relative(relativeRoot, source);
     if (predicate && !predicate(relative, name)) continue;
     copyFile(source, destination);
     copied.push(path.relative(destinationDir, destination));
@@ -366,9 +366,7 @@ function copyDirRecursive(sourceDir, destinationDir, predicate) {
 // something" is satisfied by copying one file, and the destination has already
 // been removed by the time the copy runs.
 const MIN_MCP_RUNTIME_MODULES = 50;
-// `lib` is the temporary compatibility root retained by this relocation node;
-// the other four names are the canonical runtime-owned trees.
-const MCP_RUNTIME_TREE_NAMES = Object.freeze(["core", "domains", "tools", "fuzz", "lib"]);
+const MCP_RUNTIME_TREE_NAMES = Object.freeze(["core", "domains", "tools", "fuzz"]);
 
 function isInstallableMcpRuntimeTreeFile(treeName, relativePath) {
   if (!MCP_RUNTIME_TREE_NAMES.includes(treeName) || typeof relativePath !== "string") return false;
@@ -2249,7 +2247,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   // permits deletion of a retired Bob filename only while its bytes and filesystem identity still match;
   // operator-created or locally modified siblings survive. The manifest is the single source of truth;
   // install-smoke.test.js pins it EQUAL to the real source top-level mcp/*.js so additions/deletions
-  // cannot silently drift. lib/ + its subdirs are copied separately below.
+  // cannot silently drift.
   const removedRetiredMcpTopLevelRuntimeFiles = pruneRetiredMcpTopLevelRuntimeFiles(
     targetAbs,
     previousInstallMetadata,
@@ -2259,8 +2257,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
   // Replace each Bob-owned runtime subtree independently. The surrounding mcp/
-  // root remains mixed ownership, while the temporary flat lib/ compatibility
-  // files travel with the four canonical runtime trees during this node.
+  // root remains mixed ownership.
   const sourceRuntimeRoot = path.join(sourceRoot, "mcp");
   if (path.resolve(sourceRuntimeRoot) !== path.resolve(mcpDir)) {
     const runtimeTrees = MCP_RUNTIME_TREE_NAMES.map((name) => ({
@@ -2789,6 +2786,7 @@ module.exports = {
   detectInstalledAdapterIds,
   installProject,
   installedAdapterIds,
+  isInstallableMcpRuntimeTreeFile,
   neutralInstallMetadataPath,
   neutralVersionPath,
   patchrightAvailable,

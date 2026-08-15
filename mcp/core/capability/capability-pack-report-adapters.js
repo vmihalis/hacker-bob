@@ -16,8 +16,8 @@ const {
   buildCapabilityPackGradeBindings,
 } = require("./capability-pack-grade-adapters.js");
 const {
-  resolvePhysicalCapabilityPackArtifacts,
-} = require("../../domains/physical/capability-pack-physical-artifacts.js");
+  resolveCapabilityPackArtifacts,
+} = require("./capability-pack-evidence-adapters.js");
 const {
   assertSafeDomain,
 } = require("../io/paths.js");
@@ -64,7 +64,7 @@ function readLivePackGradeBindings(domain, reportableFindingIds) {
 }
 
 function physicalReportSections(domain, binding) {
-  const artifacts = resolvePhysicalCapabilityPackArtifacts(domain, binding);
+  const artifacts = resolveCapabilityPackArtifacts(domain, binding);
   const evidence = artifacts.report_evidence;
   const evidenceRef = `verification_round:final:${binding.finding_id}`;
   const proofLines = [

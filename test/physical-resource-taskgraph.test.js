@@ -9,7 +9,7 @@ const test = require("node:test");
 const {
   appendContract,
   normalizeContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   selectNextExecutableNodes,
 } = require("../mcp/core/waves/graph-scheduler.js");

@@ -49,7 +49,7 @@ const {
 } = require("../mcp/core/producer-run-ledger.js");
 const {
   authStore,
-} = require("../mcp/core/auth/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   BLOCKED_PREREQ_KIND_CAPABILITY,
   computeCapabilityClearedPremiseSurfaceIds,

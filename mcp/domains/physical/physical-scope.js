@@ -22,7 +22,7 @@ const {
 const {
   PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION,
   normalizePhysicalScopeNucleusAxis,
-} = require("../../lib/physical-scope-axis.js");
+} = require("../../core/session/physical-scope-axis-contract.js");
 
 const PHYSICAL_SCOPE_POLICY_VERSION = 1;
 const PHYSICAL_SCOPE_IMPORT_VERSION = 1;

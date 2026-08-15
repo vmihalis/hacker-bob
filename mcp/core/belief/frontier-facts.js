@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const {
   redactTextSensitiveValues,
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 const {
   readFrontierEvents,
 } = require("../frontier/frontier-events.js");

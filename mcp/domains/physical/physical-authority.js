@@ -11,7 +11,7 @@ const {
 } = require("../../core/verification/verification-contracts.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../../core/governance/governance-contracts.js");
+} = require("../../core/governance/index.js");
 const {
   EFFECT_ACTIONS,
   EFFECT_CHANNELS,

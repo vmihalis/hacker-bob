@@ -15,14 +15,14 @@ const {
 } = require("../telemetry/pipeline-analytics.js");
 const {
   readSessionNucleus,
-} = require("../governance/governance-store.js");
+} = require("../governance/index.js");
 const {
   deriveLegacyPhaseFromLifecycleState,
   deriveLifecycleStateFromLegacyPhase,
 } = require("./session-state-contracts.js");
 const {
   LIFECYCLE_STATE_VALUES,
-} = require("../governance/governance-contracts.js");
+} = require("../governance/index.js");
 
 // LIFECYCLE_STATE_VALUES is ordered SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE ->
 // VERIFY -> GRADE -> REPORT, which is the canonical "progress" ordering.

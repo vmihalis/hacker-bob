@@ -47,7 +47,7 @@ const {
 } = require("../mcp/core/io/http-records.js");
 const {
   appendContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,

@@ -1,12 +1,14 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readTechniquePackForTool } = require("../core/dispatch/technique-packs.js");
 
 function readTechniquePackTool(args) {
   return readTechniquePackForTool(args);
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_technique_pack",
   description: "Read one technique pack in summary or full bounded mode. Full mode requires target_domain, wave, agent, and surface_id so full_pack_read_limit can be enforced for the assignment.",
   inputSchema: {
@@ -24,10 +26,5 @@ module.exports = Object.freeze({
   handler: readTechniquePackTool,
   role_bundles: ["evaluator-web", "evaluator-physical", "orchestrator"],
   mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["technique-pack-reads.jsonl"],
 });

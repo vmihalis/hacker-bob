@@ -26,7 +26,7 @@ const {
   OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
   getMechanismTemplate,
   getMechanismTemplatesForDomain,
-} = require("../mcp/core/mechanism/invariant-template-corpus.js");
+} = require("../mcp/core/mechanism/index.js");
 const {
   OBJECT_AUTH_BINDING,
   instantiateTemplate,
@@ -34,7 +34,7 @@ const {
 } = require("../mcp/core/authorization-differential-family.js");
 const {
   registerMechanismCandidates,
-} = require("../mcp/core/mechanism/mechanism-candidate-store.js");
+} = require("../mcp/core/mechanism/index.js");
 const {
   evaluatePromotion,
 } = require("../mcp/core/mechanism-promotion-gate.js");

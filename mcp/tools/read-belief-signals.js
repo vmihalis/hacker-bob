@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readBeliefSignals } = require("../core/belief/authority.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_belief_signals",
   capability_id: "CB-S1_belief_authority",
   description:
@@ -17,11 +19,5 @@ module.exports = Object.freeze({
   },
   handler: readBeliefSignals,
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

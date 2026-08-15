@@ -41,7 +41,7 @@ const {
   readFrontierEvents,
 } = require("../mcp/core/frontier/frontier-events.js");
 const { appendNodeTransition } = require("../mcp/core/waves/task-graph-events.js");
-const { appendContract } = require("../mcp/core/contract/contracts.js");
+const { appendContract } = require("../mcp/core/contract/index.js");
 const { materializeTaskGraph } = require("../mcp/core/waves/task-graph-materializer.js");
 const finalizeNode = require("../mcp/tools/finalize-node.js");
 const { evaluateSchedulerPrecondition } = require("../mcp/core/waves/scheduler-preconditions.js");

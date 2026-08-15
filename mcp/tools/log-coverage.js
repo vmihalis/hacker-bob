@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineLogTool } = require("./_archetypes.js");
+
 const { logCoverage } = require("../core/frontier/coverage.js");
 
-module.exports = Object.freeze({
+module.exports = defineLogTool({
   name: "bob_log_coverage",
   description:
     "Append concise endpoint/bug-class/auth-profile coverage records for the assigned surface. Call after meaningful tests and before long pivots so coverage survives maxTurns. Validated against wave assignments.",
@@ -76,11 +78,5 @@ module.exports = Object.freeze({
   },
   handler: logCoverage,
   role_bundles: ["evaluator-shared"],
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["coverage.jsonl"],
 });

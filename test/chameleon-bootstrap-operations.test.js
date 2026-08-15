@@ -50,7 +50,7 @@ const {
 } = require("../mcp/domains/physical/physical-authority.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,

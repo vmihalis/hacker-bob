@@ -6,7 +6,7 @@ const {
 } = require("../frontier/surface-graph.js");
 const {
   getMechanismTemplate,
-} = require("../mechanism/invariant-template-corpus.js");
+} = require("../mechanism/index.js");
 const {
   queryFrontierTypedFacts,
 } = require("./frontier-facts.js");

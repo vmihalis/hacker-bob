@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineQueryTool } = require("./_archetypes.js");
+
 const { querySchemaContracts } = require("../core/schema-contracts-store.js");
 
-module.exports = Object.freeze({
+module.exports = defineQueryTool({
   name: "bob_query_schema_contracts",
   capability_id: "C2_doc_vs_behavior",
   description:
@@ -30,11 +32,4 @@ module.exports = Object.freeze({
   },
   handler: querySchemaContracts,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

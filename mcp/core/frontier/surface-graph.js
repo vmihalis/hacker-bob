@@ -15,7 +15,7 @@ const {
   withSessionLock,
 } = require("../io/storage.js");
 const { hashCanonicalJson } = require("../verification/verification-contracts.js");
-const { readVerifiedSessionNucleus } = require("../governance/governance-store.js");
+const { readVerifiedSessionNucleus } = require("../governance/index.js");
 const {
   assertDurableReceiptTrustRegistry,
   normalizeAndVerifyPhysicalSurfaceLiveRevalidationReceipt,

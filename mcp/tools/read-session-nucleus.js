@@ -1,11 +1,13 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   assertNonEmptyString,
 } = require("../core/io/validation.js");
 const {
   readSessionNucleus,
-} = require("../core/governance/governance-store.js");
+} = require("../core/governance/index.js");
 
 function handler(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
@@ -16,7 +18,7 @@ function handler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_session_nucleus",
   description: "Read the persisted SessionNucleus for a target_domain.",
   inputSchema: {
@@ -32,11 +34,4 @@ module.exports = Object.freeze({
   },
   handler,
   role_bundles: ["orchestrator", "evaluator-shared", "evaluator-physical", "reporter"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

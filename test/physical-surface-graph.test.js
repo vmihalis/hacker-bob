@@ -31,7 +31,7 @@ const { hashCanonicalJson } = require("../mcp/core/verification/verification-con
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 
 const SIGNED_AT = new Date(Date.now() - 5_000).toISOString();
 const DECIDED_AT = new Date(Date.parse(SIGNED_AT) - 1_000).toISOString();

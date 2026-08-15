@@ -16,7 +16,7 @@ const {
 } = require("../mcp/core/frontier/frontier-events.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../mcp/core/redaction/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const {
   repoInventoryPath,
 } = require("../mcp/core/io/paths.js");

@@ -1,10 +1,12 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   readPipelineAnalytics,
 } = require("../core/telemetry/pipeline-analytics.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_pipeline_analytics",
   description:
     "Read local metadata-only pipeline analytics for one session or recent sessions. Summarizes phase progress, wave health, findings, verification, grade/report status, bottlenecks, and safe telemetry-derived tool and evaluator health.",
@@ -35,12 +37,6 @@ module.exports = Object.freeze({
   },
   handler: readPipelineAnalytics,
   role_bundles: ["orchestrator"],
-  mutating: false,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
   readPipelineAnalytics,
 });

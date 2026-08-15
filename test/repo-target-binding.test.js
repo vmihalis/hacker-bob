@@ -13,7 +13,7 @@ const {
 } = require("../mcp/domains/repo/repo-target.js");
 const {
   readSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   readSessionStateStrict,
 } = require("../mcp/core/session/session-state-store.js");
@@ -25,7 +25,7 @@ const {
 const {
   normalizeScopePolicy,
   buildSessionNucleus,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const initRepoSessionTool = require("../mcp/tools/repo/init-repo-session.js");
 const initSessionTool = require("../mcp/tools/init-session.js");
 

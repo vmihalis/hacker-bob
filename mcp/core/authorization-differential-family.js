@@ -38,7 +38,7 @@
 
 const {
   loadMechanismTemplates,
-} = require("./mechanism/invariant-template-corpus.js");
+} = require("./mechanism/index.js");
 
 // Every minted template is advisory until an executed differential confirms it.
 const CLAIM_AUTHORITY = false;

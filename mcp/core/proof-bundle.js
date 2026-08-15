@@ -30,7 +30,7 @@ const {
 } = require("./io/envelope.js");
 const {
   validateNoSensitiveMaterial,
-} = require("./redaction/sensitive-material.js");
+} = require("./redaction/index.js");
 const {
   findingIdSetForVerificationContext,
 } = require("./verification/verification-finding-id-adapter.js");
@@ -39,7 +39,7 @@ const {
 } = require("./verification/verification-round-store.js");
 const {
   safeGovernanceContextForDomain,
-} = require("./governance/governance-context.js");
+} = require("./governance/index.js");
 const {
   hashCanonicalJson,
   isPlainObject,

@@ -40,7 +40,7 @@ const {
 } = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   TRANSITION_KIND_HUNTING_VOCAB,
   TRANSITION_KIND_CONTRACT_TEMPLATES,

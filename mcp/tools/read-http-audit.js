@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const {
   readHttpAudit: readHttpAuditRecordsTool,
 } = require("../core/io/http-records.js");
@@ -9,7 +11,7 @@ function readHttpAudit(args) {
   return readHttpAuditRecordsTool(args, { readAttackSurfaceStrict });
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_http_audit",
   description:
     "Read a capped HTTP request audit summary from session-owned http-audit.jsonl, optionally filtered to one attack surface.",
@@ -24,12 +26,5 @@ module.exports = Object.freeze({
   },
   handler: readHttpAudit,
   role_bundles: ["evaluator-web", "verifier", "chain", "evidence"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
   readHttpAudit,
 });

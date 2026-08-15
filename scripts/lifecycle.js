@@ -451,7 +451,7 @@ function doctorProject(projectDir, options = {}) {
     // recursively while top-level runtime files remain individually manifest-bound.
     ownedRoots: CANONICAL_RUNTIME_OWNED_ROOTS.flatMap((root) => (
       root === "mcp"
-        ? ["mcp/core", "mcp/domains", "mcp/tools", "mcp/fuzz", "mcp/lib"]
+        ? ["mcp/core", "mcp/domains", "mcp/tools", "mcp/fuzz"]
         : [root]
     )),
   });

@@ -2,14 +2,20 @@
 
 const {
   normalizeOpaqueRef,
-} = require("../domains/physical/physical-quantities.js");
+} = require("../../../packages/bob-instrument-contracts/lib/physical-quantities.js");
 const {
   hashCanonicalJson,
-} = require("../core/verification/verification-contracts.js");
+} = require("../verification/verification-contracts.js");
 
+const CONTRACT_TARGET_DOMAIN_PATTERN =
+  /^(?:sc-(?:evm|svm|aptos|sui|substrate|cosmwasm)-[a-z0-9._-]+-[a-z0-9]{1,8}|contracts-[0-9a-f]{8})$/;
 const PHYSICAL_SESSION_IDENTITY_VERSION = 1;
 const PHYSICAL_SESSION_IDENTITY_DOMAIN = "hacker-bob/physical-session-identity/v1";
 const PHYSICAL_SESSION_TARGET_DOMAIN_PATTERN = /^physical-[a-f0-9]{24}$/;
+
+function isContractTargetDomain(value) {
+  return typeof value === "string" && CONTRACT_TARGET_DOMAIN_PATTERN.test(value);
+}
 
 function normalizePhysicalScopeImportRef(value) {
   return normalizeOpaqueRef(
@@ -46,10 +52,12 @@ function isPhysicalSessionTargetDomain(value) {
 }
 
 module.exports = {
+  CONTRACT_TARGET_DOMAIN_PATTERN,
   PHYSICAL_SESSION_IDENTITY_DOMAIN,
   PHYSICAL_SESSION_IDENTITY_VERSION,
   PHYSICAL_SESSION_TARGET_DOMAIN_PATTERN,
   derivePhysicalSessionIdentity,
+  isContractTargetDomain,
   isPhysicalSessionTargetDomain,
   normalizePhysicalScopeImportRef,
   physicalScopeImportRefDigest,

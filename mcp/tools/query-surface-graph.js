@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineQueryTool } = require("./_archetypes.js");
+
 const { queryEdges, queryMechanismView, neighbors } = require("../core/frontier/surface-graph.js");
 
 function querySurfaceGraphHandler(args) {
@@ -41,7 +43,7 @@ function querySurfaceGraphHandler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineQueryTool({
   name: "bob_query_surface_graph",
   capability_id: "I1_surface_graph",
   description:
@@ -68,11 +70,4 @@ module.exports = Object.freeze({
   },
   handler: querySurfaceGraphHandler,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

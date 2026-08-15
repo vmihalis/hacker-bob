@@ -36,14 +36,14 @@ const {
   resolveAuthProfile,
   resolveProfileCredentialValue,
   sessionCredentialMaterial,
-} = require("./auth/auth.js");
+} = require("./auth/index.js");
 const {
   CredentialPlaceholderError,
   DECISION_UNRESOLVED,
   isCredentialPlaceholderError,
   makeCredentialRedactor,
   prepareRequestBody,
-} = require("./auth/auth-placeholders.js");
+} = require("./auth/index.js");
 const {
   resolveHttpScanTargetDomain,
 } = require("./scope.js");

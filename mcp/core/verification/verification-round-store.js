@@ -42,7 +42,7 @@ const {
 } = require("../telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 const {
   finalVerificationHash,
 } = require("./verification-contracts.js");
@@ -62,7 +62,7 @@ const {
 } = require("../ledger-integrity/index.js");
 const {
   sessionNucleusFromState,
-} = require("../governance/governance-contracts.js");
+} = require("../governance/index.js");
 const {
   readSessionStateStrict,
 } = require("../session/session-state-store.js");

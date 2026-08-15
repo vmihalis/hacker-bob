@@ -1,9 +1,11 @@
 "use strict";
 
+const { defineWriteTool } = require("./_archetypes.js");
+
 const { writeGradeVerdict } = require("../core/grade-verdict-store.js");
 const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = wrapWriteTool({
+module.exports = wrapWriteTool(defineWriteTool({
   name: "bob_write_grade_verdict",
   writes_audit_graded: true,
   description:
@@ -87,11 +89,5 @@ module.exports = wrapWriteTool({
   },
   handler: writeGradeVerdict,
   role_bundles: ["grader"],
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["grade.json","grade.md"],
-});
+}));

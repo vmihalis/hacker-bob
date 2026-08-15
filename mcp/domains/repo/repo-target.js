@@ -30,7 +30,7 @@ const {
 const {
   buildSessionNucleus,
   normalizeTargetRepo,
-} = require("../../core/governance/governance-contracts.js");
+} = require("../../core/governance/index.js");
 const {
   resolveEgressProfile,
 } = require("../../core/egress-profiles.js");
@@ -62,7 +62,7 @@ const { ensureHandoffSigningKey } = require("../../core/ledger-integrity/index.j
 const { hasAcquiredHarness } = require("../../core/harness-store.js");
 const {
   readSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 const {
   appendSessionEvent,
 } = require("../../core/session/session-events.js");
@@ -74,7 +74,7 @@ const {
 } = require("../../core/telemetry/pipeline-events.js");
 const {
   buildGovernanceContextFromNucleus,
-} = require("../../core/governance/governance-context.js");
+} = require("../../core/governance/index.js");
 const {
   appendFrontierEvent,
 } = require("../../core/frontier/frontier-events.js");
@@ -84,7 +84,7 @@ const {
 const {
   redactTextSensitiveValues,
   validateNoSensitiveMaterial,
-} = require("../../core/redaction/sensitive-material.js");
+} = require("../../core/redaction/index.js");
 const {
   classifyRepoReachability,
 } = require("../../core/frontier/reachability.js");

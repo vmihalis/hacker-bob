@@ -1,11 +1,13 @@
 "use strict";
 
+const { defineLogTool } = require("./_archetypes.js");
+
 const { logTechniqueAttempt } = require("../core/dispatch/technique-packs.js");
 const {
   TECHNIQUE_ATTEMPT_STATUS_VALUES,
 } = require("../core/dispatch/technique-vocabulary.js");
 
-module.exports = Object.freeze({
+module.exports = defineLogTool({
   name: "bob_log_technique_attempt",
   description:
     "Append one validated technique-pack selection, attempt, skip, or outcome record to MCP-owned technique-attempts.jsonl.",
@@ -25,11 +27,5 @@ module.exports = Object.freeze({
   },
   handler: logTechniqueAttempt,
   role_bundles: ["evaluator-web", "evaluator-physical", "orchestrator"],
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["technique-attempts.jsonl"],
 });

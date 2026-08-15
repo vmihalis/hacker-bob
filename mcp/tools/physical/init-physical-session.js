@@ -8,13 +8,13 @@ const {
 const {
   buildSessionNucleus,
   sessionNucleusFromState,
-} = require("../../core/governance/governance-contracts.js");
+} = require("../../core/governance/index.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../../core/governance/governance-store.js");
+} = require("../../core/governance/index.js");
 const {
   buildGovernanceContextFromNucleus,
-} = require("../../core/governance/governance-context.js");
+} = require("../../core/governance/index.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");
@@ -58,7 +58,7 @@ const {
 } = require("../../domains/physical/physical-quantities.js");
 const {
   derivePhysicalSessionIdentity,
-} = require("../../lib/physical-session-identity.js");
+} = require("../../core/session/synthetic-session-identity-contracts.js");
 const {
   resolvePhysicalSessionBootstrapImport,
 } = require("../../domains/physical/physical-session-runtime.js");

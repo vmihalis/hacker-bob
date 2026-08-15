@@ -36,7 +36,7 @@ const {
 } = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   familyTagForCapabilityPackId,
 } = require("../mcp/core/capability/capability-packs.js");

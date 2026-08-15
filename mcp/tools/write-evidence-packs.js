@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineWriteTool } = require("./_archetypes.js");
+
 const {
   DIFFERENTIAL_CONTROL_KINDS,
   DIFFERENTIAL_VERDICTS,
@@ -7,7 +9,7 @@ const {
 } = require("../core/evidence.js");
 const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = wrapWriteTool({
+module.exports = wrapWriteTool(defineWriteTool({
   name: "bob_write_evidence_packs",
   writes_audit_graded: true,
   description:
@@ -93,11 +95,5 @@ module.exports = wrapWriteTool({
   },
   handler: writeEvidencePacks,
   role_bundles: ["evidence"],
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["evidence-packs.json", "evidence-packs.md", "verification-manifest.json"],
-});
+}));

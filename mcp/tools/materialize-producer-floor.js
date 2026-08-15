@@ -19,7 +19,7 @@ const { assertNonEmptyString } = require("../core/io/validation.js");
 const { currentSurfaces } = require("../core/frontier/frontier-projections.js");
 const { appendFrontierEvent, readFrontierEvents } = require("../core/frontier/frontier-events.js");
 const { PRODUCER_PACKS, isProducerReady } = require("../core/dispatch/producer-packs.js");
-const { CASE_FOLD_SAFE_CHAIN_FAMILIES, contractIdentityKey } = require("../lib/chain-authority.js");
+const { CASE_FOLD_SAFE_CHAIN_FAMILIES, contractIdentityKey } = require("../core/chain-authority-contracts.js");
 const {
   producerRunSet,
   recordProducerRun,

@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineSetTool } = require("./_archetypes.js");
+
 // Plane T Cycle T.8 — operator-facing toggle for adaptive pack curation.
 //
 // Per Pact T-D5 ("adaptive curation is opt-in") and Pact T-P5 ("telemetry as
@@ -35,7 +37,7 @@ function handler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineSetTool({
   name: "bob_set_pack_telemetry_config",
   description:
     "Persist an operator-supplied pack-telemetry config for a target_domain to " +
@@ -75,11 +77,5 @@ module.exports = Object.freeze({
   },
   handler,
   role_bundles: ["orchestrator"],
-  mutating: true,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["pack-telemetry-config.json"],
 });

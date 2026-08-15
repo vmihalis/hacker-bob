@@ -58,7 +58,7 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   normalizePhysicalResourceBundleBinding,
-} = require("../../lib/physical-resource-contract.js");
+} = require("../physical-resource-contracts.js");
 const {
   normalizeOptionalObject,
 } = require("../io/validation.js");

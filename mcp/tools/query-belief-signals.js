@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineQueryTool } = require("./_archetypes.js");
+
 const {
   BELIEF_PROVENANCE_VALUES,
   BELIEF_SIGNAL_KIND_VALUES,
@@ -7,7 +9,7 @@ const {
   queryBeliefSignals,
 } = require("../core/belief/authority.js");
 
-module.exports = Object.freeze({
+module.exports = defineQueryTool({
   name: "bob_query_belief_signals",
   capability_id: "CB-S1_belief_authority",
   description:
@@ -26,11 +28,4 @@ module.exports = Object.freeze({
   },
   handler: queryBeliefSignals,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

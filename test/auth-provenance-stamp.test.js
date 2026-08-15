@@ -26,7 +26,7 @@ const {
   resolveAuthJsonPath,
   listAuthProfiles,
   PROFILE_METADATA_KEYS,
-} = require("../mcp/core/auth/auth.js");
+} = require("../mcp/core/auth/index.js");
 const { profileHasProvenance } = require("../mcp/domains/web/offensive-idor-producer.js");
 const { toolNamesForRoleBundle } = require("../mcp/core/dispatch/tool-registry.js");
 const { executeTool } = require("../mcp/core/dispatch/dispatch.js");

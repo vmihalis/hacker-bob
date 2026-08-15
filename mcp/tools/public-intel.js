@@ -1,6 +1,6 @@
 "use strict";
 
-const { bountyPublicIntel: bountyPublicIntelTool } = require("../core/intel/public-intel.js");
+const { bountyPublicIntel: bountyPublicIntelTool } = require("../core/intel/index.js");
 
 async function bountyPublicIntel(args) {
   return bountyPublicIntelTool(args);

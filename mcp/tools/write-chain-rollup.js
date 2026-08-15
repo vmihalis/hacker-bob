@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineWriteTool } = require("./_archetypes.js");
+
 // Y.3 Stage c — `bob_write_chain_rollup` (Y-D15c / Y-P13 / Y-P13b / Y-P14b).
 //
 // Replaces the chain-builder Write-on-chains.md leak. Chain-builder returns
@@ -281,7 +283,7 @@ function handler(args) {
 
 const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = wrapWriteTool({
+module.exports = wrapWriteTool(defineWriteTool({
   name: "bob_write_chain_rollup",
   writes_audit_graded: true,
   description:
@@ -309,12 +311,7 @@ module.exports = wrapWriteTool({
   handler,
   role_bundles: ["chain", "orchestrator"],
   capability_id: "Y_self_reporting",
-  mutating: true,
   global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["chains.md"],
   CONFIDENCE_VALUES,
   EVIDENCE_REF_HANDLE_PREFIXES,
@@ -322,4 +319,4 @@ module.exports = wrapWriteTool({
   MAX_EVIDENCE_REFS,
   MAX_EVIDENCE_REF_LEN,
   NARRATIVE_MAX,
-});
+}));

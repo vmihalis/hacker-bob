@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { assertNonEmptyString } = require("../core/io/validation.js");
 const { findingPayloadsFromClaims } = require("./record-candidate-claim.js");
 const { deriveCvss31 } = require("../core/scoring/cvss31.js");
@@ -32,7 +34,7 @@ function readCandidateClaimsTool(args) {
   return JSON.stringify(result);
 }
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_candidate_claims",
   description:
     "Read all recorded candidate claims for a target. Returns the embedded finding payloads projected off claims.jsonl.",
@@ -49,11 +51,4 @@ module.exports = Object.freeze({
   },
   handler: readCandidateClaimsTool,
   role_bundles: ["chain","verifier","grader","reporter","evidence"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

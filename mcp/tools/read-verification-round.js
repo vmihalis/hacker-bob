@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readVerificationRound } = require("../core/verification/verification-round-store.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_verification_round",
   description:
     "Read one verification round JSON document.",
@@ -28,11 +30,4 @@ module.exports = Object.freeze({
   },
   handler: readVerificationRound,
   role_bundles: ["verifier","grader","reporter","orchestrator","evidence"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

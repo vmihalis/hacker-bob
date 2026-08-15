@@ -11,7 +11,7 @@ const {
   RESOURCE_REF_PREFIX,
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
-} = require("../../lib/physical-resource-contract.js");
+} = require("../../core/physical-resource-contracts.js");
 const {
   normalizeOpaqueRef,
 } = require("./physical-quantities.js");

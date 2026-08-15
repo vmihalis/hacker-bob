@@ -59,7 +59,8 @@ const {
 const {
   buildReportCredentialFence,
   findCredentialExportLeaks,
-} = require("../core/redaction/report-credential-fence.js");
+} = require("../core/redaction/index.js");
+const { sessionCredentialMaterial } = require("../core/auth/index.js");
 
 const SECTION_KINDS = Object.freeze([
   "impact",
@@ -1227,7 +1228,7 @@ function credentialScanRegions({ sections, callerSectionCount, severitySummary, 
 // stop a leak nor to stay out of the way. Detect and TELL the operator; never block the door,
 // never rewrite the document.
 function detectReportCredentialExport(domain, markdown, structuredRegions) {
-  const fence = buildReportCredentialFence(domain);
+  const fence = buildReportCredentialFence(domain, sessionCredentialMaterial);
   // Inactive fence (no stored credentials, or none clearing the precision floors):
   // zero behaviour change, not even an extra scan pass.
   if (!fence.active) return [];

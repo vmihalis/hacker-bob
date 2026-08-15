@@ -3,7 +3,7 @@
 const { httpScan } = require("../../core/http-scan.js");
 const { runAuthDifferential } = require("../../core/auth-differential-runner.js");
 const { makePerCallHttpScanFetcher } = require("../../core/http-scan-adapter.js");
-const { listAuthProfiles } = require("../../core/auth/auth.js");
+const { listAuthProfiles } = require("../../core/auth/index.js");
 const { extractIds, bindLineage } = require("../../core/param-lineage.js");
 
 // deriveLineageEndpoints({ seed_responses, id_bearing_templates, profiles }) -> sorted,

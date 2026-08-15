@@ -18,9 +18,9 @@ const {
   readProductionPhysicalExperimentMonotonicOwnerState,
   readPhysicalMonotonicOwnerState,
 } = require("../mcp/domains/physical/physical-monotonic-owner.js");
-const { sessionNucleusFromState } = require("../mcp/core/governance/governance-contracts.js");
+const { sessionNucleusFromState } = require("../mcp/core/governance/index.js");
 const { sessionDir } = require("../mcp/core/io/paths.js");
-const { normalizePhysicalScopeNucleusAxis } = require("../mcp/lib/physical-scope-axis.js");
+const { normalizePhysicalScopeNucleusAxis } = require("../mcp/core/session/physical-scope-axis-contract.js");
 const { buildInitialSessionState } = require("../mcp/core/session/session-state-contracts.js");
 const { writeSessionStateDocument } = require("../mcp/core/session/session-state-store.js");
 const {

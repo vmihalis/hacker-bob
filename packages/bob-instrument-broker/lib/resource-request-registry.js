@@ -10,7 +10,7 @@ const crypto = require("node:crypto");
 const {
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   normalizePhysicalResourceQueueTicket,
 } = require("../../../mcp/domains/physical/physical-resource-arbiter.js");

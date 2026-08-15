@@ -9,7 +9,7 @@ const {
   normalizeLifecycleState,
   normalizePhysicalScopeNucleusAxis,
   sessionNucleusHash,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   advanceSession,
   initSession,
@@ -17,7 +17,7 @@ const {
 } = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   writeJsonDocument,
 } = require("../mcp/core/io/storage.js");

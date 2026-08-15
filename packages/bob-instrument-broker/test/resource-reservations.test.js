@@ -56,7 +56,7 @@ const {
 const {
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   normalizePhysicalResourceInventory,
 } = require("../../../mcp/domains/physical/physical-resource-scheduler.js");

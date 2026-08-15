@@ -12,7 +12,7 @@ const {
 const {
   readSessionNucleus,
   readVerifiedSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   sessionDir,
   sessionEventsJsonlPath,

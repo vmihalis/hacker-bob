@@ -8,10 +8,10 @@
 const {
   normalizeOpaqueRef,
   normalizeQuantityBound,
-} = require("../domains/physical/physical-quantities.js");
+} = require("../../packages/bob-instrument-contracts/lib/physical-quantities.js");
 const {
   hashCanonicalJson,
-} = require("../core/verification/verification-contracts.js");
+} = require("./verification/verification-contracts.js");
 
 const PHYSICAL_RESOURCE_BUNDLE_VERSION = 1;
 const PHYSICAL_RESOURCE_BUNDLE_BINDING_VERSION = 1;

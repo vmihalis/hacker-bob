@@ -28,6 +28,9 @@ const {
 const {
   PHYSICAL_CAPABILITY_PACK,
 } = require("../mcp/core/capability/capability-packs.js");
+// Production installs these plane implementations from the folded physical
+// tool composition root; this direct adapter contract installs the same wiring.
+require("../mcp/domains/physical/capability-pack-runtime-wiring.js");
 const {
   normalizeProofBundlesDocument,
 } = require("../mcp/core/proof-bundle.js");

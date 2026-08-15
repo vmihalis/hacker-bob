@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineSetTool } = require("./_archetypes.js");
+
 const { setOperatorNote } = require("../core/session/session-state.js");
 
-module.exports = Object.freeze({
+module.exports = defineSetTool({
   name: "bob_set_operator_note",
   description:
     "Set a compact non-secret operator note on session state. Use only for bounded human instructions needed across resume turns; rejects secret-looking values.",
@@ -24,11 +26,5 @@ module.exports = Object.freeze({
   },
   handler: setOperatorNote,
   role_bundles: ["orchestrator"],
-  mutating: true,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["state.json", "session-nucleus.json", "session-events.jsonl"],
 });

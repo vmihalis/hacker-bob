@@ -44,7 +44,7 @@ const {
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../../mcp/core/governance/governance-contracts.js");
+} = require("../../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
   normalizeRequestedEffect,

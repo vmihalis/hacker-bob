@@ -15,17 +15,18 @@
 
 // hashCanonicalJson (verification-contracts.js) is the single canonical hashing
 // primitive — no parallel hash implementation is introduced here.
-const { hashCanonicalJson } = require("../core/verification/verification-contracts.js");
+const { hashCanonicalJson } = require("./verification/verification-contracts.js");
 // classifyTargetToken (target-intake.js) is the single canonical string-token
 // parser; it is already load-time-asserted against CHAIN_FAMILY_VALUES, so this
 // module never redefines or hardcodes the chain-family vocabulary.
-const { classifyTargetToken } = require("../core/target-intake.js");
+const { classifyTargetToken } = require("./target-intake.js");
 // CHAIN_FAMILY_VALUES (shared-vocabulary.js) is the single known-chain-family authority,
 // the same set the Y-D21 append funnel checks; ToolError/ERROR_CODES (envelope.js)
 // are the canonical fail-closed error carriers. Both are pure, I/O-free modules,
 // so the strict bind-time normalizer keeps this module's dependency-light posture.
-const { CHAIN_FAMILY_VALUES } = require("../core/constants/shared-vocabulary.js");
-const { ERROR_CODES, ToolError } = require("../core/io/envelope.js");
+const { CHAIN_FAMILY_VALUES } = require("./constants/shared-vocabulary.js");
+const { normalizeChainToken } = require("./constants/chain-token.js");
+const { ERROR_CODES, ToolError } = require("./io/envelope.js");
 
 // Chain families whose address encoding is case-INSENSITIVE hex, so folding to
 // lowercase is safe and lets 0xABC and 0xabc collide. base58 (svm), SS58
@@ -35,17 +36,6 @@ const { ERROR_CODES, ToolError } = require("../core/io/envelope.js");
 // their addresses are trimmed but case-PRESERVED. Single-sourced here (imported
 // by the producer floor) so address case-folding keys on families identically.
 const CASE_FOLD_SAFE_CHAIN_FAMILIES = Object.freeze(new Set(["evm", "aptos", "sui"]));
-
-// Mirror of the chain-family token normalizer (lowercase, trim, collapse runs of
-// whitespace/dashes to a single underscore). The canonical-but-unexported source
-// is normalizeChainToken in mcp/lib/frontier-events.js; importing it would
-// require touching that module, which is out of this node's scope, so the rule is
-// reproduced here verbatim and applied to chain_family only.
-function normalizeChainToken(value) {
-  if (value == null) return null;
-  const normalized = String(value).trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return normalized || null;
-}
 
 // THE single canonical contract-address normalizer every identity / dedup / hash
 // / CAIP-10 site must call, so address casing can never disagree across modules

@@ -50,7 +50,7 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   normalizePhysicalResourceBundleBinding,
-} = require("../../lib/physical-resource-contract.js");
+} = require("../physical-resource-contracts.js");
 const {
   normalizePhysicalResourceDispatchBinding,
 } = require("./task-graph-events.js");

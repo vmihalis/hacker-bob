@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineQueryTool } = require("./_archetypes.js");
+
 // chain+evaluator-shared justified: chain-builder needs graph mutation/query authority via the chain bundle (rev 4.1 defect 3 absorption); single-spawner topology preserved per Y.9 chain-bundle audit. This tool only grants `chain` + `orchestrator` (no evaluator-shared); the justification comment is recorded here for the Y.11 chain-bundle authority absorption audit trail.
 
 const { queryChainTree } = require("../core/chain-state-tree.js");
@@ -14,7 +16,7 @@ function queryChainTreeHandler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineQueryTool({
   name: "bob_query_chain_tree",
   capability_id: "I7_chain_state_tree",
   description:
@@ -39,11 +41,4 @@ module.exports = Object.freeze({
   // apparatus. Y-P8 single-spawner topology preserved — the chain
   // bundle grants tool access, not dispatch authority.
   role_bundles: ["orchestrator", "chain"],
-  mutating: false,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

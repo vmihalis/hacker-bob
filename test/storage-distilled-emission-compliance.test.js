@@ -32,7 +32,7 @@ const crypto = require("crypto");
 
 const {
   ARTIFACT_REF_PREFIX_VALUES,
-} = require("../mcp/core/contract/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   RESOLVERS,
   RESOLVER_PREFIXES,

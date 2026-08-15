@@ -1,16 +1,9 @@
 "use strict";
 
 const { resolveEvmRpcEndpoints } = require("./evm-rpc-pool.js");
-const {
-  filterResolvedPublicRpcEndpoints,
-  redactRpcEndpoint,
-  redactRpcEndpointText,
-  summarizeRpcPolicyRejections,
-} = require("./sc-egress-policy.js");
-const { requestPublicHttpsText } = require("./sc-http-client.js");
+const { filterResolvedPublicRpcEndpoints } = require("./sc-egress-policy.js");
+const { makeJsonRpcClient } = require("./json-rpc-transport.js");
 
-const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024; // 256 KiB
 const DEFAULT_MAX_RESULT_BYTES = 64 * 1024;     // 64 KiB returned to caller
 
 const HEX_BYTES_RE = /^0x([0-9a-fA-F]*)$/;
@@ -45,72 +38,13 @@ function normalizeBlockTag(value) {
   throw new Error(`block must be 'latest|earliest|pending|safe|finalized', a non-negative integer, or a hex string; received: ${value}`);
 }
 
-async function rpcRequestOnce(url, method, params, { timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES, lookup } = {}) {
-  const displayUrl = redactRpcEndpoint(url);
-  const resp = await requestPublicHttpsText(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
-    timeoutMs,
-    maxBytes: maxResponseBytes,
-    lookup,
-  });
-  const text = resp.text;
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status} from ${displayUrl}: ${redactRpcEndpointText(text).slice(0, 200)}`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new Error(`malformed JSON-RPC response from ${displayUrl}: ${error.message || String(error)}`);
-  }
-  if (parsed && parsed.error) {
-    const message = typeof parsed.error.message === "string" ? parsed.error.message : JSON.stringify(parsed.error);
-    const err = new Error(`JSON-RPC error from ${displayUrl}: ${redactRpcEndpointText(message)}`);
-    err.rpcError = parsed.error;
-    throw err;
-  }
-  return parsed && parsed.result;
-}
-
-async function rpcRequest({
-  chainId,
-  method,
-  params,
-  endpoints,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-  maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
-  lookup,
-} = {}) {
-  const rawEndpointList = Array.isArray(endpoints) && endpoints.length > 0
-    ? endpoints
-    : resolveEvmRpcEndpoints(chainId);
-  const { endpoints: endpointList, rejected } = await filterResolvedPublicRpcEndpoints(rawEndpointList, { lookup });
-  if (endpointList.length === 0) {
-    const err = new Error(`no public HTTPS RPC endpoints available for chain_id ${chainId}; set BOB_EVM_RPCS_${chainId}=url1,url2 to override`);
-    err.rpc_policy_rejections = summarizeRpcPolicyRejections(rejected);
-    err.details = { rpc_policy_rejections: err.rpc_policy_rejections };
-    throw err;
-  }
-
-  const errors = [];
-  for (const endpoint of endpointList) {
-    try {
-      const result = await rpcRequestOnce(endpoint, method, params, { timeoutMs, maxResponseBytes, lookup });
-      return { result, endpoint: redactRpcEndpoint(endpoint) };
-    } catch (error) {
-      errors.push({
-        endpoint: redactRpcEndpoint(endpoint),
-        message: redactRpcEndpointText(error.message || String(error)),
-      });
-    }
-  }
-  const summary = errors.map((e) => `${e.endpoint}: ${e.message}`).join("; ");
-  const err = new Error(`all RPC endpoints failed for ${method} on chain ${chainId}: ${summary}`);
-  err.attempts = errors;
-  throw err;
-}
+const { rpcRequest, rpcRequestOnce } = makeJsonRpcClient({
+  resolveEndpoints: resolveEvmRpcEndpoints,
+  selectorKey: "chainId",
+  selectorLabel: "chain",
+  availabilitySelectorLabel: "chain_id",
+  envHint: (chainId) => `BOB_EVM_RPCS_${chainId}`,
+});
 
 async function ethCall({ chainId, to, data, block = "latest", from = null, endpoints }) {
   if (!isAddress(to)) throw new Error(`to must be a 20-byte hex address, received: ${to}`);

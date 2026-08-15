@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineLogTool } = require("./_archetypes.js");
+
 // chain+evaluator-shared justified: protocol-drift logging is a
 // cross-cutting telemetry channel — every agent role (chain-builder,
 // evaluator-shared subagents, surface-discovery, orchestrator) may emit
@@ -133,7 +135,7 @@ function handler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineLogTool({
   name: "bob_log_protocol_drift",
   description:
     "Append a protocol_drift_observed observation to frontier-events.jsonl. Drift records are advisory telemetry only (Y-P7); the runtime NEVER decides skill-vs-MCP rightness. CI dimensions (Y.7 lifecycle / write-tool-schema / runtime-constraint) and operators resolve drift. Per-(run_id, skill_path, drift_signature) idempotent — runtime-emitted records without a skill_path collapse onto a <runtime> sentinel so multiple CI drifts on the same run coexist.",
@@ -194,11 +196,5 @@ module.exports = Object.freeze({
     "surface-discovery",
   ],
   capability_id: "Y_self_reporting",
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["frontier-events.jsonl"],
 });

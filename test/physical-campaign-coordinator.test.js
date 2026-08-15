@@ -48,7 +48,7 @@ const {
 } = require("../mcp/core/session/session-state.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../mcp/core/governance/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildInitialSessionState,
 } = require("../mcp/core/session/session-state-contracts.js");
@@ -57,7 +57,7 @@ const {
 } = require("../mcp/core/session/session-state-store.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/physical-scope-axis.js");
+} = require("../mcp/core/session/physical-scope-axis-contract.js");
 const {
   canonicalJson,
   hashCanonicalJson,

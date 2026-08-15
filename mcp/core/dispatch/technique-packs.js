@@ -51,7 +51,7 @@ const {
 } = require("../telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 const {
   resourceCandidatePaths,
 } = require("../io/runtime-resources.js");

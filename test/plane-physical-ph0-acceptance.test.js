@@ -61,7 +61,7 @@ const {
 } = require("../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
 } = require("../mcp/core/requested-effects.js");

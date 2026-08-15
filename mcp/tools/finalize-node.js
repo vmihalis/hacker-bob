@@ -69,18 +69,18 @@ const {
 } = require("../core/producer-run-ledger.js");
 const {
   buildProducerOutputContract,
-} = require("../core/contract/producer-contract.js");
+} = require("../core/contract/index.js");
 const {
   PRODUCER_PACKS,
 } = require("../core/dispatch/producer-packs.js");
 const { contractSurfaceId, caip10Endpoint } = require("../domains/blockchain/contract-target.js");
-const { normalizeContractTupleStrict } = require("../lib/chain-authority.js");
+const { normalizeContractTupleStrict } = require("../core/chain-authority-contracts.js");
 const {
   logCellCoverage,
 } = require("../core/frontier/coverage.js");
 const {
   mechanicalVerify,
-} = require("../core/contract/contract-verifier.js");
+} = require("../core/contract/index.js");
 const {
   scheduleMaterialization,
 } = require("../core/frontier/frontier-materialize-debounce.js");

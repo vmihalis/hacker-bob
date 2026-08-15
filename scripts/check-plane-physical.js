@@ -6,7 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const {
   assertPackageSafePhysicalDesignDocument,
-} = require("../mcp/lib/physical-sensitive-material.js");
+} = require("../mcp/core/physical-sensitive-material-contracts.js");
 const {
   canonicalPlanePhysicalHyperedgeRegistry,
   canonicalPlanePhysicalNodeContractRegistry,

@@ -17,7 +17,7 @@ const {
 } = require("../io/runtime-resources.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 const {
   normalizeSessionStateDocument,
 } = require("../session/session-state-contracts.js");

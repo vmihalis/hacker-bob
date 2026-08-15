@@ -276,7 +276,7 @@ test("two contracts sharing an 8-hex address prefix derive DISTINCT target_domai
 
 test("the companion path and the contracts-axis init path derive the SAME chain_authority_hash (uppercase family folds identically)", () => {
   const { prepareContractCompanion } = require("../mcp/domains/blockchain/contract-target.js");
-  const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
+  const { chainAuthorityHash } = require("../mcp/core/chain-authority-contracts.js");
   const initTool = require("../mcp/tools/blockchain/init-contract-session.js");
 
   const contract = {

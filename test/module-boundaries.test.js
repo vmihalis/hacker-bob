@@ -372,7 +372,7 @@ test("the plane classifier is structural and its live inventory is exact", () =>
   for (const directory of [path.join(MCP_LIB, "domains", "physical"), path.join(MCP_LIB, "tools", "physical")]) {
     onDisk.push(...fs.readdirSync(directory).filter((name) => name.endsWith(".js")));
   }
-  assert.equal(onDisk.length, 57);
+  assert.equal(onDisk.length, 59);
   assert.deepEqual(onDisk.sort(), [...PLANE_MEMBERS].sort());
 
   const blockchainOnDisk = [];
@@ -388,7 +388,7 @@ test("the plane classifier is structural and its live inventory is exact", () =>
     };
     visit(directory);
   }
-  assert.equal(blockchainOnDisk.length, 53);
+  assert.equal(blockchainOnDisk.length, 56);
   assert.deepEqual(blockchainOnDisk.sort(), [...BLOCKCHAIN_PLANE_MEMBERS].sort());
 });
 

@@ -18,7 +18,7 @@ const {
 const {
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   hashCanonicalJson,
 } = require("../../../mcp/core/verification/verification-contracts.js");

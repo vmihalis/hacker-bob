@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineWriteTool } = require("./_archetypes.js");
+
 const { writeWaveHandoff } = require("../core/waves/waves.js");
 const {
   BLOCKED_PREREQ_IDENTIFIER_HINT_LONG_HEX_PATTERN,
@@ -10,7 +12,7 @@ const {
 } = require("../core/waves/wave-handoff-contracts.js");
 const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = wrapWriteTool({
+module.exports = wrapWriteTool(defineWriteTool({
   name: "bob_write_wave_handoff",
   writes_audit_graded: true,
   description:
@@ -234,11 +236,5 @@ module.exports = wrapWriteTool({
   },
   handler: writeWaveHandoff,
   role_bundles: ["evaluator-shared"],
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["handoff-wN-aN.json","handoff-wN-aN.md"],
-});
+}));

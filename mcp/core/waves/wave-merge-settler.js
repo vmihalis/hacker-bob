@@ -23,7 +23,7 @@ const { readScopeExclusions } = require("../scope.js");
 const { scheduleMaterialization } = require("../frontier/frontier-materialize-debounce.js");
 const { ERROR_CODES, ToolError } = require("../io/envelope.js");
 const { safeAppendPipelineEventDirect } = require("../telemetry/pipeline-events.js");
-const { buildGovernanceContext } = require("../governance/governance-context.js");
+const { buildGovernanceContext } = require("../governance/index.js");
 const {
   buildWaveReadiness,
   loadWaveArtifacts,

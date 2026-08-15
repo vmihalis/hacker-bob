@@ -15,10 +15,10 @@ const {
 } = require("../io/validation.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../../lib/physical-scope-axis.js");
+} = require("./physical-scope-axis-contract.js");
 
 // Local copy of the lifecycle enum. The canonical source is
 // governance-contracts.js, but that module depends on

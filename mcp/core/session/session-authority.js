@@ -30,21 +30,23 @@ const {
 } = require("../../domains/blockchain/chain-tool-identity.js");
 const {
   isChainTupleInAuthority,
-} = require("../../lib/chain-authority.js");
+} = require("../chain-authority-contracts.js");
 const {
+  CONTRACT_TARGET_DOMAIN_PATTERN,
   derivePhysicalSessionIdentity,
+  isContractTargetDomain,
   isPhysicalSessionTargetDomain,
   PHYSICAL_SESSION_TARGET_DOMAIN_PATTERN,
-} = require("../../lib/physical-session-identity.js");
+} = require("./synthetic-session-identity-contracts.js");
 const {
   readVerifiedPhysicalSessionBootstrapJournal,
 } = require("../../domains/physical/physical-session-journal.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../governance/governance-store.js");
+} = require("../governance/index.js");
 const {
   sessionNucleusFromState,
-} = require("../governance/governance-contracts.js");
+} = require("../governance/index.js");
 
 const AUTHORITY_VERSION = 1;
 const AUTHORITY_MODE_ENV = "BOB_SESSION_AUTHORITY_MODE";
@@ -359,22 +361,6 @@ const REPO_TARGET_DOMAIN_PATTERN = /^repo-[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8}
 
 function isRepoTargetDomain(value) {
   return typeof value === "string" && REPO_TARGET_DOMAIN_PATTERN.test(value);
-}
-
-// CONTRACT_TARGET_DOMAIN_PATTERN identifies the synthetic on-chain slug minted by
-// deriveContractTargetDomain for the contracts axis. A single contract yields
-// `sc-<family>-<chainId>-<addr8>` (family is one of the six known chain families,
-// chainId is the safeSlug alphabet, addr8 is addressSlug's [a-z0-9]{1,8}); several
-// contracts collapse to `contracts-<hash8>` (the first 8 hex of the chain authority
-// hash). Like the repo guard, this is the hook that lets a contract session skip
-// assertHttpScopeDomain (which rejects non-public-suffix hosts). It is intentionally
-// narrow and family-restricted so a maliciously-crafted target_domain cannot smuggle
-// contract treatment for a host that is actually a public-suffix URL.
-const CONTRACT_TARGET_DOMAIN_PATTERN =
-  /^(?:sc-(?:evm|svm|aptos|sui|substrate|cosmwasm)-[a-z0-9._-]+-[a-z0-9]{1,8}|contracts-[0-9a-f]{8})$/;
-
-function isContractTargetDomain(value) {
-  return typeof value === "string" && CONTRACT_TARGET_DOMAIN_PATTERN.test(value);
 }
 
 function hasOwn(value, key) {
@@ -1074,7 +1060,7 @@ function authorizeBootstrap(rule, args) {
         const { deriveRepoTargetDomain } = require("../../domains/repo/repo-target.js");
         const {
           assertRepoRootPath,
-        } = require("../governance/governance-contracts.js");
+        } = require("../governance/index.js");
         const canonicalRoot = assertRepoRootPath(args.repo_path, "repo_path");
         args.target_domain = deriveRepoTargetDomain(canonicalRoot);
       } catch (error) {

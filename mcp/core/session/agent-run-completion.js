@@ -118,7 +118,7 @@ function evaluateEvidenceCompletion(marker) {
   let lifecycleState = state && state.lifecycle_state;
   const legacyPhase = state && state.phase;
   try {
-    const { readSessionNucleus } = require("../governance/governance-store.js");
+    const { readSessionNucleus } = require("../governance/index.js");
     const nucleus = readSessionNucleus(targetDomain);
     if (nucleus && typeof nucleus.lifecycle_state === "string") {
       lifecycleState = nucleus.lifecycle_state;
@@ -201,7 +201,7 @@ const {
 } = require("../telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 
 function handoffTelemetry(handoff, { present = true, valid = true } = {}) {
   return {

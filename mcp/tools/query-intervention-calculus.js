@@ -1,10 +1,12 @@
 "use strict";
 
+const { defineQueryTool } = require("./_archetypes.js");
+
 const {
   rankInterventions,
 } = require("../core/belief/intervention-calculus.js");
 
-module.exports = Object.freeze({
+module.exports = defineQueryTool({
   name: "bob_query_intervention_calculus",
   capability_id: "CB-B2_intervention_calculus",
   description:
@@ -21,11 +23,4 @@ module.exports = Object.freeze({
   },
   handler: rankInterventions,
   role_bundles: ["orchestrator"],
-  mutating: false,
-  global_preapproval: false,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

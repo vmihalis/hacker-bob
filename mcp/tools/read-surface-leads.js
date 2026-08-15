@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readSurfaceLeads } = require("../core/frontier/surface-leads.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_surface_leads",
   description:
     "Read compact ranked surface leads from session-owned surface-leads.json, including high-confidence unpromoted lead debt.",
@@ -16,11 +18,4 @@ module.exports = Object.freeze({
   },
   handler: readSurfaceLeads,
   role_bundles: ["evaluator-web", "orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

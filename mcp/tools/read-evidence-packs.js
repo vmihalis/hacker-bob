@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readEvidencePacks } = require("../core/evidence.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_evidence_packs",
   description:
     "Read and validate the evidence packs document for final reportable findings.",
@@ -15,11 +17,4 @@ module.exports = Object.freeze({
   },
   handler: readEvidencePacks,
   role_bundles: ["evidence", "grader", "reporter", "orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

@@ -11,7 +11,7 @@ const {
   getTemplatesForClass,
   suggestInvariantsForFinding,
   suggestInvariantsForReport,
-} = require("../mcp/core/mechanism/invariant-template-corpus.js");
+} = require("../mcp/core/mechanism/index.js");
 const { buildTestSource } = require("../mcp/core/invariant-runner.js");
 
 test("SUPPORTED_CLASSES covers the smart-contract bug classes IP4 emits", () => {

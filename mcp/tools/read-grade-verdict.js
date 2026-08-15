@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readGradeVerdict } = require("../core/grade-verdict-store.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_grade_verdict",
   description:
     "Read the authoritative grade verdict JSON document.",
@@ -19,11 +21,4 @@ module.exports = Object.freeze({
   },
   handler: readGradeVerdict,
   role_bundles: ["grader","reporter","orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

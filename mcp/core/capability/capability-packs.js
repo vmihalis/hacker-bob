@@ -8,6 +8,9 @@ const {
   PHYSICAL_CAPABILITY_CONSUMERS,
   PHYSICAL_CAPABILITY_PACK_DISPATCH_BLOCK_REASON,
 } = require("../../domains/physical/physical-capability-manifest.js");
+const {
+  PHYSICAL_CAPABILITY_PACK_ADAPTERS,
+} = require("./capability-pack-runtime-ports.js");
 
 // Capability pack manifest. Each pack is the single source of truth for:
 //   id              — string used in surface-routes.json and findings.jsonl
@@ -419,7 +422,7 @@ const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
 // while dispatch stays false until the production verdict resolver and the
 // no-active-effects wave-handoff adapter exist.  No consumer borrows web
 // endpoint/PoC/base_url semantics and no role receives provider transport.
-const PHYSICAL_CAPABILITY_PACK = Object.freeze({
+const physicalCapabilityPack = {
   id: "physical",
   capability_pack_version: 1,
   surface_class: "physical",
@@ -460,7 +463,12 @@ const PHYSICAL_CAPABILITY_PACK = Object.freeze({
   grade: PHYSICAL_CAPABILITY_CONSUMERS.grade,
   report: PHYSICAL_CAPABILITY_CONSUMERS.report,
   composition: PHYSICAL_CAPABILITY_CONSUMERS.composition,
+};
+Object.defineProperty(physicalCapabilityPack, "runtimeAdapters", {
+  value: PHYSICAL_CAPABILITY_PACK_ADAPTERS,
+  enumerable: false,
 });
+const PHYSICAL_CAPABILITY_PACK = Object.freeze(physicalCapabilityPack);
 
 const CAPABILITY_PACKS = Object.freeze({
   web: WEB_CAPABILITY_PACK,

@@ -23,7 +23,7 @@ const {
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
   projectPhysicalReservationState,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   normalizePhysicalResourceInventory,
   planPhysicalResourceBundle,

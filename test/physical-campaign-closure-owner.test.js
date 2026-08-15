@@ -37,7 +37,7 @@ const {
 } = require("../mcp/domains/physical/instrument-lease-store.js");
 const {
   sessionNucleusFromState,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildInitialSessionState,
 } = require("../mcp/core/session/session-state-contracts.js");
@@ -46,7 +46,7 @@ const {
 } = require("../mcp/core/session/session-state-store.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/physical-scope-axis.js");
+} = require("../mcp/core/session/physical-scope-axis-contract.js");
 const {
   physicalCampaignDir,
   sessionDir,

@@ -208,7 +208,7 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
   Object.freeze({
     consumer_id: "mechanism_template_loader_object_authorization",
     source_location: Object.freeze({
-      file: "mcp/core/mechanism/invariant-template-corpus.js",
+      file: "mcp/core/mechanism/index.js",
       token_or_regex: "getMechanismTemplate",
     }),
     producer_id: "object_authorization_mechanism_template",

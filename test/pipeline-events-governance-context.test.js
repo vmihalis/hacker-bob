@@ -15,7 +15,7 @@ const {
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,
-} = require("../mcp/core/governance/governance-context.js");
+} = require("../mcp/core/governance/index.js");
 const {
   sessionDir,
   pipelineEventsJsonlPath,
@@ -269,7 +269,7 @@ test("buildGovernanceContextFromNucleus pulls fields from the nucleus document",
   withTempHome(() => {
     const domain = "build-from-nucleus.example";
     const state = seedState(domain);
-    const nucleus = require("../mcp/core/governance/governance-contracts.js").sessionNucleusFromState(state);
+    const nucleus = require("../mcp/core/governance/index.js").sessionNucleusFromState(state);
     const context = buildGovernanceContextFromNucleus(nucleus);
     assert.equal(context.nucleus_hash, nucleus.nucleus_hash);
     assert.equal(context.lifecycle_state, nucleus.lifecycle_state);

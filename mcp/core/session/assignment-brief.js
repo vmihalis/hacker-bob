@@ -43,7 +43,7 @@ const {
 } = require("../io/http-records.js");
 const {
   summarizePublicIntelForSurface,
-} = require("../intel/public-intel.js");
+} = require("../intel/index.js");
 const {
   summarizeStaticScanHints,
 } = require("../../domains/repo/static-artifacts.js");
@@ -108,7 +108,7 @@ const {
 } = require("../telemetry/pack-telemetry.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../governance/governance-context.js");
+} = require("../governance/index.js");
 const {
   checkCliToolInstallation,
   presenceCachePath,
@@ -1101,7 +1101,7 @@ function deriveCellFloorForSurface({ domain, surfaceObj, surfaceId, coverageSumm
     // bob_list_auth_profiles exposes. Fail-soft to the anonymous baseline.
     authProfiles = [];
     try {
-      const parsed = JSON.parse(require("../auth/auth.js").listAuthProfiles({ target_domain: domain }));
+      const parsed = JSON.parse(require("../auth/index.js").listAuthProfiles({ target_domain: domain }));
       authProfiles = Array.isArray(parsed.profiles)
         ? parsed.profiles
           .map((p) => p && p.profile_name)
@@ -1155,7 +1155,7 @@ function deriveCellFloorForSurface({ domain, surfaceObj, surfaceId, coverageSumm
   if (belief && typeof belief === "object" && !Array.isArray(belief) && belief.enabled === true) {
     let mechanismTemplates = [];
     try {
-      const { getMechanismTemplatesForDomain } = require("../mechanism/invariant-template-corpus.js");
+      const { getMechanismTemplatesForDomain } = require("../mechanism/index.js");
       const merged = getMechanismTemplatesForDomain(domain);
       mechanismTemplates = Array.isArray(merged) ? merged : [];
     } catch {

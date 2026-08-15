@@ -21,7 +21,7 @@ const {
 const {
   validateNoSensitiveMaterial,
   redactTextSensitiveValues,
-} = require("../core/redaction/sensitive-material.js");
+} = require("../core/redaction/index.js");
 const {
   validateAssignedWaveAgentSurface,
 } = require("../core/session/assignments.js");
@@ -30,7 +30,7 @@ const {
 } = require("../core/telemetry/pipeline-events.js");
 const {
   safeGovernanceContextForDomain,
-} = require("../core/governance/governance-context.js");
+} = require("../core/governance/index.js");
 const {
   computeFindingDedupeKey,
   normalizeFindingRecord,

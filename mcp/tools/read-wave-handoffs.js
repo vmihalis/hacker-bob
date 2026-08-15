@@ -1,8 +1,10 @@
 "use strict";
 
+const { defineReadTool } = require("./_archetypes.js");
+
 const { readWaveHandoffs } = require("../core/waves/wave-handoff-store.js");
 
-module.exports = Object.freeze({
+module.exports = defineReadTool({
   name: "bob_read_wave_handoffs",
   description:
     "Read validated structured wave handoff summaries from handoff-wN-aN.json files only. Markdown handoffs are ignored.",
@@ -23,11 +25,4 @@ module.exports = Object.freeze({
   },
   handler: readWaveHandoffs,
   role_bundles: ["chain","orchestrator"],
-  mutating: false,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
-  session_artifacts_written: [],
 });

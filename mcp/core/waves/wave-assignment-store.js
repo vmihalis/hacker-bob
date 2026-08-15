@@ -37,7 +37,7 @@ const {
 // auth_differential_required — routeSurfacesInternal rewrites the file, and
 // without the detector it would clobber the flag route_surfaces set to false.
 const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../frontier/id-bearing-endpoints.js");
-const { listAuthProfiles } = require("../auth/auth.js");
+const { listAuthProfiles } = require("../auth/index.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
 } = require("../frontier/surface-leads.js");

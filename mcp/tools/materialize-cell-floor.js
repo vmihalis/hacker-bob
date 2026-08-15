@@ -18,8 +18,8 @@ const {
 } = require("../core/frontier/coverage.js");
 const { appendCellProposal, readCellProposals } = require("../core/waves/task-graph-events.js");
 const { cellNodeId, materializeTaskGraph } = require("../core/waves/task-graph-materializer.js");
-const { appendContract } = require("../core/contract/contracts.js");
-const { buildCellCoverageContract } = require("../core/contract/cell-contract.js");
+const { appendContract } = require("../core/contract/index.js");
+const { buildCellCoverageContract } = require("../core/contract/index.js");
 const { loadQueuePolicy } = require("../core/io/queue-policy.js");
 const { scheduleMaterialization } = require("../core/frontier/frontier-materialize-debounce.js");
 

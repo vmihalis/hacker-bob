@@ -50,7 +50,7 @@ const {
 } = require("../mcp/domains/repo/repo-env.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../mcp/core/redaction/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const repoPrepareEnvTool = require("../mcp/tools/repo/repo-prepare-env.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,

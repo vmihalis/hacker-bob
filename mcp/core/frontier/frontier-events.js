@@ -31,6 +31,7 @@ const {
   readJsonlStrict,
 } = require("../io/storage.js");
 const { CHAIN_FAMILY_VALUES } = require("../constants/shared-vocabulary.js");
+const { normalizeChainToken } = require("../constants/chain-token.js");
 const { ToolError, ERROR_CODES } = require("../io/envelope.js");
 
 const FRONTIER_EVENT_VERSION = 1;
@@ -93,18 +94,6 @@ function isProducerObservationSubtype(value) {
 
 function generatedFrontierEventId(fields) {
   return `FE-${hashCanonicalJson(fields).slice(0, 24)}`;
-}
-
-// Mirrors capability-packs.normalizeSurfaceType (lowercase, collapse spaces and
-// dashes to underscores) without importing that module, so frontier-events
-// stays dependency-light and free of a require cycle. CHAIN_FAMILY_VALUES
-// (constants.js) is the single known-chain-family authority — the same set
-// SMART_CONTRACT_CHAIN_FAMILY_TO_PACK keys on at routing time, so the
-// append-time gate and the router never disagree about what "known" means.
-function normalizeChainToken(value) {
-  if (value == null) return null;
-  const normalized = String(value).trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return normalized || null;
 }
 
 // Y-D21 — Producer-boundary surface integrity. A surface.observed event whose

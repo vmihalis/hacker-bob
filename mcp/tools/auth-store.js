@@ -1,6 +1,6 @@
 "use strict";
 
-const { authStore } = require("../core/auth/auth.js");
+const { authStore } = require("../core/auth/index.js");
 
 module.exports = Object.freeze({
   name: "bob_auth_store",

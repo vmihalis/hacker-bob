@@ -47,7 +47,7 @@ test("no hand-rolled CAIP-10 identity with inline lowercase in the SC path", () 
 });
 
 test("every contract-identity producer agrees and preserves base58/SS58 case", () => {
-  const { contractIdentityKey, normalizeOneTuple } = require("../mcp/lib/chain-authority.js");
+  const { contractIdentityKey, normalizeOneTuple } = require("../mcp/core/chain-authority-contracts.js");
   const { caip10Endpoint } = require("../mcp/domains/blockchain/contract-target.js");
   // base58 (svm) is case-SENSITIVE: the shared key preserves case, and the CAIP-10
   // endpoint + the membership normalizer agree with it (no divergent hand-rolled form).

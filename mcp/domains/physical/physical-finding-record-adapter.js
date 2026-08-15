@@ -26,7 +26,7 @@ const {
 } = require("../../core/io/paths.js");
 const {
   validateNoPhysicalSensitiveMaterial,
-} = require("../../lib/physical-sensitive-material.js");
+} = require("../../core/physical-sensitive-material-contracts.js");
 const {
   parseFindingId,
 } = require("../../core/io/validation.js");

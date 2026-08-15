@@ -23,7 +23,7 @@ const {
   MASSREAD_DEMONSTRATED_CEILING,
 } = require("../mcp/domains/web/offensive-massread-producer.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
-const { authStore } = require("../mcp/core/auth/auth.js");
+const { authStore } = require("../mcp/core/auth/index.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
 const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");

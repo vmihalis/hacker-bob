@@ -45,7 +45,7 @@ const { validateAgainstSchema } = require("../mcp/core/dispatch/tool-validation.
 const idorDescriptor = require("../mcp/tools/web/bob-http-idor-confirm.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
-const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/core/auth/auth.js");
+const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/core/auth/index.js");
 const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
 const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 

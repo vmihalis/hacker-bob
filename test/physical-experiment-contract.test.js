@@ -48,7 +48,7 @@ const {
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   buildDurableReceiptTrustRegistry,

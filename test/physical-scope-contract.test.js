@@ -28,7 +28,7 @@ const {
   normalizePhysicalScopeNucleusAxis,
   normalizeScopePolicy,
   sessionNucleusHash,
-} = require("../mcp/core/governance/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
 } = require("../mcp/core/requested-effects.js");
@@ -1564,7 +1564,7 @@ test("post-replay bootstrap failure leaves a durable pending journal and exact r
       fs.fsyncSync = originalFsync;
     }
     try {
-      const { target_domain: domain } = require("../mcp/lib/physical-session-identity.js")
+      const { target_domain: domain } = require("../mcp/core/session/synthetic-session-identity-contracts.js")
         .derivePhysicalSessionIdentity(importRef);
       assert.equal(fs.existsSync(physicalSessionBootstrapPath(domain)), true);
       const pending = readVerifiedPhysicalSessionBootstrapJournal(domain);

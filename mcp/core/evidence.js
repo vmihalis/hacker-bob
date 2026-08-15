@@ -30,7 +30,7 @@ const {
 } = require("./io/envelope.js");
 const {
   validateNoSensitiveMaterial,
-} = require("./redaction/sensitive-material.js");
+} = require("./redaction/index.js");
 const {
   readCurrentClaimFreeze,
 } = require("./claims/claim-freeze.js");
@@ -43,7 +43,7 @@ const {
 } = require("./verification/verification-round-store.js");
 const {
   safeGovernanceContextForDomain,
-} = require("./governance/governance-context.js");
+} = require("./governance/index.js");
 const {
   normalizeHistoryRef,
 } = require("../domains/repo/repo-target.js");

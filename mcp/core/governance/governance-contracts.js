@@ -27,14 +27,14 @@ const {
 } = require("../io/validation.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../redaction/sensitive-material.js");
+} = require("../redaction/index.js");
 const {
   extractChainTuples,
-} = require("../../lib/chain-authority.js");
+} = require("../chain-authority-contracts.js");
 const {
   PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION,
   normalizePhysicalScopeNucleusAxis,
-} = require("../../lib/physical-scope-axis.js");
+} = require("../session/physical-scope-axis-contract.js");
 
 const GOVERNANCE_VERSION = 1;
 const LIFECYCLE_STATE_VALUES = Object.freeze([

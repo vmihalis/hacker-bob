@@ -1,5 +1,7 @@
 "use strict";
 
+const { defineLogTool } = require("./_archetypes.js");
+
 // chain+evaluator-shared justified: friction logging is a cross-cutting
 // telemetry channel — every agent role (chain-builder, evaluator-shared
 // subagents, surface-discovery, orchestrator) emits capability friction
@@ -156,7 +158,7 @@ function handler(args) {
   });
 }
 
-module.exports = Object.freeze({
+module.exports = defineLogTool({
   name: "bob_log_capability_friction",
   description:
     "Append a capability_friction_observed observation to frontier-events.jsonl. The agent declares the MCP tool it wanted (wanted_tool MUST exist in TOOL_REGISTRY), the closed-enum purpose, the Bash fallback it reached for, and the friction_kind (tool_absent vs tool_inadequate). tool_inadequate REQUIRES inadequate_invocation_ref pointing at a recorded MCP invocation in the same run_id (Y-P10 mechanical witness). Per-(run_id, node_id, wanted_tool, friction_kind, purpose, detected_by) idempotent (Y-P3) — second emission with the same canonical identity is silently de-duped. friction_kind is an identity field so a tool_absent and a tool_inadequate record for the same tool/purpose/detected_by coexist (Y-P11).",
@@ -270,12 +272,6 @@ module.exports = Object.freeze({
     "surface-discovery",
   ],
   capability_id: "Y_self_reporting",
-  mutating: true,
-  global_preapproval: true,
-  network_access: false,
-  browser_access: false,
-  scope_required: false,
-  sensitive_output: false,
   session_artifacts_written: ["frontier-events.jsonl"],
   // Single-source the Y-P3 idempotency derivation over the canonical
   // (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by)

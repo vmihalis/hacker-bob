@@ -75,7 +75,7 @@ const {
 } = require("./static-artifacts.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../../core/redaction/sensitive-material.js");
+} = require("../../core/redaction/index.js");
 const {
   resolveEgressProfile,
 } = require("../../core/egress-profiles.js");

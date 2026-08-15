@@ -26,7 +26,7 @@ const {
 } = require("../session/session-authority.js");
 const {
   redactPhysicalSensitiveValues,
-} = require("../../lib/physical-sensitive-material.js");
+} = require("../physical-sensitive-material-contracts.js");
 
 const TOOL_TELEMETRY_VERSION = 1;
 const TOOL_INVOCATION_TELEMETRY_VERSION = 1;

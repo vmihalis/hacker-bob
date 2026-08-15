@@ -43,7 +43,7 @@ const {
 } = require("./capability-packs.js");
 const {
   collectContractArtifactRefs,
-} = require("../contract/contracts.js");
+} = require("../contract/index.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
 } = require("../waves/task-graph-events.js");

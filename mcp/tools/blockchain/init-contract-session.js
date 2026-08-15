@@ -34,139 +34,17 @@ const { writeSessionStateDocument } = require("../../core/session/session-state-
 const { appendFrontierEvent } = require("../../core/frontier/frontier-events.js");
 const { scheduleMaterialization } = require("../../core/frontier/frontier-materialize-debounce.js");
 const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("../../core/ledger-integrity/index.js");
-const { bindAndSeedContracts, caip10Endpoint } = require("../../domains/blockchain/contract-target.js");
-const { chainAuthorityHash, normalizeContractTupleStrict } = require("../../lib/chain-authority.js");
+const {
+  bindAndSeedContracts,
+  caip10Endpoint,
+  deriveContractSession,
+  deriveContractTargetDomain,
+} = require("../../domains/blockchain/contract-target.js");
 const { writeQueuePolicy } = require("../../core/io/queue-policy.js");
-
-// Per-family address shape validators — reuse the canonical sources rather than
-// re-copying any regex. EVM 0x+40hex (evm-client), Solana base58 pubkey
-// (svm-client.isPubkey), Move 0x+1..64hex for aptos/sui (sui-client), SS58 for
-// substrate and bech32 for cosmwasm (finding-contracts normalizers, which
-// return null on a shape/checksum miss).
-const { ADDRESS_RE: EVM_ADDRESS_RE } = require("../../domains/blockchain/smart-contracts/evm-client.js");
-const { isPubkey: isSvmPubkey } = require("../../domains/blockchain/smart-contracts/svm-client.js");
-const { MOVE_ADDRESS_RE } = require("../../domains/blockchain/smart-contracts/sui-client.js");
-const { normalizeSs58Address, normalizeBech32Address } = require("../../core/finding-contracts.js");
 
 const CHECKPOINT_MODE_VALUES = ["normal", "paranoid", "yolo"];
 // OD4 default depth for the linked-contract closure walk recorded on the seed.
 const DEFAULT_LINKED_CONTRACT_DEPTH = 3;
-
-// Shape-only validation, BY DESIGN (operator-declared scope): this checks the
-// per-family address FORMAT, not on-chain code presence. An EOA / empty account
-// that matches the shape binds as a smart_contract surface intentionally — the
-// contracts axis is an operator scoping decision, and a no-code address
-// terminalizes downstream (the sc-recon-expander does not expand a no-code
-// address), it does not silently become a live target. Deliberately NO network
-// preflight (getCode) here: init stays pure/offline and fail-closed on shape,
-// and a network round-trip at bind time would couple session creation to RPC
-// health. This is not an oversight.
-function isValidContractAddressShape(chainFamily, address) {
-  switch (chainFamily) {
-    case "evm":
-      return EVM_ADDRESS_RE.test(address);
-    case "svm":
-      return isSvmPubkey(address);
-    case "aptos":
-    case "sui":
-      return MOVE_ADDRESS_RE.test(address);
-    case "substrate":
-      return normalizeSs58Address(address) != null;
-    case "cosmwasm":
-      return normalizeBech32Address(address) != null;
-    default:
-      return false;
-  }
-}
-
-// Lowercase, collapse anything outside the safe-domain alphabet to '-', and trim
-// stray separators so the derived slug passes assertSafeDomain (no '/' '\' '..').
-function safeSlug(value) {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    || "contracts";
-}
-
-function addressSlug(address) {
-  const lowered = String(address).toLowerCase();
-  const body = lowered.startsWith("0x") ? lowered.slice(2) : lowered;
-  const safe = body.replace(/[^a-z0-9]/g, "");
-  return (safe || "addr").slice(0, 8);
-}
-
-// One contract => the on-chain identity slug PLUS a full-authority digest
-// suffix; several => a stable digest of the whole authority set. Both cases are
-// order-independent via chainAuthorityHash.
-function deriveContractTargetDomain(normalizedContracts, authorityHash) {
-  if (normalizedContracts.length === 1) {
-    const { chain_family: chainFamily, chain_id: chainId, address } = normalizedContracts[0];
-    // addressSlug truncates the address to 8 hex nibbles (32 bits), so the
-    // human-readable identity slug ALONE collides for two addresses that share
-    // their first 8 nibbles on the same family+chain_id (trivially craftable
-    // with vanity addresses). Append a short digest of the full authority set —
-    // the same disambiguation the multi-contract branch already uses — so
-    // distinct contracts derive distinct target_domains. Deterministic and
-    // fail-closed: without it, re-init throws STATE_CONFLICT or a chain tool
-    // reads chain_scope_blocked on the wrong-but-same-slug contract.
-    return safeSlug(`sc-${chainFamily}-${chainId}-${addressSlug(address)}-${String(authorityHash).slice(0, 8)}`);
-  }
-  return safeSlug(`contracts-${String(authorityHash).slice(0, 8)}`);
-}
-
-// Single shared derivation funnel: the ONE place the contracts axis turns raw
-// contract bindings into (normalizedContracts, authorityHash, domain). The
-// handler consumes it to persist state.json, and the pre-dispatch bootstrap gate
-// (session-authority.js authorizeBootstrap) lazy-requires it so the gate's
-// authorityTargetDomain is byte-equal to the persisted slug — the slug rule is
-// defined once, never duplicated in the authority kernel. Throws fail-closed
-// (ToolError) on any malformed contract via normalizeContracts.
-function deriveContractSession(rawContracts) {
-  const normalizedContracts = normalizeContracts(rawContracts);
-  const authorityHash = chainAuthorityHash(normalizedContracts);
-  const domain = deriveContractTargetDomain(normalizedContracts, authorityHash);
-  return { normalizedContracts, authorityHash, domain };
-}
-
-function normalizeContracts(rawContracts) {
-  if (!Array.isArray(rawContracts) || rawContracts.length === 0) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      "contracts must be a non-empty array of {chain_family, chain_id, address} bindings",
-    );
-  }
-  const seen = new Set();
-  const normalized = [];
-  for (let i = 0; i < rawContracts.length; i += 1) {
-    // Shared bind-time normal form (chain-authority.normalizeContractTupleStrict):
-    // object shape, chain_family trim+lowercase + CHAIN_FAMILY_VALUES membership
-    // (Y-D21 fail-closed), chain_id non-empty + colon-guarded, address non-empty.
-    // Identical to the url/repo companion path (contract-target), so the SAME
-    // contract set hashes to the SAME chain_authority_hash on both axes and the
-    // persisted CAIP-10 tuple never desyncs from authority.
-    const tuple = normalizeContractTupleStrict(rawContracts[i], i);
-    // Init-only ADD: per-family address SHAPE validation (operator-declared
-    // scope, offline, shape-not-code — see isValidContractAddressShape). The
-    // companion path leaves shape enforcement to downstream, so it stays here.
-    if (!isValidContractAddressShape(tuple.chain_family, tuple.address)) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} carries an address that is not a valid ${tuple.chain_family} address shape`,
-        { index: i, chain_family: tuple.chain_family },
-      );
-    }
-    const endpoint = caip10Endpoint({
-      chainFamily: tuple.chain_family,
-      chainId: tuple.chain_id,
-      address: tuple.address,
-    });
-    if (seen.has(endpoint)) continue;
-    seen.add(endpoint);
-    normalized.push(tuple);
-  }
-  return normalized;
-}
 
 function handler(args = {}) {
   // Single funnel shared with the bootstrap gate: order/result unchanged from the
@@ -358,6 +236,15 @@ const toolDescriptor = {
 // while session-authority's require(...).deriveContractSession still resolves.
 Object.defineProperty(toolDescriptor, "deriveContractSession", {
   value: deriveContractSession,
+  enumerable: false,
+});
+
+// The identity minter itself, exposed the SAME non-enumerable way so the
+// blockchain plane (mcp/domains/blockchain/plane.js) can bind identityMinter BY
+// REFERENCE to the ONE definition site here, while the registry descriptor
+// shape and every Object.keys/JSON path stay unchanged.
+Object.defineProperty(toolDescriptor, "deriveContractTargetDomain", {
+  value: deriveContractTargetDomain,
   enumerable: false,
 });
 

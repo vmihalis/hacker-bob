@@ -18,7 +18,7 @@ const {
 } = require("./physical-capability-manifest.js");
 const {
   validateNoPhysicalSensitiveMaterial,
-} = require("../../lib/physical-sensitive-material.js");
+} = require("../../core/physical-sensitive-material-contracts.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");

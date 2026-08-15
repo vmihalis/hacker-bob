@@ -57,7 +57,7 @@ const {
 } = require("../../../mcp/core/executed-evidence-registry.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../../../mcp/core/governance/governance-contracts.js");
+} = require("../../../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
 } = require("../../../mcp/core/requested-effects.js");

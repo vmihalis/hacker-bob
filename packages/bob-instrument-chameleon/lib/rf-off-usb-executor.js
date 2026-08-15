@@ -49,7 +49,7 @@ const {
 } = require("../../../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizeResourceAllocation,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   assertPhysicalTrustedClockPort,
   samplePhysicalTrustedClock,
