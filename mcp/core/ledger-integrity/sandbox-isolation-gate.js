@@ -338,7 +338,7 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
   // The invariant / finding-differential confirm signals (verified_by_finding maps).
   let differentialVerified = {};
   try {
-    const { readFindingDifferentialVerifiedSummary } = require("../differential/finding-differential-verifier.js");
+    const { readFindingDifferentialVerifiedSummary } = require("../differential/index.js");
     differentialVerified = readFindingDifferentialVerifiedSummary(domain).verified_by_finding || {};
   } catch {
     differentialVerified = {};
@@ -364,7 +364,7 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
     // which would otherwise re-resolve every bind leaf). Falls back to a fresh re-derivation
     // when called standalone — same authoritative read, never a cached/stale one.
     const summary = compositionSummary
-      || require("../differential/composition-live-verifier.js").readCompositionVerifiedSummary(domain);
+      || require("../differential/index.js").readCompositionVerifiedSummary(domain);
     if (Array.isArray(summary.verified_path_hashes)) {
       verifiedCompositionPathHashes = new Set(summary.verified_path_hashes);
     }
@@ -497,7 +497,7 @@ function scBackingUnIsolatedFindingIds(domain, findingIds, { compositionSummary 
   }
   let differentialVerified = {};
   try {
-    const { readFindingDifferentialVerifiedSummary } = require("../differential/finding-differential-verifier.js");
+    const { readFindingDifferentialVerifiedSummary } = require("../differential/index.js");
     differentialVerified = readFindingDifferentialVerifiedSummary(domain).verified_by_finding || {};
   } catch {
     differentialVerified = {};
@@ -516,7 +516,7 @@ function scBackingUnIsolatedFindingIds(domain, findingIds, { compositionSummary 
     // findingsBackedByKeyedLedger in one gate evaluation); fall back to a fresh re-derivation
     // when called standalone — same authoritative read, never a cached/stale one.
     const summary = compositionSummary
-      || require("../differential/composition-live-verifier.js").readCompositionVerifiedSummary(domain);
+      || require("../differential/index.js").readCompositionVerifiedSummary(domain);
     if (Array.isArray(summary.verified_cross_stack_path_hashes)) {
       crossStackVerifiedHashes = new Set(summary.verified_cross_stack_path_hashes);
     }
@@ -661,7 +661,7 @@ function evaluateVerdictSandboxGate(domain, env = process.env, platform = proces
   let compositionSummary = null;
   if (reportable.size > 0) {
     try {
-      compositionSummary = require("../differential/composition-live-verifier.js").readCompositionVerifiedSummary(domain);
+      compositionSummary = require("../differential/index.js").readCompositionVerifiedSummary(domain);
     } catch {
       compositionSummary = null;
     }

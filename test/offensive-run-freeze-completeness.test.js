@@ -38,10 +38,10 @@ const {
 } = require("../mcp/core/governance/governance-store.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");

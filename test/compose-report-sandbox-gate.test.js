@@ -25,9 +25,9 @@ const { writeVerificationRound } = require("../mcp/core/verification/verificatio
 const { writeEvidencePacks } = require("../mcp/core/evidence.js");
 const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
@@ -35,7 +35,7 @@ const {
   reportMarkdownPath,
   sessionDir,
 } = require("../mcp/core/io/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/index.js");
 const { resetForTests: resetMaterializationDebounce } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function hex(char) { return char.repeat(64); }

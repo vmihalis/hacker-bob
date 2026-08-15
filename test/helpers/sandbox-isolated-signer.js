@@ -29,7 +29,7 @@
 // tests (compose-report-sandbox-gate, sandbox-isolation-legacy-block,
 // sandbox-isolation-live-reprobe, write-grade-verdict-sandbox-gate) instead.
 
-const gateModule = require("../../mcp/core/ledger-integrity/sandbox-isolation-gate.js");
+const gateModule = require("../../mcp/core/ledger-integrity/index.js");
 
 function inertDecision() {
   return Object.freeze({

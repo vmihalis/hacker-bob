@@ -39,7 +39,7 @@ const {
 } = require("../session/assignments.js");
 const {
   readHandoffSigningKey,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 const {
   assignmentRequiresToken,
   validateHandoffProvenance,

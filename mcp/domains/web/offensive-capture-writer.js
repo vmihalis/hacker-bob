@@ -18,10 +18,10 @@ const {
 } = require("../../lib/constants.js");
 const {
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("../../core/ledger-integrity/offensive-row-mac.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   signRowViaIsolatedSignerOrLocal,
-} = require("../../core/ledger-integrity/handoff-signing-key.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   offensiveRunsDir,
   offensiveRunsJsonlPath,
@@ -536,9 +536,9 @@ function deriveShapeMatchedDecoyFromCause(domain, causeRunId) {
   // eslint-disable-next-line global-require
   const { readOffensiveRunRecords: readRows } = require("../../core/claims/claims.js");
   // eslint-disable-next-line global-require
-  const { assertRowMac } = require("../../core/ledger-integrity/offensive-row-mac.js");
+  const { assertRowMac } = require("../../core/ledger-integrity/index.js");
   // eslint-disable-next-line global-require
-  const { resolveRowVerifierSafely } = require("../../core/ledger-integrity/handoff-signing-key.js");
+  const { resolveRowVerifierSafely } = require("../../core/ledger-integrity/index.js");
   // eslint-disable-next-line global-require
   const { readOffensiveCaptureBytesSecure } = require("../../core/claims/claim-freeze.js");
   const rows = readRows(domain);

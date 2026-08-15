@@ -97,10 +97,10 @@ const {
 // key is still 0600 at the agent uid (F2 collapses INTO F3; genuine close = Cycle C).
 const {
   REPO_COMMAND_RUN_MAC_CONTEXT,
-} = require("../../core/ledger-integrity/offensive-row-mac.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   signRowViaIsolatedSignerOrLocal,
-} = require("../../core/ledger-integrity/handoff-signing-key.js");
+} = require("../../core/ledger-integrity/index.js");
 
 const execFilePromise = promisify(execFile);
 

@@ -15,7 +15,7 @@ const { types: utilTypes } = require("node:util");
 
 const { readVerifiedSessionNucleus } = require("../../core/governance/governance-store.js");
 const { assertSafeDomain, sessionsRoot } = require("../../core/io/paths.js");
-const { probeExactSigningKeyPathIsolation } = require("../../core/ledger-integrity/sandbox-isolation-attest.js");
+const { probeExactSigningKeyPathIsolation } = require("../../core/ledger-integrity/index.js");
 const { canonicalJson, hashCanonicalJson } = require("../../core/verification/verification-contracts.js");
 
 const PHYSICAL_MONOTONIC_OWNER_VERSION = 1;

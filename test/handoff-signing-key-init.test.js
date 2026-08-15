@@ -26,7 +26,7 @@ const {
   readHandoffSigningPublicKey,
   resolveOffensiveRowVerifier,
   resolveRowVerifierSafely,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const { assertExploitedClaimHasProof } = require("../mcp/core/claims/claims.js");
 const {
   handoffSigningKeyPath,
@@ -245,8 +245,8 @@ function hex(char) { return char.repeat(64); }
 function seedEd25519OffensiveRow(domain) {
   const {
     signRowViaIsolatedSignerOrLocal,
-  } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-  const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  } = require("../mcp/core/ledger-integrity/index.js");
+  const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
   const { offensiveRunsJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");
   fs.mkdirSync(sessionDir(domain), { recursive: true });
   const row = {

@@ -30,11 +30,11 @@ const { invariantRunsJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   signRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   seedInvariantRunRow,
   seedInvariantRunPair,

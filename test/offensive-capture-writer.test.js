@@ -24,9 +24,9 @@ const {
   readHandoffSigningPublicKey,
   readHandoffSigningKey,
   resolveOffensiveRowVerifier,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const { withSessionLock } = require("../mcp/core/io/storage.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const { offensiveRunsDir } = require("../mcp/core/io/paths.js");
 const { classifyConsumableShape } = require("../mcp/core/verification/consumable-shape.js");
 

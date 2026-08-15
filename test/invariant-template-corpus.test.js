@@ -148,7 +148,7 @@ test("a SEALED template is not agent-substituted (fillSlots returns the marker);
   assert.ok(!/execute|capturedAuth|0xab/.test(filled.foundry_test), "no agent slot value substituted into the sealed marker");
   // The live consume helper + the gated call are produced by the SEALED GENERATOR from the DATA
   // slots (covered fully in sealed-cross-stack-harness.test.js); confirm the wiring aligns here.
-  const sealed = require("../mcp/core/differential/sealed-cross-stack-harness.js").buildSealedTestSource({
+  const sealed = require("../mcp/core/differential/index.js").buildSealedTestSource({
     contractName: "BobInvariantTest_consume",
     testFunctionName: "testBobInvariant_consume",
     targetAddress: `0x${"ab".repeat(20)}`,

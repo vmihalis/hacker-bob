@@ -33,8 +33,8 @@ const { idorConfirm } = require("../mcp/domains/web/offensive-idor-producer.js")
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/auth.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
 const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
@@ -43,7 +43,7 @@ const {
 const {
   verifyCompositionPath,
   readCompositionVerifiedSummary,
-} = require("../mcp/core/differential/composition-live-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const { runInvariantForFinding, readInvariantRuns } = require("../mcp/core/invariant-runner.js");
 const {
   attackSurfacePath,

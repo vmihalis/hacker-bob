@@ -56,7 +56,7 @@ const {
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   hashCanonicalJson,
 } = require("../mcp/core/verification/verification-contracts.js");

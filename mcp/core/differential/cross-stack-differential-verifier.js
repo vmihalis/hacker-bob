@@ -105,11 +105,11 @@ const {
   assertRowMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("../ledger-integrity/offensive-row-mac.js");
+} = require("../ledger-integrity/index.js");
 const {
   resolveOffensiveRowVerifier,
   resolveRowVerifierSafely,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 const {
   readOffensiveRunRecords,
 } = require("../claims/claims.js");

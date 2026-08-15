@@ -95,9 +95,9 @@ function seedFinding(domain, overrides = {}) {
 // exploited_safely positive + blocked_by_defense control + the verdict line that binds them.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface-a") {
   const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {

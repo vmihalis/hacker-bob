@@ -56,7 +56,7 @@ const {
   readSessionStateStrict,
   writeSessionStateDocument,
 } = require("../../core/session/session-state-store.js");
-const { ensureHandoffSigningKey } = require("../../core/ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey } = require("../../core/ledger-integrity/index.js");
 const { hasAcquiredHarness } = require("../../core/harness-store.js");
 const {
   readSessionNucleus,

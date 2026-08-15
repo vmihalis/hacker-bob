@@ -61,10 +61,10 @@ const {
 const {
   assertRowMacOrLegacy,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("./ledger-integrity/offensive-row-mac.js");
+} = require("./ledger-integrity/index.js");
 const {
   resolveRowVerifierSafely,
-} = require("./ledger-integrity/handoff-signing-key.js");
+} = require("./ledger-integrity/index.js");
 
 const PROOF_BUNDLES_VERSION = 1;
 const CALLER_PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);

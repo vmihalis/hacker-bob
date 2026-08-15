@@ -40,7 +40,7 @@ const {
   evaluateSandboxIsolation,
   recordSandboxIsolationAttestation,
   readSandboxIsolationAttestation,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   isAuditGradedPath,
   sandboxIsolationPath,

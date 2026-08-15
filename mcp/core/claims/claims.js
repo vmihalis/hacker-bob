@@ -40,13 +40,13 @@ const {
 } = require("../io/envelope.js");
 const {
   resolveRowVerifierSafely,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 const {
   verifyRowWithMac,
   assertRowMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT,
-} = require("../ledger-integrity/offensive-row-mac.js");
+} = require("../ledger-integrity/index.js");
 const {
   SEVERITY_VALUES,
   OFFENSIVE_OUTCOME_VALUES,
@@ -1289,7 +1289,7 @@ function findingDifferentialGapForStandaloneReportableFindings(domain, { reporta
     }
   }
 
-  const { readFindingDifferentialVerifiedSummary } = require("../differential/finding-differential-verifier.js");
+  const { readFindingDifferentialVerifiedSummary } = require("../differential/index.js");
   let verifiedByFinding = {};
   try {
     verifiedByFinding = readFindingDifferentialVerifiedSummary(domain).verified_by_finding || {};
@@ -1473,7 +1473,7 @@ function crossStackPathGapForReportableFindings(domain, { reportableFindingIds, 
   // has_bind_leaf && is_cross_stack — HIGH-3), plus the per-path bound surface_refs used to
   // reconcile the bound path against THIS claim's surfaces (HIGH-2). A guard-only or same-
   // family verified_pass is NOT in this set, so it can never satisfy a cross-stack gate.
-  const { readCompositionVerifiedSummary } = require("../differential/composition-live-verifier.js");
+  const { readCompositionVerifiedSummary } = require("../differential/index.js");
   let verifiedPathHashes = new Set();
   let crossStackSurfaceRefsByHash = {};
   try {
@@ -1921,7 +1921,7 @@ function completionDepthGapForCompleteSurfaces(domain, options = {}) {
   // merely to satisfy the shared completion-depth gate.
   for (const findingId of packExecutedFindingIds) executedFindings.add(findingId);
   const verifiedSummaryReaders = [
-    () => require("../differential/finding-differential-verifier.js").readFindingDifferentialVerifiedSummary(domain),
+    () => require("../differential/index.js").readFindingDifferentialVerifiedSummary(domain),
     () => require("../../domains/repo/repro-replay-verifier.js").readReproVerifiedSummary(domain),
     () => require("../invariant-runner.js").readInvariantVerifiedSummary(domain),
   ];
@@ -1947,7 +1947,7 @@ function completionDepthGapForCompleteSurfaces(domain, options = {}) {
   // conservative, fail-closed direction.)
   const compositionExecutedSurfaces = new Set();
   try {
-    const { readCompositionVerifiedSummary } = require("../differential/composition-live-verifier.js");
+    const { readCompositionVerifiedSummary } = require("../differential/index.js");
     const surfaceRefsByHash = readCompositionVerifiedSummary(domain).verified_cross_stack_path_surface_refs || {};
     for (const refs of Object.values(surfaceRefsByHash)) {
       if (!Array.isArray(refs)) continue;
@@ -2045,7 +2045,7 @@ function completionDepthGapForCompleteSurfaces(domain, options = {}) {
   const authDifferentialCovered = new Set();
   try {
     const { readResults } = require("../auth-differential-runner.js");
-    const { templatizeIdBearingEndpoint } = require("../../domains/web/offensive-idor-producer.js");
+    const { templatizeIdBearingEndpoint } = require("../frontier/id-bearing-endpoints.js");
     const results = readResults(domain);
     // Resolve the row verifier ONCE (a disk key read) before the loop, never per row. A
     // pre-keypair session yields null -> a present row_mac fails to verify (fail closed).

@@ -450,7 +450,10 @@ test("INV-12 narrow exemptions: the two belief<->executed boundary modules consu
   //       executed-control belief, it never dispatches from belief.
   const DISPATCH_BELIEF_IMPORT = /require\(\s*['"][^'"]*(scheduler-priority|intervention-calculus|factor-graph)[^'"]*['"]\s*\)/;
 
-  const verifier = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/differential/composition-live-verifier.js"), "utf8");
+  const verifier = fs.readFileSync(
+    path.join(REPO_ROOT, "mcp/core/differential", "composition-live-verifier.js"),
+    "utf8",
+  );
   // Non-vacuity: the loop-breaker REALLY routes through the template registry, which is
   // where the executed-probe re-execution lives after the dispatcher relocation.
   const registry = fs.readFileSync(path.join(REPO_ROOT, "mcp/core/mechanism-template-registry.js"), "utf8");

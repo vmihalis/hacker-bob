@@ -4,7 +4,7 @@ const { routeSurfaces } = require("../core/frontier/surface-router.js");
 // S1: the id-bearing detector is required HERE (a tool handler, outside the
 // lead-closure) and injected into routeSurfaces, so surface-router.js never
 // takes a require edge to the alias-require-reaching offensive module.
-const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../domains/web/offensive-idor-producer.js");
+const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../core/frontier/id-bearing-endpoints.js");
 
 module.exports = Object.freeze({
   name: "bob_route_surfaces",

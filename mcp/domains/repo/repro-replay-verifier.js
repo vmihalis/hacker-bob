@@ -49,10 +49,10 @@ const {
 const {
   assertRowMacOrLegacy,
   REPO_COMMAND_RUN_MAC_CONTEXT,
-} = require("../../core/ledger-integrity/offensive-row-mac.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   resolveRowVerifierSafely,
-} = require("../../core/ledger-integrity/handoff-signing-key.js");
+} = require("../../core/ledger-integrity/index.js");
 
 const REPRO_VERIFIED_VERSION = 1;
 const REPRO_VERIFIED_MAX_RECORDS = 2000;

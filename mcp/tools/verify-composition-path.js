@@ -1,7 +1,7 @@
 "use strict";
 
 const { httpScan } = require("../core/http-scan.js");
-const { verifyCompositionPath } = require("../core/differential/composition-live-verifier.js");
+const { verifyCompositionPath } = require("../core/differential/index.js");
 
 async function verifyCompositionPathToolHandler(args) {
   const result = await verifyCompositionPath(

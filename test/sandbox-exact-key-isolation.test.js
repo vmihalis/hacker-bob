@@ -12,10 +12,10 @@ const {
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
   probeExactSigningKeyPathIsolation,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
-} = require("../mcp/core/ledger-integrity/signing-key-custody.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 const OPERATOR_ENV_NAMES = Object.freeze([
   SANDBOX_ISOLATION_ACK_ENV,

@@ -52,11 +52,11 @@ const {
 const {
   assertRowMacOrLegacy,
   CLAIM_FREEZE_MAC_CONTEXT,
-} = require("../ledger-integrity/offensive-row-mac.js");
+} = require("../ledger-integrity/index.js");
 const {
   signRowViaIsolatedSignerOrLocal,
   resolveRowVerifierSafely,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 
 const CLAIM_FREEZE_VERSION = 1;
 const CLAIM_FREEZE_MAC_FIELD = "freeze_mac";

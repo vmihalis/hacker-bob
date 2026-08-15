@@ -20,9 +20,9 @@ const path = require("node:path");
 
 const { buildAndSignOffensiveRow } = require("../mcp/domains/web/offensive-capture-writer.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
 const { withSessionLock } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {

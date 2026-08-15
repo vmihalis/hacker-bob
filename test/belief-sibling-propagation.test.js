@@ -28,7 +28,7 @@ const { hashCanonicalJson } = require("../mcp/core/verification/verification-con
 const {
   verifyCompositionPath,
   RESULT_VERIFIED_PASS,
-} = require("../mcp/core/differential/composition-live-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const {
   buildBeliefWindow,
   stableId,

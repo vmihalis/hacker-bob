@@ -29,11 +29,11 @@ const { hashCanonicalJson } = require("../../mcp/core/verification/verification-
 const {
   signRowWithMac,
   REPO_COMMAND_RUN_MAC_CONTEXT,
-} = require("../../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 
 // A real ASAN crash with a /src root-cause frame (the muparser/oss-fuzz shape).
 const DEFAULT_VULN_STDERR = `==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511

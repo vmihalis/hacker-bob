@@ -34,7 +34,7 @@ const { idorConfirm } = require("../mcp/domains/web/offensive-idor-producer.js")
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/auth.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 const { attackSurfacePath } = require("../mcp/core/io/paths.js");
 const { readOffensiveRunRecords } = require("../mcp/core/claims/claims.js");
 

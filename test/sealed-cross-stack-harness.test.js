@@ -20,7 +20,7 @@ const {
   writeSealedCrossStackProject,
   assertVictim,
   PINNED_SOLC_VERSION,
-} = require("../mcp/core/differential/sealed-cross-stack-harness.js");
+} = require("../mcp/core/differential/index.js");
 
 function forgeAvailable() {
   try {

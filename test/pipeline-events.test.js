@@ -39,7 +39,7 @@ const {
 } = require("../mcp/core/session/assignments.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   sha256Hex,
   signHandoffProvenance,

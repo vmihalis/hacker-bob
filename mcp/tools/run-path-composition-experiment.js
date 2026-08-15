@@ -2,7 +2,7 @@
 
 const {
   runPathCompositionExperiment,
-} = require("../core/differential/composition-experiment-harness.js");
+} = require("../core/differential/index.js");
 
 module.exports = Object.freeze({
   name: "bob_run_path_composition_experiment",

@@ -30,7 +30,7 @@ const {
 const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/sandbox-isolation-gate.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
 const {
   handoffSigningPrivateKeyPath,
   sessionDir,
@@ -39,7 +39,7 @@ const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function uniqueDomain(tag) {
   return `halmos-ci-${tag}-${Math.random().toString(36).slice(2)}.example.com`;

@@ -134,7 +134,7 @@ test("SubagentStop with valid handoff settles the AgentRun row through the merge
     // handoff JSON, calls settleAgentRunFromHandoff, which validates signed
     // provenance and appends a `settled` row.
     const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
     const assignments = loadWaveAssignments(domain, 1);
     const assignment = assignments.assignmentByAgent.get("a1");
     const handoffJsonPath = path.join(sessionDir(domain), "handoff-w1-a1.json");
@@ -492,7 +492,7 @@ test("a fully driven wave yields N settled rows in agent-runs.jsonl", () => {
     const start = driveWaveStart(domain, surfaces);
 
     const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
     const assignmentsInfo = loadWaveAssignments(domain, 1);
     const signingKey = readHandoffSigningKey(domain);
 
@@ -639,7 +639,7 @@ test("depth gate: a started run's SC handoff lacking completion-substance is rej
     const { markAgentRunRunning } = require("../mcp/core/session/agent-runs.js");
     const { signHandoffProvenance } = require("../mcp/core/waves/wave-handoff-contracts.js");
     const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 
     markAgentRunRunning({ targetDomain: domain, wave: "w1", agent: "a1", surfaceId: "surface-sc" });
 

@@ -19,14 +19,14 @@ const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
 const { writeEvidencePacks } = require("../mcp/core/evidence.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { signOffensiveRunRow, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const { writeGradeVerdict, readGradeVerdict } = require("../mcp/core/grade-verdict-store.js");
 const { seedInvariantRunPair } = require("./helpers/invariant-run-seed.js");
 const { verifyInvariantDifferential } = require("../mcp/core/invariant-runner.js");
 const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   offensiveRunsJsonlPath,
   findingDifferentialVerifiedJsonlPath,
@@ -38,7 +38,7 @@ const {
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_ISOLATION_SCHEMA_VERSION,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";
@@ -233,7 +233,7 @@ function forgeAttestedFlag(domain) {
   fs.writeFileSync(sandboxIsolationPath(domain), `${JSON.stringify(forged, null, 2)}\n`);
 }
 
-const gateModule = require("../mcp/core/ledger-integrity/sandbox-isolation-gate.js");
+const gateModule = require("../mcp/core/ledger-integrity/index.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 test("withIsolatedSigner forces evaluateVerdictSandboxGate to decision:allow and restores the real function in finally", () => {

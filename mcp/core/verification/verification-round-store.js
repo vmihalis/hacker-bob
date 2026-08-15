@@ -57,7 +57,7 @@ const {
 } = require("../claims/claims.js");
 const {
   resolveRowVerifierSafely,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 const {
   sessionNucleusFromState,
 } = require("../governance/governance-contracts.js");

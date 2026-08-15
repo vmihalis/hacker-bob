@@ -363,9 +363,9 @@ function driveRealizationFlow(domain) {
   // finding's), then the verdict line binding them.
   {
     const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-    const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-    const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-    const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+    const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+    const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+    const { offensiveRowHash } = require("../mcp/core/differential/index.js");
     const { offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
     for (const findingId of findingIds) {
       const demonstratedSeverity = findingId === findingIds[0] ? "high" : "medium";

@@ -61,10 +61,10 @@ const {
 const {
   safeAppendPipelineEventDirect,
 } = require("../telemetry/pipeline-events.js");
-const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("../ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("../ledger-integrity/index.js");
 const {
   recordSandboxIsolationAttestation,
-} = require("../ledger-integrity/sandbox-isolation-attest.js");
+} = require("../ledger-integrity/index.js");
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,

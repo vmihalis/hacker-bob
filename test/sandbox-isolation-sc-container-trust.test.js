@@ -32,7 +32,7 @@ const { seedInvariantRunPair } = require("./helpers/invariant-run-seed.js");
 const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/sandbox-isolation-gate.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
 const {
   handoffSigningPrivateKeyPath,
   sessionDir,
@@ -41,7 +41,7 @@ const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function withTempHome(fn, mode) {
   const previousHome = process.env.HOME;

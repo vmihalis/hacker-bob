@@ -21,7 +21,7 @@ const {
   verifyOffensiveRunRowMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   MAC_SCHEME_ED25519,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 const CTX = OFFENSIVE_ROW_MAC_CONTEXT;
 

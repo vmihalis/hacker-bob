@@ -249,7 +249,7 @@ test("start-recording on an already-settled run is a no-op (does not resurrect r
     }));
 
     const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
     const assignment = loadWaveAssignments(domain, 1).assignmentByAgent.get("a1");
     const handoffJson = JSON.parse(fs.readFileSync(
       path.join(sessionDir(domain), "handoff-w1-a1.json"), "utf8",

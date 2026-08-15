@@ -17,7 +17,7 @@ const { buildSurfaceRoutesDocument } = require("../mcp/core/frontier/surface-rou
 const {
   surfaceExposesIdBearingCollection,
   surfaceIdBearingEndpoints,
-} = require("../mcp/domains/web/offensive-idor-producer.js");
+} = require("../mcp/core/frontier/id-bearing-endpoints.js");
 
 function withClaudeHost(fn, { agentTeams = true } = {}) {
   // The router gates the reroute on the HOST-AWARE effective spawn depth (effectiveSpawnDepth

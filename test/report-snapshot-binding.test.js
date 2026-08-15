@@ -109,9 +109,9 @@ async function withTempHome(fn) {
 // suffices.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface:billing-profile") {
   const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   const { offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {

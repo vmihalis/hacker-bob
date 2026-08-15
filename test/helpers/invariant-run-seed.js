@@ -20,11 +20,11 @@ const { invariantRunsJsonlPath } = require("../../mcp/core/io/paths.js");
 const {
   signRowWithMac,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("../../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 
 // A valid matching cross-stack target binding for seeds (executed bytecode sha256 ===
 // on-chain bytecode sha256, a fixed in-fork address). A cross-stack arm seeded with

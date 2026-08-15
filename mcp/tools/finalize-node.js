@@ -93,10 +93,10 @@ const {
 } = require("../core/dispatch/dispatch-node-pack.js");
 const {
   readCompositionVerifiedSummary,
-} = require("../core/differential/composition-live-verifier.js");
+} = require("../core/differential/index.js");
 const {
   isBindLeaf,
-} = require("../core/differential/cross-stack-differential-verifier.js");
+} = require("../core/differential/index.js");
 
 // Adjudication chain shape per X-D9: severity_floor → rounds. The X.8
 // finalize emits the chain REQUEST shape into the verification round

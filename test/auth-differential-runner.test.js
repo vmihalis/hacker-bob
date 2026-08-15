@@ -593,8 +593,8 @@ test("persisted per_endpoint rows carry a verifying ed25519 row_mac; results_has
       MAC_SCHEME_ED25519,
       OFFENSIVE_ROW_MAC_VERSION_V2,
       AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT,
-    } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-    const { readHandoffSigningPublicKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+    } = require("../mcp/core/ledger-integrity/index.js");
+    const { readHandoffSigningPublicKey } = require("../mcp/core/ledger-integrity/index.js");
     // A genuine 2-tenant differential: each owner 2xx's its own id-bearing object, 401s the other's.
     const fetch_fn = async ({ auth_profile, endpoint }) => {
       const owns = (auth_profile === "victim" && endpoint === "/orders/1")

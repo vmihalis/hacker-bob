@@ -34,7 +34,7 @@ const {
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   sha256Hex,
   signHandoffProvenance,
@@ -192,8 +192,8 @@ function writeAuthDifferentialResultsRows(domain, rows) {
 function writeAuthDifferentialResults(domain) {
   const {
     signRowViaIsolatedSignerOrLocal,
-  } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  } = require("../mcp/core/ledger-integrity/index.js");
+  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
   const row = buildFlipRow();
   // Sign the flipped row under the auth-differential context exactly as the runner does, so the
   // MAC-verifying finalize consumer (hasAuthDifferentialSweepForSurface) credits a genuine flip.
@@ -221,8 +221,8 @@ function seedTechniqueAttempt(domain, surfaceId) {
 function writeSignedFlipRowWithEffectiveUrl(domain, effectiveUrl) {
   const {
     signRowViaIsolatedSignerOrLocal,
-  } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  } = require("../mcp/core/ledger-integrity/index.js");
+  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
   const row = buildFlipRow();
   row.effective_url = effectiveUrl;
   signRowViaIsolatedSignerOrLocal(domain, AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT, row);
@@ -259,10 +259,10 @@ function recordCrownFinding(domain, cwe) {
 // re-derived from the signed positive row's surface_id.
 function seedVerifiedFindingDifferential(domain, findingId, surfaceId) {
   const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
   const {
     offensiveRowHash,
-  } = require("../mcp/core/differential/finding-differential-verifier.js");
+  } = require("../mcp/core/differential/index.js");
   const {
     offensiveRunsJsonlPath,
     findingDifferentialVerifiedJsonlPath,
@@ -403,8 +403,8 @@ test("a TAMPERED flipped row does NOT clear the id-bearing surface at finalize (
     const handoff = { surface_status: "complete", blocked_prereqs: [], blocked_harness_runs: [] };
     const {
       signRowViaIsolatedSignerOrLocal,
-    } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-    const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+    } = require("../mcp/core/ledger-integrity/index.js");
+    const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 
     writeAttackSurface(domain);
     // Sign a genuine flip, then MUTATE surface_id after signing (the row_mac binds every field,

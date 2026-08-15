@@ -371,7 +371,7 @@ const {
 } = require("../mcp/core/waves/waves.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   readPipelineAnalytics,
   readPipelineEvents,
@@ -1753,8 +1753,8 @@ function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surf
   const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const { appendJsonlLine } = require("../mcp/core/io/storage.js");
   const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
@@ -3732,11 +3732,11 @@ test("completion-depth gate is forgery-closed: a hand-written verified_pass whos
 // bind leaves). Mints a REAL bound cross-stack verified_pass whose offensive cause is surfaceId.
 async function seedCrossStackComposition(domain, surfaceId, findingId) {
   const crypto = require("node:crypto");
-  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
   const { canonicalizeExploitTarget, appendCandidateClaim } = require("../mcp/core/claims/claims.js");
-  const { verifyCompositionPath } = require("../mcp/core/differential/composition-live-verifier.js");
+  const { verifyCompositionPath } = require("../mcp/core/differential/index.js");
   const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/core/io/paths.js");
-  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
   const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
   const { CONSUME_TEMPLATE_ID, DECOY_HASH, DECOY_RUN_ID, appendDecoyCapture } = require("./helpers/cross-stack-decoy.js");
   const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, ...opts });

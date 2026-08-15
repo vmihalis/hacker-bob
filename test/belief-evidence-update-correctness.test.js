@@ -35,7 +35,7 @@ const {
   RESULT_VERIFIED_PASS,
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
-} = require("../mcp/core/differential/composition-live-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const {
   buildBeliefWindow,
   stableId,

@@ -36,7 +36,7 @@ const {
 // the durable surface-routes.json written at wave start preserves
 // auth_differential_required — routeSurfacesInternal rewrites the file, and
 // without the detector it would clobber the flag route_surfaces set to false.
-const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../../domains/web/offensive-idor-producer.js");
+const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../frontier/id-bearing-endpoints.js");
 const { listAuthProfiles } = require("../auth/auth.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
@@ -52,7 +52,7 @@ const {
 } = require("../io/envelope.js");
 const {
   ensureHandoffSigningKey,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 const {
   WAVE_HANDOFF_CONTENT_MAX_CHARS,
   assertBlockedHarnessConsistency,

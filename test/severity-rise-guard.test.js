@@ -20,7 +20,7 @@ const {
 } = require("../mcp/lib/constants.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   computeInvariantRunHash,
   invariantFoundryResultHash,
@@ -42,7 +42,7 @@ const {
 } = require("../mcp/lib/constants.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   initRepoSession,
 } = require("../mcp/domains/repo/repo-target.js");

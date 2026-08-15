@@ -25,10 +25,10 @@ const {
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { authStore } = require("../mcp/core/auth/auth.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");
 const { appendCandidateClaim, readOffensiveRunRecords, OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/core/claims/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
 const { resetForTests: resetMaterializationDebounce } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 

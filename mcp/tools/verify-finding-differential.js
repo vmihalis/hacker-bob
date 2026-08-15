@@ -1,6 +1,6 @@
 "use strict";
 
-const { verifyFindingDifferential } = require("../core/differential/finding-differential-verifier.js");
+const { verifyFindingDifferential } = require("../core/differential/index.js");
 
 // bob_verify_finding_differential — the web-standalone sibling of
 // bob_verify_repro_reproduction / bob_verify_invariant_differential. It does NOT

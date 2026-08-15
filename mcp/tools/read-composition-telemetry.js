@@ -5,7 +5,7 @@ const {
 } = require("../core/waves/task-graph-materializer.js");
 const {
   readCompositionVerifiedSummary,
-} = require("../core/differential/composition-live-verifier.js");
+} = require("../core/differential/index.js");
 const {
   assertSafeDomain,
 } = require("../core/io/paths.js");

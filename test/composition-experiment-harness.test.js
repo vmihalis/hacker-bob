@@ -42,7 +42,7 @@ const {
   replayObservationRefusal,
   resolveSynthesizedDifferentialVerdict,
   runPathCompositionExperiment,
-} = require("../mcp/core/differential/composition-experiment-harness.js");
+} = require("../mcp/core/differential/index.js");
 const {
   compositionResultsJsonlPath,
 } = require("../mcp/core/io/paths.js");

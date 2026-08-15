@@ -33,11 +33,11 @@ const {
   signRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   CLAIM_FREEZE_MAC_CONTEXT,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   ensureHandoffKeypair,
   readHandoffSigningPrivateKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -170,8 +170,8 @@ test("(e) cross-ledger replay: an OFFENSIVE-context mac written as freeze_mac fa
   // Sanity: the same bytes DO verify under the offensive context (proving the signature is
   // real, only the domain separation rejects it as a claim-freeze mac).
   const reread = JSON.parse(fs.readFileSync(claimFreezePath(domain), "utf8"));
-  const { verifyRowWithMac } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-  const { readHandoffSigningPublicKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+  const { verifyRowWithMac } = require("../mcp/core/ledger-integrity/index.js");
+  const { readHandoffSigningPublicKey } = require("../mcp/core/ledger-integrity/index.js");
   const publicKey = readHandoffSigningPublicKey(domain).publicKey;
   assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, reread, { publicKey }, { macField: "freeze_mac" }), true);
   assert.equal(verifyRowWithMac(CLAIM_FREEZE_MAC_CONTEXT, reread, { publicKey }, { macField: "freeze_mac" }), false);

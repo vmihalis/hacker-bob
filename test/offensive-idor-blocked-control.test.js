@@ -19,8 +19,8 @@ const { idorConfirm } = require("../mcp/domains/web/offensive-idor-producer.js")
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/auth.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
 const { readOffensiveRunRecords } = require("../mcp/core/claims/claims.js");
 const {

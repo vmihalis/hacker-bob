@@ -33,19 +33,21 @@ const {
   pathHasConcreteParentInstance,
   createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,
+} = require("../mcp/domains/web/offensive-idor-producer.js");
+const {
   endpointValueIsIdBearing,
   templatizeIdBearingEndpoint,
   surfaceExposesIdBearingCollection,
   surfaceIdBearingEndpoints,
-} = require("../mcp/domains/web/offensive-idor-producer.js");
+} = require("../mcp/core/frontier/id-bearing-endpoints.js");
 const { assertCreateCollectionShapeSafe } = require("../mcp/domains/web/offensive-http-common.js");
 const { validateAgainstSchema } = require("../mcp/core/dispatch/tool-validation.js");
 const idorDescriptor = require("../mcp/tools/web/bob-http-idor-confirm.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/core/auth/auth.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 
 // New offensive rows are ed25519 (v2); the verifier bundle (public key + symmetric
 // key) verifies them with the PUBLIC key while still accepting any legacy v1 hmac row.
