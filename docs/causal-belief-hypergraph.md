@@ -256,7 +256,7 @@ surface, and claims/verification; any genuinely new derived fact is added via th
 
 ## Tier 2 -- Inference engine (net-new, first-class)
 
-This is the capability. Each node here is new code under `mcp/lib/belief/*`. None
+This is the capability. Each node here is new code under `mcp/core/belief/*`. None
 of it duplicates a store or an authority; it reads Tier 1 and emits through
 Tier 3.
 

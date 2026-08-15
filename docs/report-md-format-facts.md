@@ -121,7 +121,7 @@ validator, and `mcp/server.js` is 64 lines containing zero occurrences of
 positive control for that second count.
 
 `FINDING_ID_RE` and `parseFindingId` are never applied to `section_id`. Controlled
-negative: `grep -rn 'FINDING_ID_RE\|parseFindingId' mcp/lib --include='*.js'` returns
+negative: `grep -rn 'FINDING_ID_RE\|parseFindingId' mcp --include='*.js'` returns
 **48** hits across the tree (the control — the pattern is live) and **0** of them are
 in `compose-report.js`. `FINDING_ID_RE` itself resolves at only four sites:
 `mcp/core/io/identifier-contracts.js` (definition/export), `mcp/core/io/validation.js`

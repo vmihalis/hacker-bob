@@ -23,7 +23,7 @@ Verification confirmed the single contested fact and surfaced a second silent re
 | **C13** | revise | Anchor incomplete — cross-target transfer also needs `bob_init_session(targetB)` + a hard scope gate enforced in the dispatch routine; rests on claims, not `findings-index`. |
 | **C14** | split | Lite (CWE/CVSS/refs) is adopt-extend of the existing SC CWE table (`reporter.md:49-57`), Δ1; only the bundle is net-new Δ2 — and drop the Δ3 I12 predecessor (tier inversion). |
 | **C15** | keep | Largest-effort Δ4; encode "a patch that fixes the PoC must never auto-suppress the pre-patch finding"; scope strictly as the iterate-until-robust controller. |
-| **X6** | keep | Real gap (no self-defense datamarking); add `mcp/lib/body-resolvers/index.js` to the anchor for the output-fencing path. |
+| **X6** | keep | Real gap (no self-defense datamarking); add `mcp/core/body-resolvers/index.js` to the anchor for the output-fencing path. |
 | **X7** | split | Per-session `evaluator_run_avoided` count needs neither S11 nor I11 (Δ2 ride); `$`-cost-per-finding is a separate token-telemetry substrate Bob lacks (Δ4). Keep the "descriptive-only" guard. |
 | **X8** | keep | SSE *upgrade* over the existing `/api/snapshot` poll; file-backed tail respects `X-rej-4`. (Critic disputes tier → Δ4.) |
 | **X9** | demote-already-covered | Mechanism is shipped + CI-wired as `check-stigmergy-coherence.js` (`checkAssertionC/A/B`); the new `check-orphaned-consumers.js` would duplicate it. Real work = manifest coverage; fold into the stigmergy gate (and arguably merge with S12). |
