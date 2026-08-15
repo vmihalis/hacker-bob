@@ -23,7 +23,7 @@ const { writeEvidencePacks } = require("../mcp/core/evidence.js");
 const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
 const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/core/ledger-integrity/index.js");
 const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,

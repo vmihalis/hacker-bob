@@ -32,7 +32,7 @@ const { seedInvariantRunPair } = require("./helpers/invariant-run-seed.js");
 const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   handoffSigningPrivateKeyPath,
   sessionDir,

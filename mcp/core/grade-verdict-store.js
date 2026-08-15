@@ -538,7 +538,7 @@ function writeGradeVerdict(args) {
   // flag). A clean / advisory-only / no-verdict-ledger grade is inert
   // (decision:allow) and writes byte-identically — RANK != BOUND. The gate is
   // verdict-LEVEL O(1) (one evaluateVerdictSandboxGate per write), never per row.
-  const sandboxGate = require("./ledger-integrity/index.js");
+  const sandboxGate = require("./verdict-sandbox-gate.js");
   let sandboxDecision;
   try {
     sandboxDecision = sandboxGate.evaluateVerdictSandboxGate(domain);

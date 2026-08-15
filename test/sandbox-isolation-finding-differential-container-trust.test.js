@@ -30,7 +30,7 @@ const { verifyFindingDifferential } = require("../mcp/core/differential/index.js
 const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
 const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {

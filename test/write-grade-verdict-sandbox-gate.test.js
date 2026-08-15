@@ -233,7 +233,7 @@ function forgeAttestedFlag(domain) {
   fs.writeFileSync(sandboxIsolationPath(domain), `${JSON.stringify(forged, null, 2)}\n`);
 }
 
-const gateModule = require("../mcp/core/ledger-integrity/index.js");
+const gateModule = require("../mcp/core/verdict-sandbox-gate.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 test("withIsolatedSigner forces evaluateVerdictSandboxGate to decision:allow and restores the real function in finally", () => {

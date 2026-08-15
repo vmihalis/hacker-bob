@@ -30,7 +30,7 @@ const {
   sandboxDowngradeWarning,
   emitSandboxDowngradeWarning,
   SANDBOX_REMEDIATION,
-} = require("../mcp/core/ledger-integrity/index.js");
+} = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   offensiveRunsJsonlPath,
   claimsJsonlPath,

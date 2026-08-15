@@ -8,5 +8,4 @@ module.exports = {
   ...require("./handoff-signing-key.js"),
   ...require("./signing-key-custody.js"),
   ...require("./sandbox-isolation-attest.js"),
-  ...require("./sandbox-isolation-gate.js"),
 };

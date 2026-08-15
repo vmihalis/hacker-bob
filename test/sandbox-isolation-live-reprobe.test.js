@@ -22,7 +22,7 @@ const { writeVerificationRound } = require("../mcp/core/verification/verificatio
 const { writeEvidencePacks } = require("../mcp/core/evidence.js");
 const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
 const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   sandboxIsolationBlockersForReportableVerdictClaims,
 } = require("../mcp/core/session/lifecycle-gates.js");

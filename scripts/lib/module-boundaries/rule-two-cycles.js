@@ -33,18 +33,19 @@ const ALLOWLIST_DYNAMIC_REQUIRES = frozenSet("ALLOWLIST_DYNAMIC_REQUIRES", []);
 // Frozen and only-shrinking, same rule as the two lists above.
 const ALLOWLIST_MODULE_CYCLES = frozenMap("ALLOWLIST_MODULE_CYCLES", [
   [
-    "core/auth-differential-runner.js",
+    "core/belief/cell-scheduler-priority.js",
     {
-      size: 62,
+      size: 37,
       argument:
-        "POST-N1 DIP RESIDUAL WITH FROZEN PHYSICAL CONTRACT RESTORED, re-derived as 62 members after retaining the "
-        + "candidate-claim recorder, tool-registry, contract-session, repo-verifier, and repo-identity inversions while "
-        + "reverting the unsafe physical-runtime port inversion. The component contains 51 core modules across belief, "
-        + "capability, claims, differential, frontier, ledger-integrity, session, telemetry, verification, and waves, "
-        + "plus 11 physical-domain modules reached by the four restored, pre-existing core-to-physical edges. No tools "
-        + "or repo-domain runtime rejoins it. Deferred requires are still graph edges, so the mutually recursive claim, "
-        + "evidence, physical experiment/campaign, verification, grading, and session consumers remain honest residual "
-        + "debt. The 62-member allowance records the safe Option C topology without adding a new cycle.",
+        "POST-N4 HONEST-TAIL RESIDUAL, re-derived as 37 core modules after moving the verdict-level sandbox policy gate "
+        + "out of the ledger-integrity facade. That ownership inversion made ledger integrity a pure sink and removed "
+        + "the untouched physical frozen-contract arc from the SCC. The residual is the mutual claim lifecycle: claims "
+        + "are frozen and re-read by verification; verification adjudicates evidence while evidence checks verification; "
+        + "differential and invariant verdicts re-resolve signed claim-bound rows; capability grading consumes frontier "
+        + "reachability while frontier closure uses capability/session cell-floor derivation; wave handoff completion and "
+        + "agent-run completion settle one another; and scheduler preconditions consume server-derived pipeline artifacts. "
+        + "These bidirectional relationships and the rejected behavior-changing inversions are documented in "
+        + "docs/architecture/core-cycle-residual.md. The inventory shrank 62 to 37 and adds no cycle.",
     },
   ],
   [

@@ -68,7 +68,7 @@ const {
   resolveSandboxAttestationMode,
   probeVerdictLedgerKeyIsolation,
   evaluateSandboxIsolation,
-} = require("./sandbox-isolation-attest.js");
+} = require("./ledger-integrity/sandbox-isolation-attest.js");
 
 const MEDIUM_OR_HIGHER_SEVERITIES = Object.freeze(new Set(["medium", "high", "critical"]));
 
@@ -144,7 +144,7 @@ function verdictLedgerMacClasses(domain) {
     repoCommandRunsJsonlPath,
     claimFreezePath,
     compositionVerifiedJsonlPath,
-  } = require("../io/paths.js");
+  } = require("./io/paths.js");
   let present = false;
   let hasLegacyOrV1 = false;
 
@@ -223,8 +223,8 @@ function reportableMediumPlusFindingIds(domain) {
 // tools/compose-report.js. A missing/malformed final round yields an empty map
 // (the gate is then inert).
 function readFinalVerificationByFinding(domain) {
-  const { verificationRoundPaths } = require("../io/paths.js");
-  const { SEVERITY_VALUES } = require("../constants/shared-vocabulary.js");
+  const { verificationRoundPaths } = require("./io/paths.js");
+  const { SEVERITY_VALUES } = require("./constants/shared-vocabulary.js");
   const out = new Map();
   let paths;
   try {
@@ -240,7 +240,7 @@ function readFinalVerificationByFinding(domain) {
     return out;
   }
   const results = Array.isArray(doc && doc.results) ? doc.results : [];
-  const { reclampSeveritiesAgainstFreeze } = require("../verification/verification-round-store.js");
+  const { reclampSeveritiesAgainstFreeze } = require("./verification/verification-round-store.js");
   const reclamped = reclampSeveritiesAgainstFreeze(domain, results);
   for (const result of results) {
     if (!result || typeof result !== "object") continue;
@@ -313,7 +313,7 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
   const claimByFinding = new Map();
   let claims = [];
   try {
-    const { readCandidateClaims } = require("../claims/claims.js");
+    const { readCandidateClaims } = require("./claims/claims.js");
     claims = readCandidateClaims(domain);
   } catch {
     claims = [];
@@ -338,14 +338,14 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
   // The invariant / finding-differential confirm signals (verified_by_finding maps).
   let differentialVerified = {};
   try {
-    const { readFindingDifferentialVerifiedSummary } = require("../differential/index.js");
+    const { readFindingDifferentialVerifiedSummary } = require("./differential/index.js");
     differentialVerified = readFindingDifferentialVerifiedSummary(domain).verified_by_finding || {};
   } catch {
     differentialVerified = {};
   }
   let invariantVerified = {};
   try {
-    const { readInvariantVerifiedSummary } = require("../invariant-runner.js");
+    const { readInvariantVerifiedSummary } = require("./invariant-runner.js");
     invariantVerified = readInvariantVerifiedSummary(domain).verified_by_finding || {};
   } catch {
     invariantVerified = {};
@@ -364,7 +364,7 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
     // which would otherwise re-resolve every bind leaf). Falls back to a fresh re-derivation
     // when called standalone — same authoritative read, never a cached/stale one.
     const summary = compositionSummary
-      || require("../differential/index.js").readCompositionVerifiedSummary(domain);
+      || require("./differential/index.js").readCompositionVerifiedSummary(domain);
     if (Array.isArray(summary.verified_path_hashes)) {
       verifiedCompositionPathHashes = new Set(summary.verified_path_hashes);
     }
@@ -437,7 +437,7 @@ function resolveSurfaceKind(domain, surfaceId) {
   if (typeof surfaceId !== "string" || !surfaceId.trim()) return null;
   let events = [];
   try {
-    const { readFrontierEvents } = require("../frontier/frontier-events.js");
+    const { readFrontierEvents } = require("./frontier/frontier-events.js");
     events = readFrontierEvents(domain);
   } catch {
     return null;
@@ -490,14 +490,14 @@ function scBackingUnIsolatedFindingIds(domain, findingIds, { compositionSummary 
   if (!(findingIds instanceof Set) || findingIds.size === 0) return unIsolated;
   let invariantVerified = {};
   try {
-    const { readInvariantVerifiedSummary } = require("../invariant-runner.js");
+    const { readInvariantVerifiedSummary } = require("./invariant-runner.js");
     invariantVerified = readInvariantVerifiedSummary(domain).verified_by_finding || {};
   } catch {
     invariantVerified = {};
   }
   let differentialVerified = {};
   try {
-    const { readFindingDifferentialVerifiedSummary } = require("../differential/index.js");
+    const { readFindingDifferentialVerifiedSummary } = require("./differential/index.js");
     differentialVerified = readFindingDifferentialVerifiedSummary(domain).verified_by_finding || {};
   } catch {
     differentialVerified = {};
@@ -516,7 +516,7 @@ function scBackingUnIsolatedFindingIds(domain, findingIds, { compositionSummary 
     // findingsBackedByKeyedLedger in one gate evaluation); fall back to a fresh re-derivation
     // when called standalone — same authoritative read, never a cached/stale one.
     const summary = compositionSummary
-      || require("../differential/index.js").readCompositionVerifiedSummary(domain);
+      || require("./differential/index.js").readCompositionVerifiedSummary(domain);
     if (Array.isArray(summary.verified_cross_stack_path_hashes)) {
       crossStackVerifiedHashes = new Set(summary.verified_cross_stack_path_hashes);
     }
@@ -529,7 +529,7 @@ function scBackingUnIsolatedFindingIds(domain, findingIds, { compositionSummary 
     crossStackContainerIsolated = {};
   }
   try {
-    const { readCandidateClaims } = require("../claims/claims.js");
+    const { readCandidateClaims } = require("./claims/claims.js");
     claims = readCandidateClaims(domain);
   } catch {
     claims = [];
@@ -661,7 +661,7 @@ function evaluateVerdictSandboxGate(domain, env = process.env, platform = proces
   let compositionSummary = null;
   if (reportable.size > 0) {
     try {
-      compositionSummary = require("../differential/index.js").readCompositionVerifiedSummary(domain);
+      compositionSummary = require("./differential/index.js").readCompositionVerifiedSummary(domain);
     } catch {
       compositionSummary = null;
     }
