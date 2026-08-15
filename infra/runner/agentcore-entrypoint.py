@@ -170,7 +170,7 @@ def _public_replay_receipt(result: dict) -> dict:
 
 
 def resolve_session_dir(home: str, target: str) -> str:
-    """$HOME/hacker-bob-sessions/<target> — matches mcp/lib/paths.js:44-46
+    """$HOME/hacker-bob-sessions/<target> — matches mcp/core/io/paths.js:44-46
     sessionsRoot() exactly. No env-var override exists there, so none is
     introduced here either."""
     return f"{home}/hacker-bob-sessions/{target}"
@@ -180,9 +180,9 @@ def _port_stripped_host(target: str) -> str:
     """Strip a trailing ":<port>" suffix, if any, from `target`.
 
     This is the exact `target_domain` form the approval-gate consumers
-    (mcp/lib/lifecycle-gates.js's gradeToReportApprovalBlocker,
+    (mcp/core/session/lifecycle-gates.js's gradeToReportApprovalBlocker,
     .claude/hooks/bob-approval-gate-impl.py) key their artifact lookups by.
-    mcp/lib/scope.js's assertHttpScopeDomain (line ~211: `host.includes(":")
+    mcp/core/scope.js's assertHttpScopeDomain (line ~211: `host.includes(":")
     || net.isIP(address) || ...`) and lab-target-attest.js's
     labTargetEligibleHost (`net.isIP(address) !== 4`) both treat a
     colon-bearing host as never a bare IPv4 literal — net.isIP("10.0.0.5:8545")
@@ -452,14 +452,14 @@ def _write_caller_auth_mcp_config(mcp_config_path: str, token: str) -> str:
     itself spawns -- never to the model's own ambient process env. A rogue second
     engine instance the model spawns directly via Bash (e.g. `env -u BOB_AGENTCORE
     node .../mcp/server.js`, inheriting only the model's own env) therefore never
-    receives BOB_MCP_CALLER_TOKEN. mcp/lib/transport.js's caller-auth gate verifies
+    receives BOB_MCP_CALLER_TOKEN. mcp/core/io/transport.js's caller-auth gate verifies
     this token on the first inbound request when enforcement is active.
 
     FAILS GRACEFULLY (defense-in-depth, NOT the root of trust): if the config cannot
     be read/parsed, or carries no `mcpServers.hacker-bob` entry, this returns
     `mcp_config_path` UNCHANGED rather than raising -- a malformed/missing mcp-config
     must not hard-fail the whole invocation over what is explicitly a SECOND layer
-    (see mcp/lib/transport.js's own header comment: the real structural backstop is
+    (see mcp/core/io/transport.js's own header comment: the real structural backstop is
     the independent export-tool approval chokepoint, defense 3). A model that reads
     this per-invocation config via Bash/Read could in principle exfiltrate and replay
     the token into a rogue spawn -- documented residual, not closed by this layer."""
@@ -900,7 +900,7 @@ def run_invocation(payload: dict, env: dict, secrets_client=None,
     # payload["target"] = our in-VPC target's RFC1918 PRIVATE IP ONLY:
     #   KyberFork anvil node  -> "<10.x.x.x>:8545"   (SC/EVM engagement, the anchor)
     #   self-hosted Locker    -> "<10.x.x.x>"        (web engagement, the breadth demo)
-    # SCOPE-GATE FACT (build-verified 2026-07-09): the engine's mcp/lib/lab-target-attest.js
+    # SCOPE-GATE FACT (build-verified 2026-07-09): the engine's mcp/core/lab-target-attest.js
     # REJECTS .internal/.local DNS names — only RFC1918/loopback IPv4 literals are lab-eligible,
     # and ONLY under an explicit operator attestation. The deploy (i1 hacker-bob-stack) MUST set,
     # as AgentCore Runtime env vars (out of the model's reach — a compromised bob cannot
@@ -913,7 +913,7 @@ def run_invocation(payload: dict, env: dict, secrets_client=None,
     stage = payload.get("stage")
     # fx-gate-bypass defense 4 (HIGH — CAIP-10 target handling): KyberFork's co-anchor
     # revision uses CAIP-10 smart-contract targets whose engine session dir is
-    # `sc-<family>-<chainId>-<addr8>-<hash8>` (mcp/lib/tools/init-contract-session.js's
+    # `sc-<family>-<chainId>-<addr8>-<hash8>` (mcp/tools/blockchain/init-contract-session.js's
     # deriveContractTargetDomain), which this entrypoint's own RFC1918/port-stripped
     # derivation below does NOT reproduce (it has no notion of chain_family/chain_id/
     # address, and re-deriving that logic a second time in Python would risk silently
@@ -938,7 +938,7 @@ def run_invocation(payload: dict, env: dict, secrets_client=None,
     # hacker-bob-engagement.asl.json) that runs under a SEPARATE IAM role the model never assumes,
     # triggered by Step Functions after GRADE -- not by anything this resumed invocation does. This entrypoint no
     # longer reads BOB_APPROVAL_ARTIFACT_DIR or payload["approvalToken"] at all; the resumed
-    # session's own internal GRADE->REPORT gate (mcp/lib/lifecycle-gates.js
+    # session's own internal GRADE->REPORT gate (mcp/core/session/lifecycle-gates.js
     # gradeToReportApprovalBlocker, .claude/hooks/bob-approval-gate-impl.py) verifies the
     # HMAC-bound S3 artifact the Lambda wrote, independent of anything in this payload.
 

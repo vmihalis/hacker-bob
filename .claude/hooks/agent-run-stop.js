@@ -223,7 +223,7 @@ function projectRoot() {
   return process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..", "..");
 }
 
-// This hook loads mcp/lib/paths.js in-process, and paths.js freezes the session
+// This hook loads mcp/core/io/paths.js in-process, and paths.js freezes the session
 // root from the environment at first require. The installer gives each
 // workspace its OWN session root so two workspaces can run engines
 // concurrently; if this hook resolved the default root instead, it would look

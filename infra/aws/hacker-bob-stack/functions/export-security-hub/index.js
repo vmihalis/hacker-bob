@@ -19,8 +19,8 @@
 // What gets exported is the exact verifier-approved finding set, protected by
 // S3 Object Lock COMPLIANCE / WORM at GRADE time -- BEFORE any verifier
 // attestation exists -- by
-// mcp/lib/grade-freeze-store.js's
-// writeGradeFreezeBundleSync (called from mcp/lib/grade-verdict-store.js's
+// mcp/core/grade-freeze-store.js's
+// writeGradeFreezeBundleSync (called from mcp/core/grade-verdict-store.js's
 // writeGradeVerdict, right after the local grade.json write), keyed by
 // content-derived grade_verdict_hash. This Lambda reads ONLY that
 // grade-freeze WORM object -- NEVER live EFS session state, NEVER
@@ -40,9 +40,9 @@
 // the embedded grade_verdict_hash/target_domain. A key/version mixup, newer
 // version race, or payload substitution therefore fails closed.
 //
-// Reuses mcp/lib/asff-builder.js (a pure, AWS/fs-free module) verbatim for
+// Reuses mcp/domains/repo/asff-builder.js (a pure, AWS/fs-free module) verbatim for
 // ASFF record shaping -- the SAME module the (now-deregistered)
-// mcp/lib/tools/export-security-hub-finding.js library imports, so this
+// mcp/tools/export-security-hub-finding.js library imports, so this
 // Lambda and that legacy code path can never silently diverge in how an
 // ASFF record is built.
 //
@@ -112,7 +112,7 @@ function requiredEnv(name) {
   throw new Error(`${name} must be set for the ExportSecurityHubFunction Lambda`);
 }
 
-// Mirrors mcp/lib/grade-freeze-store.js's gradeFreezeS3Key exactly. Not
+// Mirrors mcp/core/grade-freeze-store.js's gradeFreezeS3Key exactly. Not
 // require()'d from there directly: that module also carries the (fs/
 // child_process-bound) synchronous PutObject writer, which has no business
 // existing inside this Lambda's bundle. Duplicating this one pure string

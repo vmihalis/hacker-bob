@@ -21,14 +21,14 @@ test("legacySessionsRoot resolver is removed from paths.js", () => {
 
 test("telemetry-migration shim module is deleted", () => {
   assert.throws(
-    () => require("../mcp/lib/telemetry-migration.js"),
+    () => require.resolve("../mcp/lib/telemetry-migration.js"),
     (error) => error && error.code === "MODULE_NOT_FOUND",
   );
 });
 
 test("session-root-migration shim module is deleted", () => {
   assert.throws(
-    () => require("../mcp/lib/session-root-migration.js"),
+    () => require.resolve("../mcp/lib/session-root-migration.js"),
     (error) => error && error.code === "MODULE_NOT_FOUND",
   );
 });

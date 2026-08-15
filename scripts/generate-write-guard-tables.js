@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-// CR-2: render mcp/lib/paths.js WRITE_GUARD_TABLES to a committed JSON manifest
+// CR-2: render mcp/core/io/paths.js WRITE_GUARD_TABLES to a committed JSON manifest
 // that the PreToolUse write-guard hooks read at runtime, killing the
 // hook<->paths.js classification drift. The manifest is asserted byte-identical
 // to the paths.js projection by `npm run check:write-guard-tables`.

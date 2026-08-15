@@ -1019,7 +1019,7 @@ test("a receipt that silently normalizes to zero says so out loud", () => {
   // their edits were saved for files they had never touched.
   const files = [];
   for (let index = 0; index < 600; index += 1) {
-    files.push({ path: `mcp/lib/mod-${index}.js`, byte_size: 10, sha256: "c".repeat(64), mode: 0o644 });
+    files.push({ path: `mcp/mod-${index}.js`, byte_size: 10, sha256: "c".repeat(64), mode: 0o644 });
   }
   assert.equal(files.length, 600, "fixture broken: the receipt is not populated");
 
@@ -1036,7 +1036,7 @@ test("a receipt that silently normalizes to zero says so out loud", () => {
   const poisoned = {
     [INSTALLED_FILE_OWNERSHIP_KEY]: {
       version: INSTALLED_FILE_OWNERSHIP_VERSION,
-      files: [...files, { path: "mcp/lib/bad.js", byte_size: 10, sha256: "c".repeat(64), mode: 99999 }],
+      files: [...files, { path: "mcp/bad.js", byte_size: 10, sha256: "c".repeat(64), mode: 99999 }],
     },
   };
   assert.equal(declaredInstalledFileOwnershipCount(poisoned), 601);

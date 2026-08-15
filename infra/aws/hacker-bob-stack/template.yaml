@@ -301,7 +301,7 @@ Parameters:
       port. Defaults to the image-owned loopback demo target. External owned
       targets must override this value and disable EnableBuiltInDemoTarget.
       See README.md "Scope-gate attestation" and
-      mcp/lib/lab-target-attest.js. Human-supplied at deploy time, out of
+      mcp/core/lab-target-attest.js. Human-supplied at deploy time, out of
       the model's reach for external targets.
       Threaded straight through to the AgentCore Runtime's BOB_LAB_TARGET
       env var, which scope.js then permits as the ONLY eligible target.
@@ -672,7 +672,7 @@ Resources:
 
   # ---------------------------------------------------------------------
   # (c) EFS for $HOME persistence across the split invoke-GRADE /
-  # resume-REPORT Runtime invocations. mcp/lib/paths.js:44 sessionsRoot()
+  # resume-REPORT Runtime invocations. mcp/core/io/paths.js:44 sessionsRoot()
   # has no env override — $HOME/hacker-bob-sessions must land on this mount
   # at the container/task layer (Dockerfile / entrypoint concern, a
   # separate node); this stack only supplies the durable mount + access
@@ -799,7 +799,7 @@ Resources:
   #     GlassboxAgentRuntimeExecutionRole (the model's role) gets s3:GetObject ONLY on this
   #     prefix, scoped to the *.approved suffix specifically so the grant can never reach into
   #     approvals/pending/ (see GetHumanApprovalArtifacts below) — this deny-write posture is the PRIMARY enforcement;
-  #     the HMAC is defense-in-depth on top of it (mcp/lib/approval-store.js,
+  #     the HMAC is defense-in-depth on top of it (mcp/core/approval-store.js,
   #     .claude/hooks/bob-approval-gate-impl.py). Re-export of amended content is already
   #     blocked by this content binding; see also the approvals/ S3 lifecycle TTL below
   #     (belt-and-suspenders, not load-bearing).
@@ -841,7 +841,7 @@ Resources:
   # never repo-literal) random string — GenerateSecretString with no GenerateStringKey/
   # SecretStringTemplate produces a raw string as SecretString directly (no JSON
   # wrapping), matching how every consumer reads it (ApprovalWriterFunction below,
-  # mcp/lib/approval-store.js, .claude/hooks/bob-approval-gate-impl.py — all three treat
+  # mcp/core/approval-store.js, .claude/hooks/bob-approval-gate-impl.py — all three treat
   # SecretString as the literal key bytes, never JSON-parsed).
   GlassboxApprovalHmacKey:
     Type: AWS::SecretsManager::Secret
@@ -1049,7 +1049,7 @@ Resources:
                   StringEquals:
                     cloudwatch:namespace: bedrock-agentcore
               # PutEvidenceObjects also covers the GRADE-time WORM freeze write
-              # (mcp/lib/grade-freeze-store.js's writeGradeFreezeBundleSync, called
+              # (mcp/core/grade-freeze-store.js's writeGradeFreezeBundleSync, called
               # from writeGradeVerdict BEFORE any verifier attestation exists) — it lands
               # under EvidenceBucket's hacker-bob/grade-freeze/ prefix, the SAME
               # bucket, no new Sid needed. The model's role is granted s3:PutObject
@@ -1914,7 +1914,7 @@ Resources:
   # securityhub:BatchImportFindings at all (see that role's comment above).
   #
   # Reads ONLY the GRADE-time WORM freeze object
-  # (mcp/lib/grade-freeze-store.js, written by writeGradeVerdict BEFORE any
+  # (mcp/core/grade-freeze-store.js, written by writeGradeVerdict BEFORE any
   # human approval exists) at
   # s3://<EvidenceBucket>/hacker-bob/grade-freeze/<target_domain>/<grade_verdict_hash>.json
   # -- never live EFS session state, never claims.jsonl, never a re-run
@@ -1923,9 +1923,9 @@ Resources:
   #
   # Handler: infra/aws/hacker-bob-stack/functions/export-security-hub/index.js.
   # CodeUri is the repo root (not just the function's own directory) so the
-  # packaged Lambda can require ../../../../../mcp/lib/asff-builder.js -- the
+  # packaged Lambda can require ../../../../../mcp/domains/repo/asff-builder.js -- the
   # SAME pure ASFF-building module the (now-deregistered)
-  # mcp/lib/tools/export-security-hub-finding.js library imports, so this
+  # mcp/tools/export-security-hub-finding.js library imports, so this
   # Lambda and that legacy code path can never silently diverge in how an
   # ASFF record is built. This is the standard, if unglamorous, "vendor the
   # whole repo into the zip" SAM pattern -- acceptable here since no build
@@ -1998,8 +1998,8 @@ Resources:
         - !Ref AsffBuilderLayer
       Environment:
         Variables:
-          ASFF_BUILDER_PATH: /opt/lib/asff-builder.js
-          VERIFICATION_CONTRACTS_PATH: /opt/lib/verification-contracts.js
+          ASFF_BUILDER_PATH: /opt/lib/domains/repo/asff-builder.js
+          VERIFICATION_CONTRACTS_PATH: /opt/lib/core/verification/verification-contracts.js
           GRADE_FREEZE_BUCKET: !Ref EvidenceBucket
           SECURITY_HUB_PRODUCT_ARN: !Sub arn:aws:securityhub:${AWS::Region}:${AWS::AccountId}:product/${AWS::AccountId}/default
 

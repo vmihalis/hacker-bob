@@ -1,6 +1,6 @@
 > ## SUPERSEDED (fx-kyber-iac) — this stack's in-VPC anvil node + private DNS is NOT deployed
 > `KYBERFORK-SPEC.md`'s own REFRAMED 2026-07-09 banner (top of that file) explains why:
-> hacker-bob's SC/EVM axis (`mcp/lib/sc-egress-policy.js`) unconditionally rejects
+> hacker-bob's SC/EVM axis (`mcp/domains/blockchain/smart-contracts/sc-egress-policy.js`) unconditionally rejects
 > RFC1918/private RPC endpoints, with zero coupling to the web-axis lab-attestation this
 > stack's `kyberfork.internal` private-DNS design depended on — making `template.yaml`'s
 > §1/§4 architecture structurally unreachable by the EVM pack as written. **Kyber now runs via
@@ -123,7 +123,7 @@ archive-RPC host. Two build-day steps keep the *actual* run inside that single h
 quietly needing more:
 
 1. **Vendor `ks-elastic-sc-legacy` source into the harness at build time.** The live run must
-   never call `bob_evm_fetch_source` (`mcp/lib/evm-source.js`'s `SOURCIFY_BASE`
+   never call `bob_evm_fetch_source` (`mcp/domains/blockchain/smart-contracts/evm-source.js`'s `SOURCIFY_BASE`
    [`https://sourcify.dev/server/files/any`] / Etherscan V2 [`https://api.etherscan.io/v2/api`]
    path) to pull KyberSwap Elastic's source — both of those hosts are outside the one declared
    allow-list domain. Fetch and vendor the contract source into the runner image (or the
@@ -139,7 +139,7 @@ Both steps keep egress at exactly the one archive-RPC host declared in
 `infra/aws/hacker-bob-stack/template.yaml` — vendoring/pre-baking is what makes "one declared
 egress hole" true in practice, not just on paper.
 
-**`BOB_EVM_RPCS_1` alone does not enforce single-host containment.** `mcp/lib/evm-rpc-pool.js`'s
+**`BOB_EVM_RPCS_1` alone does not enforce single-host containment.** `mcp/domains/blockchain/smart-contracts/evm-rpc-pool.js`'s
 `resolveEvmRpcEndpoints(chainId)` ALWAYS appends the shipped 3-host
 `DEFAULT_PUBLIC_RPC_LADDER[1]` (`ethereum-rpc.publicnode.com` / `eth.llamarpc.com` / `1rpc.io/eth`)
 after any `BOB_EVM_RPCS_1` env override (`[...fromEnv, ...defaults, ...fromDefaultEnv]`) — none of
@@ -147,7 +147,7 @@ which are on `ArchiveRpcAllowedDomainList` or `hacker-bob-deny-egress-sg`. Setti
 would leave three non-allowlisted candidate hosts still resolved/returned by
 `resolveEvmRpcEndpoints`, even though a live call to any of them lands as a VPC Flow Log REJECT
 (the deny-by-default SG still holds). What actually enforces the single pinned host is
-`mcp/lib/foundry-runner.js`'s `explicitForkUrls` short-circuit: `bob_foundry_run` called with
+`mcp/domains/blockchain/smart-contracts/foundry-runner.js`'s `explicitForkUrls` short-circuit: `bob_foundry_run` called with
 `fork_urls=["https://<ONE pinned archive-RPC host>"]` bypasses `resolveEvmRpcEndpoints` entirely,
 exactly as `KYBERFORK-SPEC.md`'s own Agent-Prompt already specifies. Always pass the explicit
 `fork_urls` override, never rely on `BOB_EVM_RPCS_1`/`chain_id` alone.

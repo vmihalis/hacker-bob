@@ -42,7 +42,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 2048,
-      "description": "What bob is authorized to engage, and NOTHING ELSE. Interpretation depends on targetKind: a registrable HTTP scope domain (web), a git/clone reference (repo), or a chain+address smart-contract reference (sc). This is the fail-closed scope seed: the entrypoint binds the engine's scope gate (mcp/lib/scope.js assertHttpScopeDomain / validateHttpScanScope) to exactly this value. Out-of-scope reach is refused by the SAME gate the local rail uses; the runner adds no new bypass."
+      "description": "What bob is authorized to engage, and NOTHING ELSE. Interpretation depends on targetKind: a registrable HTTP scope domain (web), a git/clone reference (repo), or a chain+address smart-contract reference (sc). This is the fail-closed scope seed: the entrypoint binds the engine's scope gate (mcp/core/scope.js assertHttpScopeDomain / validateHttpScanScope) to exactly this value. Out-of-scope reach is refused by the SAME gate the local rail uses; the runner adds no new bypass."
     },
     "targetKind": {
       "type": "string",
@@ -97,13 +97,13 @@
         },
         "labAuthorization": {
           "type": "object",
-          "description": "Operator-attested lab/private-target escape for a loopback/RFC1918 web target, mapping to mcp/lib/scope.js opts.labAuthorization. OFF unless explicitly present in the SIGNED grant (the runner's operator-attestation equivalent of the local rail's BOB_LAB_TARGET_ACK env); cloud-metadata/link-local/IPv6/.internal/.local remain ineligible even with it. Requires autonomy 'operator-approved'. Shape pinned so this security escape carries no unconstrained fields.",
+          "description": "Operator-attested lab/private-target escape for a loopback/RFC1918 web target, mapping to mcp/core/scope.js opts.labAuthorization. OFF unless explicitly present in the SIGNED grant (the runner's operator-attestation equivalent of the local rail's BOB_LAB_TARGET_ACK env); cloud-metadata/link-local/IPv6/.internal/.local remain ineligible even with it. Requires autonomy 'operator-approved'. Shape pinned so this security escape carries no unconstrained fields.",
           "additionalProperties": false,
           "required": ["private_targets"],
           "properties": {
             "private_targets": {
               "const": true,
-              "description": "Must be exactly true — the operator's declared private-target intent. parseLabAuthorization (mcp/lib/lab-target-attest.js) reads ONLY this bit; ack_source and scope are server-derived, never accepted from the grant. No other field is honored."
+              "description": "Must be exactly true — the operator's declared private-target intent. parseLabAuthorization (mcp/core/lab-target-attest.js) reads ONLY this bit; ack_source and scope are server-derived, never accepted from the grant. No other field is honored."
             }
           }
         }
@@ -112,7 +112,7 @@
     "egressProfile": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-      "description": "Name of the egress profile the container binds before bob runs (mcp/lib/egress-profiles.js). Determines the adversary's identity on the wire. Defaults to the engagement's provisioned profile when absent. The RESOLVED identity is disclosed back as egress_profile_identity_hash in the run's opening event — who the container IS on the wire, stated plainly, never as a badge."
+      "description": "Name of the egress profile the container binds before bob runs (mcp/core/egress-profiles.js). Determines the adversary's identity on the wire. Defaults to the engagement's provisioned profile when absent. The RESOLVED identity is disclosed back as egress_profile_identity_hash in the run's opening event — who the container IS on the wire, stated plainly, never as a badge."
     }
   }
 }

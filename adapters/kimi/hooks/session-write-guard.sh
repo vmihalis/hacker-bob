@@ -7,7 +7,7 @@
 
 INPUT=$(cat)
 export WRITE_GUARD_INPUT="$INPUT"
-# CR-2: classification tables are rendered from mcp/lib/paths.js
+# CR-2: classification tables are rendered from mcp/core/io/paths.js
 # WRITE_GUARD_TABLES — never hand-edit. Regenerate with
 # `node scripts/generate-write-guard-tables.js`. The manifest travels beside
 # this hook (the kimi install copies it into .kimi/hooks/).
@@ -24,7 +24,7 @@ import sys
 
 # Per-workspace session roots. The installer gives each workspace its OWN
 # disjoint session root (BOB_SESSIONS_ROOT, written into the host config and
-# frozen at engine boot by mcp/lib/paths.js) so two workspaces can run engines
+# frozen at engine boot by mcp/core/io/paths.js) so two workspaces can run engines
 # concurrently. This guard must protect the root the engine actually writes to,
 # so the configured root is discovered here — from the environment first, then
 # from the workspace host config, which is authoritative even if the host does
@@ -70,7 +70,7 @@ SESSIONS_ROOTS = _configured_sessions_roots() + (
 )
 SESSIONS_ROOT = SESSIONS_ROOTS[0]
 
-# CR-2: load the classification tables rendered from mcp/lib/paths.js
+# CR-2: load the classification tables rendered from mcp/core/io/paths.js
 # WRITE_GUARD_TABLES. The manifest is the single source of truth; closure
 # covers the AUDIT-GRADED subset (re-exported by reference from
 # AUDIT_GRADED_PATHS) plus the hand-maintained plain-MCP-owned/agent-writable

@@ -228,7 +228,7 @@ test("(f) fixture chain-builder dispatch produces at least 1 bob_propose_hypothe
   try {
     // Force re-resolution of any HOME-dependent module state.
     for (const key of Object.keys(require.cache)) {
-      if (key.includes("/mcp/lib/")) {
+      if (key.includes("/mcp/")) {
         delete require.cache[key];
       }
     }
@@ -260,7 +260,7 @@ test("(f) fixture chain-builder dispatch produces at least 1 bob_propose_hypothe
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
     for (const key of Object.keys(require.cache)) {
-      if (key.includes("/mcp/lib/")) {
+      if (key.includes("/mcp/")) {
         delete require.cache[key];
       }
     }

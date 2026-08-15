@@ -171,10 +171,11 @@ test("canonical package declares the MCP runtime through a deny-by-default file 
     "mcp/auto-signup.js",
     "mcp/redaction.js",
     "mcp/browser-driver.js",
+    "mcp/*.js",
     "mcp/core/**/*.js",
     "mcp/domains/**/*.js",
     "mcp/tools/**/*.js",
-    "mcp/lib/*.js",
+    "mcp/fuzz/**/*.js",
     "mcp/fuzz/bob-multitu-build.sh",
     "mcp/offensive-image.json",
   ]) {
@@ -665,7 +666,6 @@ test("package policy excludes denied files even if they exist in the source tree
     fs.mkdirSync(path.join(root, "docs", "plane-delta", "detail"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs", "plane-delta", "verification"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs", "plane-physical"), { recursive: true });
-    fs.mkdirSync(path.join(root, "mcp", "lib"), { recursive: true });
     fs.mkdirSync(path.join(root, "mcp", "fuzz"), { recursive: true });
     fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
     fs.mkdirSync(path.join(root, "scripts", "replay-prompts"), { recursive: true });
@@ -681,10 +681,10 @@ test("package policy excludes denied files even if they exist in the source tree
     fs.writeFileSync(path.join(root, "docs", "plane-delta", "verification", "WEAVE.md"), "internal\n");
     fs.writeFileSync(path.join(root, "docs", "plane-physical", "nodes.json"), "{}\n");
     fs.writeFileSync(path.join(root, "mcp", "server.js"), "module.exports = {};\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "runtime.js"), "module.exports = {};\n");
+    fs.writeFileSync(path.join(root, "mcp", "runtime.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(root, "mcp", "fuzz", "bob-multitu-build.sh"), "exit 0\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "hil-evidence.json"), "{}\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "operator-private.pem"), "secret\n");
+    fs.writeFileSync(path.join(root, "mcp", "hil-evidence.json"), "{}\n");
+    fs.writeFileSync(path.join(root, "mcp", "operator-private.pem"), "secret\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-refusal.js"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-prompts", "00-baseline.md"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "keep.js"), "keep\n");
@@ -703,10 +703,10 @@ test("package policy excludes denied files even if they exist in the source tree
     assert.ok(!expectedFiles.includes("docs/plane-physical/nodes.json"));
     assert.ok(!expectedFiles.includes("testing/policy-replay/LIVE_SMOKE_DESIGN.md"));
     assert.ok(expectedFiles.includes("mcp/server.js"));
-    assert.ok(expectedFiles.includes("mcp/lib/runtime.js"));
+    assert.ok(expectedFiles.includes("mcp/runtime.js"));
     assert.ok(expectedFiles.includes("mcp/fuzz/bob-multitu-build.sh"));
-    assert.ok(!expectedFiles.includes("mcp/lib/hil-evidence.json"));
-    assert.ok(!expectedFiles.includes("mcp/lib/operator-private.pem"));
+    assert.ok(!expectedFiles.includes("mcp/hil-evidence.json"));
+    assert.ok(!expectedFiles.includes("mcp/operator-private.pem"));
     for (const excluded of EXCLUDED_CANONICAL_PACKAGE_FILES) {
       assert.ok(!expectedFiles.includes(excluded), `${excluded} should not be expected`);
     }
