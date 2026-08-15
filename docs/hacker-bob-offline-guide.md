@@ -213,7 +213,7 @@ guardrails in several layers:
   validation
 - write guard hook in `.claude/hooks/session-write-guard.sh`
 - evaluator stop validation in `.claude/hooks/agent-run-stop.js`
-- phase gates in `mcp/lib/phase-gates.js`
+- phase gates in `mcp/core/session/lifecycle-gates.js`
 - egress profile handling in `mcp/core/egress-profiles.js`
 
 \newpage
@@ -264,7 +264,6 @@ install.sh
 scripts/install.js
 scripts/merge-claude-config.js
 scripts/lifecycle.js
-mcp/lib/claude-config.js
 ```
 
 The CLI has these main commands:
@@ -365,8 +364,8 @@ mcp/core/io/transport.js
 mcp/core/dispatch/tool-registry.js
 mcp/core/dispatch/dispatch.js
 mcp/tools/index.js
-mcp/lib/tools/*.js
-mcp/lib/*.js
+mcp/tools/**/*.js
+mcp/core/**/*.js
 ```
 
 Claude Code talks to `mcp/server.js` over stdio. The server exposes `bounty_*`
@@ -464,7 +463,7 @@ The state machine is implemented in:
 
 ```text
 mcp/core/session/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Valid phases:
@@ -509,8 +508,8 @@ Blocked when:
 Code:
 
 ```text
-mcp/lib/phase-gates.js
-computeEvaluationToChainGate()
+mcp/core/session/lifecycle-gates.js
+gateOpenFrontierToClaimFreeze()
 ```
 
 ## CHAIN -> VERIFY
@@ -534,8 +533,8 @@ not_applicable
 Code:
 
 ```text
-mcp/lib/phase-gates.js
-computeChainToVerifyGate()
+mcp/core/session/lifecycle-gates.js
+gateClaimFreezeToVerify()
 ```
 
 ## VERIFY -> GRADE
@@ -546,8 +545,8 @@ missing.
 Code:
 
 ```text
-mcp/lib/phase-gates.js
-computeVerifyToGradeGate()
+mcp/core/session/lifecycle-gates.js
+gateVerifyToGrade()
 mcp/core/evidence.js
 requireValidEvidencePacksForFinalReportableFindings()
 ```
@@ -1089,7 +1088,7 @@ silently dropped.
 Code:
 
 ```text
-mcp/lib/findings.js
+mcp/core/verification/verification-round-store.js
 writeVerificationRound()
 requirePriorVerificationRound()
 ```
@@ -1502,8 +1501,9 @@ bounty_record_finding
 Code:
 
 ```text
-mcp/lib/findings.js
-recordFinding()
+mcp/tools/record-candidate-claim.js
+mcp/core/claims/claims.js
+recordCandidateClaimHandler()
 ```
 
 Simplified record:
@@ -1529,7 +1529,7 @@ Simplified record:
 }
 ```
 
-`recordFinding()` also computes a dedupe key from endpoint, title/classification,
+`recordCandidateClaimHandler()` also computes a dedupe key from endpoint, title/classification,
 auth context, and evidence fingerprint. Exact duplicates are not recorded unless
 `force_record` is true.
 
@@ -2070,7 +2070,6 @@ install.sh
 scripts/install.js
 scripts/merge-claude-config.js
 scripts/lifecycle.js
-mcp/lib/claude-config.js
 ```
 
 Trace:
@@ -2191,7 +2190,7 @@ Open:
 mcp/core/io/paths.js
 mcp/core/io/storage.js
 mcp/core/session/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Questions to answer:
@@ -2244,7 +2243,7 @@ Questions to answer:
 Open:
 
 ```text
-mcp/lib/findings.js
+mcp/core/claims/claims.js
 mcp/core/chain-attempts.js
 mcp/core/evidence.js
 ```
@@ -2317,7 +2316,7 @@ rg --files
 ## Find Tool Definitions
 
 ```bash
-rg "name: \"bob_" mcp/lib/tools
+rg "name: \"bob_" mcp/tools
 ```
 
 ## See Tool Registry Summary
@@ -2414,7 +2413,7 @@ Read:
 
 ```text
 mcp/core/session/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 mcp/core/waves/waves.js
 mcp/core/session/assignment-brief.js
 mcp/core/frontier/coverage.js
@@ -2427,7 +2426,7 @@ Goal: understand how Bob manages many agents without relying on chat memory.
 Read:
 
 ```text
-mcp/lib/findings.js
+mcp/core/claims/claims.js
 mcp/core/chain-attempts.js
 mcp/core/evidence.js
 ```
@@ -2853,8 +2852,8 @@ bounty_record_finding({
 Code path:
 
 ```text
-mcp/lib/tools/record-finding.js
-  -> mcp/lib/findings.js
+mcp/tools/record-candidate-claim.js
+  -> mcp/core/claims/claims.js
 ```
 
 Artifacts:
@@ -3006,7 +3005,7 @@ That status includes:
 The EVALUATE -> CHAIN gate is enforced in:
 
 ```text
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 The transition blocks if:
@@ -3229,8 +3228,8 @@ mcp/core/session/session-state.js
 mcp/core/waves/waves.js
 .claude/agents/evaluator-agent.md
 mcp/core/session/assignment-brief.js
-mcp/lib/findings.js
-mcp/lib/phase-gates.js
+mcp/core/claims/claims.js
+mcp/core/session/lifecycle-gates.js
 .claude/agents/chain-builder.md
 .claude/agents/*verifier.md
 mcp/core/evidence.js
@@ -4219,7 +4218,7 @@ Best code/doc pair:
 .claude/agents/evaluator-agent.md
 mcp/core/session/assignment-brief.js
 mcp/core/waves/waves.js
-mcp/lib/findings.js
+mcp/core/claims/claims.js
 ```
 
 Failure signals:
@@ -4270,7 +4269,7 @@ Best code/doc pair:
 ```text
 .claude/agents/chain-builder.md
 mcp/core/chain-attempts.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Failure signals:
@@ -4543,7 +4542,7 @@ Code:
 
 ```text
 mcp/core/session/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 ## Transition Contract
@@ -4659,16 +4658,16 @@ allowedTransitions
 Then open:
 
 ```text
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Trace these functions:
 
 ```text
-computeEvaluationToChainGate
-computeChainToVerifyGate
-computeVerifyToGradeGate
-formatTransitionBlockers
+gateOpenFrontierToClaimFreeze
+gateClaimFreezeToVerify
+gateVerifyToGrade
+evaluateLifecycleTransition
 ```
 
 That is the complete "why can or cannot we move forward" core.
@@ -5131,8 +5130,8 @@ open_requeue_coverage
 Code to read:
 
 ```text
-mcp/lib/phase-gates.js
-computeEvaluationToChainGate
+mcp/core/session/lifecycle-gates.js
+gateOpenFrontierToClaimFreeze
 ```
 
 What to do:
@@ -5164,9 +5163,10 @@ findings or handoff `chain_notes`, but no terminal chain attempt was recorded.
 Code to read:
 
 ```text
-mcp/lib/phase-gates.js
-computeChainRequirement
-computeChainToVerifyGate
+mcp/core/session/lifecycle-gates.js
+mcp/core/waves/scheduler-preconditions.js
+evaluateSchedulerPrecondition("chain_work_terminal", ...)
+gateClaimFreezeToVerify
 mcp/core/chain-attempts.js
 ```
 
@@ -5203,7 +5203,7 @@ Code to read:
 
 ```text
 mcp/core/evidence.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 What to do:
@@ -5306,7 +5306,7 @@ final includes every balanced result
 If that invariant breaks, inspect:
 
 ```text
-mcp/lib/findings.js
+mcp/core/verification/verification-round-store.js
 .claude/agents/balanced-verifier.md
 .claude/agents/final-verifier.md
 test/mcp-server.test.js
@@ -5575,7 +5575,7 @@ turn that spawned evaluators.
 Task:
 
 ```bash
-rg -n "state.json|writeSessionStateDocument|session_artifacts_written" mcp/lib
+rg -n "state.json|writeSessionStateDocument|session_artifacts_written" mcp
 ```
 
 Answer:
@@ -5638,12 +5638,12 @@ the brief is where the assigned context packet comes from.
 Task:
 
 ```bash
-sed -n '1,180p' mcp/lib/phase-gates.js
+sed -n '1,180p' mcp/core/session/lifecycle-gates.js
 ```
 
 Answer:
 
-`computeEvaluationToChainGate()` blocks on:
+`gateOpenFrontierToClaimFreeze()` blocks on:
 
 ```text
 pending_wave
@@ -5766,7 +5766,7 @@ mcp/core/session/session-state.js
 ```text
 mcp/core/constants/shared-vocabulary.js
 mcp/core/session/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 ## Where Are MCP Tools Registered?
@@ -5827,10 +5827,10 @@ mcp/core/frontier/coverage.js
 ## Where Are Findings Implemented?
 
 ```text
-mcp/lib/findings.js
-mcp/lib/tools/record-finding.js
-mcp/lib/tools/read-findings.js
-mcp/lib/tools/list-findings.js
+mcp/core/claims/claims.js
+mcp/tools/record-candidate-claim.js
+mcp/tools/read-candidate-claims.js
+mcp/tools/list-candidate-claims.js
 ```
 
 ## Where Are Chain Attempts Implemented?
@@ -5844,7 +5844,7 @@ mcp/tools/read-chain-attempts.js
 ## Where Are Verification Rounds Implemented?
 
 ```text
-mcp/lib/findings.js
+mcp/core/verification/verification-round-store.js
 mcp/tools/write-verification-round.js
 mcp/tools/read-verification-round.js
 ```
@@ -6071,7 +6071,8 @@ Right now, artifact schemas are mostly encoded in normalizer functions:
 ```text
 mcp/core/session/session-state.js
 mcp/core/waves/waves.js
-mcp/lib/findings.js
+mcp/core/claims/claims.js
+mcp/core/verification/verification-round-store.js
 mcp/core/evidence.js
 mcp/core/chain-attempts.js
 ```
@@ -6243,7 +6244,7 @@ Output:
 
 Why it makes sense:
 
-The gate logic already exists in `mcp/lib/phase-gates.js`. Today, blocked
+The gate logic already exists in `mcp/core/session/lifecycle-gates.js`. Today, blocked
 transitions surface as `STATE_CONFLICT` errors from `bounty_transition_phase`.
 A dedicated read-only explainer would make orchestration and `/bob-status`
 clearer without requiring a failed transition attempt.
@@ -6961,11 +6962,12 @@ mcp/tools/index.js
 mcp/core/io/paths.js
 mcp/core/io/storage.js
 mcp/core/session/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 mcp/core/waves/waves.js
 mcp/core/session/assignments.js
 mcp/core/frontier/coverage.js
-mcp/lib/findings.js
+mcp/core/claims/claims.js
+mcp/core/verification/verification-round-store.js
 mcp/core/chain-attempts.js
 mcp/core/evidence.js
 mcp/core/telemetry/pipeline-analytics.js

@@ -13,7 +13,7 @@ I have all the evidence. Writing the verdict report.
 ### I10 — Static-analysis finding index
 **VERDICT: keep**
 
-- **Already shipped?** No. `bob_static_scan` (`mcp/tools/repo/static-scan.js` → `static-artifacts.js`) is a *token-contract* scan only (`scan_type` enum = `token_contract`); zero `sarif|codeql|semgrep|coccinelle` anywhere in `mcp/lib`. `mcp/domains/repo/static-analysis-index.js` does not exist. Genuinely net-new, no overlap.
+- **Already shipped?** No. `bob_static_scan` (`mcp/tools/repo/static-scan.js` → `static-artifacts.js`) is a *token-contract* scan only (`scan_type` enum = `token_contract`); zero `sarif|codeql|semgrep|coccinelle` anywhere in `mcp/`. `mcp/domains/repo/static-analysis-index.js` does not exist. Genuinely net-new, no overlap.
 - **Anchor real?** Yes — `static-analysis-index.js` correctly marked new; `mcp/core/frontier/lead-intake.js` exists as the real intake consumer (`normalizeSurfaceLead`/`readSurfaceLeadsDocument`).
 - **Predecessors sound?** IP7 (new SARIF runner, absent ✓), S6 (shipped) ✓. No cycle.
 - **Anti-pattern:** Clean — explicitly "candidate LEADS (never auto-findings)," respecting freeze-then-verify; index has its tier-mate consumer C11.
@@ -22,7 +22,7 @@ I have all the evidence. Writing the verdict report.
 ### I11 — Calibration ledger / trust cells
 **VERDICT: keep** (one dependency caveat)
 
-- **Already shipped?** No. Zero `wilson|trust.?cell|calibration|fp.?rate` in `mcp/lib`. `capability-metrics.js` only buckets per-capability *tool usage*, not per-(model,attack_class,decision_class) *outcomes*. `grade-verdict-store.js` persists `verdict` but no per-class disposition ledger. Net-new (tagged "adopt" from raptor, fine).
+- **Already shipped?** No. Zero `wilson|trust.?cell|calibration|fp.?rate` in `mcp/`. `capability-metrics.js` only buckets per-capability *tool usage*, not per-(model,attack_class,decision_class) *outcomes*. `grade-verdict-store.js` persists `verdict` but no per-class disposition ledger. Net-new (tagged "adopt" from raptor, fine).
 - **Anchor real?** Yes — `bob_write_grade_verdict` exists (`tools/write-grade-verdict.js`); the adjudication source exists (`tools/build-verification-adjudication.js`). S11 store is new.
 - **Predecessors sound?** S11 (new) ✓, single predecessor, no cycle. **Caveat:** do NOT lean on I6's "reserved calibration_label slot" that capability-hypergraph.md advertises — that slot was never built (see summary). I11 must source labels directly from grade verdicts + adjudication, which its intent text already says.
 - **Anti-pattern:** This is the *correct* boundary case — "Passive, default-off, NON-BINDING prior… never short-circuiting a claim pre-verification." It adopts the signal, not the kill, so it does NOT drift into `X-rej-1`/`X-rej-2`. Clean. (Keep the non-binding gate language verbatim in the detail spec.)
@@ -40,7 +40,7 @@ I have all the evidence. Writing the verdict report.
 ### I13 — Cross-target transfer index
 **VERDICT: revise** (phantom predecessor; bigger than implied)
 
-- **Already shipped?** No — `mcp/lib/cross-target-transfer.js` does not exist.
+- **Already shipped?** No — `cross-target-transfer module (planned; not yet implemented)` does not exist.
 - **Anchor real? PARTIALLY STALE.** Anchor is "over symbol-surface-index + **findings-index** + surface-graph." `symbol-surface-index.js` ✓ (I3) and `surface-graph.js` ✓ (I1) exist, but **"findings-index" (I6) does not exist**: no embeddings, no vector store (`grep embedding|sqlite-vss|vector|cosine` = empty), no `bob_index_candidate_claim` / `bob_query_candidate_claims_index` tool files, no `findings-index` file, no `priors_slice`. `claim-correlator.js` is **within-session** clustering only (surface_id / auth_profile_ref / subject_id signals on a single freeze batch), not a cross-target retrieval layer. So one of I13's three named substrates is a phantom.
 - **Predecessors sound?** I1 ✓, I3 ✓, **I6 ✗** — `docs/capability-hypergraph.md` declares I6 "engineering-complete… library, MCP tool wrappers… all shipped," but the actual cross-target findings index was never built; the shipped doc overstates it. No literal cycle, but I13 depends on a non-existent index.
 - **Anti-pattern:** Clean on doctrine — it auto-proposes *sibling hypotheses* fanned into `bob_start_wave` (full freeze-then-verify), not auto-findings; the gate requires confirmation on the 2nd target.
