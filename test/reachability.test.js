@@ -48,7 +48,7 @@ const {
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   loadWaveAssignments,
 } = require("../mcp/core/session/assignments.js");

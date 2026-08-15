@@ -68,14 +68,14 @@ const {
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   ingestMechanismAPhysicalExperimentReceipt,
   openMechanismAPhysicalExperimentDurableHeadPort,
 } = require("../mcp/domains/physical/physical-experiment-store.js");
 const {
   PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
-} = require("../mcp/core/ledger-integrity/signing-key-custody.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   compareAndSetPhysicalMonotonicOwnerState,
   readPhysicalMonotonicOwnerState,

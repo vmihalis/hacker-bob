@@ -23,12 +23,12 @@ const {
   signRowViaIsolatedSignerOrLocal,
   ensureHandoffSigningKey,
   readHandoffSigningPublicKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   verifyRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
   CLAIM_FREEZE_MAC_CONTEXT,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   handoffSigningKeyPath,
   handoffSigningPrivateKeyPath,

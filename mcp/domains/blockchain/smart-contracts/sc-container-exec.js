@@ -350,7 +350,7 @@ function shouldRefuseHostAsSignerScRun(baseOpts) {
   // where the probe is not isolated and this never fires.
   let probe;
   try {
-    const { probeVerdictLedgerKeyIsolation } = require("../../../core/ledger-integrity/sandbox-isolation-attest.js");
+    const { probeVerdictLedgerKeyIsolation } = require("../../../core/ledger-integrity/index.js");
     probe = probeVerdictLedgerKeyIsolation(targetDomain);
   } catch {
     return false;

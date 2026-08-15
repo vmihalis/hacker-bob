@@ -48,10 +48,10 @@ const {
 const {
   verifyRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("../ledger-integrity/offensive-row-mac.js");
+} = require("../ledger-integrity/index.js");
 const {
   resolveOffensiveRowVerifier,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 
 const FINDING_DIFFERENTIAL_VERIFIED_VERSION = 1;
 const FINDING_DIFFERENTIAL_VERIFIED_MAX_RECORDS = 2000;

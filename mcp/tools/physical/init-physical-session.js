@@ -47,7 +47,7 @@ const {
 const {
   ensureHandoffSigningKey,
   ensureHandoffKeypair,
-} = require("../../core/ledger-integrity/handoff-signing-key.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   buildPhysicalOnlySessionBootstrapPayload,
   projectPhysicalScopeNucleusAxis,

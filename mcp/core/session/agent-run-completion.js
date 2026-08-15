@@ -26,7 +26,7 @@ const {
 } = require("../auth-differential-runner.js");
 const {
   readFindingDifferentialVerifiedSummary,
-} = require("../differential/finding-differential-verifier.js");
+} = require("../differential/index.js");
 const {
   edgesFromAttackSurface,
 } = require("../frontier/surface-graph-builder.js");
@@ -723,14 +723,14 @@ function hasAuthDifferentialSweepForSurface(marker, assignment) {
   if (endpoints.size === 0) return false;
   const results = readAuthDifferentialResults(marker.target_domain);
   const rows = results && Array.isArray(results.per_endpoint) ? results.per_endpoint : [];
-  const { templatizeIdBearingEndpoint } = require("../../domains/web/offensive-idor-producer.js");
+  const { templatizeIdBearingEndpoint } = require("../frontier/id-bearing-endpoints.js");
   // Cycle B keyed layer: resolve the row verifier ONCE (a disk key read), then require every
   // credited flip row to carry a VERIFYING row_mac under the auth-differential context. rowMacVerifies
   // wraps assertRowMac to a boolean (STRICT — an unsigned/tampered/forged/cross-context row throws
   // -> false), checked BEFORE rowHasTwoProfileSweep so a Bash-forged flip never clears the id-bearing
   // surface at finalize. Fail closed: a pre-keypair session's null verifier rejects any present row_mac.
-  const { assertRowMac, AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../ledger-integrity/offensive-row-mac.js");
-  const { resolveRowVerifierSafely } = require("../ledger-integrity/handoff-signing-key.js");
+  const { assertRowMac, AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../ledger-integrity/index.js");
+  const { resolveRowVerifierSafely } = require("../ledger-integrity/index.js");
   const rowVerifier = resolveRowVerifierSafely(marker.target_domain);
   const rowMacVerifies = (row) => {
     try {
@@ -921,7 +921,7 @@ function surfaceRouteVerifiability(domain, surfaceId, assignmentEndpoints = []) 
 // as a standalone clearing lever for an id-bearing surface. Fails CLOSED on an unreadable ledger.
 function hasVerifiedCrossStackCompositionForSurface(domain, surfaceId) {
   try {
-    const { readCompositionVerifiedSummary } = require("../differential/composition-live-verifier.js");
+    const { readCompositionVerifiedSummary } = require("../differential/index.js");
     const refsByHash = readCompositionVerifiedSummary(domain).verified_cross_stack_path_surface_refs || {};
     for (const refs of Object.values(refsByHash)) {
       if (Array.isArray(refs) && refs.includes(`offensive:${surfaceId}`)) return true;

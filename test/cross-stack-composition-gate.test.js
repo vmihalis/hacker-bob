@@ -48,7 +48,7 @@ const {
   normalizeEvidenceReferenceShape,
   canonicalizeExploitTarget,
 } = require("../mcp/core/claims/claims.js");
-const compositionLiveVerifier = require("../mcp/core/differential/composition-live-verifier.js");
+const compositionLiveVerifier = require("../mcp/core/differential/index.js");
 const {
   verifyCompositionPath,
 } = compositionLiveVerifier;
@@ -60,10 +60,10 @@ const {
 } = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   seedInvariantRunRow: seedInvariantRunRowRaw,
 } = require("./helpers/invariant-run-seed.js");

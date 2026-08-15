@@ -25,10 +25,10 @@ const {
 } = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

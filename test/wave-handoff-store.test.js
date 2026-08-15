@@ -44,7 +44,7 @@ const {
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   sha256Hex,
   signHandoffProvenance,

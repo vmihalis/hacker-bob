@@ -26,15 +26,15 @@ const { deriveCvss31 } = require("../mcp/core/scoring/cvss31.js");
 const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
 const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
   writeSessionStateDocument,
 } = require("../mcp/core/session/session-state-store.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
-const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   claimsJsonlPath,
   findingDifferentialVerifiedJsonlPath,

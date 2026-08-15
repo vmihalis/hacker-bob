@@ -28,7 +28,7 @@
 // claims.js and agent-run-completion.js. This module never re-derives segment-collapse
 // logic; it only consumes the canonical string that helper returns.
 
-const { templatizeIdBearingEndpoint } = require("../domains/web/offensive-idor-producer.js");
+const { templatizeIdBearingEndpoint } = require("./frontier/id-bearing-endpoints.js");
 
 // Bounded tree-walk budgets — mirror the visit() pattern in
 // offensive-massread-producer.js's subjectIdentifierSet so a hostile/huge body

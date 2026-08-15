@@ -37,11 +37,11 @@ const {
   ensureHandoffSigningKey,
   readHandoffSigningPublicKey,
   resolveOffensiveRowVerifier,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   verifyRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   directSmartContractSubprocessEnv,
   SC_CONTROLLED_ARTIFACT_ENV_KEYS,
@@ -373,8 +373,8 @@ test("invariant row binds consumed_artifact_hash INSIDE run_hash (present/absent
 
     // The sibling IS MAC-covered on the invariant row: flipping it breaks the row_mac.
     const verifier = resolveOffensiveRowVerifier(domain);
-    const { verifyRowWithMac: verifyInv } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-    const { INVARIANT_RUN_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+    const { verifyRowWithMac: verifyInv } = require("../mcp/core/ledger-integrity/index.js");
+    const { INVARIANT_RUN_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
     assert.ok(pRow.row_mac, "positive invariant row is signed");
     assert.equal(verifyInv(INVARIANT_RUN_MAC_CONTEXT, pRow, verifier), true, "intact invariant row verifies");
     const tamperedRow = { ...pRow, consumed_artifact_hash: "0".repeat(64) };

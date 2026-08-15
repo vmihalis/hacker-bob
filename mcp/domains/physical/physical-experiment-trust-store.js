@@ -24,10 +24,10 @@ const {
 } = require("../../core/io/storage.js");
 const {
   probeExactSigningKeyPathIsolation,
-} = require("../../core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
-} = require("../../core/ledger-integrity/signing-key-custody.js");
+} = require("../../core/ledger-integrity/index.js");
 
 // Capture the small mutable-prototype surface used by the authority journal.
 // A dependency that poisons Array/Object helpers after module load must not be

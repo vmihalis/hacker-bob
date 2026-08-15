@@ -37,11 +37,11 @@ const {
   assertRowMacOrLegacy,
   INVARIANT_RUN_MAC_CONTEXT,
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("./ledger-integrity/offensive-row-mac.js");
+} = require("./ledger-integrity/index.js");
 const {
   signRowViaIsolatedSignerOrLocal,
   resolveRowVerifierSafely,
-} = require("./ledger-integrity/handoff-signing-key.js");
+} = require("./ledger-integrity/index.js");
 const {
   readOffensiveCaptureBytesSecure,
 } = require("./claims/claim-freeze.js");
@@ -866,7 +866,7 @@ async function runInvariantForFinding({
   const sealedSlots = isPlainObject(slot_values) ? slot_values : {};
   let source;
   if (isSealedCrossStack) {
-    source = require("./differential/sealed-cross-stack-harness.js").buildSealedTestSource({
+    source = require("./differential/index.js").buildSealedTestSource({
       contractName: contract_name,
       testFunctionName: function_name,
       targetAddress: sealedSlots.target_address,
@@ -993,7 +993,7 @@ async function runInvariantForFinding({
       // under home) and run forge against IT — the agent's harness_path is NOT used for a sealed
       // cross-stack run, so no agent Solidity / forge-std / setUp is ever on the execution path.
       sealedProjectParent = fs.mkdtempSync(path.join(os.homedir(), ".bob-sealed-xstack-"));
-      const sealed = require("./differential/sealed-cross-stack-harness.js").writeSealedCrossStackProject(sealedProjectParent, {
+      const sealed = require("./differential/index.js").writeSealedCrossStackProject(sealedProjectParent, {
         contractName: contract_name,
         testFunctionName: function_name,
         targetAddress: sealedSlots.target_address,

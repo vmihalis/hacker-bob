@@ -28,8 +28,8 @@ const {
 const {
   verifyRowWithMac,
   INVARIANT_RUN_MAC_CONTEXT,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
 
 function uniqueDomain() {
   return `inv-ci-${Math.random().toString(36).slice(2)}.example.com`;

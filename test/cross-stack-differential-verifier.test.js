@@ -46,13 +46,13 @@ const {
   verifyCompositionPath,
   readCompositionVerifiedSummary,
   resolveCompositionPathSynthVerdict,
-} = require("../mcp/core/differential/composition-live-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const {
   isBindLeaf,
   isShapeValidEdgeType,
   resolveBoundDifferentialLeaf,
   reverifyCrossStackLeaf,
-} = require("../mcp/core/differential/cross-stack-differential-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const {
   canonicalizeExploitTarget,
   appendCandidateClaim,
@@ -67,10 +67,10 @@ const {
 } = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   classifySurfaceCapability,
 } = require("../mcp/core/capability/capability-packs.js");

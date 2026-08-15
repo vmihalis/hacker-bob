@@ -21,9 +21,9 @@ const { writeVerificationRound } = require("../mcp/core/verification/verificatio
 const { writeEvidencePacks } = require("../mcp/core/evidence.js");
 const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,

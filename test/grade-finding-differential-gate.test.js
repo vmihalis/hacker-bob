@@ -44,10 +44,10 @@ const {
 } = require("../mcp/core/frontier/frontier-events.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   writeVerificationRound,
@@ -202,7 +202,7 @@ function seedFindingDifferentialArm(domain, findingId, {
     run_id: controlRunId, offensive_outcome: "blocked_by_defense", command_hash: hex("2"),
     surface_id: surfaceId, demonstrated_severity: positiveSeverity,
   });
-  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
     version: 1,
     target_domain: domain,

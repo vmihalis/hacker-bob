@@ -22,7 +22,7 @@ const {
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   offensiveRunsJsonlPath,
   attackSurfacePath,
@@ -32,7 +32,7 @@ const {
 const {
   signOffensiveRunRow,
   verifyOffensiveRunRowMac,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   readHttpAuditRecordsFromJsonl,
 } = require("../mcp/core/io/http-records.js");

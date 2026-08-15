@@ -24,7 +24,7 @@ const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 const DOMAIN = "sc-refuse.example.com";
 

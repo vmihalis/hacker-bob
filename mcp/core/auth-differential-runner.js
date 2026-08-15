@@ -36,8 +36,8 @@ const { scheduleMaterialization } = require("./frontier/frontier-materialize-deb
 // Does NOT close the same-uid signer residual — the private key is still 0600 at the agent
 // uid; the enforced delta is that an unsigned/content-tampered forged row no longer clears
 // the id-bearing gate. row_mac is EXCLUDED from results_hash so the hash stays byte-stable.
-const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("./ledger-integrity/offensive-row-mac.js");
-const { signRowViaIsolatedSignerOrLocal } = require("./ledger-integrity/handoff-signing-key.js");
+const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("./ledger-integrity/index.js");
+const { signRowViaIsolatedSignerOrLocal } = require("./ledger-integrity/index.js");
 
 const DEFAULT_ENDPOINT_LIMIT = 200;
 
@@ -290,7 +290,7 @@ async function runAuthDifferential({
   // large producer module at load, and any require cycle). id_bearing_templates is the caller-
   // resolved, route-frozen {id}-template set for surface_id; an empty/unresolvable set FAILS
   // CLOSED (validates no principal for the flip arm) rather than admitting a public-endpoint 2xx.
-  const { templatizeIdBearingEndpoint } = require("../domains/web/offensive-idor-producer.js");
+  const { templatizeIdBearingEndpoint } = require("./frontier/id-bearing-endpoints.js");
   const idBearingTemplateSet = new Set(
     Array.isArray(id_bearing_templates)
       ? id_bearing_templates.filter((t) => typeof t === "string" && t)

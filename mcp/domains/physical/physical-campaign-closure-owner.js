@@ -33,7 +33,7 @@ const {
 } = require("../../core/io/paths.js");
 const {
   probeExactSigningKeyPathIsolation,
-} = require("../../core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../../core/ledger-integrity/index.js");
 const {
   canonicalJson,
   hashCanonicalJson,

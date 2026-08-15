@@ -35,9 +35,9 @@ const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 function seedFindingDifferentialArm(domain, findingId, surfaceId = "surface:billing-profile") {
   const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",

@@ -29,7 +29,7 @@ const {
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
   RESULT_OFFLINE_REFUSED,
-} = require("../mcp/core/differential/composition-live-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const { TOOL_MANIFEST } = require("../mcp/core/dispatch/tool-registry.js");
 
 // example.com is a real registrable domain, so validateHttpScanScope accepts

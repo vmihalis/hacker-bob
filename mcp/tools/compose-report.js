@@ -549,7 +549,7 @@ function normalizeAndValidatePackSections(domain, projection, callerSections) {
 // (CONSTRAINT 1); it consumes the LIVE probe, NEVER the stored sandbox-isolation
 // .json flag (forward-note ii).
 function assertComposedVerdictSectionsAreSandboxAttested(domain, sections) {
-  const gate = require("../core/ledger-integrity/sandbox-isolation-gate.js");
+  const gate = require("../core/ledger-integrity/index.js");
   let decision;
   try {
     decision = gate.evaluateVerdictSandboxGate(domain);

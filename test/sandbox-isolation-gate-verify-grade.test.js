@@ -30,14 +30,14 @@ const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
 const { writeEvidencePacks } = require("../mcp/core/evidence.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,
   sessionDir,
 } = require("../mcp/core/io/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";

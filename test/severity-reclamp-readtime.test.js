@@ -33,13 +33,13 @@ const {
 const composeReportTool = require("../mcp/tools/compose-report.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
-const { offensiveRowHash } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   appendJsonlLine,
 } = require("../mcp/core/io/storage.js");

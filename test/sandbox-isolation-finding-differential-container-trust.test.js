@@ -26,13 +26,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { verifyFindingDifferential } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { verifyFindingDifferential } = require("../mcp/core/differential/index.js");
 const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
 const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
 const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/sandbox-isolation-gate.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/ledger-integrity/index.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,
@@ -42,7 +42,7 @@ const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/core/ledger-integrity/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) {
   return char.repeat(64);

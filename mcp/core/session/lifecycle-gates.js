@@ -204,7 +204,7 @@ function gateVerifyToGrade(context) {
 function sandboxIsolationBlockersForReportableVerdictClaims(targetDomain) {
   let decision;
   try {
-    decision = require("../ledger-integrity/sandbox-isolation-gate.js").evaluateVerdictSandboxGate(targetDomain);
+    decision = require("../ledger-integrity/index.js").evaluateVerdictSandboxGate(targetDomain);
   } catch (error) {
     return [{
       code: "sandbox_isolation_unattested",
@@ -213,7 +213,7 @@ function sandboxIsolationBlockersForReportableVerdictClaims(targetDomain) {
         "VERIFY -> GRADE blocked: sandbox-isolation gate evaluation failed (failing closed): "
         + compactError(error),
       error: compactError(error),
-      remediation: require("../ledger-integrity/sandbox-isolation-gate.js").SANDBOX_REMEDIATION,
+      remediation: require("../ledger-integrity/index.js").SANDBOX_REMEDIATION,
     }];
   }
   if (!decision.applies || decision.decision === "allow") return [];
@@ -223,7 +223,7 @@ function sandboxIsolationBlockersForReportableVerdictClaims(targetDomain) {
     // sections advisory. The transition proceeds (CONSTRAINT 7: in-flight
     // sessions are never hard-crashed under degrade).
     try {
-      require("../ledger-integrity/sandbox-isolation-gate.js").emitSandboxDowngradeWarning(decision, "VERIFY -> GRADE:");
+      require("../ledger-integrity/index.js").emitSandboxDowngradeWarning(decision, "VERIFY -> GRADE:");
     } catch {
       // warning emission is best-effort; never block on it.
     }
@@ -240,7 +240,7 @@ function sandboxIsolationBlockersForReportableVerdictClaims(targetDomain) {
       + `${decision.reportable_finding_ids.length} reportable medium+ finding(s) draw on a keyed verdict `
       + `ledger but the signing key is not isolated (mode=enforce, reason=${decision.reason}); a same-uid `
       + "agent could forge the backing MAC",
-    remediation: require("../ledger-integrity/sandbox-isolation-gate.js").SANDBOX_REMEDIATION,
+    remediation: require("../ledger-integrity/index.js").SANDBOX_REMEDIATION,
   }];
 }
 

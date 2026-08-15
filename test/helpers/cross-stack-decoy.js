@@ -16,10 +16,10 @@ const {
 } = require("../../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../../mcp/core/ledger-integrity/handoff-signing-key.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../../mcp/core/ledger-integrity/offensive-row-mac.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 const { canonicalizeExploitTarget } = require("../../mcp/core/claims/claims.js");
 const { seedInvariantRunRow } = require("./invariant-run-seed.js");
 

@@ -48,7 +48,7 @@ const { readFrontierEvents } = require("../mcp/core/frontier/frontier-events.js"
 const { writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
 const { DEFAULT_SCANNERS, SYNTHESIZERS } = require("../mcp/core/friction-scanners.js");
 const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
-const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 
 void frictionIdempotencyKey;
 

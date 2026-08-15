@@ -30,7 +30,7 @@ const {
 } = require("../mcp/domains/web/oob-collector.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 const {
   attackSurfacePath,
   offensiveRunsJsonlPath,
@@ -43,10 +43,10 @@ const {
   canonicalizeExploitTarget,
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("../mcp/core/claims/claims.js");
-const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
-const { verifyFindingDifferential } = require("../mcp/core/differential/finding-differential-verifier.js");
+const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/core/ledger-integrity/index.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
+const { verifyFindingDifferential } = require("../mcp/core/differential/index.js");
 const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,

@@ -29,7 +29,7 @@ const { findRoutedSurface } = require("../mcp/domains/web/offensive-http-common.
 const {
   surfaceExposesIdBearingCollection: idBearingDetector,
   surfaceIdBearingEndpoints: idBearingEndpoints,
-} = require("../mcp/domains/web/offensive-idor-producer.js");
+} = require("../mcp/core/frontier/id-bearing-endpoints.js");
 const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {

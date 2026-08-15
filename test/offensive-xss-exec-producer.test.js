@@ -23,7 +23,7 @@ const {
 } = require("../mcp/domains/web/offensive-xss-exec-producer.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, httpAuditJsonlPath } = require("../mcp/core/io/paths.js");
 const {
   appendCandidateClaim,
@@ -31,8 +31,8 @@ const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
 } = require("../mcp/core/claims/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
 const { projectExploitRunObservedRef } = require("../mcp/core/claims/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,

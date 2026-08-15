@@ -26,7 +26,7 @@ const {
 } = require("../../tools/record-candidate-claim.js");
 const {
   readHandoffSigningKey,
-} = require("../ledger-integrity/handoff-signing-key.js");
+} = require("../ledger-integrity/index.js");
 const {
   assignmentRequiresToken,
   attachHandoffOrigin,
