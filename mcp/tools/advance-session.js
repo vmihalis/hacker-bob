@@ -6,7 +6,7 @@ const {
 } = require("../core/governance/governance-contracts.js");
 const {
   AUTH_STATUS_VALUES,
-} = require("../lib/constants.js");
+} = require("../core/session/session-state-vocabulary.js");
 
 module.exports = Object.freeze({
   name: "bob_advance_session",

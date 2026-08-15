@@ -2,7 +2,7 @@
 
 // A pure constants require keeps the "PURE: no I/O at import" header below
 // accurate — constants.js has zero requires, so there is no circular dependency.
-const { CHAIN_FAMILY_VALUES } = require("../../lib/constants.js");
+const { CHAIN_FAMILY_VALUES } = require("../constants/shared-vocabulary.js");
 
 // Pure SSOT producer-pack manifest — a structural sibling of
 // capability-packs.js. It describes the recon producer DAG: a single ROOT

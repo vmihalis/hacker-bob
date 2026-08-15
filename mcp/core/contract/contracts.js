@@ -61,10 +61,10 @@ const {
 } = require("../../lib/physical-resource-contract.js");
 const {
   normalizeOptionalObject,
-} = require("../../lib/fabric-common.js");
+} = require("../io/validation.js");
 const {
   SEVERITY_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 
 // ─── Frozen vocabulary (X-D4, X-D12) ─────────────────────────────────────
 

@@ -7,7 +7,7 @@ const {
 } = require("../io/validation.js");
 const {
   AUTH_STATUS_VALUES,
-} = require("../../lib/constants.js");
+} = require("./session-state-vocabulary.js");
 const {
   sessionDir,
   sessionNucleusPath,
@@ -57,7 +57,7 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("../io/storage.js");
 const {
   safeAppendPipelineEventDirect,
 } = require("../telemetry/pipeline-events.js");

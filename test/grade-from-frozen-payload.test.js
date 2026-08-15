@@ -64,7 +64,7 @@ const {
 } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   hashDocumentExcluding,
-} = require("../mcp/lib/fabric-common.js");
+} = require("../mcp/core/verification/document-hash.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {

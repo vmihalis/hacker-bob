@@ -5,8 +5,10 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   VERIFICATION_REPLAY_PURPOSE_VALUES,
+} = require("./verification-vocabulary.js");
+const {
   VERIFICATION_ROUND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 const {
   assertEnumValue,
   assertNonEmptyString,

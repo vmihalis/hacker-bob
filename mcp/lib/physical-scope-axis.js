@@ -11,7 +11,7 @@ const {
 } = require("../core/io/validation.js");
 const {
   withDocumentHash,
-} = require("./fabric-common.js");
+} = require("../core/verification/document-hash.js");
 const {
   validateNoSensitiveMaterial,
   validateNoPhysicalSensitiveMaterial,

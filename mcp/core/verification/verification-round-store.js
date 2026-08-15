@@ -5,11 +5,13 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   SEVERITY_VALUES,
+  VERIFICATION_ROUND_VALUES,
+} = require("../constants/shared-vocabulary.js");
+const {
   VERIFICATION_CONFIDENCE_REASON_VALUES,
   VERIFICATION_CONFIDENCE_VALUES,
   VERIFICATION_DISPOSITION_VALUES,
-  VERIFICATION_ROUND_VALUES,
-} = require("../../lib/constants.js");
+} = require("./verification-vocabulary.js");
 const {
   assertBoolean,
   assertEnumValue,

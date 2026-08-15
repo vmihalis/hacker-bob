@@ -3,7 +3,7 @@
 // Plane X Cycle X.3 — Transition surface kind + surface-index extension.
 //
 // X.3 ships:
-//   - mcp/lib/constants.js gains SURFACE_KIND_VALUES (closed enum:
+//   - mcp/core/waves/task-graph-scheduling.js defines SURFACE_KIND_VALUES (closed enum:
 //     surface, transition, hypothesis, claim) — the SoT shared by the
 //     task-graph materializer (X.2) and the surface-index materializer
 //     (X-P6 "transitions persist as kind: 'transition' in surface-index").
@@ -33,7 +33,7 @@ const path = require("path");
 
 const {
   SURFACE_KIND_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/waves/task-graph-scheduling.js");
 const {
   TASK_GRAPH_NODE_KIND_VALUES,
 } = require("../mcp/core/waves/task-graph-materializer.js");

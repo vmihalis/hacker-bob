@@ -1,0 +1,11 @@
+"use strict";
+
+const GRADE_VERDICT_VALUES = ["SUBMIT", "HOLD", "SKIP"];
+const GRADE_HOLD_MIN_SCORE = 20;
+const GRADE_SUBMIT_MIN_SCORE = 40;
+
+module.exports = {
+  GRADE_HOLD_MIN_SCORE,
+  GRADE_SUBMIT_MIN_SCORE,
+  GRADE_VERDICT_VALUES,
+};

@@ -47,7 +47,7 @@ const {
   withSessionLock,
 } = require("../core/io/storage.js");
 const { deriveCvss31 } = require("../core/scoring/cvss31.js");
-const { SEVERITY_VALUES } = require("../lib/constants.js");
+const { SEVERITY_VALUES } = require("../core/constants/shared-vocabulary.js");
 const { hashCanonicalJson } = require("../core/verification/verification-contracts.js");
 const { findingPayloadsFromClaims, degradedReportableFindingIds } = require("./record-candidate-claim.js");
 const {

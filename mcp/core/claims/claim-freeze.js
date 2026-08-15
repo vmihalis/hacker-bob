@@ -16,10 +16,14 @@ const {
 } = require("../verification/verification-contracts.js");
 const {
   hashDocumentExcluding,
+} = require("../verification/document-hash.js");
+const {
   normalizeIsoTimestamp,
   normalizeOptionalId,
+} = require("../io/validation.js");
+const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("../io/storage.js");
 const {
   readCandidateClaims,
 } = require("./claims.js");

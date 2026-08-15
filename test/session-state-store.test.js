@@ -1138,12 +1138,12 @@ test("session-state contract and store keep forbidden import boundaries", () => 
   // lead_surface_ids) can be re-derived from frontier events without a
   // top-level circular import.
   assert.deepEqual(requireSpecs(contractSource).sort(), [
-    "../../lib/constants.js",
     "../../lib/physical-scope-axis.js",
     "../frontier/frontier-projections.js",
     "../frontier/frontier-projections.js",
     "../io/validation.js",
     "../redaction/sensitive-material.js",
+    "./session-state-vocabulary.js",
   ].sort());
   assertNoForbiddenRequire("mcp/core/session/session-state-contracts.js", [
     "fs",

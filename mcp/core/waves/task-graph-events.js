@@ -37,7 +37,7 @@ const {
   normalizeId,
   normalizeOptionalId,
   normalizeOptionalObject,
-} = require("../../lib/fabric-common.js");
+} = require("../io/validation.js");
 const {
   NODE_STATE_TRANSITIONS,
   NODE_STATE_VALUES,

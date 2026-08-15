@@ -10,8 +10,10 @@ const {
 } = require("../../core/io/paths.js");
 const {
   normalizeIsoTimestamp,
+} = require("../../core/io/validation.js");
+const {
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../../core/verification/document-hash.js");
 const {
   normalizePhysicalScopeNucleusAxis,
 } = require("../../lib/physical-scope-axis.js");

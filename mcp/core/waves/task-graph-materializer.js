@@ -38,8 +38,10 @@ const {
 } = require("../io/paths.js");
 const {
   sortByTextField,
+} = require("../io/validation.js");
+const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("../io/storage.js");
 const {
   withSessionLock,
 } = require("../io/storage.js");
@@ -67,7 +69,10 @@ const {
 // closed set of TaskGraph node kinds AND the kind discriminator persisted
 // in surface-index.json. The X.2 materializer alias TASK_GRAPH_NODE_KIND_VALUES
 // is preserved for back-compat re-export; both point at the same frozen array.
-const { SURFACE_KIND_VALUES, PRODUCER_NODE_KIND } = require("../../lib/constants.js");
+const {
+  SURFACE_KIND_VALUES,
+  PRODUCER_NODE_KIND,
+} = require("./task-graph-scheduling.js");
 
 // Ledger-pressure thresholds. Public for tests + downstream cycles that may
 // surface them in summaries.
@@ -86,7 +91,7 @@ if (LEDGER_PRESSURE_REFUSE_THRESHOLD >= FRONTIER_EVENTS_MAX_RECORDS) {
 }
 
 // Closed set of TaskGraph node kinds. X.3 (X-P6) promoted this enum into
-// mcp/lib/constants.js (SURFACE_KIND_VALUES) as the SoT shared with the
+// task-graph-scheduling.js (SURFACE_KIND_VALUES) as the SoT shared with the
 // surface-index materializer (transition surfaces persist with kind:
 // "transition" per X-P6). The X.2 alias is preserved for back-compat
 // re-export; both point at the same frozen array.

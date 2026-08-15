@@ -4,7 +4,7 @@ const {
   AUTH_STATUS_VALUES,
   CHECKPOINT_MODE_VALUES,
   SESSION_PUBLIC_STATE_FIELDS,
-} = require("../../lib/constants.js");
+} = require("./session-state-vocabulary.js");
 const {
   assertEnumValue,
   assertBoolean,

@@ -36,7 +36,7 @@ const {
   DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
   DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
   DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
-} = require("../lib/constants.js");
+} = require("../core/waves/task-graph-scheduling.js");
 
 // Orphan-executed reconciler bounds. A producer node stuck 'executed' with NO
 // terminal producer_run row (produced | blocked) lost its finalize across the

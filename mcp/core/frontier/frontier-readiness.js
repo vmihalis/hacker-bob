@@ -23,7 +23,7 @@
 
 const {
   COVERAGE_UNFINISHED_STATUS_VALUES,
-} = require("../../lib/constants.js");
+} = require("./coverage-vocabulary.js");
 const {
   rankAttackSurfaces,
 } = require("../ranking.js");

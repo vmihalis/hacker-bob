@@ -11,7 +11,7 @@ const {
   verificationSnapshotPath,
 } = require("../io/paths.js");
 const { readJsonFile } = require("../io/storage.js");
-const { VERIFICATION_ROUND_VALUES } = require("../../lib/constants.js");
+const { VERIFICATION_ROUND_VALUES } = require("../constants/shared-vocabulary.js");
 
 const ATTEMPT_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 

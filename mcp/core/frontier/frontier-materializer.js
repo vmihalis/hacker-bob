@@ -7,10 +7,14 @@ const {
 } = require("../io/paths.js");
 const {
   hashDocumentExcluding,
+} = require("../verification/document-hash.js");
+const {
   normalizeOptionalTextArray,
   sortByTextField,
+} = require("../io/validation.js");
+const {
   writeJsonDocument,
-} = require("../../lib/fabric-common.js");
+} = require("../io/storage.js");
 const {
   readFrontierEvents,
 } = require("./frontier-events.js");
@@ -31,7 +35,7 @@ const {
 } = require("./frontier-projections.js");
 const {
   SURFACE_KIND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../waves/task-graph-scheduling.js");
 const {
   TRANSITION_KIND_VALUES,
 } = require("../waves/task-graph-events.js");

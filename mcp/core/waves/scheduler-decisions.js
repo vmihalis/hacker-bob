@@ -20,9 +20,13 @@ const {
   normalizeOptionalId,
   normalizeOptionalObject,
   normalizePositiveInteger,
+} = require("../io/validation.js");
+const {
   readJsonlStrict,
+} = require("../io/storage.js");
+const {
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../verification/document-hash.js");
 const {
   normalizeTaskLens,
 } = require("../session/task-lenses.js");

@@ -5764,7 +5764,7 @@ mcp/lib/session-state.js
 ## Where Are Phases Defined?
 
 ```text
-mcp/lib/constants.js
+mcp/core/constants/shared-vocabulary.js
 mcp/lib/session-state.js
 mcp/lib/phase-gates.js
 ```

@@ -77,7 +77,7 @@ const {
 } = require("../mcp/core/io/paths.js");
 const {
   writeJsonDocument,
-} = require("../mcp/lib/fabric-common.js");
+} = require("../mcp/core/io/storage.js");
 const {
   appendJsonlLine,
 } = require("../mcp/core/io/storage.js");

@@ -3,7 +3,7 @@
 const fs = require("fs");
 const {
   VERIFICATION_ROUND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 const {
   LIFECYCLE_STATE_VALUES,
 } = require("../governance/governance-contracts.js");

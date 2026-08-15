@@ -14,8 +14,10 @@ const {
 } = require("../../core/claims/claims.js");
 const {
   SEVERITY_VALUES,
+} = require("../../core/constants/shared-vocabulary.js");
+const {
   OFFENSIVE_ROW_ORACLE_KIND_VALUES,
-} = require("../../lib/constants.js");
+} = require("../../core/constants/offensive-run-vocabulary.js");
 const {
   OFFENSIVE_ROW_MAC_CONTEXT,
 } = require("../../core/ledger-integrity/index.js");

@@ -3,7 +3,7 @@
 const { logTechniqueAttempt } = require("../core/dispatch/technique-packs.js");
 const {
   TECHNIQUE_ATTEMPT_STATUS_VALUES,
-} = require("../lib/constants.js");
+} = require("../core/dispatch/technique-vocabulary.js");
 
 module.exports = Object.freeze({
   name: "bob_log_technique_attempt",

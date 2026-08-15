@@ -4,7 +4,7 @@ const fs = require("fs");
 const {
   CHAIN_ATTEMPT_OUTCOME_VALUES,
   CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES,
-} = require("../lib/constants.js");
+} = require("./constants/chain-network-vocabulary.js");
 const {
   readAttackSurfaceStrict,
 } = require("./frontier/attack-surface.js");

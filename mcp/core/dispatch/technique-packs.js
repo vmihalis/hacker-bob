@@ -6,7 +6,7 @@ const {
   TECHNIQUE_ATTEMPT_LOG_MAX_RECORDS,
   TECHNIQUE_ATTEMPT_STATUS_VALUES,
   TECHNIQUE_PACK_READ_LOG_MAX_RECORDS,
-} = require("../../lib/constants.js");
+} = require("./technique-vocabulary.js");
 const {
   assertEnumValue,
   assertInteger,

@@ -26,7 +26,7 @@ const {
   normalizePriority,
   normalizeScore,
 } = require("./lead-scoring.js");
-const { CHAIN_FAMILY_VALUES } = require("../../lib/constants.js");
+const { CHAIN_FAMILY_VALUES } = require("../constants/shared-vocabulary.js");
 
 const LEAD_STATUS_VALUES = ["new", "promoted", "dismissed"];
 const SURFACE_LEAD_ARRAY_LIMITS = Object.freeze({

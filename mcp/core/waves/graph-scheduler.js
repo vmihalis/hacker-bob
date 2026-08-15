@@ -46,7 +46,7 @@ const {
 } = require("../io/paths.js");
 const {
   SEVERITY_VALUES,
-} = require("../../lib/constants.js");
+} = require("../constants/shared-vocabulary.js");
 const {
   assertPhysicalResourceReservationEligibilityPort,
   resolveHeldPhysicalResourceForNode,

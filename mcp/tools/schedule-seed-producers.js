@@ -18,7 +18,7 @@ const { readFrontierEvents } = require("../core/frontier/frontier-events.js");
 const { producerRunSet } = require("../core/producer-run-ledger.js");
 const { appendSpawnLedgerEntry } = require("../core/session/spawn-ledger.js");
 const { withSessionLock } = require("../core/io/storage.js");
-const { PRODUCER_NODE_KIND } = require("../lib/constants.js");
+const { PRODUCER_NODE_KIND } = require("../core/waves/task-graph-scheduling.js");
 
 // Bounded retry window for the drift backpressure. When independent producers
 // land surfaces concurrently the task-graph hash churns between two successive

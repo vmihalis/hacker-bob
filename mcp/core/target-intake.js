@@ -56,7 +56,7 @@
 // fs/network/clock/process-env I/O" purity contract (URL parsing is pure and
 // side-effect-free).
 
-const { CHAIN_FAMILY_VALUES } = require("../lib/constants.js");
+const { CHAIN_FAMILY_VALUES } = require("./constants/shared-vocabulary.js");
 
 const CAIP_NAMESPACE_TO_CHAIN_FAMILY = Object.freeze({
   eip155: "evm",

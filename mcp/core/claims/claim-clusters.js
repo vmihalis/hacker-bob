@@ -21,9 +21,13 @@ const {
   normalizeOptionalId,
   normalizeOptionalObject,
   normalizeOptionalTextArray,
+} = require("../io/validation.js");
+const {
   readJsonlStrict,
+} = require("../io/storage.js");
+const {
   withDocumentHash,
-} = require("../../lib/fabric-common.js");
+} = require("../verification/document-hash.js");
 
 const CLAIM_CLUSTER_VERSION = 1;
 const CLAIM_CLUSTERS_MAX_RECORDS = 10000;
