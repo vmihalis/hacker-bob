@@ -35,13 +35,16 @@ const ALLOWLIST_MODULE_CYCLES = frozenMap("ALLOWLIST_MODULE_CYCLES", [
   [
     "core/auth-differential-runner.js",
     {
-      size: 176,
+      size: 232,
       argument:
-        "PRE-DIP COMPOSITION-RUNTIME CYCLE. Post-N1 path restructuring preserves the legacy registry, session, "
-        + "wave, verification, report, domain, and tool return edges as one component. Those directions are live "
-        + "runtime dependencies, including deferred edges, so this baseline records the current structural debt "
-        + "without pretending the directory move broke it. N5 is responsible for shrinking this component by "
-        + "introducing the intended dependency inversions.",
+        "PRE-DIP COMPOSITION-RUNTIME CYCLE, re-derived after N3 bounding as 232 members. The component spans "
+        + "belief, capability, claims, contract, differential, dispatch, frontier, ledger-integrity, session, "
+        + "telemetry, verification, and wave core modules; blockchain, physical, repo, and web domain runtimes; "
+        + "and their composition tools. N3 routed consumers through differential/index.js and "
+        + "ledger-integrity/index.js, and those public boundaries joined the same component because their concrete "
+        + "implementations retain live return edges through the legacy registries, domains, and tools. Deferred "
+        + "requires are still graph edges, so the one-door reroutes enlarged rather than broke the SCC. This entry "
+        + "records that merged structural debt honestly; N5 owns the dependency inversions that shrink it.",
     },
   ],
   [

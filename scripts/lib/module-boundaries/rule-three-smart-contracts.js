@@ -92,7 +92,7 @@ const SMART_CONTRACTS_DEPENDENCY_CLASSES = Object.freeze([
 const SMART_CONTRACTS_ALLOWED_DEPENDENCIES = frozenMap("SMART_CONTRACTS_ALLOWED_DEPENDENCIES", [
   ["core/io/paths.js", "shared_vocabulary"],
   ["core/io/storage.js", "shared_vocabulary"],
-  ["core/ledger-integrity/sandbox-isolation-attest.js", "cross_module_seam"],
+  ["core/ledger-integrity/index.js", "cross_module_seam"],
   ["core/url-surface.js", "cross_module_seam"],
   ["redaction.js", "shared_vocabulary"],
 ]);
