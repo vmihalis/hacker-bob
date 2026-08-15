@@ -58,7 +58,7 @@ const {
   RESULT_VERIFIED_PASS,
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
-} = require("../domains/repo/repro-replay-verifier.js");
+} = require("./repro-replay-verifier.js");
 
 const INVARIANT_VERIFIED_VERSION = 1;
 const INVARIANT_VERIFIED_MAX_RECORDS = 2000;

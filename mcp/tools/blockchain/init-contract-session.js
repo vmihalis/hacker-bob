@@ -37,9 +37,11 @@ const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("../../core/le
 const {
   bindAndSeedContracts,
   caip10Endpoint,
+} = require("../../domains/blockchain/contract-target.js");
+const {
   deriveContractSession,
   deriveContractTargetDomain,
-} = require("../../domains/blockchain/contract-target.js");
+} = require("../../core/chain-authority-contracts.js");
 const { writeQueuePolicy } = require("../../core/io/queue-policy.js");
 
 const CHECKPOINT_MODE_VALUES = ["normal", "paranoid", "yolo"];

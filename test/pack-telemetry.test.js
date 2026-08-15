@@ -51,7 +51,7 @@ const {
 const {
   TOOL_HANDLERS,
   TOOL_MANIFEST,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 function withTempEnv(fn) {
   const prevHome = process.env.HOME;

@@ -34,7 +34,7 @@ const {
   aliasNamesForTool,
   primaryToolName,
   toolNamesForRoleBundle,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const { ADAPTERS, getAdapter } = require("../adapters/index.js");
 const {
   FANOUT_CHILD_SCOPE_GUARD_MATCHER,
@@ -204,11 +204,9 @@ function uniqueClaimRecordingToolsForRole(roleId) {
 }
 
 function handlerWritesCandidateClaim(toolName) {
-  // Load the tool module and confirm it imports `appendCandidateClaim` from
-  // claims.js (the CandidateClaim normalizer + writer). This is the
-  // load-bearing structural invariant: any future renaming of the public
-  // tool name is fine, but the handler must still validate against the
-  // CandidateClaim schema exposed by claims.js.
+  // Confirm the public tool resolves to the core-owned recorder that imports
+  // appendCandidateClaim from claims.js. Public tool names and thin wrappers
+  // may change, but validation must retain the canonical CandidateClaim writer.
   const slug = toolName.replace(/^bob_/, "");
   const candidates = [
     `mcp/tools/${slug}.js`,
@@ -216,6 +214,7 @@ function handlerWritesCandidateClaim(toolName) {
     ...["web", "blockchain", "repo", "physical"].map((domain) => `mcp/tools/${domain}/${slug}.js`),
     "mcp/tools/record-candidate-claim.js",
     "mcp/tools/record-finding.js",
+    "mcp/core/claims/candidate-claim-recorder.js",
   ];
   for (const candidate of candidates) {
     const absolute = path.join(ROOT, candidate);
@@ -1340,7 +1339,7 @@ test("chain-specific identifiers are not duplicated across registry consumers", 
   const chainBundles = ["evaluator-evm", "evaluator-svm", "evaluator-move", "evaluator-substrate", "evaluator-cosmwasm"];
   const consumers = [
     "mcp/core/dispatch/role-model.js",
-    "mcp/core/dispatch/tool-registry.js",
+    "mcp/tools/tool-registry.js",
     "scripts/lib/claude-role-renderer.js",
     "scripts/lib/codex-role-renderer.js",
     "adapters/codex/role-specs.js",

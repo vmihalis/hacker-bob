@@ -28,7 +28,7 @@ const {
   PROFILE_METADATA_KEYS,
 } = require("../mcp/core/auth/index.js");
 const { profileHasProvenance } = require("../mcp/domains/web/offensive-idor-producer.js");
-const { toolNamesForRoleBundle } = require("../mcp/core/dispatch/tool-registry.js");
+const { toolNamesForRoleBundle } = require("../mcp/tools/tool-registry.js");
 const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const { ERROR_CODES, ToolError } = require("../mcp/core/io/envelope.js");

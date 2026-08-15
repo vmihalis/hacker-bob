@@ -17,7 +17,7 @@ const {
   pinnedSessionsRootFromSettings,
   resolveWorkspaceSessionsRoot,
 } = require("./lib/workspace-sessions-root.js");
-const { TOOLS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOLS } = require("../mcp/tools/tool-registry.js");
 
 // Canonical primary tool names this install ships. Drives the upgrade rewrite:
 // a legacy `bounty_<suffix>` permission is migrated to `bob_<suffix>` only when

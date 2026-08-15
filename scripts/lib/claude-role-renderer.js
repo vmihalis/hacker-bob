@@ -21,7 +21,7 @@ const {
 } = require("../../mcp/core/capability/capability-playbooks.js");
 const { evaluatorRoleSpecs } = require("../../mcp/core/capability/capability-packs.js");
 const { FANOUT_ROLE_REGISTRY } = require("../../mcp/core/session/nested-spawn.js");
-const { TOOL_REGISTRY } = require("../../mcp/core/dispatch/tool-registry.js");
+const { TOOL_REGISTRY } = require("../../mcp/tools/tool-registry.js");
 const { parseSkillText } = require("./skill-parser.js");
 
 // Y.8 Do step 0b — `@schema_ref` directive auto-injection. The

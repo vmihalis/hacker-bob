@@ -46,7 +46,7 @@ const {
 } = require("./governance/index.js");
 const {
   normalizeHistoryRef,
-} = require("../domains/repo/repo-target.js");
+} = require("./repo-identity-contracts.js");
 const {
   hashCanonicalJson,
 } = require("./verification/verification-contracts.js");
@@ -860,7 +860,7 @@ function writeEvidencePacks(args) {
     // Fail-closed trust gate: refuse to write an evidence pack for a
     // trust-degraded (unsigned) finding. Inert for signed/unmarked findings
     // because degradedReportableFindingIds is empty for them.
-    const { degradedReportableFindingIds } = require("../tools/record-candidate-claim.js");
+    const { degradedReportableFindingIds } = require("./claims/candidate-claim-recorder.js");
     const degraded = degradedReportableFindingIds(domain);
     const findingIdSet = readFindingIdSet(domain);
     const finalRound = loadFinalVerification(domain, findingIdSet, "evidence collection");

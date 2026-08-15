@@ -8,7 +8,7 @@ const {
 } = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   toolNamesForRoleBundle,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 function dedupeSorted(values) {
   return Array.from(new Set(values.filter((v) => typeof v === "string" && v.length > 0))).sort();

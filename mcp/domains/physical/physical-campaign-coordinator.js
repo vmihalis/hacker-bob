@@ -1572,6 +1572,9 @@ function physicalCampaignClosureReadiness(targetDomain) {
   });
 }
 
+require("../../core/physical-domain-runtime-ports.js")
+  .configurePhysicalDomainRuntimePorts({ physicalCampaignClosureReadiness });
+
 module.exports = {
   PHYSICAL_CAMPAIGN_COORDINATOR_VERSION,
   initializePhysicalCampaignCoordinator,

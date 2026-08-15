@@ -30,7 +30,7 @@ const {
   RESULT_INCONCLUSIVE,
   RESULT_OFFLINE_REFUSED,
 } = require("../mcp/core/differential/index.js");
-const { TOOL_MANIFEST } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_MANIFEST } = require("../mcp/tools/tool-registry.js");
 
 // example.com is a real registrable domain, so validateHttpScanScope accepts
 // https://example.com/... as first-party — the verifier exercises real scope.

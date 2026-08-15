@@ -388,7 +388,7 @@ test("the plane classifier is structural and its live inventory is exact", () =>
     };
     visit(directory);
   }
-  assert.equal(blockchainOnDisk.length, 56);
+  assert.equal(blockchainOnDisk.length, 55);
   assert.deepEqual(blockchainOnDisk.sort(), [...BLOCKCHAIN_PLANE_MEMBERS].sort());
 });
 

@@ -5,7 +5,7 @@
 // adapter contract and the lifecycle projection it aggregates.
 
 const { getCapabilityPack } = require("./capability-packs.js");
-const { findingPayloadsFromClaims } = require("../../tools/record-candidate-claim.js");
+const { findingPayloadsFromClaims } = require("../claims/candidate-claim-recorder.js");
 const { readCurrentClaimFreeze } = require("../claims/claim-freeze.js");
 const { assertSafeDomain } = require("../io/paths.js");
 const { parseFindingId } = require("../io/validation.js");

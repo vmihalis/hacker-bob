@@ -20,8 +20,17 @@ const {
   resolvePhysicalCapabilityPackArtifacts,
 } = require("./capability-pack-physical-artifacts.js");
 const {
+  normalizePhysicalFindingRecord,
+} = require("./physical-finding-record-adapter.js");
+const {
+  physicalCampaignClosureReadiness,
+} = require("./physical-campaign-coordinator.js");
+const {
   configureCapabilityPackCompositionPorts,
 } = require("../../core/capability/capability-pack-composition-adapters.js");
+const {
+  configurePhysicalDomainRuntimePorts,
+} = require("../../core/physical-domain-runtime-ports.js");
 const {
   configurePhysicalCapabilityPackRuntimePorts,
 } = require("./capability-pack-runtime-ports.js");
@@ -33,6 +42,12 @@ configureCapabilityPackCompositionPorts({
   assertProductionPhysicalExperimentLedger,
   assertVerifiedPhysicalClaimProjection,
   describeProductionPhysicalExperimentLedger,
+});
+
+configurePhysicalDomainRuntimePorts({
+  assertVerifiedPhysicalClaimProjection,
+  normalizePhysicalFindingRecord,
+  physicalCampaignClosureReadiness,
 });
 
 configurePhysicalCapabilityPackRuntimePorts({

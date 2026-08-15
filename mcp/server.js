@@ -9,7 +9,7 @@ const {
 const {
   TOOL_MANIFEST,
   TOOLS,
-} = require("./core/dispatch/tool-registry.js");
+} = require("./tools/tool-registry.js");
 const {
   startStdioServer,
 } = require("./core/io/transport.js");

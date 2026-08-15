@@ -10,7 +10,6 @@ This inventory is the post-N1, pre-DIP structural-debt baseline for the blockcha
 | 2 | `mcp/core/invariant-runner.js:1014` -> `../domains/blockchain/smart-contracts/evm-rpc-pool.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |
 | 3 | `mcp/core/session/assignment-brief.js:65` -> `../../domains/blockchain/smart-contracts/evm-rpc-pool.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |
 | 4 | `mcp/core/session/session-authority.js:30` -> `../../domains/blockchain/chain-tool-identity.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |
-| 5 | `mcp/core/session/session-authority.js:1100` -> `../../tools/blockchain/init-contract-session.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |
 | 6 | `mcp/tools/finalize-node.js:76` -> `../domains/blockchain/contract-target.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |
 | 7 | `mcp/tools/index.js:32` -> `./blockchain/anchor-run.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |
 | 8 | `mcp/tools/index.js:34` -> `./blockchain/aptos-fetch-module.js` | Existing pre-DIP core-to-blockchain dependency; recorded so new edges fail closed. |

@@ -91,37 +91,15 @@ const {
 const {
   NATIVE_SOURCE_EXTENSIONS,
 } = require("../../core/native-extensions.js");
-
-// Cycle O.1: SAFE_NAME_PATTERN keeps the basename safe for the
-// target_domain slug. Any character outside `[A-Za-z0-9._-]` is folded
-// to a single dash; leading/trailing dashes are trimmed. Empty
-// basenames (e.g. trailing slash on root) fall back to "repo".
-function safeBasename(value) {
-  const base = path.basename(value || "").trim();
-  if (!base) return "repo";
-  const folded = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return folded || "repo";
-}
-
-function sha8(value) {
-  return crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 8);
-}
-
-function sha64(value) {
-  return crypto.createHash("sha256").update(String(value)).digest("hex");
-}
-
-function deriveRepoTargetDomain(realpathValue) {
-  const name = safeBasename(realpathValue);
-  return `repo-${name}-${sha8(realpathValue)}`;
-}
-
-function deriveRepoHashFromPath(realpathValue) {
-  // Stable 64-hex digest of the canonical path. Trimmed to 64 chars so
-  // it shares the validation envelope with explicit git commit hashes
-  // (which can be 40 hex chars).
-  return sha64(realpathValue);
-}
+const {
+  HEX_REF_RE,
+  deriveRepoHashFromPath,
+  deriveRepoTargetDomain,
+  gitMetadataError,
+  normalizeHistoryRef,
+  safeBasename,
+  sha8,
+} = require("../../core/repo-identity-contracts.js");
 
 // Translate a friendly error code from assertRepoRootPath into a
 // structured ToolError so callers (bob_init_repo_session) surface the
@@ -140,42 +118,8 @@ function repoPathError(error) {
   return null;
 }
 
-const GIT_REF_MAX_CHARS = 120;
-const HEX_REF_RE = /^[0-9a-f]{7,64}$/i;
 const FULL_HEX_OBJECT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
-const LOCAL_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
 const AMBIGUOUS_OBJECT_PREFIX = Symbol("ambiguous-object-prefix");
-
-function gitMetadataError(message, repoErrorCode, details = {}) {
-  return new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, {
-    repo_error_code: repoErrorCode,
-    ...details,
-  });
-}
-
-function normalizeHistoryRef(ref, fieldName = "checkout.ref") {
-  const normalized = assertNonEmptyString(ref, fieldName);
-  if (normalized.length > GIT_REF_MAX_CHARS) {
-    throw gitMetadataError(
-      `${fieldName} must be at most ${GIT_REF_MAX_CHARS} characters`,
-      "invalid_differential_ref",
-    );
-  }
-  if (HEX_REF_RE.test(normalized)) return normalized;
-  if (!LOCAL_REF_RE.test(normalized)
-      || normalized.includes("..")
-      || normalized.includes("//")
-      || normalized.includes("@{")
-      || normalized.endsWith("/")
-      || normalized.endsWith(".")
-      || normalized.endsWith(".lock")) {
-    throw gitMetadataError(
-      `${fieldName} must be a 7-64 hex object prefix or safe local git ref`,
-      "invalid_differential_ref",
-    );
-  }
-  return normalized;
-}
 
 function pathContains(root, candidate) {
   const relative = path.relative(root, candidate);

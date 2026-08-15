@@ -524,7 +524,7 @@ function normalizeCandidateClaim(input, { targetDomain = null, now = new Date(),
   // payloads whose description (used as the summary fallback in
   // record-candidate-claim) routinely exceeded 2000 chars. Per-field text
   // caps for the inline finding payload live in
-  // mcp/tools/record-candidate-claim.js CLAIM_TEXT_LIMITS.
+  // mcp/core/claims/candidate-claim-recorder.js CLAIM_TEXT_LIMITS.
   const summary = normalizeId(input.summary, "summary", { maxLength: 16000 });
   const createdAt = normalizeIsoTimestamp(input.created_at || input.ts, "created_at", now);
   const status = assertEnumValue(input.status || "candidate", CLAIM_STATUSES, "status");
@@ -560,7 +560,7 @@ function normalizeCandidateClaim(input, { targetDomain = null, now = new Date(),
   const tags = normalizeOptionalTextArray(input.tags, "tags");
   // Y.0 hotfix 1 (O2): payload carries the embedded finding-shaped record
   // whose per-field caps were raised in
-  // mcp/tools/record-candidate-claim.js. Pass the widened text cap so the
+  // mcp/core/claims/candidate-claim-recorder.js. Pass the widened text cap so the
   // generic plain-object validator does not re-tighten what the writer just
   // accepted. payloadBypassValuePaths is the deep-path Set the caller built
   // from secret_detection_bypass; structural sensitive-key detection still
@@ -1084,7 +1084,7 @@ function reproVerifiedGapForNativeReportableFindings(domain, { reportableFinding
     }
   }
 
-  const { readReproVerifiedSummary } = require("../../domains/repo/repro-replay-verifier.js");
+  const { readReproVerifiedSummary } = require("../repro-replay-verifier.js");
   let verifiedByFinding = {};
   try {
     verifiedByFinding = readReproVerifiedSummary(domain).verified_by_finding || {};
@@ -1314,7 +1314,7 @@ function findingDifferentialGapForStandaloneReportableFindings(domain, { reporta
   // A native finding whose differential reproduction already executed + flipped carries an
   // executed arm (the O-P4 repro verified_pass) regardless of its final severity, so it is
   // NOT routed to the standalone arm even at medium — it is already armed.
-  const { readReproVerifiedSummary } = require("../../domains/repo/repro-replay-verifier.js");
+  const { readReproVerifiedSummary } = require("../repro-replay-verifier.js");
   let reproVerifiedByFinding = {};
   try {
     reproVerifiedByFinding = readReproVerifiedSummary(domain).verified_by_finding || {};
@@ -1906,7 +1906,7 @@ function completionDepthGapForCompleteSurfaces(domain, options = {}) {
   const findingsBySurface = new Map();
   const accessControlFindingIds = new Set();
   try {
-    const { findingPayloadsFromClaims } = require("../../tools/record-candidate-claim.js");
+    const { findingPayloadsFromClaims } = require("./candidate-claim-recorder.js");
     for (const finding of findingPayloadsFromClaims(domain)) {
       if (!finding || !finding.surface_id || !finding.id) continue;
       if (!findingsBySurface.has(finding.surface_id)) findingsBySurface.set(finding.surface_id, []);
@@ -1928,7 +1928,7 @@ function completionDepthGapForCompleteSurfaces(domain, options = {}) {
   for (const findingId of packExecutedFindingIds) executedFindings.add(findingId);
   const verifiedSummaryReaders = [
     () => require("../differential/index.js").readFindingDifferentialVerifiedSummary(domain),
-    () => require("../../domains/repo/repro-replay-verifier.js").readReproVerifiedSummary(domain),
+    () => require("../repro-replay-verifier.js").readReproVerifiedSummary(domain),
     () => require("../invariant-runner.js").readInvariantVerifiedSummary(domain),
   ];
   for (const readSummary of verifiedSummaryReaders) {

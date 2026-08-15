@@ -16,7 +16,7 @@ const path = require("path");
 
 const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 const { authorizeToolCall } = require("../mcp/core/session/session-authority.js");
-const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/core/dispatch/tool-registry.js");
+const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/tools/tool-registry.js");
 const { validateToolArguments } = require("../mcp/core/dispatch/tool-validation.js");
 
 async function withTempHome(fn) {

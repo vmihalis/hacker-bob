@@ -55,7 +55,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 const initSessionTool = require("../mcp/tools/init-session.js");
 const advanceSessionTool = require("../mcp/tools/advance-session.js");
 const recordSurfaceLeadsTool = require("../mcp/tools/record-surface-leads.js");

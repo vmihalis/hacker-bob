@@ -10,7 +10,7 @@ const {
 const {
   capabilityToolMapFromRegistry,
   TOOL_MANIFEST,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 function event({ tool, status = "ok", latency_ms = 10, timestamp = "2026-05-10T00:00:00Z", ok, error_code }) {
   return { tool, status, latency_ms, timestamp, ok, error_code };

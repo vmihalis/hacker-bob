@@ -185,7 +185,7 @@ const {
 } = require("../frontier/coverage.js");
 const {
   findingPayloadsFromClaims,
-} = require("../../tools/record-candidate-claim.js");
+} = require("../claims/candidate-claim-recorder.js");
 const {
   evaluateTechniqueAttemptRequirement,
 } = require("../dispatch/technique-attempt-gate.js");

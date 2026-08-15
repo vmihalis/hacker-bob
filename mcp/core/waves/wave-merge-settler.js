@@ -15,7 +15,7 @@ const {
 const { readCoverageRecordsFromJsonl } = require("../frontier/coverage.js");
 const {
   findingPayloadsFromClaims,
-} = require("../../tools/record-candidate-claim.js");
+} = require("../claims/candidate-claim-recorder.js");
 const {
   summarizeFindings,
 } = require("../finding-contracts.js");

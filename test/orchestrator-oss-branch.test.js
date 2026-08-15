@@ -37,7 +37,7 @@ const {
 } = require("../adapters/claude/config.js");
 const {
   TOOL_MANIFEST,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   ROLE_DEFINITIONS,
   mcpToolNamesForRole,

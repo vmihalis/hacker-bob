@@ -606,7 +606,7 @@ test("core installer and packed runtime start without a lifecycle-custodian prel
         "if (custodian.lifecycleCustodianStatus().available !== false) process.exit(61);",
         "const result = require(path.join(root, 'scripts/install.js')).installProject(target, { sourceRoot: root, adapter: 'generic-mcp', onAdapterResolution() {} });",
         "const server = require(path.join(target, 'mcp/server.js'));",
-        "const registry = require(path.join(target, 'mcp/core/dispatch/tool-registry.js'));",
+        "const registry = require(path.join(target, 'mcp/tools/tool-registry.js'));",
         "if (!Array.isArray(server.TOOLS) || server.TOOLS.length < 1) process.exit(62);",
         "if (JSON.stringify(server.TOOLS.map((tool) => tool.name)) !== JSON.stringify(registry.TOOLS.map((tool) => tool.name))) process.exit(63);",
         "const removed = require(path.join(root, 'scripts/lifecycle.js')).uninstallProject(target, { sourceRoot: root, adapter: 'generic-mcp', dryRun: false, onAdapterResolution() {} });",
@@ -1147,7 +1147,7 @@ test("installer copies a require-able complete MCP runtime", () => {
       [
         "const server = require(process.argv[1]);",
         "const installedRequire = require('module').createRequire(process.argv[1]);",
-        "const installedRegistry = installedRequire('./core/dispatch/tool-registry.js');",
+        "const installedRegistry = installedRequire('./tools/tool-registry.js');",
         "installedRequire('psl');",
         "installedRequire('proxy-agent');",
         "if (!Array.isArray(server.TOOLS) || server.TOOLS.length < 1) process.exit(2);",

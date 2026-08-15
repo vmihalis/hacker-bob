@@ -36,7 +36,7 @@ const {
 } = require("../scripts/lib/claude-role-renderer.js");
 const {
   getRegisteredTool,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   classForTool,
 } = require("../mcp/core/session/session-authority.js");

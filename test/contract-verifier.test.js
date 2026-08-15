@@ -47,7 +47,7 @@ const {
 const {
   appendJsonlLine,
 } = require("../mcp/core/io/storage.js");
-const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 // ─── Fixture helpers ─────────────────────────────────────────────────────
 

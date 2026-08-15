@@ -50,7 +50,7 @@ const {
   VALID_ROLE_BUNDLES,
   toolNamesForRoleBundle,
   roleBundleResolvesToTools,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 // ─── Fixtures ────────────────────────────────────────────────────────────
 

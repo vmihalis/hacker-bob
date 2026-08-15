@@ -1057,7 +1057,7 @@ function authorizeBootstrap(rule, args) {
     // checkout from any working directory routes to the same session.
     if (!targetDomainPresent(args) && hasRepoPath) {
       try {
-        const { deriveRepoTargetDomain } = require("../../domains/repo/repo-target.js");
+        const { deriveRepoTargetDomain } = require("../repo-identity-contracts.js");
         const {
           assertRepoRootPath,
         } = require("../governance/index.js");
@@ -1097,7 +1097,7 @@ function authorizeBootstrap(rule, args) {
     // re-wrapped fail-closed, never requiring target_url for this axis.
     let domain;
     try {
-      const { deriveContractSession } = require("../../tools/blockchain/init-contract-session.js");
+      const { deriveContractSession } = require("../chain-authority-contracts.js");
       ({ domain } = deriveContractSession(args.contracts));
     } catch (error) {
       throw blockedDecision(rule, args, {

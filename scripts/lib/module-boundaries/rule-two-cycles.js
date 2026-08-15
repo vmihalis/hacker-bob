@@ -35,18 +35,15 @@ const ALLOWLIST_MODULE_CYCLES = frozenMap("ALLOWLIST_MODULE_CYCLES", [
   [
     "core/auth-differential-runner.js",
     {
-      size: 243,
+      size: 40,
       argument:
-        "PRE-DIP COMPOSITION-RUNTIME CYCLE, re-derived after the N5 runtime-port inversion and registry-manifest fold as 243 members. The component spans "
-        + "belief, capability, claims, contract, differential, dispatch, frontier, ledger-integrity, session, "
-        + "telemetry, verification, and wave core modules; blockchain, physical, repo, and web domain runtimes; "
-        + "and their composition tools. N5 removed nine core-to-physical edges by routing generic capability adapters "
-        + "through configured runtime ports. The physical runtime wiring and artifact implementation remain in the "
-        + "same live composition component through the tool registry. The eight concept manifests also remain in that "
-        + "component, without restoring any of the severed core-to-plane edges: concrete physical and blockchain tools "
-        + "are still named only by the established tools/index.js composition root. Deferred requires are still graph "
-        + "edges, so the public seam indexes and "
-        + "runtime wiring do not themselves split this pre-existing SCC. This records that residual debt honestly.",
+        "POST-N1 DIP RESIDUAL CORE CYCLE, re-derived as 40 members after the candidate-claim recorder, tool-registry, "
+        + "contract-session, repo-verifier, repo-identity, and physical-runtime port inversions. The remaining component "
+        + "contains only core modules across belief, capability, claims, differential, frontier, ledger-integrity, "
+        + "session, telemetry, verification, and waves; no tools or domain-plane runtime remains in it. Deferred "
+        + "requires are still graph edges, so the mutually recursive claim, evidence, verification, grading, and "
+        + "session consumers remain honest residual debt. N1 shrank this allowance from 243 to the exact measured "
+        + "40-member component without recording any new cycle.",
     },
   ],
   [

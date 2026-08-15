@@ -21,7 +21,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 const {
   appendFrontierEvent,
 } = require("../mcp/core/frontier/frontier-events.js");

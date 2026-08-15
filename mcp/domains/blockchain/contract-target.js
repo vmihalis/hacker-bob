@@ -25,73 +25,10 @@ const {
   normalizeContractTupleStrict,
   normalizeContractAddress,
   contractIdentityKey,
+  deriveContractSession,
+  deriveContractTargetDomain,
+  normalizeContracts,
 } = require("../../core/chain-authority-contracts.js");
-const { isValidContractAddressShape } = require("./contract-address-shapes.js");
-
-function safeSlug(value) {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    || "contracts";
-}
-
-function addressSlug(address) {
-  const lowered = String(address).toLowerCase();
-  const body = lowered.startsWith("0x") ? lowered.slice(2) : lowered;
-  const safe = body.replace(/[^a-z0-9]/g, "");
-  return (safe || "addr").slice(0, 8);
-}
-
-function deriveContractTargetDomain(normalizedContracts, authorityHash) {
-  if (normalizedContracts.length === 1) {
-    const { chain_family: chainFamily, chain_id: chainId, address } = normalizedContracts[0];
-    return safeSlug(`sc-${chainFamily}-${chainId}-${addressSlug(address)}-${String(authorityHash).slice(0, 8)}`);
-  }
-  return safeSlug(`contracts-${String(authorityHash).slice(0, 8)}`);
-}
-
-function normalizeContracts(rawContracts) {
-  if (!Array.isArray(rawContracts) || rawContracts.length === 0) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      "contracts must be a non-empty array of {chain_family, chain_id, address} bindings",
-    );
-  }
-  const seen = new Set();
-  const normalized = [];
-  for (let i = 0; i < rawContracts.length; i += 1) {
-    const tuple = normalizeContractTupleStrict(rawContracts[i], i);
-    if (!isValidContractAddressShape(tuple.chain_family, tuple.address)) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} carries an address that is not a valid ${tuple.chain_family} address shape`,
-        { index: i, chain_family: tuple.chain_family },
-      );
-    }
-    const endpoint = caip10Endpoint({
-      chainFamily: tuple.chain_family,
-      chainId: tuple.chain_id,
-      address: tuple.address,
-    });
-    if (seen.has(endpoint)) continue;
-    seen.add(endpoint);
-    normalized.push(tuple);
-  }
-  return normalized;
-}
-
-function deriveContractSession(rawContracts) {
-  const normalizedContracts = normalizeContracts(rawContracts);
-  const authorityHash = chainAuthorityHash(normalizedContracts);
-  const domain = deriveContractTargetDomain(normalizedContracts, authorityHash);
-  return { normalizedContracts, authorityHash, domain };
-}
-
-Object.defineProperty(deriveContractTargetDomain, "deriveContractSession", {
-  value: deriveContractSession,
-  enumerable: false,
-});
 
 // Normalize ONE raw {chain_family, chain_id, address} binding into the internal
 // camelCase shape the seeding + CAIP-10 helpers consume. Delegates to the single

@@ -58,7 +58,7 @@ const {
 } = require("../mcp/core/waves/wave-promotion-detector.js");
 const {
   capabilityToolMapFromRegistry,
-} = require("../mcp/core/dispatch/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const producerFloorTool = require("../mcp/tools/materialize-producer-floor.js");
 const initContractSessionTool = require("../mcp/tools/blockchain/init-contract-session.js");
 const {

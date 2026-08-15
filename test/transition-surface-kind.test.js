@@ -51,7 +51,7 @@ const {
 const {
   surfaceIndexPath,
 } = require("../mcp/core/io/paths.js");
-const { TOOL_HANDLERS } = require("../mcp/core/dispatch/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
