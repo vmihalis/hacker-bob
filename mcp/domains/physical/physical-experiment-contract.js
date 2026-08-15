@@ -5077,9 +5077,6 @@ function describeProductionPhysicalExperimentLedger(ledger) {
   return PRODUCTION_PHYSICAL_EXPERIMENT_LEDGER_STATE.get(ledger);
 }
 
-require("../../core/physical-domain-runtime-ports.js")
-  .configurePhysicalDomainRuntimePorts({ assertVerifiedPhysicalClaimProjection });
-
 module.exports = {
   CLAIM_DISPOSITIONS,
   CLAIM_REASON_CODES,

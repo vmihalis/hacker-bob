@@ -35,15 +35,16 @@ const ALLOWLIST_MODULE_CYCLES = frozenMap("ALLOWLIST_MODULE_CYCLES", [
   [
     "core/auth-differential-runner.js",
     {
-      size: 40,
+      size: 62,
       argument:
-        "POST-N1 DIP RESIDUAL CORE CYCLE, re-derived as 40 members after the candidate-claim recorder, tool-registry, "
-        + "contract-session, repo-verifier, repo-identity, and physical-runtime port inversions. The remaining component "
-        + "contains only core modules across belief, capability, claims, differential, frontier, ledger-integrity, "
-        + "session, telemetry, verification, and waves; no tools or domain-plane runtime remains in it. Deferred "
-        + "requires are still graph edges, so the mutually recursive claim, evidence, verification, grading, and "
-        + "session consumers remain honest residual debt. N1 shrank this allowance from 243 to the exact measured "
-        + "40-member component without recording any new cycle.",
+        "POST-N1 DIP RESIDUAL WITH FROZEN PHYSICAL CONTRACT RESTORED, re-derived as 62 members after retaining the "
+        + "candidate-claim recorder, tool-registry, contract-session, repo-verifier, and repo-identity inversions while "
+        + "reverting the unsafe physical-runtime port inversion. The component contains 51 core modules across belief, "
+        + "capability, claims, differential, frontier, ledger-integrity, session, telemetry, verification, and waves, "
+        + "plus 11 physical-domain modules reached by the four restored, pre-existing core-to-physical edges. No tools "
+        + "or repo-domain runtime rejoins it. Deferred requires are still graph edges, so the mutually recursive claim, "
+        + "evidence, physical experiment/campaign, verification, grading, and session consumers remain honest residual "
+        + "debt. The 62-member allowance records the safe Option C topology without adding a new cycle.",
     },
   ],
   [

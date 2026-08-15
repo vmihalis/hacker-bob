@@ -9,7 +9,7 @@ const crypto = require("node:crypto");
 const { hashCanonicalJson, isPlainObject } = require("./verification/verification-contracts.js");
 const {
   assertVerifiedPhysicalClaimProjection,
-} = require("./physical-domain-runtime-ports.js");
+} = require("../domains/physical/physical-experiment-contract.js");
 const {
   normalizePhysicalSurfaceLiveRevalidationPayload,
   normalizePhysicalSurfaceTransitionPayload,

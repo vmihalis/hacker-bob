@@ -71,8 +71,12 @@ const COMPOSITION_ROOT_MODULE = path.join(TOOLS_DIR, "index.js");
 const ALLOWLIST_BOUNDARY_VIOLATIONS = frozenMap("ALLOWLIST_BOUNDARY_VIOLATIONS", [
   ["core/capability/capability-packs.js -> domains/physical/physical-capability-manifest.js", "plane_value_import"],
   ["core/capability/capability-packs.js -> domains/physical/physical-surface-transition.js", "plane_value_import"],
+  ["core/executed-evidence-registry.js -> domains/physical/physical-experiment-contract.js", "plane_value_import"],
   ["core/executed-evidence-registry.js -> domains/physical/physical-surface-transition.js", "plane_value_import"],
+  ["core/finding-contracts.js -> domains/physical/physical-finding-record-adapter.js", "control_flow_core"],
+  ["core/frontier/frontier-readiness.js -> domains/physical/physical-campaign-coordinator.js", "control_flow_core"],
   ["core/frontier/surface-graph.js -> domains/physical/physical-surface-transition.js", "control_flow_core"],
+  ["core/session/lifecycle-gates.js -> domains/physical/physical-campaign-coordinator.js", "control_flow_core"],
   ["core/session/session-authority.js -> domains/physical/physical-session-journal.js", "control_flow_core"],
   ["tools/index.js -> tools/physical/credential-acquire.js", "composition_root"],
   ["tools/index.js -> tools/physical/credential-emulate.js", "composition_root"],
