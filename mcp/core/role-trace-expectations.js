@@ -5,9 +5,9 @@
 // Closed map of role-id -> ordered list of trace-reading expectations a
 // subagent is expected to honor at recognized decision boundaries. Each
 // entry references:
-//   * fragment_id (must exist in mcp/lib/friction-prompt-fragments.js)
+//   * fragment_id (must exist in mcp/core/friction-prompt-fragments.js)
 //   * decision_boundary (closed enum per Y-P14a)
-//   * producer_id (must exist in mcp/lib/stigmergic-producers.js)
+//   * producer_id (must exist in mcp/core/stigmergic-producers.js)
 //
 // The Y.5 assignment-brief renderer (W1) composes the brief's per-role
 // "trace-reading expectations" section by reading this registry and
@@ -15,8 +15,8 @@
 // fragment_id is preserved on the brief for telemetry attribution.
 //
 // Rev 4.1 (defect 5) — canonical fragment_id and producer_id strings are
-// committed in mcp/lib/friction-prompt-fragments.js (Y.2) and
-// mcp/lib/stigmergic-producers.js (Y.6). The Y.6 shape test asserts every
+// committed in mcp/core/friction-prompt-fragments.js (Y.2) and
+// mcp/core/stigmergic-producers.js (Y.6). The Y.6 shape test asserts every
 // entry here resolves to a real fragment + real producer (no escape
 // hatch, no orphan).
 //

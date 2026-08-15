@@ -68,7 +68,7 @@ X10 — Reasoning-divergence adjudication
           plan hash. No semantic/LLM diff.
   predecessors: (verification spine — bob_build_verification_adjudication, shipped)
   unlocks: tighter adjudication on the spine "ahead of every peer"
-  anchor: mcp/lib/verification.js findingDiffs (:471-473, currently diffs only
+  anchor: mcp/core/verification/verification.js findingDiffs (:471-473, currently diffs only
           disposition/severity/reportable) + computeAdjudicationPlanHash
   source: COMPETITOR_ANALYSIS.md:84,113 (gap #10, defer-table safe form)
 

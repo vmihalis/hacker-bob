@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Long-running Patchright (stealth Playwright fork) session driver.
-// Spawned by mcp/lib/browser-sessions.js for the bob_browser_* MCP tool family.
+// Spawned by mcp/domains/web/browser-sessions.js for the bob_browser_* MCP tool family.
 //
 // Anti-detection stack inherited from auto-signup.js:
 //   1. Patchright — fixes Runtime.Enable CDP leak
@@ -278,7 +278,7 @@ class BrowserDriver {
     // ignoreDefaultArgs filter all still apply, so the proxy carries a real
     // Chrome fingerprint instead of leaking a headless/Playwright signature.
     // The proxy was env-expanded and scheme-validated upstream
-    // (mcp/lib/browser-tools-shared.js#resolveBrowserEgressProfile) — the
+    // (mcp/domains/web/browser-tools-shared.js#resolveBrowserEgressProfile) — the
     // driver only sees the structured { server, username?, password? } form.
     if (this.proxy) {
       launchOptions.proxy = this.proxy;

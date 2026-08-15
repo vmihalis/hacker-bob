@@ -7,7 +7,7 @@ const { defineSetTool } = require("./_archetypes.js");
 // Operator-extensible friction-scanner registry. Defaults (`bash_curl`,
 // `bash_wget`, `bash_raw_http`, `bash_cat_ledger`, and the rev-3
 // `mcp_invocation_failure_scanner` D7 narrow case) ship in Y.6's
-// `mcp/lib/friction-scanners.js` as a frozen registry. Operators add
+// `mcp/core/friction-scanners.js` as a frozen registry. Operators add
 // environment-specific scanners (e.g., `bash_xargs_curl`, `python_urllib`)
 // here; the queue-policy ledger persists them and the Y.6 scanner consumes
 // the union.

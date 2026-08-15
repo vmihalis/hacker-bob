@@ -3,7 +3,7 @@
 // Cycle Y.9 (rev 4.1) — Stigmergic consumers manifest (Y-P14a).
 //
 // Closed registry of code sites whose behavior depends on a stigmergic
-// producer trace recorded in `mcp/lib/stigmergic-producers.js`. Paired
+// producer trace recorded in `mcp/core/stigmergic-producers.js`. Paired
 // with the producers manifest by the `check:stigmergy-coherence` CI gate
 // (Y-P14c), which walks both registries and asserts:
 //   (a) every manifested producer has at least one manifested consumer

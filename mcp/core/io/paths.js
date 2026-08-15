@@ -158,7 +158,7 @@ function resolveSessionsRootOverride(env) {
   } catch (error) {
     rejectSessionsRootOverride(`it could not be inspected (${error && error.message})`);
   }
-  // Same root assertions mcp/lib/engine-lock.js applies before it elects an
+  // Same root assertions mcp/core/io/engine-lock.js applies before it elects an
   // engine, applied here at boot so an unsafe root is refused before a single
   // audit-graded byte is written to it. engine-lock.js keeps re-asserting them
   // independently; this does not replace that check.
@@ -389,7 +389,7 @@ function taskQueuePath(domain) {
 
 // Plane X Cycle X.2 — task-graph.json materialized view. Lives alongside
 // surface-index.json + task-queue.json under the session root. Folded from
-// frontier-events.jsonl by mcp/lib/task-graph-materializer.js on every
+// frontier-events.jsonl by mcp/core/waves/task-graph-materializer.js on every
 // producer-event session-lock release (via frontier-materialize-debounce).
 function taskGraphPath(domain) {
   return path.join(sessionDir(domain), "task-graph.json");
@@ -1102,8 +1102,8 @@ const WRITE_GUARD_TABLES = Object.freeze({
 // be bound to an MCP-owned import handle (`bob_import_http_traffic`,
 // `bob_resolve_body`, or `bob_static_scan`) rather than referenced as a raw
 // `evidence/<path>` string. Consumers:
-//   * `mcp/lib/tools/write-chain-rollup.js` `evidence_refs[]` validator
-//   * `mcp/lib/friction-scanners.js` `large_response_body_unimported` scanner
+//   * `mcp/tools/write-chain-rollup.js` `evidence_refs[]` validator
+//   * `mcp/core/friction-scanners.js` `large_response_body_unimported` scanner
 // Threshold value is committed here so callers import a single constant; no
 // duplicated literals across validator + scanner.
 const LARGE_BODY_THRESHOLD_BYTES = 262144;
@@ -1276,7 +1276,7 @@ const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
   // dir (sessionsRoot()/.engine.lock), not a file WITHIN sessionDir(domain).
   // It is out of scope for the per-domain write-guard/audit-graded inventory
   // this registry drives (it is never agent-writable or MCP-tool-writable at
-  // all; only mcp/lib/engine-lock.js touches it, at process boot/shutdown).
+  // all; only mcp/core/io/engine-lock.js touches it, at process boot/shutdown).
   "engineLockPath",
 ]);
 

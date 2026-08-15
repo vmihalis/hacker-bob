@@ -30,7 +30,7 @@ function hasResponseId(rpc) {
 // model that reads the per-invocation mcp-config JSON via Bash/Read could in
 // principle exfiltrate and replay the token into a rogue spawn. The true
 // structural backstop is the INDEPENDENT export-tool chokepoint
-// (mcp/lib/tools/export-security-hub-finding.js's unconditional
+// (mcp/tools/export-security-hub-finding.js's unconditional
 // verifyApprovalArtifact call), which this defense does not weaken or
 // replace.
 function createCallerAuthGate({ stderr, env, exit }) {

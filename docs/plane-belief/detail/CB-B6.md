@@ -4,7 +4,7 @@
 
 - `id`: `CB-B6`
 - `action`: `build_new`
-- `anchor`: `mcp/lib/belief/residual.js`
+- `anchor`: `mcp/core/belief/residual.js`
 - `status`: `done`
 
 ## Contract
@@ -16,7 +16,7 @@ template-promotion authority.
 
 ## Implementation
 
-- `mcp/lib/belief/residual.js` emits `belief-residual.v1` from
+- `mcp/core/belief/residual.js` emits `belief-residual.v1` from
   `factor-graph-sampler.v1` marginals using negative log-likelihood plus entropy
   decomposition per variable.
 - The output is deterministic for the same registry, seed, window hash, evidence,

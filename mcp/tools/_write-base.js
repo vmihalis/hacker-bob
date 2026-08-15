@@ -14,8 +14,8 @@
 //   2. Server-internal caller-context construction for the Y-D13
 //      `bob_emit_runtime_drift({drift_signature: "write_arg_schema_mismatch_recovered"})`
 //      hook. The `mcp_server_internal` synthetic caller bundle is constructed
-//      HERE — never exported from `mcp/lib/role-bundles.js` (a paired CI guard
-//      in Y.8 asserts this). The bundle is a synthetic context, not a grantable
+//      HERE — never exported from `mcp/core/dispatch/tool-registry.js` (a
+//      paired CI guard in Y.8 asserts this). The bundle is a synthetic context, not a grantable
 //      role; agents cannot acquire it through any role-bundle assignment.
 //   3. Uniform ToolError envelope including optional `remediation: string`
 //      (Y-D12 / D15 — `tool-error.js`'s ToolError already supports the field;
@@ -55,10 +55,9 @@ function getValidator() {
 }
 
 // Synthetic caller bundle constructed inside this module. CI in Y.8 asserts
-// this name is NOT exported from `mcp/lib/role-bundles.js` — there is no such
-// file today, but the guard will scan role-spec exports in
-// `tool-registry.js` / `capability-packs.js` / `role-model.js`. The literal
-// string is the contract.
+// this name is NOT exported from `mcp/core/dispatch/tool-registry.js`; the
+// guard also scans role-spec exports in `mcp/core/capability/capability-packs.js`
+// and `mcp/core/dispatch/role-model.js`. The literal string is the contract.
 const MCP_SERVER_INTERNAL_BUNDLE = Object.freeze({
   bundle_id: "mcp_server_internal",
   // Synthetic caller contexts cannot acquire any tool grant — they only

@@ -86,8 +86,8 @@ and tools so hosts without a matching hook can still run Bob predictably.
 Y-P13 (audit-graded paths are MCP-write-only) has two enforcement layers with
 different reach:
 
-- **In-process (MCP server).** `mcp/lib/tools/_write-base.js` and
-  `mcp/lib/belief/authority.js` gate the server's OWN writes — the report / grade /
+- **In-process (MCP server).** `mcp/tools/_write-base.js` and
+  `mcp/core/belief/authority.js` gate the server's OWN writes — the report / grade /
   chain-rollup / evidence / verification-round / wave-handoff / proof-bundle /
   amend composers and belief artifacts — against `paths.js` `isAuditGradedPath`.
   `scripts/check-audit-graded-writers.js` anchors the composer whitelist to the
@@ -120,7 +120,7 @@ general escape hatch: a mutating session write under shadow is REFUSED
 (`STATE_CONFLICT` / `enforcement_degraded_unacked`, plus a runtime-drift record)
 unless the operator explicitly sets `BOB_SESSION_AUTHORITY_SHADOW_ACK`, which
 stamps `operator_ack` on the audit-graded decision. Unset (the default) is
-`enforce`. The ack token is single-homed in `mcp/lib/enforcement-attest.js`
+`enforce`. The ack token is single-homed in `mcp/core/enforcement-attest.js`
 (asserted by `test/enforcement-liveness-attest.test.js`).
 
 Longer-running platform work is tracked in the roadmap and release notes rather

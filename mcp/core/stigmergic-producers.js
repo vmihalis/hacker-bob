@@ -5,7 +5,7 @@
 // Closed registry of MCP tools, generator outputs, and recorded artifacts
 // that emit decision-relevant traces consumed by other agents or systems.
 // Pair the producer entries here with consumer entries in
-// `mcp/lib/stigmergic-consumers.js` (Y.9). The
+// `mcp/core/stigmergic-consumers.js` (Y.9). The
 // `check:stigmergy-coherence` CI gate (Y-P14c, lands in Y.9) walks both
 // registries and asserts (a) every manifested producer has at least one
 // manifested consumer reference, (b) every manifested consumer references

@@ -6,7 +6,7 @@
 // <target>/report.md`. Agents emit structured sections + bounded prose; MCP
 // renders the markdown view server-side, computes the content hash, and writes
 // the file atomically. No agent invokes Write on report.md (the path lives in
-// `mcp/lib/paths.js` AUDIT_GRADED_PATHS; the report-writer agent loses its
+// `mcp/core/io/paths.js` AUDIT_GRADED_PATHS; the report-writer agent loses its
 // Write tool grant in Stage d).
 //
 // Provenance enforcement (Y-P13c): any section marked `provenance:

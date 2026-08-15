@@ -4,7 +4,7 @@
 
 - `id`: `CB-B3`
 - `action`: `build_new+layer_on_dispatch`
-- `anchor`: `mcp/lib/belief/experiment-loop.js`
+- `anchor`: `mcp/core/belief/experiment-loop.js`
 - `status`: `done`
 
 ## Contract
@@ -16,7 +16,7 @@ and never records claims.
 
 ## Implementation
 
-- `mcp/lib/belief/experiment-loop.js` ranks interventions and emits
+- `mcp/core/belief/experiment-loop.js` ranks interventions and emits
   `belief-experiment-loop.v1` plans.
 - `dry_run: true` returns the same bounded proposal shape without writing.
 - Non-dry runs append `hypothesis_proposed` observations with advisory

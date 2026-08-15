@@ -95,7 +95,7 @@ const EVALUATOR_PACK_CATALOGUE_PLACEHOLDER = "{{EVALUATOR_PACK_CATALOGUE}}";
 // JSON-schema enum for blocked_harness_runs[].kind, surfaced here so the
 // catalogue can validate that every pack's blocked_harness_kind_options is
 // expressible inside the schema. Keep in sync with
-// mcp/lib/tools/write-wave-handoff.js.
+// mcp/tools/write-wave-handoff.js.
 const BLOCKED_HARNESS_RUN_KINDS = Object.freeze([
   "foundry_fork",
   "anchor_fork",
@@ -235,7 +235,7 @@ function substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelFor) {
 //
 // Structural twin of the evaluator pack catalogue: the orchestrator SETUP prose
 // documents the deterministic recon-producer floor, and this renders the
-// PRODUCER_PACKS DAG (`mcp/lib/producer-packs.js`) as a compact one-line-per-
+// PRODUCER_PACKS DAG (`mcp/core/dispatch/producer-packs.js`) as a compact one-line-per-
 // producer catalogue. Host-agnostic (one render function feeds all three
 // adapters). Adding a producer pack auto-extends the catalogue at next
 // regeneration; no renderer edit is needed.
@@ -270,7 +270,7 @@ function substituteProducerCatalogue(document) {
 //
 // Evaluator prompts learn handoff field limits before submission, not from
 // rejection messages mid-flight. Limits are read from the live schema in
-// `mcp/lib/tools/write-wave-handoff.js` so a future schema bump propagates
+// `mcp/tools/write-wave-handoff.js` so a future schema bump propagates
 // to every consumer prompt at next regeneration without hand-edits.
 
 const HANDOFF_FIELD_LIMITS_PLACEHOLDER = "{{HANDOFF_FIELD_LIMITS}}";

@@ -6,7 +6,7 @@
 // at recognized friction points. Composed by assignment-brief.js (Y.5) via
 // the role-trace-expectations registry (Y.6). The fragment_id vocabulary is
 // the canonical Y-D19 (rev 4.1) set — 9 entries — and is referenced by
-// mcp/lib/role-trace-expectations.js (Y.6) for stigmergic producer/consumer
+// mcp/core/role-trace-expectations.js (Y.6) for stigmergic producer/consumer
 // pairing. Adding a fragment requires a paired entry in
 // role-trace-expectations.js for at least one role.
 //

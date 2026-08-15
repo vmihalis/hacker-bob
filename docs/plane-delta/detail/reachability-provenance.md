@@ -8,7 +8,7 @@
 
 ## The defect (proven, do not re-derive)
 
-The I9 producer (`mcp/lib/reachability.js`) classifies `attack_vector` / `network_reachable` by **file-directory locality with socket primitives** (an anchor file in a dir → the dir's depth-2 prefix is tagged network → every file under it inherits `network`). Measured on net-snmp `f128c80`:
+The I9 producer (`mcp/core/frontier/reachability.js`) classifies `attack_vector` / `network_reachable` by **file-directory locality with socket primitives** (an anchor file in a dir → the dir's depth-2 prefix is tagged network → every file under it inherits `network`). Measured on net-snmp `f128c80`:
 
 | finding | file | producer stamp | correct | why |
 |---|---|---|---|---|
@@ -34,16 +34,16 @@ A finding MAY carry an **evaluator-asserted reachability** (`attack_vector` + `n
 
 ## Build slices (real anchors on the Δ1 base; verify exact lines at build time)
 
-1. **Claim schema** — `mcp/lib/finding-contracts.js` `normalizeFindingRecord` (~:392, beside `surface_id` ~:420): add an optional `reachability_assertion` object:
+1. **Claim schema** — `mcp/core/finding-contracts.js` `normalizeFindingRecord` (~:392, beside `surface_id` ~:420): add an optional `reachability_assertion` object:
    - `attack_vector` — validated against `ATTACK_VECTOR_VALUES` (`reachability-ceiling.js` ~:31)
    - `network_reachable` — boolean
    - `call_path` — **required when the assertion is present** (entrypoint→sink, cited; reject a bare assertion with no path)
    - `justification` — short text
    It MUST NOT enter `computeFindingDedupeKey` (~:370) — reachability is not an identity field.
-2. **Recording** — `mcp/lib/tools/record-candidate-claim.js`: thread the field through (it already normalizes via `normalizeFindingRecord`); add `call_path`/`justification` text caps consistent with `CLAIM_TEXT_LIMITS` (~:53).
-3. **Consumer override** — `mcp/lib/reachability-ceiling.js` `resolveFindingReachability` (~:237): before the surface-ceilings match, read the finding's frozen-claim `reachability_assertion`; if present + cited, return `{severity_ceiling: <asserted class ceiling constrained by any existing inventory/heuristic ceiling via stricterSeverityCeiling>, attack_vector, network_reachable, reachability_source:"asserted"}`. Else the current heuristic path with `reachability_source:"heuristic"`; null → `"none"`. `computeReachabilityDisposition` (~:57) carries `reachability_source` into the disposition.
-4. **Disposition stamp** — add `reachability_source` to the object from `computeReachabilityDisposition` + the normalizer `normalizeReachabilityDispositionStamp` (**defined in `mcp/lib/reachability-ceiling.js` ~:139**, invoked at `grade-verdict-store.js` ~:125) + a `- Reachability Source:` line in the markdown render (`grade-verdict-store.js` ~:313-317).
-5. **Gate** — `mcp/lib/lifecycle-gates.js` `missingReachabilityStampsForReportableFindings` (~:89): an asserted reachability satisfies the stamp requirement even when the surface carries no producer stamp (don't flag a cited-assertion finding as "missing reachability"). If no producer inventory/stamped-surface fallback exists, the grade records a `reachability_divergence` audit note instead of silently treating the assertion as inventory-backed.
+2. **Recording** — `mcp/tools/record-candidate-claim.js`: thread the field through (it already normalizes via `normalizeFindingRecord`); add `call_path`/`justification` text caps consistent with `CLAIM_TEXT_LIMITS` (~:53).
+3. **Consumer override** — `mcp/core/frontier/reachability-ceiling.js` `resolveFindingReachability` (~:237): before the surface-ceilings match, read the finding's frozen-claim `reachability_assertion`; if present + cited, return `{severity_ceiling: <asserted class ceiling constrained by any existing inventory/heuristic ceiling via stricterSeverityCeiling>, attack_vector, network_reachable, reachability_source:"asserted"}`. Else the current heuristic path with `reachability_source:"heuristic"`; null → `"none"`. `computeReachabilityDisposition` (~:57) carries `reachability_source` into the disposition.
+4. **Disposition stamp** — add `reachability_source` to the object from `computeReachabilityDisposition` + the normalizer `normalizeReachabilityDispositionStamp` (**defined in `mcp/core/frontier/reachability-ceiling.js` ~:139**, invoked at `grade-verdict-store.js` ~:125) + a `- Reachability Source:` line in the markdown render (`grade-verdict-store.js` ~:313-317).
+5. **Gate** — `mcp/core/session/lifecycle-gates.js` `missingReachabilityStampsForReportableFindings` (~:89): an asserted reachability satisfies the stamp requirement even when the surface carries no producer stamp (don't flag a cited-assertion finding as "missing reachability"). If no producer inventory/stamped-surface fallback exists, the grade records a `reachability_divergence` audit note instead of silently treating the assertion as inventory-backed.
 6. **Evaluator behavior** — the evaluator agent(s) (`evaluator-agent` + the OSS evaluator family) must assert `reachability_assertion` when recording a native/code finding: cite entrypoint→sink and classify network vs local. Examples to encode in the prompt: `"UDP-161 SNMP SET → write_vacmAccessStatus → access_parse_oid"` = network/PR:H; `"AgentX master unix socket → handle_subagent_set_response"` = local. **Registry-driven** so Codex/Kimi reach parity; run `node scripts/generate-agent-tools.js` (+ `generate-hacker-bob-skill.js`, `generate-kimi-roles.js`) if role/tool metadata changes.
 
 ---

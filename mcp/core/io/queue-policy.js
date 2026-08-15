@@ -73,7 +73,7 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   default_wave_task_budget: { ...DEFAULT_WAVE_TASK_BUDGET },
   // Y.3 (D16) — operator-extensible friction scanners. Default empty;
   // bob_set_friction_scanners persists additions here. Default registry of
-  // closed-prefix scanners lives in `mcp/lib/friction-scanners.js` (Y.6) and
+  // closed-prefix scanners lives in `mcp/core/friction-scanners.js` (Y.6) and
   // is unioned with this list at scan time. Order-preserving.
   friction_scanners: [],
   // Y.6 (Y-D5 + Y-D9) — Friction-to-Hypothesis promotion threshold.
@@ -168,7 +168,7 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   // OPEN_FRONTIER -> CLAIM_FREEZE runtime gate. Each entry is a
   // {surface_id, attestation_token, rationale?} object. The runtime
   // gate consults the latest merged wave's partial_surface_ids
-  // (via mcp/lib/scheduler-preconditions.js partial_surfaces_drained)
+  // (via mcp/core/waves/scheduler-preconditions.js partial_surfaces_drained)
   // and intersects them with the surface_ids in this list; a surface
   // is gated until acknowledged. The attestation_token is matched
   // against the operator nonce at ~/.bob/session-cap when that file

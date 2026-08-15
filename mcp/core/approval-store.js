@@ -22,14 +22,14 @@
 //       in the account) still fails closed here.
 //   (3) fx-hmac-content: the artifact is bound to the EXACT grade the human reviewed, not
 //       just the target_domain. verifyApprovalArtifact takes the CURRENT grade_verdict_hash
-//       (resolved by the caller via mcp/lib/report-finalize.js's loadGradeVerdictHash) and
+//       (resolved by the caller via mcp/core/report-finalize.js's loadGradeVerdictHash) and
 //       requires it to equal the artifact's own stored grade_verdict_hash before the HMAC is
 //       even checked. A post-approval amend+re-grade changes the current hash, so the SAME
 //       previously-valid artifact no longer verifies — closing the "one approval permanently
 //       pre-authorizes unlimited amend+re-export" gap.
 //
-// Consumed by mcp/lib/lifecycle-gates.js's gradeToReportApprovalBlocker AND (P1-3)
-// mcp/lib/tools/finalize-report.js. This module owns ONLY the fetch + verify decision
+// Consumed by mcp/core/session/lifecycle-gates.js's gradeToReportApprovalBlocker AND (P1-3)
+// mcp/tools/finalize-report.js. This module owns ONLY the fetch + verify decision
 // (verifyApprovalArtifact -> boolean); callers own their own blocker/ToolError shape.
 //
 // SYNCHRONOUS BY DESIGN: gradeToReportApprovalBlocker is invoked deep inside
@@ -58,7 +58,7 @@ function isSafeTargetDomain(value) {
 }
 
 // Test-only injection points, mirroring the awsClientFactoriesForTest pattern already
-// established in mcp/lib/tools/export-security-hub-finding.js. Never read in production.
+// established in mcp/tools/export-security-hub-finding.js. Never read in production.
 function _setApprovalBackendForTest(fn) {
   backendForTest = typeof fn === "function" ? fn : null;
 }
@@ -164,7 +164,7 @@ function resolveHmacKey() {
 // against the artifact's `hmac` field, AND confirms the artifact's
 // own stored `grade_verdict_hash` equals the CALLER-SUPPLIED currentGradeVerdictHash (the hash
 // of the grade the human is being asked to approve RIGHT NOW, resolved by the caller via
-// mcp/lib/report-finalize.js's loadGradeVerdictHash). Binding the HMAC input to the graded
+// mcp/core/report-finalize.js's loadGradeVerdictHash). Binding the HMAC input to the graded
 // content -- not just target_domain -- closes the amend-and-reexport gap: a single approval no
 // longer permanently pre-authorizes unlimited amend+re-finalize+re-export against that domain,
 // because a post-approval change to grade.json changes currentGradeVerdictHash, which no longer

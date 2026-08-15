@@ -19,7 +19,7 @@
 // a SERVER-INTERNAL caller bundle constructed inside _write-base.js (which
 // ships atomically in Y.3); the `mcp_server_internal` bundle is NOT
 // grantable to any agent role and is CI-asserted absent from
-// mcp/lib/role-bundles.js exports. This Y.2 cycle ships ONLY the
+// mcp/core/dispatch/tool-registry.js exports. This Y.2 cycle ships ONLY the
 // orchestrator-facing entry; the internal caller context lands in Y.3.
 
 const {
@@ -239,7 +239,7 @@ module.exports = Object.freeze({
   // mcp_server_internal synthetic caller context that lets _write-base.js
   // auto-emit on INVALID_ARGUMENTS retry success lands in Y.3 and is
   // explicitly NOT a grantable role bundle. CI guard in Y.8 asserts
-  // mcp_server_internal is not exported from mcp/lib/role-bundles.js.
+  // mcp_server_internal is not exported from mcp/core/dispatch/tool-registry.js.
   role_bundles: ["orchestrator"],
   capability_id: "Y_self_reporting",
   mutating: true,

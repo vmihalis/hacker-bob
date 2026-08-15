@@ -29,7 +29,7 @@ const {
 
 // I6 (CR-4): lifecycle reopenability. The CLAIM_FREEZE/VERIFY/GRADE/REPORT ->
 // OPEN_FRONTIER back-edges are load-bearing operator re-entry, NOT redundancy.
-// Registry: mcp/lib/invariant-registry.js REGISTRY["I6"]. Removing a back-edge
+// Registry: mcp/core/invariant-registry.js REGISTRY["I6"]. Removing a back-edge
 // is a breaking change; update the registry entry in the same commit.
 const ALLOWED_TRANSITIONS = Object.freeze({
   SETUP: Object.freeze(["OPEN_FRONTIER"]),
@@ -60,7 +60,7 @@ const TRANSITION_GATES = Object.freeze({
   // requeue re-entry from VERIFY must not silently bounce an IN-PROGRESS
   // verification snapshot. A VERIFY -> OPEN_FRONTIER move while a v2 attempt is
   // live (the a7/distributor-v2 bounce) re-enters VERIFY later and triggers
-  // archiveCurrentV2Attempt (mcp/lib/verification.js), forcing a full re-freeze
+  // archiveCurrentV2Attempt (mcp/core/verification/verification.js), forcing a full re-freeze
   // + re-verification. The gate refuses unless override:"operator_force" — the
   // deliberate operator abandon-and-reopen path recorded as
   // governance.lifecycle.override. GRADE -> OPEN_FRONTIER is intentionally NOT
@@ -272,7 +272,7 @@ function gateGradeToReport(context) {
 // branch (BOB_AGENTCORE unset/falsy) so every local/interactive/CI session is completely
 // unaffected -- mirrors .claude/hooks/bob-approval-gate-impl.py's own AWS-branch gate.
 // When active, verifies the un-forgeable S3-backed, HMAC-bound approval artifact via
-// mcp/lib/approval-store.js: the model's own execution role can only s3:GetObject the
+// mcp/core/approval-store.js: the model's own execution role can only s3:GetObject the
 // approvals/ prefix (never PutObject -- see template.yaml HackerBobAgentRuntimeExecutionRole),
 // and the artifact's HMAC is recomputed and compared, not merely its existence checked
 // (fx-gate-hardening: the old raw-existence-of-a-model-writable-file check was forgeable
@@ -414,7 +414,7 @@ function gateClaimFreezeToVerify(context) {
 
 // SETUP -> OPEN_FRONTIER seed gate. A frontier with zero routed seed surfaces
 // has nothing to schedule, so SETUP is not complete. Consumes the
-// seed_surfaces_present precondition (mcp/lib/scheduler-preconditions.js) — the
+// seed_surfaces_present precondition (mcp/core/waves/scheduler-preconditions.js) — the
 // single source of truth for routed-seed counting; the gate never re-implements
 // route counting, keeping the closed-enum precondition authoritative and the
 // @precondition coherence check satisfied. Producer-agnostic: a seed surface
@@ -515,7 +515,7 @@ function gateSetupToOpenFrontier(context) {
 // OPEN_FRONTIER -> CLAIM_FREEZE while the latest merged wave-handoff has
 // any surface in `surface_status: "partial"` AND the operator has not
 // extended bob_set_queue_policy({partial_surface_advance_acknowledgements: [...]}).
-// Reads partial_surface_ids via mcp/lib/scheduler-preconditions.js
+// Reads partial_surface_ids via mcp/core/waves/scheduler-preconditions.js
 // (partial_surfaces_drained), which consults the latest merge snapshot
 // persisted by mergeWaveHandoffs to <sessionDir>/wave-handoffs/
 // wave-<N>-merge-snapshot.json.

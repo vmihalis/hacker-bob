@@ -4,8 +4,8 @@
 
 - `id`: `CB-3`
 - `action`: `layer_on`
-- `anchor`: `mcp/lib/frontier-events.js`; `mcp/lib/frontier-materializer.js`;
-  `mcp/lib/frontier-projections.js`; `mcp/lib/capability-observations.js`
+- `anchor`: `mcp/core/frontier/frontier-events.js`; `mcp/core/frontier/frontier-materializer.js`;
+  `mcp/core/frontier/frontier-projections.js`; `mcp/core/capability/capability-observations.js`
 - `status`: `done`
 
 ## Contract
@@ -16,7 +16,7 @@ extractor tier, or write path.
 
 ## Implementation
 
-- `mcp/lib/belief/frontier-facts.js` adds a pure projection over
+- `mcp/core/belief/frontier-facts.js` adds a pure projection over
   `readFrontierEvents`, reusing `normalizeObservationEvent` and timestamp
   ordering from `frontier-projections.js`.
 - `queryFrontierTypedFacts` returns bounded, read-only `frontier_observation`

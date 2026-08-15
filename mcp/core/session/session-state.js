@@ -719,7 +719,7 @@ function advanceSession(args) {
       const first = nonBypassable || evaluation.blockers[0];
       // Y.10 (Y-D12 / Y-P12) — propagate the blocker's structured
       // remediation string through the ToolError so MCP callers see it
-      // verbatim in the response envelope (mcp/lib/envelope.js).
+      // verbatim in the response envelope (mcp/core/io/envelope.js).
       const remediation = typeof first.remediation === "string" ? first.remediation : null;
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,

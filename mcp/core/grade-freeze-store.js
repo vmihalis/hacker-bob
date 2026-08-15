@@ -27,7 +27,7 @@
 // aabw-2026 HARDENING-CHECKLIST); also make the write retry-not-silently-noop so a legit finding
 // reliably freezes (a transient S3 error currently fails the export CLOSED, safe but a demo gap).
 //
-// SYNCHRONOUS BY DESIGN, mirroring mcp/lib/approval-store.js's own module
+// SYNCHRONOUS BY DESIGN, mirroring mcp/core/approval-store.js's own module
 // header: writeGradeVerdict (grade-verdict-store.js) is invoked deep inside
 // dozens of existing synchronous, session-locked call chains, and making
 // that chain async is out of this node's "engine changes additive-only"

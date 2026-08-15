@@ -2,7 +2,7 @@
 
 // Plane Y Cycle Y.5 (rev 4.1 W1) — Trace-reading expectations composer.
 //
-// The wave-scheduler brief renderer (mcp/lib/assignment-brief.js
+// The wave-scheduler brief renderer (mcp/core/session/assignment-brief.js
 // readAssignmentBrief) and any other per-role brief composer reads through
 // this helper to produce the role-specific "trace-reading expectations"
 // section per Y-P14d. The output is the structured, telemetry-attributable

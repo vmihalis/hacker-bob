@@ -16,7 +16,7 @@ remains the banding mechanism.
 
 ## Implementation
 
-- `mcp/lib/belief/scheduler-priority.js` converts CB-B2 intervention rankings
+- `mcp/core/belief/scheduler-priority.js` converts CB-B2 intervention rankings
   and optional residual diagnostics into advisory per-surface priority hints.
 - `queue-policy.json` gains `belief_assisted_priority_enabled` plus deterministic
   seed/rank-limit knobs. The default is disabled.

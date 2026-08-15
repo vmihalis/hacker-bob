@@ -80,7 +80,7 @@ function frictionPayloadsForSurface(frontierEvents, surfaceId) {
 }
 
 // Read the raw queue-policy JSON for the target without going through
-// loadQueuePolicy's normalizer. The normalizer (mcp/lib/queue-policy.js)
+// loadQueuePolicy's normalizer. The normalizer (mcp/core/io/queue-policy.js)
 // drops fields it does not yet know about; the rev-4 `target_class_default`
 // field lands in Y.6 schema-side. Until Y.6 lands its writer, the
 // caller-side resolver must read the raw file to surface the field that

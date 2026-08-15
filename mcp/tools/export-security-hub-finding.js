@@ -219,7 +219,7 @@ async function handler(args) {
   // make BOB_AGENTCORE-keyed gates inert, but it CANNOT fabricate a valid
   // approval artifact -- the root of trust is the IAM PutObject boundary
   // (only ApprovalWriterRole may write approvals/*.approved; see
-  // mcp/lib/approval-store.js's module header), which no engine-side env var
+  // mcp/core/approval-store.js's module header), which no engine-side env var
   // can bypass. Reuses verifyApprovalArtifact/loadGradeVerdictHash EXACTLY as
   // lifecycle-gates.js's gradeToReportApprovalBlocker does, so the artifact
   // must be bound (via HMAC over target_domain + grade_verdict_hash) to the

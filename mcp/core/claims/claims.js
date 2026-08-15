@@ -524,7 +524,7 @@ function normalizeCandidateClaim(input, { targetDomain = null, now = new Date(),
   // payloads whose description (used as the summary fallback in
   // record-candidate-claim) routinely exceeded 2000 chars. Per-field text
   // caps for the inline finding payload live in
-  // mcp/lib/tools/record-candidate-claim.js CLAIM_TEXT_LIMITS.
+  // mcp/tools/record-candidate-claim.js CLAIM_TEXT_LIMITS.
   const summary = normalizeId(input.summary, "summary", { maxLength: 16000 });
   const createdAt = normalizeIsoTimestamp(input.created_at || input.ts, "created_at", now);
   const status = assertEnumValue(input.status || "candidate", CLAIM_STATUSES, "status");
@@ -560,7 +560,7 @@ function normalizeCandidateClaim(input, { targetDomain = null, now = new Date(),
   const tags = normalizeOptionalTextArray(input.tags, "tags");
   // Y.0 hotfix 1 (O2): payload carries the embedded finding-shaped record
   // whose per-field caps were raised in
-  // mcp/lib/tools/record-candidate-claim.js. Pass the widened text cap so the
+  // mcp/tools/record-candidate-claim.js. Pass the widened text cap so the
   // generic plain-object validator does not re-tighten what the writer just
   // accepted. payloadBypassValuePaths is the deep-path Set the caller built
   // from secret_detection_bypass; structural sensitive-key detection still

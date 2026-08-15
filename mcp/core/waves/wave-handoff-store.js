@@ -765,7 +765,7 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
 // Snapshot lives at <sessionDir>/wave-handoffs/wave-<N>-merge-snapshot.json and
 // is append-only (each successful merge writes a new snapshot file; older
 // snapshots are retained for audit). The wave-handoffs/ directory is already
-// in AUDIT_GRADED_RELATIVE_DIRS (mcp/lib/paths.js) so the snapshot is
+// in AUDIT_GRADED_RELATIVE_DIRS (mcp/core/io/paths.js) so the snapshot is
 // MCP-owned audit-graded artifact content (Y-P13).
 function waveHandoffsSnapshotDir(domain) {
   return path.join(sessionDir(domain), "wave-handoffs");
@@ -786,7 +786,7 @@ function writeWaveMergeSnapshot(domain, waveNumber, snapshot) {
 // Returns the partial_surface_ids of the highest-numbered merge snapshot for
 // the target's session; empty array if no merges have happened or the
 // snapshot directory is missing. Used by the Y-P12 runtime gate in
-// mcp/lib/tools/advance-session.js and by mcp/lib/scheduler-preconditions.js.
+// mcp/tools/advance-session.js and by mcp/core/waves/scheduler-preconditions.js.
 function getLatestMergedWavePartialSurfaceIds(targetDomain) {
   const domain = assertNonEmptyString(targetDomain, "target_domain");
   const dir = waveHandoffsSnapshotDir(domain);

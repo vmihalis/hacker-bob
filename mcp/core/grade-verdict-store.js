@@ -809,7 +809,7 @@ function writeGradeVerdict(args) {
   // ARCHITECTURAL FIX (Eric-approved): additive, best-effort WORM freeze of
   // the just-written grade verdict, taken HERE (at GRADE time, before any
   // human approval exists) and keyed by grade_verdict_hash. See
-  // mcp/lib/grade-freeze-store.js's module header for the full rationale.
+  // mcp/core/grade-freeze-store.js's module header for the full rationale.
   // No-ops when no bucket is configured (every non-AWS-branch session);
   // never throws; never blocks this write.
   {

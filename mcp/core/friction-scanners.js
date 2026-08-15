@@ -12,7 +12,7 @@
 // Operator extensions land in queue-policy.friction_scanners[] via
 // `bob_set_friction_scanners` (Y.3) and are unioned with the defaults at
 // scan time (the operator union is consumed by the `bob_set_friction_scanners`
-// caller — see `mcp/lib/tools/scan-transcript-for-friction.js`).
+// caller — see `mcp/tools/scan-transcript-for-friction.js`).
 //
 // Closed manifest of default scanner ids:
 //   * bash_curl, bash_wget, bash_raw_http, bash_cat_ledger — closed-prefix

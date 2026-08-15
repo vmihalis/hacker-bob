@@ -226,7 +226,7 @@ const ASSIGNMENT_BRIEF_RANKING_REASON_LIMIT = 10;
 const ASSIGNMENT_BRIEF_RANKING_REASON_MAX_CHARS = 160;
 
 // Default brief message returned when bob-spec.json is absent. The loader is
-// real (mcp/lib/bob-spec.js); this message is the empty-state fallback.
+// real (mcp/core/bob-spec.js); this message is the empty-state fallback.
 const BOB_SPEC_ABSENT_MESSAGE = "bob-spec.json not present in the session directory; the smart_contract anti-stop rule still applies (record at least one bypass_attempts[] entry citing the trust assumption you actually attempted to break, or record a finding).";
 const UNTRUSTED_CONTENT_POLICY =
   `${UNTRUSTED_DATA_SYSTEM_NOTE} Markers: ${OPEN_SENTINEL} / ${CLOSE_SENTINEL}.`;

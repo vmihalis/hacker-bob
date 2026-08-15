@@ -7,7 +7,7 @@
 // summary: it carries node identifiers, hashes, state-transition counts, and
 // timestamps — NOT raw bodies. Per the pre-flight sweep finding, TaskGraph
 // node ids use the `TG-` prefix throughout so they cannot be confused with
-// `mcp/lib/surface-graph.js` adjacency `node_id` strings (a different graph).
+// `mcp/core/frontier/surface-graph.js` adjacency `node_id` strings (a different graph).
 //
 // Per Cycle X.1 the ledger gained ONE new top-level kind, `node.transitioned`,
 // plus two `observation.recorded` payload kinds: `transition_proposed` and

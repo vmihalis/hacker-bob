@@ -66,7 +66,7 @@ const PROMOTED_SURFACE_LEAD_LABEL = "promoted_surface_lead";
 // whose `source` string is in this set is treated as internal; anything
 // outside the set (or any `external_` prefix) is treated as external for
 // the soft-warning heuristic below. This list mirrors the producer entries
-// in mcp/lib/stigmergic-producers.js — keep additions in sync when new
+// in mcp/core/stigmergic-producers.js — keep additions in sync when new
 // internal lead producers are wired.
 const KNOWN_INTERNAL_LEAD_SOURCES = new Set([
   "evaluator",
@@ -324,7 +324,7 @@ function emitFrontierEnqueued(domain, lead) {
 // (default 60 from lead-scoring.normalizePromotionOptions), the lead MUST
 // carry a non-empty rationale (≤512 chars). Validator runs BEFORE write so
 // no partial state is persisted. Structural complement to the Y.7
-// silent_lead_threshold_drop runtime tripwire (mcp/lib/friction-scanners.js).
+// silent_lead_threshold_drop runtime tripwire (mcp/core/friction-scanners.js).
 function enforceLeadRationalePolicy(domain, normalizedLeads) {
   let policy;
   try {

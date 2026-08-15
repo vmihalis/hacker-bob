@@ -86,7 +86,7 @@ const COMPOSITION_EXPERIMENT_RESULT_KINDS = Object.freeze(["pass", "fail"]);
 const EVIDENCE_BINDING_REF_PATTERN = /^frontier_event:[A-Za-z0-9_-]+$/;
 
 // Node identifiers in the TaskGraph plane carry a `TG-` prefix. The
-// pre-flight sweep noted that mcp/lib/surface-graph.js uses generic
+// pre-flight sweep noted that mcp/core/frontier/surface-graph.js uses generic
 // `node_id` strings for an unrelated surface-adjacency graph; the prefix
 // disambiguates which graph a given id belongs to in tool descriptions,
 // in agent reasoning, and in any cross-tool join.

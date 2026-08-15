@@ -164,7 +164,7 @@ top of it; it is a delete-authorization receipt, not an ownership ledger.
 | Precedent | `path:line` | Property demonstrated |
 | --- | --- | --- |
 | `copyResourceSet` empty-copy refusal | `scripts/install.js:315-317` — `if (copied.length === 0) throw new Error(resourceSet.emptyMessage);` | **non-vacuity**: a copy that moved zero files is an error, not a silent success. Both `RESOURCE_SETS` entries carry an `emptyMessage` (`:60-77`; bypassTables `:61-68`, knowledge `:69-76`). This is the shape invariant 6 asks for — reuse it. |
-| `ensureEgressProfilesConfig` | `mcp/lib/egress-profiles.js:208-227` — reads first (`:211-214` / `:222`), writes only when absent | **preserve-on-exist**: an operator file already on disk is never overwritten. |
+| `ensureEgressProfilesConfig` | `mcp/core/egress-profiles.js:208-227` — reads first (`:211-214` / `:222`), writes only when absent | **preserve-on-exist**: an operator file already on disk is never overwritten. |
 
 **The live asymmetry an implementer must close.** `copyResourceSet` is the only
 `copyDirFiles` caller with a non-vacuity floor. The two Claude call sites have
@@ -232,9 +232,9 @@ excluded. Derived by enumerating every
 fchmodSync,writeSync,mkdirSync}` call in this bounded module set —
 
 `scripts/install.js`, `adapters/{claude,kimi,codex,generic-mcp}/index.js`,
-`mcp/lib/egress-profiles.js`, `scripts/lib/{claude,kimi,codex}-role-renderer.js`,
+`mcp/core/egress-profiles.js`, `scripts/lib/{claude,kimi,codex}-role-renderer.js`,
 `scripts/merge-claude-config.js`, `scripts/lib/workspace-sessions-root.js`,
-`scripts/lib/package-policy.js`, `mcp/lib/session-cap.js`
+`scripts/lib/package-policy.js`, `mcp/core/session/session-cap.js`
 
 — then discarding those that live inside a Family A or Family B helper, or in a
 function the install flow never enters. Two exclusions worth naming so they are
@@ -265,16 +265,16 @@ individual handling.
 | `scripts/install.js:1760` | `fs.rmSync` per legacy `.claude/{bypass-tables,knowledge}/<name>` |
 | `scripts/install.js:1906` | `fs.chmodSync` on `mcp/server.js` |
 | `scripts/install.js:1922` | `fs.rmSync(recursive)` on the whole `mcp/lib/` tree |
-| `scripts/install.js:1942` | `fs.rmSync` on `mcp/lib/offensive-image.json` |
+| `scripts/install.js:1942` | `fs.rmSync` on `mcp/domains/web/offensive-image.json` |
 | `adapters/claude/index.js:317` | `fs.writeFileSync` — the adapter's module-private `writeTextFile` (`:315-318`), used for rendered commands at `:503` |
 | `adapters/claude/index.js:500` | `fs.rmSync(recursive)` on `.claude/skills/<legacy>/` |
 | `adapters/claude/index.js:573` | `fs.writeFileSync` on `.claude/bob/VERSION` |
 | `adapters/claude/index.js:1015` | `fs.mkdirSync(recursive)` — module-private `fsSafeMkdir` (`:1014-1016`), called `:471` and `:473`. Non-destructive, listed for completeness: it belongs to neither family. |
 | `adapters/claude/index.js:1020` | `fs.rmdirSync` — module-private `removeEmptyDirIfExists` (`:1018-1021`), called `:498`. Removes only an empty dir; belongs to neither family. |
-| `mcp/lib/egress-profiles.js:239` | `fs.writeFileSync` on `.claude/bob/egress-profiles.example.json`. Reached because `adapters/claude/index.js:558` calls `ensureEgressProfilesExample(targetAbs)` with **no** `options.installFs`, so the guard at `:232` is false and the raw branch `:237-240` runs. |
-| `mcp/lib/egress-profiles.js:203` | `fs.writeFileSync` on `.claude/bob/egress-profiles.json`, inside `writeEgressProfilesDocument` (`:193-206`) raw branch. Reached from `adapters/claude/index.js:559` → `ensureEgressProfilesConfig` `:222-224` — **first install only**, because `:222` is preserve-on-exist. |
+| `mcp/core/egress-profiles.js:239` | `fs.writeFileSync` on `.claude/bob/egress-profiles.example.json`. Reached because `adapters/claude/index.js:558` calls `ensureEgressProfilesExample(targetAbs)` with **no** `options.installFs`, so the guard at `:232` is false and the raw branch `:237-240` runs. |
+| `mcp/core/egress-profiles.js:203` | `fs.writeFileSync` on `.claude/bob/egress-profiles.json`, inside `writeEgressProfilesDocument` (`:193-206`) raw branch. Reached from `adapters/claude/index.js:559` → `ensureEgressProfilesConfig` `:222-224` — **first install only**, because `:222` is preserve-on-exist. |
 | `scripts/lib/workspace-sessions-root.js:169` | `fs.mkdirSync(recursive, mode 0700)` on the workspace sessions root — **outside the target**. `ensureSessionsRoot` (`:168-171`), called from `scripts/install.js:2061`. Non-destructive; listed because it belongs to neither family. |
-| `mcp/lib/session-cap.js:71` | `fs.writeSync` of the session-cap nonce into `~/.bob/session-cap` — **outside the target**. `ensureSessionCapNonce` (`:54-91`), reached from `scripts/install.js:2076`, which `require`s the copy of this module **already installed into the target** (`:2073-2075`). Preserve-on-exist: guarded by `:66` plus `O_EXCL` (`"wx"`, `:70`) and an `EEXIST` fall-through at `:73`. Also `:57` mkdir, `:60` and `:86` `chmodSync`. Best-effort — `scripts/install.js:2078` swallows all errors. |
+| `mcp/core/session/session-cap.js:71` | `fs.writeSync` of the session-cap nonce into `~/.bob/session-cap` — **outside the target**. `ensureSessionCapNonce` (`:54-91`), reached from `scripts/install.js:2076`, which `require`s the copy of this module **already installed into the target** (`:2073-2075`). Preserve-on-exist: guarded by `:66` plus `O_EXCL` (`"wx"`, `:70`) and an `EEXIST` fall-through at `:73`. Also `:57` mkdir, `:60` and `:86` `chmodSync`. Best-effort — `scripts/install.js:2078` swallows all errors. |
 
 Adapter-private `writeJson` helpers exist in kimi (`adapters/kimi/index.js:216-219`),
 codex (`adapters/codex/index.js:109-112`) and generic-mcp
@@ -316,7 +316,7 @@ Driver: `installProjectWithTargetAuthority`, `scripts/install.js:1844`.
 | `<target>/mcp/server.js` mode `0755` | raw `fs.chmodSync` | `scripts/install.js:1906` | LOW |
 | **DELETE** `<target>/mcp/lib/` (entire tree) | raw `fs.rmSync(recursive)` | `scripts/install.js:1922` | MED |
 | `<target>/mcp/lib/**/*.{js,sh}` | `copyDirRecursive` (A) | `scripts/install.js:1927` | MED |
-| `<target>/mcp/lib/offensive-image.json` (or **DELETE** it) | `copyFile` (A) / raw `fs.rmSync` | `scripts/install.js:1938` / `:1942` | LOW |
+| `<target>/mcp/domains/web/offensive-image.json` (or **DELETE** it) | `copyFile` (A) / raw `fs.rmSync` | `scripts/install.js:1938` / `:1942` | LOW |
 | `<target>/packages/{bob-artifact-vault,bob-instrument-broker,bob-instrument-contracts,bob-instrument-chameleon,bob-instrument-chameleon-worker-runtime,bob-instrument-deterministic,bob-instrument-native-prebuild-trust,bob-instrument-principal-acl-darwin}/**` — whole root **REPLACED** | staged raw write + rename | `scripts/install.js:1944` → `copyCanonicalRuntimePackages` `:1726`, which dispatches at `:1734` to `copyCanonicalRuntimePackagesDirect` `:1611` (or `:1732` with a target authority). Staged writes `:1683`/`:1598`; `:1697` rename-out, `:1701` rename-in, `:1704` backup rm. Roots at `scripts/lib/package-policy.js:68-77` | LOW |
 | `<target>/mcp/node_modules/**` — per-destination **REPLACED** | raw `fs.rmSync` + descriptor copy | `scripts/install.js:1949` → `applyRuntimeNodeDependencyCopy` `:1422` (`:1213` remove, `:1477` → `copyStableRuntimeDependencyFile` `:1238`) | LOW |
 | `<target>/testing/policy-replay/**/*.{mjs,md,json}` | `copyDirRecursive` (A) | `scripts/install.js:1956` | **HIGH** — `prompts/*.md` and `cases/*.json` are tuning inputs |
@@ -345,8 +345,8 @@ belongs to neither family and needs its own gate.
 | `.claude/rules/*.md` (**2 source files today**: `evaluating.md`, `reporting.md`) | `copyDirFiles` (A) | `adapters/claude/index.js:525`; result used only as a count at `:587` — **no non-vacuity floor**. **This is the one that bit.** | **HIGH** |
 | `.claude/hooks/<name>` — `HOOK_FILES` has **12 entries** (`:23-36`, entries `:24-35`); mode `0755` when in `EXECUTABLE_HOOKS` (**10 entries**, `:53-64`) | `copyFile` (A) | `adapters/claude/index.js:533` (loop `:531-538`, mode chosen `:532`) | **HIGH** — guards are the natural local-policy edit point |
 | `.claude/hooks/write-guard-tables.json` | `copyFile` (A) | `adapters/claude/index.js:544` (`HOOK_DATA_FILES`, **1 entry**, `:49-51`) | MED |
-| `.claude/bob/egress-profiles.example.json` | raw `fs.writeFileSync` (`mcp/lib/egress-profiles.js:239`) — `adapters/claude/index.js:558` passes no `installFs`, so `:232` is false | `adapters/claude/index.js:558` → `ensureEgressProfilesExample` `:230-242` | LOW |
-| `.claude/bob/egress-profiles.json` | create-if-absent (raw `fs.writeFileSync` `mcp/lib/egress-profiles.js:203` on first install only) | `adapters/claude/index.js:559` → `ensureEgressProfilesConfig` `:208-227` (`:222` is the preserve-on-exist test) | **SAFE** |
+| `.claude/bob/egress-profiles.example.json` | raw `fs.writeFileSync` (`mcp/core/egress-profiles.js:239`) — `adapters/claude/index.js:558` passes no `installFs`, so `:232` is false | `adapters/claude/index.js:558` → `ensureEgressProfilesExample` `:230-242` | LOW |
+| `.claude/bob/egress-profiles.json` | create-if-absent (raw `fs.writeFileSync` `mcp/core/egress-profiles.js:203` on first install only) | `adapters/claude/index.js:559` → `ensureEgressProfilesConfig` `:208-227` (`:222` is the preserve-on-exist test) | **SAFE** |
 | `<target>/.mcp.json` | `writeJson` (A) | `adapters/claude/index.js:569` | **MERGE** |
 | `.claude/settings.json` | `writeJson` (A) | `adapters/claude/index.js:570` | **MERGE** |
 | `.claude/bob/VERSION` | raw `fs.writeFileSync` | `adapters/claude/index.js:573` | LOW |

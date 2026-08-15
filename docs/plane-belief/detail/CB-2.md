@@ -4,8 +4,8 @@
 
 - `id`: `CB-2`
 - `action`: `merge`
-- `anchor`: `mcp/lib/invariant-template-corpus.js`;
-  `mcp/lib/oss-rootcause-family-corpus.js`; `mcp/lib/cwe-catalog.js`
+- `anchor`: `mcp/core/mechanism/invariant-template-corpus.js`;
+  `mcp/domains/repo/oss-rootcause-family-corpus.js`; `mcp/core/scoring/cwe-catalog.js`
 - `status`: `done`
 
 ## Contract
@@ -16,7 +16,7 @@ registry, a new mechanism-class authority, or an LLM-promoted class path.
 
 ## Implementation
 
-- `mcp/lib/invariant-template-corpus.js` adds
+- `mcp/core/mechanism/invariant-template-corpus.js` adds
   `OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE` with required entities,
   interventions, positive controls, negative controls, confounders, and a
   differential-effect evidence predicate.
@@ -25,7 +25,7 @@ registry, a new mechanism-class authority, or an LLM-promoted class path.
 - `loadMechanismTemplates` and `normalizeMechanismTemplate` provide a
   bounded-warning loader: malformed records are skipped and reported, not
   thrown.
-- `mcp/lib/oss-rootcause-family-corpus.js` adds a matching
+- `mcp/domains/repo/oss-rootcause-family-corpus.js` adds a matching
   `object_authorization` family with a principal/object/policy/effect
   source-sink signature.
 - Stigmergy pair: producer `object_authorization_mechanism_template` consumed by

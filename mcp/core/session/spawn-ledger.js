@@ -3,7 +3,7 @@
 // CN (coverage-nesting) Step B — the MCP-owned spawn-ledger writer/reader.
 //
 // One row per emitted nesting fan-out envelope. The basename is HOOK_MCP_OWNED
-// (mcp/lib/paths.js), so the session-write-guard fences the evaluator-fanout
+// (mcp/core/io/paths.js), so the session-write-guard fences the evaluator-fanout
 // Bash/Write channel — the spawner holds Bash for OSS harness work, so toolset
 // absence cannot guarantee integrity; the hook-fenced basename does.
 //

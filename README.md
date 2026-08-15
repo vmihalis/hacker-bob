@@ -365,7 +365,7 @@ Common checks:
 - Codex must be restarted after install or update before `$bob-*` skills and local plugin wiring load.
 - Kimi CLI must be restarted after install or update before `/skill:bob-*` skills and MCP config load.
 - `.mcp.json` should contain an `mcpServers["hacker-bob"]` entry pointing at the installed project's `mcp/server.js`. v1.x installs are auto-migrated to this canonical key on next install or update.
-- If an upgrade leaves `mcp/lib/tools/` missing, rerun the installer with `hacker-bob@latest`.
+- If an upgrade leaves `mcp/tools/` missing, rerun the installer with `hacker-bob@latest`.
 
 Detailed guides:
 

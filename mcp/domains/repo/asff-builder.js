@@ -1,7 +1,7 @@
 "use strict";
 
 // asff-builder.js — the PURE ASFF (AWS Security Finding Format)-building layer,
-// extracted out of mcp/lib/tools/export-security-hub-finding.js so it can be
+// extracted out of mcp/tools/export-security-hub-finding.js so it can be
 // required unmodified by BOTH:
 //   (1) the downstream ExportSecurityHubFunction Lambda
 //       (infra/aws/hacker-bob-stack/functions/export-security-hub/index.js),
@@ -13,8 +13,8 @@
 // Everything in this file is deterministic and side-effect-free: no fs, no
 // AWS SDK, no session-path resolution, no network. It only transforms
 // in-memory data and may throw ToolError (itself a dependency-free type).
-// This is a hard invariant — do not import mcp/lib/storage.js, mcp/lib/
-// paths.js, or any AWS SDK client from this file.
+// This is a hard invariant — do not import mcp/core/io/storage.js,
+// mcp/core/io/paths.js, or any AWS SDK client from this file.
 //
 // Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 

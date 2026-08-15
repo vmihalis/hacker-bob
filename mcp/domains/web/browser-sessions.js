@@ -307,7 +307,7 @@ async function startSession({
     // proxy: { server, username?, password? } — passed straight to Patchright's
     // chromium.launch({ proxy }) in the subprocess. The egress profile is
     // already resolved + env-expanded + scheme-validated by the tool wrapper
-    // (see mcp/lib/browser-tools-shared.js#resolveBrowserEgressProfile). null
+    // (see mcp/domains/web/browser-tools-shared.js#resolveBrowserEgressProfile). null
     // means direct egress (no proxy), which is the default.
     proxy: proxy && typeof proxy === "object" ? proxy : null,
     // Cookie auth for the trusted authed_fetch transport is NOT passed here — it would put
