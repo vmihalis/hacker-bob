@@ -1,16 +1,31 @@
+<p align="center">
+  <img src="docs/media/readme-contributing-header.svg" alt="Hacker Bob contributor operations — build, verify, and explain" width="100%" />
+</p>
+
+<p align="center">
+  <a href="#before-opening-an-issue-or-pull-request"><strong>01 SCOPE</strong></a> ·
+  <a href="#development-setup"><strong>02 BUILD</strong></a> ·
+  <a href="#pull-request-expectations"><strong>03 VERIFY</strong></a> ·
+  <a href="#release-checklist"><strong>04 RELEASE</strong></a>
+</p>
+
 # Contributing
 
 Thanks for taking the time to improve Hacker Bob. This project is a security
 tool, so contributions need to preserve operator safety, clear authorization
 boundaries, and reproducible behavior.
 
+| 01 / Scope | 02 / Build | 03 / Verify |
+|---|---|---|
+| Read the project policies and keep private target data out of the repository. | Use Node.js 20 or newer and keep generated surfaces registry-driven. | Explain the behavior change and run the checks required by the affected surface. |
+
 ## Before opening an issue or pull request
 
-- Read `README.md`, `DISCLAIMER.md`, and `SECURITY.md`.
+- Read [README.md](README.md), [DISCLAIMER.md](DISCLAIMER.md), and [SECURITY.md](SECURITY.md).
 - Do not include real target data, private bug bounty reports, credentials,
   session artifacts, cookies, tokens, or screenshots containing secrets.
 - Report vulnerabilities in Hacker Bob itself through the private security
-  reporting flow described in `SECURITY.md`, not through public issues.
+  reporting flow described in [SECURITY.md](SECURITY.md), not through public issues.
 - Report vulnerabilities found in third-party targets to that target's official
   disclosure or bug bounty channel.
 
@@ -39,16 +54,15 @@ npm run test:hooks
 
 ## Project layout
 
-- `adapters/` contains host-specific install, doctor, uninstall, render, and
-  config ownership for Claude, Codex, Kimi, and generic MCP hosts.
-- `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and
-  `.claude/hooks/` are the generated Claude adapter surface.
-- `prompts/roles/` and `mcp/core/dispatch/role-model.js` define shared role contracts
-  that adapters render into host-specific files.
-- `mcp/` contains the MCP server and runtime tool implementation.
-- `.hacker-bob/` contains neutral runtime resources copied into installs.
-- `scripts/` contains generation and config merge helpers.
-- `test/` contains the contract, MCP, installer, and hook tests.
+| Path | Responsibility |
+|---|---|
+| `adapters/` | `adapters/` contains host-specific install, doctor, uninstall, render, and config ownership for Claude, Codex, Kimi, and generic MCP hosts. |
+| `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, `.claude/hooks/` | `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and `.claude/hooks/` are the generated Claude adapter surface. |
+| `prompts/roles/`, `mcp/core/dispatch/role-model.js` | `prompts/roles/` and `mcp/core/dispatch/role-model.js` define shared role contracts that adapters render into host-specific files. |
+| `mcp/` | `mcp/` contains the MCP server and runtime tool implementation. |
+| `.hacker-bob/` | `.hacker-bob/` contains neutral runtime resources copied into installs. |
+| `scripts/` | `scripts/` contains generation and config merge helpers. |
+| `test/` | `test/` contains the contract, MCP, installer, and hook tests. |
 
 ## Generated surfaces
 

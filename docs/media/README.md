@@ -19,6 +19,9 @@ Capture these from a throwaway Claude Code workspace with no real credentials, t
 11. `readme-chapter-deploy.svg`: deploy chapter band for installation and host selection.
 12. `readme-chapter-proof.svg`: proof chapter band for receipts and the evidence chain.
 13. `readme-chapter-operate.svg`: operations chapter band for CI, safety, reference, and contribution.
+14. `readme-community-header.svg`: branded Code of Conduct header.
+15. `readme-contributing-header.svg`: branded contributor operations header.
+16. `readme-security-header.svg`: branded private security reporting header.
 
 ## Sanitization
 
