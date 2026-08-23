@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="150" viewBox="0 0 1200 150" role="img" aria-labelledby="title desc">
+  <title id="title">Contribute, report securely, and reuse under Apache 2.0</title>
+  <desc id="desc">A black and amber Hacker Bob footer with contribution, security, and license paths.</desc>
+
+  <rect width="1200" height="150" fill="#0B0B0F"/>
+  <rect x="1" y="1" width="1198" height="148" fill="none" stroke="#2B261B" stroke-width="2"/>
+  <rect x="0" y="0" width="1200" height="6" fill="#F5B83B"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+    <text x="42" y="48" fill="#F5B83B" font-size="13" font-weight="700" letter-spacing="2.5">CONTRIBUTE</text>
+    <text x="42" y="93" fill="#F4F0E6" font-size="25" font-weight="700">BUILD A BETTER BOB</text>
+
+    <path d="M395 30V122" stroke="#343039" stroke-width="2"/>
+
+    <text x="438" y="48" fill="#F5B83B" font-size="13" font-weight="700" letter-spacing="2.5">SECURITY</text>
+    <text x="438" y="93" fill="#F4F0E6" font-size="25" font-weight="700">REPORT PRIVATELY</text>
+
+    <path d="M790 30V122" stroke="#343039" stroke-width="2"/>
+
+    <text x="833" y="48" fill="#F5B83B" font-size="13" font-weight="700" letter-spacing="2.5">LICENSE</text>
+    <text x="833" y="93" fill="#F4F0E6" font-size="25" font-weight="700">APACHE 2.0</text>
+  </g>
+</svg>
