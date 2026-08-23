@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="112" viewBox="0 0 1200 112" role="img" aria-labelledby="title desc">
+  <title id="title">Chapter one: Deploy</title>
+  <desc id="desc">Install Hacker Bob, verify the runtime, and choose a host adapter.</desc>
+
+  <rect width="1200" height="112" fill="#050508"/>
+  <rect width="318" height="112" fill="#F0B510"/>
+  <rect x="318" y="1" width="881" height="110" fill="none" stroke="#2B261B" stroke-width="2"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+    <text x="34" y="34" fill="#3B2C00" font-size="12" font-weight="800" letter-spacing="2.5">CHAPTER 01</text>
+    <text x="34" y="82" fill="#050508" font-family="Arial Black, Arial, sans-serif" font-size="38" font-weight="900" letter-spacing="1">DEPLOY</text>
+
+    <text x="364" y="42" fill="#8A8376" font-size="12" font-weight="700" letter-spacing="2.5">ENTRY SEQUENCE</text>
+    <text x="364" y="79" fill="#F4F0E6" font-size="23" font-weight="700" letter-spacing="1">INSTALL  /  VERIFY  /  CHOOSE A HOST</text>
+
+    <rect x="1040" y="43" width="16" height="16" fill="#F0B510"/>
+    <rect x="1072" y="43" width="16" height="16" fill="#F0B510" opacity="0.65"/>
+    <rect x="1104" y="43" width="16" height="16" fill="#F0B510" opacity="0.3"/>
+  </g>
+</svg>

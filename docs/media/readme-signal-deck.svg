@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="140" viewBox="0 0 1200 140" role="img" aria-labelledby="title desc">
+  <title id="title">Hacker Bob signal deck</title>
+  <desc id="desc">17 assigned CVE IDs, nine open-source projects, four host adapters, and a local MCP runtime.</desc>
+
+  <rect width="1200" height="140" fill="#050508"/>
+  <rect x="1" y="1" width="1198" height="138" fill="none" stroke="#2B261B" stroke-width="2"/>
+  <rect width="1200" height="5" fill="#F0B510"/>
+  <rect y="135" width="1200" height="5" fill="#F0B510"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+    <text x="42" y="91" fill="#F0B510" font-family="Arial Black, Arial, sans-serif" font-size="58" font-weight="900">17</text>
+    <text x="126" y="61" fill="#8A8376" font-size="12" font-weight="700" letter-spacing="2">ASSIGNED</text>
+    <text x="126" y="88" fill="#F4F0E6" font-size="20" font-weight="700" letter-spacing="1">CVE IDs</text>
+
+    <path d="M300 28V112" stroke="#343039" stroke-width="2"/>
+
+    <text x="344" y="91" fill="#F0B510" font-family="Arial Black, Arial, sans-serif" font-size="58" font-weight="900">9</text>
+    <text x="400" y="61" fill="#8A8376" font-size="12" font-weight="700" letter-spacing="2">OPEN-SOURCE</text>
+    <text x="400" y="88" fill="#F4F0E6" font-size="20" font-weight="700" letter-spacing="1">PROJECTS</text>
+
+    <path d="M600 28V112" stroke="#343039" stroke-width="2"/>
+
+    <text x="644" y="91" fill="#F0B510" font-family="Arial Black, Arial, sans-serif" font-size="58" font-weight="900">4</text>
+    <text x="700" y="61" fill="#8A8376" font-size="12" font-weight="700" letter-spacing="2">SUPPORTED</text>
+    <text x="700" y="88" fill="#F4F0E6" font-size="20" font-weight="700" letter-spacing="1">HOST ADAPTERS</text>
+
+    <path d="M900 28V112" stroke="#343039" stroke-width="2"/>
+
+    <text x="944" y="61" fill="#8A8376" font-size="12" font-weight="700" letter-spacing="2">EXECUTION</text>
+    <text x="944" y="92" fill="#F0B510" font-size="26" font-weight="800" letter-spacing="1">LOCAL MCP</text>
+  </g>
+</svg>
