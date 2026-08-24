@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/readme-community-header.svg" alt="Hacker Bob community protocol — practical, good-faith, and safe" width="100%" />
+  <img src="docs/media/readme-community-header.svg" alt="Hacker Bob community protocol: practical, good-faith, and safe" width="100%" />
 </p>
 
 <p align="center">

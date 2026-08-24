@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/readme-security-header.svg" alt="Hacker Bob security channel — private, evidence-rich, and authorized" width="100%" />
+  <img src="docs/media/readme-security-header.svg" alt="Hacker Bob security channel: private, evidence-rich, and authorized" width="100%" />
 </p>
 
 <p align="center">

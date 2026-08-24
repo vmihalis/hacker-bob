@@ -5,43 +5,13 @@ const path = require("node:path");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
-// Single source of truth for the npm pack-size tripwire. Imported by BOTH
-// test/package.test.js and scripts/release-check.js so the ceiling cannot drift
-// between them (no duplicated magic number). The 921 KB docs/hacker-bob-social.png is
-// excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES). On this (core) line the lean
-// pack is larger than the public line because core ships the full
-// offensive arsenal (XSS/IDOR/CORS/OOB/nuclei producers + tools, ed25519/keyed-ledger MAC)
-// and the offensive-sandbox isolation arc (attestation + verdict gate + sc-container-exec +
-// the seven SC container runners) the public line does not. The provider-neutral physical
-// contract runtime plus the provider-neutral nested Plane-PH packages are kept within the ceiling
-// by excluding internal competitive analysis, roadmap authoring/review workbooks, and unreferenced
-// documentation screenshots along with the social-preview asset. The deliberate 3.70 MB ceiling
-// still fires early on a surprising regression (a re-added asset or vendored dependency). Bump it
-// deliberately (and only here) when a real runtime growth stream warrants it.
-// The 2026-07 Plane-PH transaction ledger added the broker-owned durable store,
-// compatibility alias, and intrinsic-poisoning defenses while retaining one
-// implementation in the tarball; that reviewed runtime growth warrants this
-// 50 KB increment and leaves less than 1.4% headroom.
-//
-// Raised to 3.85 MB for the install drift guard. Two things forced this, and the
-// docs were NOT one of them -- both engineering surveys written for that work
-// (docs/install-ownership.md 43,213 B and docs/report-md-format-facts.md 31,443 B)
-// are denied pack budget in EXCLUDED_CANONICAL_PACKAGE_FILES below rather than
-// shipped. Excluding them was measured, not assumed: it recovers only 24,723
-// compressed bytes, because ~75 KB of markdown gzips roughly 3x. What remains is:
-//   1. A PRE-EXISTING breach. The tarball was already 3,734,856 B at the branch
-//      point -- 34,856 B over the old 3.70 MB ceiling before this branch added a
-//      single byte, so `npm run test:package` was already red on main. The ceiling
-//      had been outgrown by earlier merges and the tripwire went unaddressed.
-//   2. Genuine shipped runtime growth: scripts/lib/install-drift.js (the guard
-//      itself, 27,458 B) plus the report-format contract, which by design is
-//      replicated into all four role surfaces it governs -- .claude/agents/
-//      report-writer.md, prompts/roles/reporter.md, and the codex and kimi
-//      bob-evaluate SKILL.md bundles -- at 17,911 B each.
-// Post-exclusion the lean tarball measures 3,795,479 B, so 3.85 MB leaves ~54 KB
-// (1.4%) of headroom: the same margin as the prior increment, and still tight
-// enough to fire on a re-added asset or a vendored dependency.
-const CANONICAL_PACKAGE_MAX_BYTES = 3_850_000;
+// Single source of truth for the npm pack-size tripwire. Imported by both
+// test/package.test.js and scripts/release-check.js so the ceiling cannot drift.
+// The README redesign deliberately ships every relative image, animation, and
+// reproducibility source it references; package consumers otherwise receive a
+// broken README. The resulting tarball is about 4.59 MB and leaves 2.4%
+// headroom while still catching an unexpected asset or vendored dependency.
+const CANONICAL_PACKAGE_MAX_BYTES = 4_700_000;
 
 // Explicit deny-by-default manifest for the JavaScript files installed at the
 // top level of mcp/. It is shared by install, doctor, and package tests so the

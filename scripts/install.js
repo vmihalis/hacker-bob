@@ -61,15 +61,13 @@ const MAX_MCP_TOP_LEVEL_RUNTIME_FILE_BYTES = 16 * 1024 * 1024;
 const MCP_TOP_LEVEL_RUNTIME_NAME_PATTERN = /^[A-Za-z0-9._-]+\.js$/u;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES = 1024 * 1024;
-const MAX_RUNTIME_DEPENDENCY_FILE_BYTES = 256 * 1024 * 1024;
+const MAX_RUNTIME_DEPENDENCY_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_FILES = 100_000;
-// Sized against the real production tree, not a round number. @anthropic-ai
-// ships the agent SDK as prebuilt per-platform binaries and a host may resolve
-// more than one: Linux installs both the gnu and musl arm64 builds at ~240 MB
-// each, so the tree is ~500 MB there against ~230 MB on macOS, which has a
-// single variant. The former overran a 512 MB bound and made `install` fail on
-// every Linux host. This is a runaway-tree backstop, so leave real headroom for
-// another platform variant rather than tracking today's measurement.
+// The agent SDK ships a native Claude CLI. darwin-arm64 0.3.241 is about
+// 325 MB unpacked, so the per-file ceiling needs real headroom above 256 MB.
+// The total graph bound below remains the independent runaway-tree backstop.
+// It also covers layouts with more than one platform variant, such as Linux
+// installs that contain both gnu and musl builds.
 const MAX_RUNTIME_DEPENDENCY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_DEPTH = 32;
 const MAX_RUNTIME_DEPENDENCY_DIRECTORIES = 4096;
@@ -2645,13 +2643,13 @@ function printInstallSummary(summary) {
   console.log("  git clone https://github.com/ticarpi/jwt_tool ~/jwt_tool && python3 -m pip install -r ~/jwt_tool/requirements.txt");
   console.log("");
   if (summary.adapters.length === 1 && summary.adapters[0] === "claude") {
-    console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob-evaluate target.com`);
+    console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run against an authorized target: /bob-evaluate <authorized-target>`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "codex") {
-    console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $bob-evaluate target.com`);
+    console.log(`Done. Restart Codex in ${summary.targetAbs}, then run against an authorized target: $bob-evaluate <authorized-target>`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "generic-mcp") {
     console.log(`Done. Connect your MCP host to ${path.join(summary.targetAbs, "mcp", "server.js")} and read .hacker-bob/generic-mcp/hacker-bob.md.`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "kimi") {
-    console.log(`Done. Launch Kimi from ${summary.targetAbs} with: kimi --mcp-config-file .kimi/mcp.json  (Kimi does not auto-discover .kimi/mcp.json, so this flag is mandatory), then run: /skill:bob-evaluate target.com`);
+    console.log(`Done. Launch Kimi from ${summary.targetAbs} with: kimi --mcp-config-file .kimi/mcp.json  (Kimi does not auto-discover .kimi/mcp.json, so this flag is mandatory), then run against an authorized target: /skill:bob-evaluate <authorized-target>`);
   } else {
     console.log(`Done. Restart the selected host CLIs in ${summary.targetAbs} before continuing.`);
   }

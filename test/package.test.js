@@ -354,22 +354,9 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.equal(isExcludedCanonicalPackageFile(excluded), true, `${excluded} should be denied by policy`);
     }
 
-    // Pack-size budget raised to 3.1 MB to accommodate the kimi adapter family
-    // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
-    // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
-    // Y.3 Stage c substrate growth (evidence_refs[] validator + LARGE_BODY_THRESHOLD_BYTES
-    // export + EVIDENCE_REF_HANDLE_PREFIXES constant on bob_write_chain_rollup
-    // per Y-P14b / O4), plus the packable Plane-Delta graph JSON docs.
-    // Raised again for the CVSS v3.1 + CWE report-layer annotations
-    // (mcp/lib/cvss31.js, mcp/lib/cwe-catalog.js, cwe/cvss prompt + doc surfaces),
-    // now measured against the lean tarball — mcp/node_modules is excluded from
-    // the pack, so this budget tracks shipped source/docs only.
-    // The 921 KB docs/hacker-bob-social.png (a web/marketing asset unused by the installed
-    // runtime) is excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES in
-    // scripts/lib/package-policy.js). The ceiling is a single source of truth
-    // (CANONICAL_PACKAGE_MAX_BYTES), shared with scripts/release-check.js so the two cannot
-    // drift; it is calibrated to core's full offensive + sandbox-isolation surface, a larger
-    // lean tarball than the public line, plus the provider-neutral physical contract runtime.
+    // README-relative media must stay in the tarball so npm consumers receive
+    // a complete document. The shared ceiling still catches accidental assets
+    // and vendored dependencies.
     assert.ok(
       pack.size < CANONICAL_PACKAGE_MAX_BYTES,
       `npm pack size ${pack.size} exceeds ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`,
