@@ -919,7 +919,7 @@ function degradedReportableFindingIds(domain) {
 module.exports = Object.freeze({
   name: "bob_record_candidate_claim",
   description:
-    "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Reportable web findings must record request_method and injection_point; GraphQL findings must also record graphql_operation and graphql_resolver. Survives context rotation.",
+    "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Reportable web findings must record request_method, injection_point, and auth_profile (use unauthenticated when no authenticated session applies); GraphQL findings must also record graphql_operation and graphql_resolver. Survives context rotation.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -1013,7 +1013,9 @@ module.exports = Object.freeze({
         "type": "string"
       },
       "auth_profile": {
-        "type": "string"
+        "type": "string",
+        "minLength": 1,
+        "description": "Authentication context used for the proof. Required on every new reportable web or GraphQL finding; use unauthenticated when no authenticated session applies."
       },
       "mechanism_id": {
         "type": "string",

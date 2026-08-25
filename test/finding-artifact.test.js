@@ -344,7 +344,8 @@ test("web and GraphQL continuity fields normalize and enforce bounded values", (
   assert.equal(properties.injection_point.maxLength, 200);
   assert.equal(properties.graphql_operation.maxLength, 128);
   assert.equal(properties.graphql_resolver.maxLength, 256);
-  assert.match(recordCandidateClaimTool.description, /Reportable web findings must record/);
+  assert.match(properties.auth_profile.description, /Required on every new reportable web or GraphQL finding/);
+  assert.match(recordCandidateClaimTool.description, /request_method, injection_point, and auth_profile/);
 });
 
 test("sealed session assembles a schema-valid artifact and writes the sidecar", () => {
