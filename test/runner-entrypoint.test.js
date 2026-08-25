@@ -423,6 +423,49 @@ test("main awaits the observable lifecycle, verifies the receipt, and completes 
     assert.equal(completion.accessIter, 100000);
   });
 });
+
+test("hosted completion conflict marks the sealing run failed and closes", async (t) => {
+  const runPayload = payload({ runSlug: "runner-completion-conflict" });
+  await withRunnerEnvironment(runPayload, async ({ sessionsRoot }) => {
+    writeCleanReceipt(runPayload);
+    fs.writeFileSync(
+      path.join(sessionsRoot, runPayload.targetDomain, "state.json"),
+      `${JSON.stringify({ lifecycle_state: "REPORT" })}\n`,
+    );
+    const client = recordingClient({
+      fail: (name) => name === "reports:completeHostedRun",
+    });
+    const errors = [];
+    t.mock.method(console, "log", () => {});
+    t.mock.method(console, "error", (message) => {
+      errors.push(String(message));
+    });
+
+    const code = await entrypoint.main({
+      clientFactory: async () => client,
+      spawnFactory: () => fakeChild(),
+      clock: () => Date.UTC(2026, 7, 25, 12),
+      delay: immediateDelay,
+    });
+
+    assert.equal(code, 1);
+    assert.equal(client.closed, true);
+    assert.deepEqual(
+      client.calls.filter((call) => call.name === "runs:setStatus").map((call) => call.args.status),
+      ["provisioning", "running", "sealing", "failed"],
+    );
+    assert.equal(
+      client.calls.filter((call) => call.name === "reports:completeHostedRun").length,
+      1,
+    );
+    assert.equal(
+      client.calls.filter((call) => call.name === "runs:appendEvent").at(-1).args.payloadJson,
+      JSON.stringify({ message: "Runner execution failed." }),
+    );
+    assert.match(errors.at(-1), /reports:completeHostedRun/);
+  });
+});
+
 test("replay resumes event sequence and committed completion survives client-close failure", async (t) => {
   const runPayload = payload({ runSlug: "runner-replay-events" });
   await withRunnerEnvironment(runPayload, async ({ sessionsRoot }) => {
