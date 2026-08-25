@@ -649,6 +649,18 @@ function reportMarkdownPath(domain) {
   return path.join(sessionDir(domain), "report.md");
 }
 
+// runner-wiring: the canonical structured finding artifact assembled
+// at report finalization (renderer superset + chain-of-custody receipt) and
+// its content-hash sidecar. Both audit-graded: emitted only by the
+// bob_finalize_report composer, never agent-Write.
+function findingArtifactPath(domain) {
+  return path.join(sessionDir(domain), "finding-artifact.json");
+}
+
+function findingArtifactSidecarPath(domain) {
+  return path.join(sessionDir(domain), "finding-artifact.sha256");
+}
+
 // Y.3 Stage c — chains.md is now MCP-rendered alongside chain-attempts.jsonl.
 // Authored by `bob_write_chain_rollup`; agents no longer Write here directly.
 function chainsMarkdownPath(domain) {
@@ -828,6 +840,10 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   "verification-input-snapshot.json",
   "verification-adjudication.json",
   "report-snapshots.jsonl",
+  // runner-wiring: the canonical structured finding artifact + its
+  // content-hash sidecar, emitted by bob_finalize_report at seal.
+  "finding-artifact.json",
+  "finding-artifact.sha256",
   "report-amendments.jsonl",
   "chain-attempts.jsonl",
   // SC1 confirm-half: the live-verifier's verified_pass ledger. MCP-write-only so
@@ -1347,6 +1363,8 @@ module.exports = {
   coverageJsonlPath,
   securityHubExportJsonlPath,
   evidencePackPaths,
+  findingArtifactPath,
+  findingArtifactSidecarPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
   liveDeadEndsJsonlPath,

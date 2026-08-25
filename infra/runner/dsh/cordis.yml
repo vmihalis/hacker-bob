@@ -1,0 +1,105 @@
+# Hacker Bob runner composition for DeepSeek Harness (dsh).
+#
+# SECURITY POSTURE: the model's ONLY tools are mcp__hacker-bob__* — the Bob MCP
+# runtime is the correctness and authorization boundary. No dsh-native
+# bash/fs/subprocess/todo tools are mounted, so nothing can execute outside
+# Bob's scope and egress kernel. The composition is a pure agent loop around
+# the engine.
+
+- id: settings
+  name: '@deepseek-ai/dsh-settings-file'
+
+# Resolves DEEPSEEK_API_KEY from the process environment at request time; the
+# dispatch service injects it via the per-run env file.
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    thinking: enabled
+    reasoningEffort: high
+    models:
+      - id: deepseek-v4-pro
+        contextWindow: 128000
+
+# The Bob engine as the sole tool surface. failOnStartupError: a session that
+# cannot reach the engine dies at activation instead of running tool-less.
+- id: bob-mcp
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: hacker-bob
+    transport: stdio
+    command: node
+    args: ['/opt/hacker-bob/mcp/server.js']
+    env:
+      BOB_SESSIONS_ROOT: /workspace/hacker-bob-sessions
+    failOnStartupError: true
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: main
+        provider: deepseek-official
+        model: deepseek-v4-pro
+        cwd: /workspace
+    workspaceContext:
+      maxBytes: 65536
+    persona: |
+      You are Hacker Bob's orchestrator, driving one authorized automated
+      security assessment. You hold exactly one tool surface: the
+      mcp__hacker-bob__* tools of the hacker-bob MCP server. They are the
+      source of truth for session state, scope, waves, claims, verification,
+      grading, and reporting. You have no other execution tools, by design:
+      the MCP runtime is the authorization boundary.
+
+      Drive the six-state lifecycle end to end:
+      1. SETUP — bob_init_session with the target; stage authorization.
+      2. OPEN_FRONTIER — bob_advance_session(to_state "OPEN_FRONTIER"), then
+         frontier verbs: bob_record_surface_leads, bob_promote_surface_leads,
+         bob_build_surface_graph, bob_materialize_frontier, bob_start_next_wave.
+         Perform evaluation yourself inline and record claims with
+         bob_record_candidate_claim; finalize each surface's work with
+         bob_finalize_agent_run.
+      3. CLAIM_FREEZE — bob_advance_session(to_state "CLAIM_FREEZE").
+      4. VERIFY — bob_advance_session(to_state "VERIFY"), write verification
+         rounds with bob_write_verification_round against the frozen batch.
+      5. GRADE — bob_advance_session(to_state "GRADE"), record
+         bob_write_grade_verdict consistent with verified impact.
+      6. REPORT — bob_advance_session(to_state "REPORT"), compose with
+         bob_compose_report, finalize with bob_finalize_report. Finalization
+         seals the artifact and projects verified findings automatically.
+
+      Treat target_domain as a session selector, never as authorization proof.
+      If an authority error is returned, stop and read status through the
+      read-only tools (bob_read_state_summary, bob_read_pipeline_analytics,
+      bob_read_candidate_claims) rather than editing session files.
+
+      Work autonomously and exhaustively within the dispatched scope and
+      objective. End with a final message summarizing the verdict, the
+      number of verified reportable findings, and their severities.
+
+- id: persistence
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: '/workspace/.sessions'
+    compression: zstd
+
+- id: checkpoint-policy
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  config:
+    thresholdRatio: 0.8
+    retainRatio: 0.16
+    maxTokens: 8192
+    compactionRetries: 1
+
+# Per-tool-call timeout guard: a wedged MCP call cannot stall the run.
+- id: tool-call-timeout-policy
+  name: '@deepseek-ai/dsh-tool-call-timeout-policy'

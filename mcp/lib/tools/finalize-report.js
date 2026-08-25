@@ -28,6 +28,16 @@ const {
   gradeToReportApprovalBlocker,
 } = require("../lifecycle-gates.js");
 const { wrapWriteTool } = require("./_write-base.js");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync } = require("child_process");
+const {
+  writeFindingArtifact,
+} = require("../finding-artifact.js");
+const {
+  buildProjectionPayload,
+} = require("../projection-payload.js");
 
 function artifactRefsForBundle(bundle) {
   const refs = [
@@ -125,6 +135,74 @@ function handler(args) {
     // Best-effort; the pipeline-event emission must never regress the
     // ReportSnapshot append.
   }
+  // runner-wiring: emit the canonical structured finding artifact and
+  // project the sealed findings into the retained console ledger. The
+  // artifact write is unconditional (sealed evidence); projection runs only
+  // when the runner dispatched this run (BOB_PROJECTION_URL set) and fails
+  // closed — an unprojected dispatched run must not complete.
+  let artifactSummary;
+  try {
+    artifactSummary = writeFindingArtifact(bundle.target_domain);
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `finding artifact emission failed: ${error.message || String(error)}`,
+      { artifact: "finding-artifact.json" },
+    );
+  }
+  let projectionSummary = { skipped: true, reason: "no_projection_url" };
+  if (process.env.BOB_PROJECTION_URL) {
+    const runSlug = process.env.BOB_RUN_SLUG;
+    const projectionKey = process.env.BOB_PROJECTION_KEY;
+    if (!runSlug || !projectionKey) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        "projection URL is set but the run slug or projection key is missing",
+        { code: "projection_env_incomplete" },
+      );
+    }
+    const { payload } = buildProjectionPayload(bundle.target_domain, {
+      runSlug,
+      projectionKey,
+      reportSlug: process.env.BOB_REPORT_SLUG || null,
+      kind: process.env.BOB_RUN_KIND === "retest" ? "retest" : "assessment",
+      retestOf: process.env.BOB_RETEST_OF
+        ? process.env.BOB_RETEST_OF.split(",").map((value) => value.trim()).filter(Boolean)
+        : [],
+    });
+    const payloadFile = path.join(
+      os.tmpdir(),
+      `bob-projection-${runSlug}-${Date.now()}.json`,
+    );
+    fs.writeFileSync(payloadFile, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        [path.join(__dirname, "../../../scripts/project-findings.js"), payloadFile],
+        { encoding: "utf8", timeout: 180000, env: { ...process.env } },
+      );
+      const lastLine = String(stdout).trim().split("\n").pop();
+      projectionSummary = JSON.parse(lastLine || "{}");
+    } catch (error) {
+      let detail = null;
+      if (error && error.stdout) {
+        try {
+          detail = JSON.parse(String(error.stdout).trim().split("\n").pop());
+        } catch {
+          detail = null;
+        }
+      }
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `projection failed: ${detail && detail.error ? detail.error : detail && detail.message ? detail.message : error.message || String(error)}`,
+        { code: "projection_failed", detail },
+      );
+    } finally {
+      try { fs.unlinkSync(payloadFile); } catch { /* best-effort */ }
+    }
+  }
+
 
   return JSON.stringify({
     version: 1,
@@ -140,6 +218,14 @@ function handler(args) {
     report_content_hash: bundle.report_content_hash,
     report_path: bundle.report_path,
     report_size_bytes: bundle.report_size_bytes,
+    artifact: artifactSummary.emitted
+      ? {
+        written_json: artifactSummary.written_json,
+        content_hash: artifactSummary.content_hash,
+        findings_count: artifactSummary.reportableCount,
+      }
+      : { emitted: false, reason: artifactSummary.reason },
+    projection: projectionSummary,
   });
 }
 
