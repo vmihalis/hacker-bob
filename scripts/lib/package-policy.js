@@ -195,10 +195,10 @@ const OPTIONAL_PROVIDER_EXCLUDED_PACKAGE_ROOTS = Object.freeze([
 const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   ...STALE_HOOK_SCRIPT_NAMES.map((name) => `.claude/hooks/${name}`),
   // Internal analysis is useful in the source tree but is not runtime or end-user package
-  // documentation. The media captures are referenced only by docs/media/README.md and are not
-  // embedded by the shipped README. The offline guide is retained in the source tree as an
-  // explicitly labelled v1.3.5/pre-v2 historical snapshot, but does not describe the installed
-  // v2 runtime and therefore must not consume canonical-package budget.
+  // documentation. README presentation media remains available in the source repository and on
+  // GitHub, but is not runtime material and must not consume canonical-package budget. The offline
+  // guide is retained in the source tree as an explicitly labelled v1.3.5/pre-v2 historical
+  // snapshot, but does not describe the installed v2 runtime.
   "docs/COMPETITOR_ANALYSIS.md",
   "docs/COMPETITOR_ANALYSIS_APPENDIX.md",
   "docs/LLM_AGENT_SECURITY_LANDSCAPE_2026.md",
@@ -215,6 +215,22 @@ const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   "docs/media/doctor-ok.png",
   "docs/media/evaluate-start.png",
   "docs/media/status-fresh.png",
+  "docs/media/hacker-bob-demo.gif",
+  "docs/media/hacker-bob-demo.tape",
+  "docs/media/hacker-bob-doctor-demo.gif",
+  "docs/media/hacker-bob-doctor-demo.tape",
+  "docs/media/hacker-bob-receipts-demo.gif",
+  "docs/media/hacker-bob-receipts-demo.sh",
+  "docs/media/hacker-bob-receipts-demo.tape",
+  "docs/media/readme-chapter-deploy.svg",
+  "docs/media/readme-chapter-operate.svg",
+  "docs/media/readme-chapter-proof.svg",
+  "docs/media/readme-community-header.svg",
+  "docs/media/readme-contributing-header.svg",
+  "docs/media/readme-footer.svg",
+  "docs/media/readme-hero.png",
+  "docs/media/readme-security-header.svg",
+  "docs/media/readme-signal-deck.svg",
   "docs/hacker-bob-offline-guide.pdf",
   // The 921 KB social-preview card is a web/marketing asset (referenced only by the
   // non-packed site/ and GitHub's social-preview, never by the installed runtime). It

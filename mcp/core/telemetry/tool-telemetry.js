@@ -12,6 +12,7 @@ const {
 } = require("../io/storage.js");
 const {
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
+  agentRunStopSeenDir,
   statePath,
   telemetryDir,
   telemetryToolInvocationsJsonlPath,
@@ -899,6 +900,39 @@ function slimToolInvocationEvent(event) {
   };
 }
 
+const PHANTOM_MARKER_NAME = /^[0-9a-f]{16}$/;
+const PHANTOM_MARKER_SCAN_CAP = 100000;
+const PHANTOM_MARKER_MAX_BYTES = 256;
+
+function readLifetimeSuppressedPhantomBlockRows(env = process.env) {
+  const dir = agentRunStopSeenDir(env);
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  let scanned = 0;
+  for (const name of entries) {
+    if (scanned >= PHANTOM_MARKER_SCAN_CAP) break;
+    if (!PHANTOM_MARKER_NAME.test(name)) continue;
+    const file = path.join(dir, name);
+    try {
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.size > PHANTOM_MARKER_MAX_BYTES) continue;
+      scanned += 1;
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (Number.isInteger(parsed.suppressed) && parsed.suppressed >= 0) {
+        total += parsed.suppressed;
+      }
+    } catch {
+      // Best-effort telemetry: ignore unreadable, corrupt, or missing markers.
+    }
+  }
+  return total;
+}
+
 function summarizeToolInvocationTelemetryEvents(events, {
   limit = DEFAULT_RECENT_FAILURE_LIMIT,
   readResult = null,
@@ -928,6 +962,10 @@ function summarizeToolInvocationTelemetryEvents(events, {
     filters,
     total_runs: events.length,
     malformed_lines: readResult ? readResult.malformed_lines : 0,
+    suppressed_phantom_block_rows: {
+      scope: "lifetime_global",
+      total: readLifetimeSuppressedPhantomBlockRows(env),
+    },
     totals: {
       runs: events.length,
       by_status: byStatus,
