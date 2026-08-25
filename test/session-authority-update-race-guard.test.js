@@ -528,9 +528,11 @@ for (const member of ["state", "nucleus", "events"]) {
           assert.equal(fs.lstatSync(failedFile).nlink, 2);
         }
         if (ambiguousQuarantinePath) {
-          const identityPath = mutation === "symlink" ? victim : failedFile;
-          const failedStats = fs.lstatSync(identityPath);
           const ambiguousStats = fs.lstatSync(ambiguousQuarantinePath);
+          const identityPath = mutation === "symlink" && !ambiguousStats.isSymbolicLink()
+            ? victim
+            : failedFile;
+          const failedStats = fs.lstatSync(identityPath);
           assert.equal(ambiguousStats.dev, failedStats.dev);
           assert.equal(ambiguousStats.ino, failedStats.ino);
           assert.deepEqual(casResiduePaths(domain), [ambiguousQuarantinePath]);
