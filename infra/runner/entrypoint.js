@@ -327,6 +327,22 @@ function canonicalEventHash(runSlug, kind, phase, message) {
   return sha256Hex(JSON.stringify({ runSlug, kind, phase, message }));
 }
 
+const RESTART_FORWARD_STATUS_RANK = Object.freeze({
+  provisioning: 0,
+  running: 1,
+  sealing: 2,
+  sealed: 3,
+});
+
+function acceptsRunTransition(requested, current) {
+  if (requested === current) return true;
+  const requestedRank = RESTART_FORWARD_STATUS_RANK[requested];
+  const currentRank = RESTART_FORWARD_STATUS_RANK[current];
+  return requestedRank !== undefined
+    && currentRank !== undefined
+    && currentRank >= requestedRank;
+}
+
 async function transitionRun(client, secret, runSlug, status, phase) {
   const result = await client.mutation("runs:setStatus", {
     secret,
@@ -334,7 +350,7 @@ async function transitionRun(client, secret, runSlug, status, phase) {
     status,
     phase,
   });
-  if (!result || result.status !== status) {
+  if (!result || !acceptsRunTransition(status, result.status)) {
     throw new Error(`run status transition to ${status} was not accepted`);
   }
   return result;
