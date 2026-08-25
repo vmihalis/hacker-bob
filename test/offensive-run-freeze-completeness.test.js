@@ -11,13 +11,13 @@ const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
   normalizeCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
   projectCodeBoundObservedRefs,
   projectExploitRunObservedRef,
   assertCompletenessAgainstFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   claimsJsonlPath,
   isAuditGradedPath,
@@ -25,23 +25,23 @@ const {
   offensiveRunsJsonlPath,
   sessionDir,
   sessionsRoot,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   advanceSession,
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");

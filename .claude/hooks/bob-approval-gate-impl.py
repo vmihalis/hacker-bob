@@ -105,7 +105,7 @@ def _fetch_approval_artifact_bytes(engagement_id, current_grade_verdict_hash):
          HackerBobAgentRuntimeExecutionRole
          can only read, never write (see template.yaml). boto3's S3 client is natively
          synchronous, so no async bridge is needed here (contrast
-         mcp/lib/approval-store.js's Node-side equivalent, which must shell out because the
+         mcp/core/approval-store.js's Node-side equivalent, which must shell out because the
          AWS SDK v3 JS clients are Promise-only).
     """
     if not _is_safe_engagement_id(engagement_id) or not _is_sha256(current_grade_verdict_hash):
@@ -170,14 +170,14 @@ def _current_grade_verdict_hash(engagement_id):
     fx-hmac-content: the approval artifact is bound to the exact grade the human reviewed,
     not merely to engagement_id. Reads
     ~/hacker-bob-sessions/<engagement_id>/grade.json -- the same on-disk path
-    mcp/lib/paths.js's gradeArtifactPaths(domain) resolves to, keyed by the already-validated
+    mcp/core/io/paths.js's gradeArtifactPaths(domain) resolves to, keyed by the already-validated
     engagement_id (_is_safe_engagement_id already ran before this is called via
     _approval_artifact_present, but this function re-checks defensively since it is also a
     plausible standalone call site).
 
-    Canonicalization matches mcp/lib/verification-contracts.js's hashCanonicalJson
+    Canonicalization matches mcp/core/verification/verification-contracts.js's hashCanonicalJson
     byte-for-byte for the integer/string-only grade-verdict shape written by
-    mcp/lib/grade-verdict-store.js: json.dumps(doc, sort_keys=True, separators=(",", ":"),
+    mcp/core/grade-verdict-store.js: json.dumps(doc, sort_keys=True, separators=(",", ":"),
     ensure_ascii=False) already recursively sorts nested dict keys (Python's sort_keys is
     recursive) and drops no whitespace, matching hashCanonicalJson's recursive
     Object.keys().sort() + compact JSON.stringify -- no manual canonicalize pass is needed.

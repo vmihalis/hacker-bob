@@ -9,28 +9,28 @@ const path = require("path");
 const {
   appendFrontierEvent,
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   observationsForSurface,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 const {
   surfaceIndexPath,
   attackSurfacePath,
   sessionDir,
   frontierEventsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ingestSchemaDoc,
-} = require("../mcp/lib/schema-contracts-store.js");
+} = require("../mcp/core/schema-contracts-store.js");
 const {
   runAuthDifferential,
-} = require("../mcp/lib/auth-differential-runner.js");
+} = require("../mcp/core/auth-differential-runner.js");
 const {
   runDocDelta,
-} = require("../mcp/lib/doc-delta-runner.js");
+} = require("../mcp/domains/repo/doc-delta-runner.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

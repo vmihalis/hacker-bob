@@ -29,10 +29,10 @@ const path = require("node:path");
 const {
   composeTraceReadingExpectationsForRole,
   ROLE_TRACE_EXPECTATIONS_PATH,
-} = require("../mcp/lib/trace-reading-composer.js");
+} = require("../mcp/core/trace-reading-composer.js");
 const {
   FRICTION_PROMPT_FRAGMENTS,
-} = require("../mcp/lib/friction-prompt-fragments.js");
+} = require("../mcp/core/friction-prompt-fragments.js");
 
 test("composeTraceReadingExpectationsForRole returns null for unknown / empty role id", () => {
   assert.equal(composeTraceReadingExpectationsForRole(""), null);

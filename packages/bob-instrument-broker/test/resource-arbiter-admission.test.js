@@ -7,11 +7,11 @@ const crypto = require("node:crypto");
 const {
   PHYSICAL_RESOURCE_ARBITER_CONFIG_VERSION,
   PHYSICAL_RESOURCE_ARBITER_QUEUE_VERSION,
-} = require("../../../mcp/lib/physical-resource-arbiter.js");
+} = require("../../../mcp/domains/physical/physical-resource-arbiter.js");
 const {
   normalizePhysicalReservationRequest,
   normalizePhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   createPhysicalResourceArbiterStatePort,
   createPhysicalResourceArbiterStore,

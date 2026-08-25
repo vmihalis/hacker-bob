@@ -12,16 +12,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { attackSurfacePath, surfaceRoutesPath } = require("../mcp/lib/paths.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
-const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-const { startWave, waveStatus } = require("../mcp/lib/waves.js");
+const { attackSurfacePath, surfaceRoutesPath } = require("../mcp/core/io/paths.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
+const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+const { startWave, waveStatus } = require("../mcp/core/waves/waves.js");
 const {
   deriveUnroutableSurfacesFromRoutes,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   buildStartNextWaveResponse,
-} = require("../mcp/lib/waves/wave-promotion-detector.js");
+} = require("../mcp/core/waves/wave-promotion-detector.js");
 
 function withClaudeHome(fn) {
   const prevHome = process.env.HOME;

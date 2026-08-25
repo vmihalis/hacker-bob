@@ -77,11 +77,11 @@ mechanical verification gate.
 LOCKER-SPEC section 0 says `locker.internal` "passes the scope gate on its
 merits." The engine in this repository does not currently do that.
 
-`mcp/lib/url-surface.js:221-234` defines `isBlockedInternalHost()` and blocks
-any host ending in `.internal`. `mcp/lib/scope.js:201-228` runs
+`mcp/core/url-surface.js:221-234` defines `isBlockedInternalHost()` and blocks
+any host ending in `.internal`. `mcp/core/scope.js:201-228` runs
 `assertHttpScopeDomain()`, checks `isBlockedInternalHost(host)`, and only tries
 the operator-attested bypass after `labTargetEligibleHost(host)` passes.
-`mcp/lib/lab-target-attest.js:111-115` makes only loopback or RFC1918 IPv4
+`mcp/core/lab-target-attest.js:111-115` makes only loopback or RFC1918 IPv4
 literals lab-eligible; DNS hostnames are never eligible.
 
 As the engine stands today, `target_domain: "locker.internal"` is rejected by

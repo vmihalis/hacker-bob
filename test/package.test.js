@@ -77,7 +77,7 @@ test("canonical package declares PSL as a runtime dependency without vendoring i
 });
 
 test("durable instrument store has one broker-owned implementation and an exact MCP alias", () => {
-  const compatibilityPath = path.join(ROOT, "mcp", "lib", "instrument-lease-store.js");
+  const compatibilityPath = path.join(ROOT, "mcp", "domains", "physical", "instrument-lease-store.js");
   const canonicalPath = path.join(
     ROOT,
     "packages",
@@ -171,9 +171,13 @@ test("canonical package declares the MCP runtime through a deny-by-default file 
     "mcp/auto-signup.js",
     "mcp/redaction.js",
     "mcp/browser-driver.js",
-    "mcp/lib/**/*.js",
-    "mcp/lib/fuzz/bob-multitu-build.sh",
-    "mcp/lib/offensive-image.json",
+    "mcp/*.js",
+    "mcp/core/**/*.js",
+    "mcp/domains/**/*.js",
+    "mcp/tools/**/*.js",
+    "mcp/fuzz/**/*.js",
+    "mcp/fuzz/bob-multitu-build.sh",
+    "mcp/offensive-image.json",
   ]) {
     assert.ok(packageJson.files.includes(expected), `${expected} should be explicitly packed`);
   }
@@ -369,7 +373,8 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // scripts/lib/package-policy.js). The ceiling is a single source of truth
     // (CANONICAL_PACKAGE_MAX_BYTES), shared with scripts/release-check.js so the two cannot
     // drift; it is calibrated to core's full offensive + sandbox-isolation surface, a larger
-    // lean tarball than the public line, plus the provider-neutral physical contract runtime.
+    // lean tarball than the public line, plus the provider-neutral physical contract runtime,
+    // authority transaction/storage substrate, and belief/validity/instrument-plane runtime.
     assert.ok(
       pack.size < CANONICAL_PACKAGE_MAX_BYTES,
       `npm pack size ${pack.size} exceeds ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`,
@@ -491,7 +496,7 @@ test("canonical package excludes internal design docs and scratch topology", () 
     "packages/bob-artifact-vault/index.js",
     "packages/bob-artifact-vault/worker.js",
     "packages/bob-artifact-vault/operator.js",
-    "mcp/lib/physical-provider-authoring.js",
+    "mcp/domains/physical/physical-provider-authoring.js",
     "packages/bob-instrument-deterministic/lib/orthogonal-fixture.js",
     "docs/provider-authoring.md",
   ]) {
@@ -605,12 +610,7 @@ test("real canonical tarball has a closed all-export physical runtime dependency
       JSON.parse(fs.readFileSync(path.join(runtimeRoot, "package.json"), "utf8")).name,
       "hacker-bob",
     );
-    const extractedCompatibilityStore = path.join(
-      runtimeRoot,
-      "mcp",
-      "lib",
-      "instrument-lease-store.js",
-    );
+    const extractedCompatibilityStore = path.join(runtimeRoot, "mcp", "domains", "physical", "instrument-lease-store.js");
     const extractedCanonicalStore = path.join(
       runtimeRoot,
       "packages",
@@ -674,7 +674,7 @@ test("package policy excludes denied files even if they exist in the source tree
     fs.mkdirSync(path.join(root, "docs", "plane-delta", "detail"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs", "plane-delta", "verification"), { recursive: true });
     fs.mkdirSync(path.join(root, "docs", "plane-physical"), { recursive: true });
-    fs.mkdirSync(path.join(root, "mcp", "lib", "fuzz"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "fuzz"), { recursive: true });
     fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
     fs.mkdirSync(path.join(root, "scripts", "replay-prompts"), { recursive: true });
     fs.mkdirSync(path.join(root, "testing", "policy-replay"), { recursive: true });
@@ -689,10 +689,10 @@ test("package policy excludes denied files even if they exist in the source tree
     fs.writeFileSync(path.join(root, "docs", "plane-delta", "verification", "WEAVE.md"), "internal\n");
     fs.writeFileSync(path.join(root, "docs", "plane-physical", "nodes.json"), "{}\n");
     fs.writeFileSync(path.join(root, "mcp", "server.js"), "module.exports = {};\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "runtime.js"), "module.exports = {};\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "exit 0\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "hil-evidence.json"), "{}\n");
-    fs.writeFileSync(path.join(root, "mcp", "lib", "operator-private.pem"), "secret\n");
+    fs.writeFileSync(path.join(root, "mcp", "runtime.js"), "module.exports = {};\n");
+    fs.writeFileSync(path.join(root, "mcp", "fuzz", "bob-multitu-build.sh"), "exit 0\n");
+    fs.writeFileSync(path.join(root, "mcp", "hil-evidence.json"), "{}\n");
+    fs.writeFileSync(path.join(root, "mcp", "operator-private.pem"), "secret\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-refusal.js"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-prompts", "00-baseline.md"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "keep.js"), "keep\n");
@@ -711,10 +711,10 @@ test("package policy excludes denied files even if they exist in the source tree
     assert.ok(!expectedFiles.includes("docs/plane-physical/nodes.json"));
     assert.ok(!expectedFiles.includes("testing/policy-replay/LIVE_SMOKE_DESIGN.md"));
     assert.ok(expectedFiles.includes("mcp/server.js"));
-    assert.ok(expectedFiles.includes("mcp/lib/runtime.js"));
-    assert.ok(expectedFiles.includes("mcp/lib/fuzz/bob-multitu-build.sh"));
-    assert.ok(!expectedFiles.includes("mcp/lib/hil-evidence.json"));
-    assert.ok(!expectedFiles.includes("mcp/lib/operator-private.pem"));
+    assert.ok(expectedFiles.includes("mcp/runtime.js"));
+    assert.ok(expectedFiles.includes("mcp/fuzz/bob-multitu-build.sh"));
+    assert.ok(!expectedFiles.includes("mcp/hil-evidence.json"));
+    assert.ok(!expectedFiles.includes("mcp/operator-private.pem"));
     for (const excluded of EXCLUDED_CANONICAL_PACKAGE_FILES) {
       assert.ok(!expectedFiles.includes(excluded), `${excluded} should not be expected`);
     }

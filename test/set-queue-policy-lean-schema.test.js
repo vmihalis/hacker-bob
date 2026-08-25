@@ -14,13 +14,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const setQueuePolicy = require("../mcp/lib/tools/set-queue-policy.js");
-const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
+const setQueuePolicy = require("../mcp/tools/set-queue-policy.js");
+const { validateAgainstSchema } = require("../mcp/core/dispatch/tool-validation.js");
 const {
   LEAN_PROFILE,
   DEFAULT_NESTING_SPAWN_BUDGET,
   normalizeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -8,7 +8,7 @@ const {
   assertNoForbiddenDockerFlags,
   OFFENSIVE_DNS,
   DEFAULT_WORK_TMPFS_BYTES,
-} = require("../mcp/lib/offensive-sandbox.js");
+} = require("../mcp/domains/web/offensive-sandbox.js");
 
 const DIGEST = "ghcr.io/bobnetsec/bob-offense@sha256:" + "a".repeat(64);
 const RUN = "bob-off-9f8e7d6c5b4a3f2e1d0c";

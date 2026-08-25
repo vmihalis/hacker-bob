@@ -11,64 +11,73 @@ const {
   advanceSession,
   deriveAdvanceAuthContext,
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   authStore,
-} = require("../mcp/lib/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
+  buildSessionNucleus,
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/index.js");
+const {
+  readSessionStateStrict,
+  writeSessionStateDocument,
+} = require("../mcp/core/session/session-state-store.js");
 const {
   gradeArtifactPaths,
   repoInventoryPath,
   sessionEventsJsonlPath,
+  sessionNucleusPath,
   statePath,
-} = require("../mcp/lib/paths.js");
+  verificationAttemptsDir,
+  verificationSnapshotPath,
+} = require("../mcp/core/io/paths.js");
+const verificationModule = require("../mcp/core/verification/verification.js");
 const {
   readSessionEvents,
-} = require("../mcp/lib/session-events.js");
+} = require("../mcp/core/session/session-events.js");
 const {
   loadGradeVerdictHash,
-} = require("../mcp/lib/report-finalize.js");
+} = require("../mcp/core/report-finalize.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   allowedTargetsFor,
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   _setApprovalBackendForTest,
   _setApprovalHmacKeyForTest,
-} = require("../mcp/lib/approval-store.js");
+} = require("../mcp/core/approval-store.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/claims/claims.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   writeChainAttempt,
-} = require("../mcp/lib/chain-attempts.js");
+} = require("../mcp/core/chain-attempts.js");
 const {
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   buildRepoInventory,
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   evaluateEvidenceCompletion,
-} = require("../mcp/lib/agent-run-completion.js");
+} = require("../mcp/core/session/agent-run-completion.js");
 
 // fx-hmac-content test helper: the same HMAC-SHA256(`${target_domain}|${grade_verdict_hash}`,
 // key) content-bound scheme mcp/lib/approval-store.js's verifyApprovalArtifact (and the
@@ -444,14 +453,14 @@ test("bob_advance_session drives SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIF
   });
 });
 
-test("REPORT -> OPEN_FRONTIER re-entry stamps legacy phase EXPLORE so the post-report evidence gate admits it", () => {
+test("REPORT -> OPEN_FRONTIER re-entry lands a hash-bound lifecycle.advanced event so the post-report evidence gate admits it", () => {
   withTempHome(() => {
     const domain = "evidence-reentry.example.com";
     bootstrapDomain(domain);
 
     // Walk to REPORT, then re-enter OPEN_FRONTIER — the post-report
-    // evidence-amplification / re-mine window (the legacy EXPLORE re-entry the
-    // evidence-completion gate is designed to admit).
+    // evidence-amplification / re-mine window the evidence-completion gate is
+    // designed to admit.
     for (const target of ["OPEN_FRONTIER", "CLAIM_FREEZE", "VERIFY", "GRADE", "REPORT"]) {
       advanceTopology(domain, target);
     }
@@ -459,23 +468,31 @@ test("REPORT -> OPEN_FRONTIER re-entry stamps legacy phase EXPLORE so the post-r
     assert.equal(reentry.from_state, "REPORT");
     assert.equal(reentry.to_state, "OPEN_FRONTIER");
 
-    // The re-entry stamps the legacy phase EXPLORE rather than the canonical
-    // EVALUATE. OPEN_FRONTIER's canonical pre-image is EVALUATE (active
-    // evaluation), so without this the post-report evidence window would be
-    // indistinguishable from active evaluation and the gate would reject it.
+    // phase is migration-only: the re-entry writes the canonical pre-image of
+    // OPEN_FRONTIER (EVALUATE), never a history-dependent override.
     const state = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
-    assert.equal(state.phase, "EXPLORE", "REPORT -> OPEN_FRONTIER must stamp legacy phase EXPLORE");
+    assert.equal(state.phase, "EVALUATE", "phase must stay the canonical pre-image, not a re-entry-specific override");
     assert.equal(readSessionNucleus(domain).lifecycle_state, "OPEN_FRONTIER");
 
-    // Therefore the post-report evidence-completion gate ADMITS the run (it
-    // would block OPEN_FRONTIER + EVALUATE — active evaluation — as a mismatch).
+    // The evidence-completion gate is driven by the event ledger, not phase:
+    // the latest governance.lifecycle.advanced event binds the current nucleus
+    // hash and records a REPORT -> OPEN_FRONTIER re-entry, so the gate admits
+    // the run (it would block a SETUP -> OPEN_FRONTIER active-evaluation event
+    // as a mismatch).
+    const events = lifecycleAdvancedEvents(domain);
+    const latest = events[events.length - 1];
+    assert.equal(latest.payload.from_state, "REPORT");
+    assert.equal(latest.payload.to_state, "OPEN_FRONTIER");
+    assert.equal(latest.nucleus_hash, reentry.nucleus_hash);
+    assert.equal(latest.payload.nucleus_hash, reentry.nucleus_hash);
+
     const gate = evaluateEvidenceCompletion({ target_domain: domain });
     assert.equal(gate.ok, true, "post-report OPEN_FRONTIER re-entry must admit an evidence run");
     assert.equal(gate.handoff.provenance, "post_report_evidence");
   });
 });
 
-test("bob_advance_session with override: operator_force advances despite a no_transition blocker and writes a lifecycle.override event", () => {
+test("bob_advance_session with override: operator_force advances despite a no_transition blocker and folds override/blockers into the ONE canonical lifecycle.advanced event", () => {
   withTempHome(() => {
     const domain = "override.example.com";
     bootstrapDomain(domain);
@@ -498,21 +515,23 @@ test("bob_advance_session with override: operator_force advances despite a no_tr
     assert.equal(persisted.lifecycle_state, "VERIFY");
     assert.equal(persisted.nucleus_hash, result.nucleus_hash);
 
-    const overrides = lifecycleOverrideEvents(domain);
-    assert.equal(overrides.length, 1, "exactly one governance.lifecycle.override event after forced advance");
-    const [overrideEvent] = overrides;
-    assert.equal(overrideEvent.payload.from_state, "SETUP");
-    assert.equal(overrideEvent.payload.to_state, "VERIFY");
-    assert.equal(overrideEvent.payload.override, "operator_force");
-    assert.equal(overrideEvent.payload.override_reason, "operator forced verify for cycle test");
-    assert.equal(overrideEvent.payload.prior_nucleus_hash, priorNucleus.nucleus_hash);
-    assert.ok(Array.isArray(overrideEvent.payload.blockers));
-    assert.equal(overrideEvent.payload.blockers[0].blocked_by, "no_transition");
-
+    // A2/A7: exactly ONE governance event per advance. The override is folded
+    // into the canonical governance.lifecycle.advanced event rather than a
+    // separate governance.lifecycle.override event.
+    assert.equal(
+      lifecycleOverrideEvents(domain).length, 0,
+      "override is folded into the canonical advanced event, not a separate event",
+    );
     const advances = lifecycleAdvancedEvents(domain);
-    assert.equal(advances.length, 1, "override path still emits the lifecycle.advanced event");
-    assert.equal(advances[0].payload.from_state, "SETUP");
-    assert.equal(advances[0].payload.to_state, "VERIFY");
+    assert.equal(advances.length, 1, "override path emits exactly one lifecycle.advanced event");
+    const [advanceEvent] = advances;
+    assert.equal(advanceEvent.payload.from_state, "SETUP");
+    assert.equal(advanceEvent.payload.to_state, "VERIFY");
+    assert.equal(advanceEvent.payload.override, "operator_force");
+    assert.equal(advanceEvent.payload.override_reason, "operator forced verify for cycle test");
+    assert.equal(advanceEvent.payload.prior_nucleus_hash, priorNucleus.nucleus_hash);
+    assert.ok(Array.isArray(advanceEvent.payload.blockers));
+    assert.equal(advanceEvent.payload.blockers[0].blocked_by, "no_transition");
   });
 });
 
@@ -1337,28 +1356,30 @@ test("deriveAdvanceAuthContext self-guards an invalid explicit value (exported f
   assert.equal(deriveAdvanceAuthContext({ auth_status: "pending" }, null, true, false).auth_status, "authenticated");
 });
 
-test("advanceSession emits a governance.auth_context.replaced audit event ONLY when auth_status changes", () => {
+test("advanceSession folds the auth_context delta into the ONE canonical lifecycle.advanced event, with auth_status_changed accurate on every advance", () => {
   withTempHome(() => {
     const domain = "auth-audit-event.example.test";
     bootstrapDomain(domain);
     // A usable profile is stored, so the first advance moves auth_status pending -> authenticated.
     authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
     advanceTopology(domain, "OPEN_FRONTIER");
-    const afterChange = authContextReplacedEvents(domain);
-    assert.equal(afterChange.length, 1, "one auth_context.replaced event on the pending->authenticated change");
-    assert.equal(afterChange[0].payload.from_auth_status, "pending");
-    assert.equal(afterChange[0].payload.to_auth_status, "authenticated");
-    assert.equal(afterChange[0].payload.had_usable_profile, true);
-    assert.equal(afterChange[0].payload.explicit_auth_status_supplied, false);
-    // ATOMIC PROVENANCE: the canonical lifecycle.advanced event ALSO carries the transition, so the
-    // auth move is reconstructable from that single durable append even if the best-effort companion
-    // above ever fails to write.
+    // A2/A7: no separate governance.auth_context.replaced event — the auth delta
+    // rides atomically on the SAME canonical event as the lifecycle move.
+    assert.equal(
+      authContextReplacedEvents(domain).length, 0,
+      "auth delta is folded into the canonical advanced event, not a separate event",
+    );
     const advanced = lifecycleAdvancedEvents(domain);
     const changedAdvance = advanced.find((e) => e.payload.auth_status_changed === true);
     assert.ok(changedAdvance, "the advance that changed auth_status carries it on the canonical event");
     assert.equal(changedAdvance.payload.from_auth_status, "pending");
     assert.equal(changedAdvance.payload.to_auth_status, "authenticated");
-    // A LATER advance that does not change auth_status (still authenticated) emits NO new event.
+    assert.equal(changedAdvance.payload.had_usable_profile, true);
+    assert.equal(changedAdvance.payload.explicit_auth_status_supplied, false);
+
+    // A LATER advance that does not change auth_status (still authenticated) marks
+    // auth_status_changed=false on ITS OWN canonical event rather than emitting a
+    // second change-audit event.
     advanceSession({
       target_domain: domain,
       to_state: "CLAIM_FREEZE",
@@ -1366,9 +1387,14 @@ test("advanceSession emits a governance.auth_context.replaced audit event ONLY w
       override_reason: "auth-audit no-change test bypasses the freeze content gate",
     });
     assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    const noChangeAdvance = lifecycleAdvancedEvents(domain).find((e) => e.payload.to_state === "CLAIM_FREEZE");
+    assert.ok(noChangeAdvance, "the CLAIM_FREEZE advance still emits a canonical lifecycle.advanced event");
+    assert.equal(noChangeAdvance.payload.auth_status_changed, false);
+    assert.equal(noChangeAdvance.payload.from_auth_status, "authenticated");
+    assert.equal(noChangeAdvance.payload.to_auth_status, "authenticated");
     assert.equal(
-      authContextReplacedEvents(domain).length, 1,
-      "no second event when auth_status is unchanged (change-only audit)",
+      authContextReplacedEvents(domain).length, 0,
+      "still no separate auth_context.replaced event",
     );
   });
 });
@@ -1397,5 +1423,167 @@ test("advanceSession trims a padded auth_status (honored, not thrown deep, and t
     advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "  authenticated  " });
     assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
     assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "authenticated");
+  });
+});
+
+// Seed an existing v2 verification attempt directly onto disk (bypassing a full
+// lifecycle traversal) so a SUBSEQUENT VERIFY bootstrap has a real prior attempt
+// to archive when it runs — exercising commitVerificationEntry's archive-dir
+// write (and therefore its undo receipt) for real, not vacuously against an
+// empty archives directory.
+function seedPriorV2VerificationAttempt(domain) {
+  const { raw, state } = readSessionStateStrict(domain);
+  const priorAttemptId = "va-prior-seed-00000001";
+  const priorSnapshot = {
+    version: 1,
+    schema_version: 2,
+    target_domain: domain,
+    verification_attempt_id: priorAttemptId,
+    created_at: "2026-01-01T00:00:00.000Z",
+    claim_freeze_id: null,
+    claim_ids: [],
+    finding_ids: [],
+    input_hashes: {},
+    snapshot_hash: "0".repeat(64),
+  };
+  fs.mkdirSync(path.dirname(verificationSnapshotPath(domain)), { recursive: true });
+  fs.writeFileSync(verificationSnapshotPath(domain), `${JSON.stringify(priorSnapshot, null, 2)}\n`);
+  writeSessionStateDocument(domain, raw, {
+    ...state,
+    verification_schema_version: 2,
+    verification_attempt_id: priorAttemptId,
+    verification_snapshot_hash: priorSnapshot.snapshot_hash,
+    verification_entered_at: priorSnapshot.created_at,
+  });
+  return priorSnapshot;
+}
+
+test("advanceSession -> VERIFY: a throw in the widened window between commitVerificationEntry and commitSessionAuthority invokes the verification undo receipt", () => {
+  withTempHome(() => {
+    const domain = "verify-undo-widened-window.example.com";
+    bootstrapDomain(domain);
+    advanceTopology(domain, "OPEN_FRONTIER");
+    advanceTopology(domain, "CLAIM_FREEZE");
+    const priorSnapshot = seedPriorV2VerificationAttempt(domain);
+
+    const statePreBytes = fs.readFileSync(statePath(domain));
+    const nucleusPreBytes = fs.readFileSync(sessionNucleusPath(domain));
+    const eventsPreBytes = fs.readFileSync(sessionEventsJsonlPath(domain));
+
+    const originalCommit = verificationModule.commitVerificationEntry;
+    verificationModule.commitVerificationEntry = (targetDomain, built) => {
+      // Perform the REAL write (the new attempt's archive dir + snapshot land on
+      // disk for real, archiving priorSnapshot), then fail from the WIDENED
+      // window (advanceSession's own state/event computation, reached via
+      // accessing .state_fields) rather than from commitSessionAuthority's CAS
+      // call — proving the undo receipt covers more than just a CAS throw.
+      const real = originalCommit(targetDomain, built);
+      return {
+        ...real,
+        get state_fields() {
+          throw new Error("simulated failure inside the widened rollback window (pre-CAS)");
+        },
+      };
+    };
+
+    let captured = null;
+    try {
+      advanceSession({ target_domain: domain, to_state: "VERIFY" });
+    } catch (error) {
+      captured = error;
+    } finally {
+      verificationModule.commitVerificationEntry = originalCommit;
+    }
+
+    assert.ok(captured, "advanceSession -> VERIFY must throw when the widened window throws");
+    assert.match(captured.message, /simulated failure inside the widened rollback window/);
+
+    // The verification undo receipt must have reversed the REAL archive-dir
+    // write commitVerificationEntry performed before the throw.
+    const archiveDirs = fs.existsSync(verificationAttemptsDir(domain))
+      ? fs.readdirSync(verificationAttemptsDir(domain))
+      : [];
+    assert.deepEqual(archiveDirs, [], "the archive dir created by commitVerificationEntry must be removed by undo()");
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(verificationSnapshotPath(domain), "utf8")),
+      priorSnapshot,
+      "verification-snapshot.json must be restored to its exact pre-advance bytes",
+    );
+
+    // The throw happened before commitSessionAuthority was ever called, so the
+    // three lifecycle-authority stores must be byte-identical to their pre-call
+    // snapshots.
+    assert.deepEqual(fs.readFileSync(statePath(domain)), statePreBytes);
+    assert.deepEqual(fs.readFileSync(sessionNucleusPath(domain)), nucleusPreBytes);
+    assert.deepEqual(fs.readFileSync(sessionEventsJsonlPath(domain)), eventsPreBytes);
+    assert.equal(readSessionNucleus(domain).lifecycle_state, "CLAIM_FREEZE");
+  });
+});
+
+test("advanceSession -> VERIFY: a nucleus CAS mismatch reached THROUGH advanceSession invokes the verification undo receipt and leaves state.json/session-events.jsonl untouched", () => {
+  withTempHome(() => {
+    const domain = "verify-cas-mismatch-through-advance.example.com";
+    bootstrapDomain(domain);
+    advanceTopology(domain, "OPEN_FRONTIER");
+    advanceTopology(domain, "CLAIM_FREEZE");
+    const priorSnapshot = seedPriorV2VerificationAttempt(domain);
+
+    const statePreBytes = fs.readFileSync(statePath(domain));
+    const eventsPreBytes = fs.readFileSync(sessionEventsJsonlPath(domain));
+    const preNucleus = readSessionNucleus(domain);
+
+    // A self-consistent nucleus with a DIFFERENT nucleus_hash, simulating a
+    // concurrent writer that mutated session-nucleus.json between advanceSession's
+    // verified read (at the top of the call, before this stub runs) and its CAS
+    // commit (which pinned expectedNucleusHash to the value read at that top).
+    const concurrentNucleus = buildSessionNucleus({
+      ...preNucleus,
+      operator_constraint: { ...preNucleus.operator_constraint, operator_note: "concurrent external mutation" },
+    });
+    assert.notEqual(concurrentNucleus.nucleus_hash, preNucleus.nucleus_hash);
+
+    const originalCommit = verificationModule.commitVerificationEntry;
+    verificationModule.commitVerificationEntry = (targetDomain, built) => {
+      const real = originalCommit(targetDomain, built);
+      fs.writeFileSync(sessionNucleusPath(domain), `${JSON.stringify(concurrentNucleus, null, 2)}\n`);
+      return real;
+    };
+
+    let captured = null;
+    try {
+      advanceSession({ target_domain: domain, to_state: "VERIFY" });
+    } catch (error) {
+      captured = error;
+    } finally {
+      verificationModule.commitVerificationEntry = originalCommit;
+    }
+
+    assert.ok(captured, "advanceSession -> VERIFY must throw on a nucleus CAS mismatch");
+    assert.match(captured.message, /CAS mismatch/);
+
+    // The verification undo receipt still fires on a CAS-call throw (not just a
+    // throw in the widened window before the CAS call).
+    const archiveDirs = fs.existsSync(verificationAttemptsDir(domain))
+      ? fs.readdirSync(verificationAttemptsDir(domain))
+      : [];
+    assert.deepEqual(archiveDirs, [], "the archive dir created by commitVerificationEntry must be removed by undo()");
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(verificationSnapshotPath(domain), "utf8")),
+      priorSnapshot,
+      "verification-snapshot.json must be restored to its exact pre-advance bytes",
+    );
+
+    // advanceSession's OWN write never landed: state.json and session-events.jsonl
+    // (which only advanceSession's failed transaction could have touched) are
+    // byte-identical to their pre-call snapshots.
+    assert.deepEqual(fs.readFileSync(statePath(domain)), statePreBytes);
+    assert.deepEqual(fs.readFileSync(sessionEventsJsonlPath(domain)), eventsPreBytes);
+    // session-nucleus.json reflects the concurrent writer's data, NOT
+    // advanceSession's own (correctly rejected) attempted overwrite — the CAS
+    // mismatch protects the concurrent writer rather than silently clobbering it.
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(sessionNucleusPath(domain), "utf8")),
+      concurrentNucleus,
+    );
   });
 });

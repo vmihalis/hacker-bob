@@ -19,23 +19,23 @@ const {
 } = require("./provider-contract.js");
 const {
   normalizeInstrumentBootstrapPrecommitRequest,
-} = require("../../../mcp/lib/instrument-bootstrap-contract.js");
+} = require("../../../mcp/domains/physical/instrument-bootstrap-contract.js");
 const {
   assertInstrumentBootstrapCustodyBinding,
   assertInstrumentBootstrapCustodyBindingForBrokerPort,
   assertInstrumentBootstrapCustodyProjection,
   assertInstrumentBootstrapBrokerPort,
   readInstrumentBootstrapCustodyProjection,
-} = require("../../../mcp/lib/instrument-bootstrap-store.js");
+} = require("../../../mcp/domains/physical/instrument-bootstrap-store.js");
 const {
   normalizeOpaqueRef,
-} = require("../../../mcp/lib/physical-quantities.js");
+} = require("../../../mcp/domains/physical/physical-quantities.js");
 const {
   assertVerifiedPhysicalBootstrapGrant,
-} = require("../../../mcp/lib/physical-authority.js");
+} = require("../../../mcp/domains/physical/physical-authority.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const INSTRUMENT_BOOTSTRAP_BROKER_VERSION = 1;
 const MAX_BOOTSTRAP_PROVIDERS = 64;

@@ -12,25 +12,25 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { REGISTRY } = require("../mcp/lib/invariant-registry.js");
+const { REGISTRY } = require("../mcp/core/invariant-registry.js");
 const {
   CLAUDE_ROLE_SPECS,
   claudeAllowedToolsForRole,
   fanoutChildAgentNames,
   spawnCapableAgentNames,
 } = require("../scripts/lib/claude-role-renderer.js");
-const { mcpToolNamesForRole } = require("../mcp/lib/role-model.js");
-const { DEFAULT_QUEUE_POLICY, LEAN_PROFILE, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
+const { mcpToolNamesForRole } = require("../mcp/core/dispatch/role-model.js");
+const { DEFAULT_QUEUE_POLICY, LEAN_PROFILE, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
 const {
   FANOUT_ROLE_REGISTRY,
   maxBranchingForBudget,
   validateSpawnFanout,
-} = require("../mcp/lib/nested-spawn.js");
-const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
-const { techniqueCompatibilityPackId } = require("../mcp/lib/capability-packs.js");
-const { loadTechniqueRegistry, techniquePackSupportsCapability } = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/session/nested-spawn.js");
+const { buildChildFanoutPlanForSurface } = require("../mcp/core/session/assignment-brief.js");
+const { techniqueCompatibilityPackId } = require("../mcp/core/capability/capability-packs.js");
+const { loadTechniqueRegistry, techniquePackSupportsCapability } = require("../mcp/core/dispatch/technique-packs.js");
 
-const TOOLS_DIR = path.join(__dirname, "..", "mcp", "lib", "tools");
+const TOOLS_DIR = path.join(__dirname, "..", "mcp", "tools");
 const CELL_MARKERS = ["appendCellProposal", "appendTransitionProposal", "appendNodeTransition", "materializeCellFloor", "selectNextExecutableNodes", "buildCellCoverageContract", "enumerateCandidatePaths", "verifyCompositionPath"];
 function coverageCellToolNames() {
   const out = new Set();

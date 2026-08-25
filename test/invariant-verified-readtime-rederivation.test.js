@@ -18,14 +18,14 @@ const {
   verifyInvariantDifferential,
   reverifyInvariantVerifiedRecord,
   readInvariantVerifiedSummary,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   invariantRunsJsonlPath,
   invariantVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

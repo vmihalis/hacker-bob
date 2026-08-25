@@ -28,15 +28,15 @@ const {
   DEFAULT_SCANNERS,
   scanTranscript,
   listEvidenceFiles,
-} = require("../mcp/lib/friction-scanners.js");
-const scanTool = require("../mcp/lib/tools/scan-transcript-for-friction.js");
+} = require("../mcp/core/friction-scanners.js");
+const scanTool = require("../mcp/tools/scan-transcript-for-friction.js");
 const {
   sessionDir,
   LARGE_BODY_THRESHOLD_BYTES,
   queuePolicyPath,
   surfaceLeadsPath,
-} = require("../mcp/lib/paths.js");
-const { DRIFT_SIGNATURE_VALUES } = require("../mcp/lib/capability-observations.js");
+} = require("../mcp/core/io/paths.js");
+const { DRIFT_SIGNATURE_VALUES } = require("../mcp/core/capability/capability-observations.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

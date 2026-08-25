@@ -19,11 +19,25 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { statePath } = require("../mcp/lib/paths.js");
-const { readJsonFile } = require("../mcp/lib/storage.js");
-const { loadQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
-const setQueuePolicy = require("../mcp/lib/tools/set-queue-policy.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const {
+  handoffSigningKeyPath,
+  handoffSigningPrivateKeyPath,
+  handoffSigningPublicKeyPath,
+  queuePolicyPath,
+  sessionEventsJsonlPath,
+  sessionNucleusPath,
+  statePath,
+} = require("../mcp/core/io/paths.js");
+const { readJsonFile } = require("../mcp/core/io/storage.js");
+const { loadQueuePolicy, writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
+const {
+  readVerifiedSessionNucleus,
+  sessionNucleusFromState,
+} = require("../mcp/core/governance/index.js");
+const { readSessionEvents } = require("../mcp/core/session/session-events.js");
+const { deriveContractSession } = require("../mcp/core/chain-authority-contracts.js");
+const setQueuePolicy = require("../mcp/tools/set-queue-policy.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -37,8 +51,45 @@ async function withTempHome(fn) {
   }
 }
 
+function sessionRootEntries(home) {
+  const root = path.join(home, "hacker-bob-sessions");
+  try {
+    return fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+}
+
+function assertNoSessionRootEntries(home) {
+  const entries = sessionRootEntries(home);
+  assert.equal(entries.length, 0, `expected no session created, found ${JSON.stringify(entries)}`);
+}
+
+function assertContractAuthorityCommitted(domain, state) {
+  assert.equal(fs.existsSync(statePath(domain)), true, "state.json must be written");
+  assert.equal(fs.existsSync(sessionNucleusPath(domain)), true, "session-nucleus.json must be written");
+  assert.equal(fs.existsSync(sessionEventsJsonlPath(domain)), true, "session-events.jsonl must be written");
+  const rehydrated = sessionNucleusFromState(state);
+  const verified = readVerifiedSessionNucleus(domain);
+  assert.equal(verified.lifecycle_state, "SETUP");
+  assert.equal(rehydrated.nucleus_hash, verified.nucleus_hash);
+  const initEvents = readSessionEvents(domain).filter(
+    (event) => event.kind === "governance.session.initialized",
+  );
+  assert.equal(initEvents.length, 1, "exactly one initialization event is canonical");
+  assert.equal(initEvents[0].target_domain, domain);
+  assert.equal(initEvents[0].nucleus_hash, verified.nucleus_hash);
+  assert.equal(initEvents[0].payload.nucleus_hash, verified.nucleus_hash);
+  return verified;
+}
+
 test("bob_init_contract_session bootstraps a contracts-axis session through dispatch", async () => {
   await withTempHome(async () => {
+    const expected = deriveContractSession([{
+      chain_family: "evm",
+      chain_id: "1",
+      address: "0x0000000000000000000000000000000000000001",
+    }]);
     const env = await executeTool("bob_init_contract_session", {
       contracts: [{
         chain_family: "evm",
@@ -51,6 +102,8 @@ test("bob_init_contract_session bootstraps a contracts-axis session through disp
 
     const domain = env.data.target_domain;
     assert.equal(typeof domain, "string");
+    assert.equal(domain, expected.domain);
+    assert.equal(env.data.chain_authority_hash, expected.authorityHash);
     assert.ok(
       domain.startsWith("sc-evm-1-"),
       `expected sc-evm-1-<addr8> slug, got ${domain}`,
@@ -63,7 +116,23 @@ test("bob_init_contract_session bootstraps a contracts-axis session through disp
       state.target_contracts,
       ["evm:1:0x0000000000000000000000000000000000000001"],
     );
+    assert.deepEqual(env.data.target_contracts, state.target_contracts);
+    assert.equal(state.chain_authority_hash, expected.authorityHash);
     assert.equal(state.target_url, null, "contracts-axis sessions carry no target_url");
+    const nucleus = assertContractAuthorityCommitted(domain, state);
+    assert.equal(nucleus.scope_policy.target_url, undefined);
+    assert.equal(nucleus.scope_policy.target_repo, undefined);
+    assert.deepEqual(nucleus.scope_policy.target_contracts, [{
+      chain_family: "evm",
+      chain_id: "1",
+      address: "0x0000000000000000000000000000000000000001",
+    }]);
+    assert.equal(nucleus.scope_policy.chain_authority_hash, expected.authorityHash);
+    assert.equal(loadQueuePolicy(domain).linked_contract_depth, 3);
+    assert.equal(fs.existsSync(queuePolicyPath(domain)), true);
+    assert.equal(fs.existsSync(handoffSigningKeyPath(domain)), true);
+    assert.equal(fs.existsSync(handoffSigningPrivateKeyPath(domain)), true);
+    assert.equal(fs.existsSync(handoffSigningPublicKeyPath(domain)), true);
 
     // At least one smart_contract surface is seeded via the Y-D21 funnel.
     assert.ok(Array.isArray(env.data.seeded_surfaces));
@@ -223,14 +292,7 @@ test("bob_init_contract_session fails closed on a chain_id containing a colon", 
     });
     assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
 
-    const sessionsRoot = path.join(home, "hacker-bob-sessions");
-    let entries = [];
-    try {
-      entries = fs.readdirSync(sessionsRoot);
-    } catch {
-      entries = [];
-    }
-    assert.equal(entries.length, 0, `expected no session created, found ${JSON.stringify(entries)}`);
+    assertNoSessionRootEntries(home);
   });
 });
 
@@ -275,9 +337,9 @@ test("two contracts sharing an 8-hex address prefix derive DISTINCT target_domai
 });
 
 test("the companion path and the contracts-axis init path derive the SAME chain_authority_hash (uppercase family folds identically)", () => {
-  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
-  const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
-  const initTool = require("../mcp/lib/tools/init-contract-session.js");
+  const { prepareContractCompanion } = require("../mcp/domains/blockchain/contract-target.js");
+  const { chainAuthorityHash } = require("../mcp/core/chain-authority-contracts.js");
+  const initTool = require("../mcp/tools/blockchain/init-contract-session.js");
 
   const contract = {
     chain_family: "evm",
@@ -303,7 +365,7 @@ test("the companion path and the contracts-axis init path derive the SAME chain_
 });
 
 test("the companion path rejects a chain_id containing a colon (fail-closed, same as init)", () => {
-  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  const { prepareContractCompanion } = require("../mcp/domains/blockchain/contract-target.js");
   assert.throws(
     () => prepareContractCompanion([{
       chain_family: "evm",
@@ -316,7 +378,7 @@ test("the companion path rejects a chain_id containing a colon (fail-closed, sam
 });
 
 test("bob_init_contract_session fails closed on an unknown chain_family", async () => {
-  await withTempHome(async () => {
+  await withTempHome(async (home) => {
     const env = await executeTool("bob_init_contract_session", {
       contracts: [{
         chain_family: "notachain",
@@ -325,6 +387,7 @@ test("bob_init_contract_session fails closed on an unknown chain_family", async 
       }],
     });
     assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
+    assertNoSessionRootEntries(home);
   });
 });
 
@@ -346,13 +409,6 @@ test("bob_init_contract_session fails closed at the bootstrap gate on a malforme
     // The gate blocks pre-handler: no session directory is materialized.
     // sessionsRoot() resolves under os.homedir(), which honors process.env.HOME
     // on POSIX (the same isolation the withTempHome helper relies on).
-    const sessionsRoot = path.join(home, "hacker-bob-sessions");
-    let entries = [];
-    try {
-      entries = fs.readdirSync(sessionsRoot);
-    } catch {
-      entries = [];
-    }
-    assert.equal(entries.length, 0, `expected no session created, found ${JSON.stringify(entries)}`);
+    assertNoSessionRootEntries(home);
   });
 });

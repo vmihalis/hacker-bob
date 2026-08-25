@@ -8,37 +8,40 @@ const path = require("node:path");
 
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   buildCapabilityPackGradeBindings,
   capabilityPackGradeAdapterId,
-} = require("../mcp/lib/capability-pack-grade-adapters.js");
+} = require("../mcp/core/capability/capability-pack-grade-adapters.js");
 const {
   buildCapabilityPackReportSections,
-} = require("../mcp/lib/capability-pack-report-adapters.js");
+} = require("../mcp/core/capability/capability-pack-report-adapters.js");
 const {
   buildCapabilityPackEvidencePacks,
-} = require("../mcp/lib/capability-pack-evidence-adapters.js");
+} = require("../mcp/core/capability/capability-pack-evidence-adapters.js");
 const {
   buildCapabilityPackProofBundles,
-} = require("../mcp/lib/capability-pack-proof-adapters.js");
+} = require("../mcp/core/capability/capability-pack-proof-adapters.js");
 const {
   PHYSICAL_CAPABILITY_PACK,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
+// Production installs these plane implementations from the folded physical
+// tool composition root; this direct adapter contract installs the same wiring.
+require("../mcp/domains/physical/capability-pack-runtime-wiring.js");
 const {
   normalizeProofBundlesDocument,
-} = require("../mcp/lib/proof-bundle.js");
-const writeProofBundleTool = require("../mcp/lib/tools/write-proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
+const writeProofBundleTool = require("../mcp/tools/write-proof-bundle.js");
 const {
   derivePhysicalAssignmentContextDigest,
   derivePhysicalFindingDedupeKey,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 const DOMAIN = "physical-lifecycle-adapter-test";
 

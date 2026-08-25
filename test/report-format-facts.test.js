@@ -81,16 +81,16 @@ const BLOCK_LINE_FLOOR = 20;
 // If compose-report.js is refactored out from under the prose, this goes red
 // instead of the prompt quietly documenting a function that no longer exists.
 const CITED_SYMBOLS = Object.freeze([
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "SECTION_KINDS" }),
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "PROVENANCE_VALUES" }),
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "SECTION_PROSE_MAX" }),
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "function renderMarkdown" }),
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "function normalizeSection" }),
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "function buildCvssAnnotations" }),
-  Object.freeze({ file: "mcp/lib/tools/compose-report.js", symbol: "function readAmendments" }),
-  Object.freeze({ file: "mcp/lib/audit-report-parser.js", symbol: "warnings.push" }),
-  Object.freeze({ file: "mcp/lib/paths.js", symbol: "function assertSafeDomain" }),
-  Object.freeze({ file: "mcp/lib/validation.js", symbol: "function assertNonEmptyString" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "SECTION_KINDS" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "PROVENANCE_VALUES" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "SECTION_PROSE_MAX" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "function renderMarkdown" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "function normalizeSection" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "function buildCvssAnnotations" }),
+  Object.freeze({ file: "mcp/tools/compose-report.js", symbol: "function readAmendments" }),
+  Object.freeze({ file: "mcp/core/audit-report-parser.js", symbol: "warnings.push" }),
+  Object.freeze({ file: "mcp/core/io/paths.js", symbol: "function assertSafeDomain" }),
+  Object.freeze({ file: "mcp/core/io/validation.js", symbol: "function assertNonEmptyString" }),
 ]);
 const CITED_SYMBOL_FLOOR = 10;
 

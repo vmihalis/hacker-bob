@@ -24,11 +24,11 @@ const {
   getConsumer,
   isKnownConsumerId,
   getConsumersForProducer,
-} = require("../mcp/lib/stigmergic-consumers.js");
+} = require("../mcp/core/stigmergic-consumers.js");
 const {
   STIGMERGIC_PRODUCERS,
   isKnownProducerId,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 
 const CANONICAL_CONSUMER_IDS = [
   "assignment_brief_technique_section_renderer",

@@ -1,0 +1,59 @@
+"use strict";
+
+const sessionInitializerTools = Object.freeze([
+  require("../init-session.js"),
+  require("../repo/init-repo-session.js"),
+]);
+
+const sessionAfterSpecializedSessionTools = Object.freeze([
+  require("../repo/repo-inventory.js"),
+  require("../repo/repo-prepare-env.js"),
+  require("../repo/repo-docker-run.js"),
+  require("../repo/repo-check.js"),
+  require("../repo/import-harness.js"),
+  require("../repo/import-seed-corpus.js"),
+  require("../read-session-state.js"),
+  require("../read-session-nucleus.js"),
+  require("../advance-session.js"),
+  require("../apply-wave-merge.js"),
+  require("../write-handoff.js"),
+  require("../write-wave-handoff.js"),
+  require("../finalize-agent-run.js"),
+  require("../wave-handoff-status.js"),
+  require("../merge-wave-handoffs.js"),
+  require("../read-wave-handoffs.js"),
+  require("../log-dead-ends.js"),
+  require("../log-coverage.js"),
+  require("../wave-status.js"),
+  require("../web/temp-email.js"),
+  require("../web/signup-detect.js"),
+  require("../auth-store.js"),
+  require("../list-auth-profiles.js"),
+  require("../web/auto-signup.js"),
+  require("../read-state-summary.js"),
+  require("../read-session-summary.js"),
+  require("../set-operator-note.js"),
+  require("../clear-operator-note.js"),
+  require("../clear-terminal-block.js"),
+  require("../finalize-report.js"),
+]);
+
+const sessionWaveTools = [
+  ...sessionInitializerTools,
+  ...sessionAfterSpecializedSessionTools,
+];
+
+Object.defineProperty(sessionWaveTools, "sessionInitializerTools", {
+  value: sessionInitializerTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+Object.defineProperty(sessionWaveTools, "sessionAfterSpecializedSessionTools", {
+  value: sessionAfterSpecializedSessionTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+
+module.exports = Object.freeze(sessionWaveTools);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-// CR-2: render mcp/lib/paths.js WRITE_GUARD_TABLES to a committed JSON manifest
+// CR-2: render mcp/core/io/paths.js WRITE_GUARD_TABLES to a committed JSON manifest
 // that the PreToolUse write-guard hooks read at runtime, killing the
 // hook<->paths.js classification drift. The manifest is asserted byte-identical
 // to the paths.js projection by `npm run check:write-guard-tables`.
@@ -17,7 +17,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { WRITE_GUARD_TABLES } = require("../mcp/lib/paths.js");
+const { WRITE_GUARD_TABLES } = require("../mcp/core/io/paths.js");
 
 const ROOT = path.join(__dirname, "..");
 const MANIFEST_RELS = Object.freeze([
@@ -46,7 +46,7 @@ function update({ check = false } = {}) {
     if (next === existing) continue;
     if (check) {
       throw new Error(
-        `${rel} is stale vs mcp/lib/paths.js WRITE_GUARD_TABLES; ` +
+        `${rel} is stale vs mcp/core/io/paths.js WRITE_GUARD_TABLES; ` +
         `run: node scripts/generate-write-guard-tables.js`,
       );
     }

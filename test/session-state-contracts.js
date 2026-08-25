@@ -9,7 +9,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { normalizeSessionStateDocument } = require("../mcp/lib/session-state-contracts.js");
+const { normalizeSessionStateDocument } = require("../mcp/core/session/session-state-contracts.js");
 
 const DOMAIN = "example.com";
 const URL = "https://example.com/";

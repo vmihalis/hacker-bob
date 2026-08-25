@@ -12,7 +12,7 @@ const { types: utilTypes } = require("node:util");
 
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const arrayIsArray = Array.isArray;
 const arrayPrototype = Array.prototype;

@@ -24,25 +24,25 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runFoundryTest } = require("../mcp/lib/foundry-runner.js");
-const { runHalmos } = require("../mcp/lib/halmos-runner.js");
-const { runAnchorTest } = require("../mcp/lib/anchor-runner.js");
-const { runCosmwasmTest } = require("../mcp/lib/cosmwasm-runner.js");
-const { runSubstrateTest } = require("../mcp/lib/substrate-runner.js");
-const { runSuiTest } = require("../mcp/lib/sui-runner.js");
-const { runAptosTest } = require("../mcp/lib/aptos-runner.js");
+const { runFoundryTest } = require("../mcp/domains/blockchain/smart-contracts/foundry-runner.js");
+const { runHalmos } = require("../mcp/domains/blockchain/smart-contracts/halmos-runner.js");
+const { runAnchorTest } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
+const { runCosmwasmTest } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js");
+const { runSubstrateTest } = require("../mcp/domains/blockchain/smart-contracts/substrate-runner.js");
+const { runSuiTest } = require("../mcp/domains/blockchain/smart-contracts/sui-runner.js");
+const { runAptosTest } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
 const {
   setRouteSpy,
   ROUTED_SC_RUNNERS,
   __resetDockerProbeCache,
   SC_TOOLCHAIN_IMAGE_ENV,
-} = require("../mcp/lib/sc-container-exec.js");
-const { handoffSigningPrivateKeyPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/blockchain/smart-contracts/sc-container-exec.js");
+const { handoffSigningPrivateKeyPath } = require("../mcp/core/io/paths.js");
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 const DOMAIN = "sc-thread.example.com";
 

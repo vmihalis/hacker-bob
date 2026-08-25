@@ -41,24 +41,24 @@ const {
   isCapabilityObservationKind,
   assertCapabilityFrictionPayload,
   assertProtocolDriftPayload,
-} = require("../mcp/lib/capability-observations.js");
+} = require("../mcp/core/capability/capability-observations.js");
 
 const {
   FRONTIER_EVENT_KINDS,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 
 const {
   OSS_OBSERVATION_KIND_VALUES,
   CAPABILITY_OBSERVATION_KIND_VALUES: CAPABILITY_KINDS_FROM_REPO_TARGET,
   isCapabilityObservationKind: isCapabilityKindFromRepoTarget,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 
-const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
-const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
+const writeVerificationRoundTool = require("../mcp/tools/write-verification-round.js");
+const { validateAgainstSchema } = require("../mcp/core/dispatch/tool-validation.js");
 
 const {
   CLAIM_TEXT_LIMITS,
-} = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/tools/record-candidate-claim.js");
 const {
   fieldObservedPayload,
 } = require("./fixtures/o2-field-observed-payload.js");

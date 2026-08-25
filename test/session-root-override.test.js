@@ -25,8 +25,8 @@ const path = require("node:path");
 const { execFileSync, spawn } = require("node:child_process");
 
 const REPO_ROOT = path.join(__dirname, "..");
-const PATHS_MODULE = path.join(REPO_ROOT, "mcp", "lib", "paths.js");
-const ENGINE_LOCK_MODULE = path.join(REPO_ROOT, "mcp", "lib", "engine-lock.js");
+const PATHS_MODULE = path.join(REPO_ROOT, "mcp", "core", "io", "paths.js");
+const ENGINE_LOCK_MODULE = path.join(REPO_ROOT, "mcp", "core", "io", "engine-lock.js");
 
 function withTempDir(prefix, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -381,7 +381,7 @@ test("`node mcp/server.js` refuses to start under an unsafe BOB_SESSIONS_ROOT", 
 // No agent-callable tool may relocate the session root: it is operator boot
 // config only. Guard the tool registry against a future regression.
 test("no MCP tool exposes a session-root override knob", () => {
-  const registry = require("../mcp/lib/tool-registry.js");
+  const registry = require("../mcp/tools/tool-registry.js");
   const serialized = JSON.stringify(registry.TOOL_MANIFEST || registry.TOOLS || []);
   assert.equal(
     /BOB_SESSIONS_ROOT|sessions_root|session_root/i.test(serialized),

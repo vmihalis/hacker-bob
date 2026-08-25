@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   parseGraphqlSdl,
   looksLikeGraphqlSdl,
-} = require("../mcp/lib/graphql-sdl-parser.js");
+} = require("../mcp/core/graphql-sdl-parser.js");
 
 const MINIMAL_SDL = `
 type Query {

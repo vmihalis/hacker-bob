@@ -20,7 +20,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const childProcess = require("node:child_process");
 
-const seam = require("../mcp/lib/sc-container-exec.js");
+const seam = require("../mcp/domains/blockchain/smart-contracts/sc-container-exec.js");
 const {
   scSubprocessContainerExec,
   buildScContainerArgv,

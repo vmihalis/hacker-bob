@@ -19,51 +19,53 @@ const {
   VERIFICATION_REPLAY_LEASE_TTL_MS,
   replayExecutionPolicy,
   runWithReplaySafety,
-} = require("../mcp/lib/verification-replay-safety.js");
+} = require("../mcp/core/verification/verification-replay-safety.js");
 const {
   computeAdjudicationPlanHash,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   verificationReplayLeaseDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   TECHNIQUE_FULL_ITEM_MAX_CHARS,
   TECHNIQUE_FULL_ITEMS_PER_KIND,
   TECHNIQUE_SELECTION_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
-} = require("../mcp/lib/technique-packs.js");
-const egressProfiles = require("../mcp/lib/egress-profiles.js");
-const {
-  TOOL_HANDLERS,
-} = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
+const egressProfiles = require("../mcp/core/egress-profiles.js");
 const {
   SHADOW_ACK_ENV,
   SHADOW_ACK_TOKEN,
-} = require("../mcp/lib/enforcement-attest.js");
+} = require("../mcp/core/enforcement-attest.js");
 const {
   buildToolRegistry,
   capabilityToolMapFromRegistry,
   defineTool,
+  TOOL_HANDLERS,
   TOOL_REGISTRY,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   TOOL_MODULES,
-} = require("../mcp/lib/tools/index.js");
+} = require("../mcp/tools/index.js");
 const {
   createMcpMessageHandler,
   createStdioServer,
-} = require("../mcp/lib/transport.js");
+} = require("../mcp/core/io/transport.js");
 const {
   COVERAGE_LOG_MAX_RECORDS,
+} = require("../mcp/core/frontier/coverage-vocabulary.js");
+const {
   HTTP_AUDIT_LOG_MAX_RECORDS,
-  STATIC_ARTIFACT_MAX_CHARS,
   TRAFFIC_IMPORT_MAX_ENTRIES,
   TRAFFIC_LOG_MAX_RECORDS,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/io/http-traffic-limits.js");
+const {
+  STATIC_ARTIFACT_MAX_CHARS,
+} = require("../mcp/core/io/static-analysis-limits.js");
 const {
   appendHttpAuditRecord,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 const {
   acquireSessionLock,
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
@@ -74,19 +76,19 @@ const {
   trimJsonlFile,
   withSessionLock,
   writeFileExclusiveAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   safeFetch,
-} = require("../mcp/lib/safe-fetch.js");
+} = require("../mcp/core/io/safe-fetch.js");
 const {
   fetchTextWithTimeout,
-} = require("../mcp/lib/public-intel.js");
+} = require("../mcp/core/intel/index.js");
 const {
   normalizeAutoSignupResult,
-} = require("../mcp/lib/signup.js");
+} = require("../mcp/domains/web/signup.js");
 const {
   tempEmailCreate,
-} = require("../mcp/lib/temp-email.js");
+} = require("../mcp/core/temp-email.js");
 const {
   toolInvocationSidecarPath,
   toolInvocationTelemetryPath,
@@ -95,22 +97,22 @@ const {
   buildToolInvocationTelemetryEvent,
   readToolTelemetry,
   toolTelemetryPath,
-} = require("../mcp/lib/tool-telemetry.js");
+} = require("../mcp/core/telemetry/tool-telemetry.js");
 const {
   bobVersion,
   readResourceText,
   resolveResourcePath,
   runtimeClient,
-} = require("../mcp/lib/runtime-resources.js");
+} = require("../mcp/core/io/runtime-resources.js");
 const {
   candidateAuthDomains,
-} = require("../mcp/lib/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   appendPipelineEventDirect,
-} = require("../mcp/lib/pipeline-events.js");
+} = require("../mcp/core/telemetry/pipeline-events.js");
 const {
   buildGovernanceContext,
-} = require("../mcp/lib/governance-context.js");
+} = require("../mcp/core/governance/index.js");
 const {
   attachHandoffOrigin,
   BLOCKED_PREREQ_KIND_VALUES,
@@ -119,7 +121,7 @@ const {
   sha256Hex,
   signHandoffProvenance,
   validateWaveHandoffPayload,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 const ROOT = path.join(__dirname, "..");
 const PACKAGE_VERSION = require("../package.json").version;
@@ -132,7 +134,7 @@ const {
 } = serverModule;
 const {
   SESSION_LOCK_STALE_MS,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/session/session-state-vocabulary.js");
 const {
   assertSafeDomain,
   attackSurfacePath,
@@ -165,14 +167,14 @@ const {
   verificationManifestPath,
   verificationRoundPaths,
   verificationSnapshotPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   clearOperatorNote,
   clearTerminalBlock,
@@ -181,43 +183,43 @@ const {
   advanceSession,
   setOperatorNote,
   readStateSummary,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   compactSessionState,
-} = require("../mcp/lib/session-state-contracts.js");
+} = require("../mcp/core/session/session-state-contracts.js");
 const {
   readSessionSummary,
-} = require("../mcp/lib/session-summary.js");
+} = require("../mcp/core/session/session-summary.js");
 const {
   routeSurfaces,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   buildCoverageSummaryForSurface,
   computeCoverageRequeueSurfaceIds,
   logCoverage,
   normalizeCoverageRecord,
   readCoverageRecordsFromJsonl,
-} = require("../mcp/lib/coverage.js");
+} = require("../mcp/core/frontier/coverage.js");
 const {
   buildCircuitBreakerSummary,
   normalizeHttpAuditRecord,
   normalizeTrafficRecord,
   readHttpAuditRecordsFromJsonl,
   readTrafficRecordsFromJsonl,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 const {
   readStaticArtifactRecordsFromJsonl,
   readStaticScanResultsFromJsonl,
   summarizeStaticScanHints,
-} = require("../mcp/lib/static-artifacts.js");
+} = require("../mcp/domains/repo/static-artifacts.js");
 const {
   validateScanUrl,
-} = require("../mcp/lib/url-surface.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const listCandidateClaimsTool = require("../mcp/lib/tools/list-candidate-claims.js");
-const readCandidateClaimsTool = require("../mcp/lib/tools/read-candidate-claims.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { deriveCvss31 } = require("../mcp/lib/cvss31.js");
+} = require("../mcp/core/url-surface.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const listCandidateClaimsTool = require("../mcp/tools/list-candidate-claims.js");
+const readCandidateClaimsTool = require("../mcp/tools/read-candidate-claims.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { deriveCvss31 } = require("../mcp/core/scoring/cvss31.js");
 const REPORTABLE_SEVERITIES = new Set(["critical", "high", "medium"]);
 // The write path requires derivable cvss_inputs for reportable findings. These
 // fixtures record two finding shapes: web IDOR/PII disclosure (network,
@@ -250,7 +252,7 @@ const listFindings = listCandidateClaimsTool.handler;
 const readFindings = readCandidateClaimsTool.handler;
 const {
   findingPayloadsFromClaims: readFindingsFromJsonl,
-} = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/tools/record-candidate-claim.js");
 
 // Cycle D.2: findings.jsonl/findings.md are gone; tests that previously
 // asserted on those paths now operate on claims.jsonl. Provide local aliases so
@@ -280,58 +282,58 @@ const {
   readGradeVerdict,
   renderGradeVerdictMarkdown,
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   normalizeVerificationRoundDocument,
   readVerificationRound,
   renderVerificationRoundMarkdown,
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   normalizeFindingRecord,
   renderFindingMarkdownEntry,
   summarizeFindings,
-} = require("../mcp/lib/finding-contracts.js");
+} = require("../mcp/core/finding-contracts.js");
 const {
   normalizeEvidencePacksDocument,
   readEvidencePacks,
   renderEvidencePacksMarkdown,
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   buildVerificationAdjudication,
   readVerificationContext,
   refreshVerificationManifest,
-} = require("../mcp/lib/verification.js");
+} = require("../mcp/core/verification/verification.js");
 const {
   readChainAttempts,
   readChainAttemptsFromJsonl,
   writeChainAttempt,
-} = require("../mcp/lib/chain-attempts.js");
+} = require("../mcp/core/chain-attempts.js");
 const {
   rankAttackSurfaces,
-} = require("../mcp/lib/ranking.js");
+} = require("../mcp/core/ranking.js");
 const {
   assertHttpScopeDomain,
   filterExclusionsByHosts,
   readScopeExclusions,
   validateHttpScanScope,
-} = require("../mcp/lib/scope.js");
+} = require("../mcp/core/scope.js");
 const {
   readAssignmentBrief,
   resolveEvaluatorKnowledge,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
-} = require("../mcp/lib/untrusted-envelope.js");
+} = require("../mcp/core/untrusted-envelope.js");
 const {
   readCapabilityPlaybook,
-} = require("../mcp/lib/capability-playbooks.js");
+} = require("../mcp/core/capability/capability-playbooks.js");
 const {
   getContextBudget,
-} = require("../mcp/lib/context-budget.js");
+} = require("../mcp/core/context-budget.js");
 const {
   loadTechniqueRegistry,
   logTechniqueAttempt,
@@ -339,7 +341,7 @@ const {
   readTechniquePack,
   readTechniquePackReadRecordsFromJsonl,
   selectTechniquePacks,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 const {
   authStore,
   buildHeaderProfile,
@@ -347,17 +349,17 @@ const {
   migrateAuthJson,
   readAuthJson,
   resolveAuthJsonPath,
-} = require("../mcp/lib/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   tempEmail,
-} = require("../mcp/lib/temp-email.js");
+} = require("../mcp/core/temp-email.js");
 const {
   autoSignup,
   signupDetect,
-} = require("../mcp/lib/signup.js");
+} = require("../mcp/domains/web/signup.js");
 const {
   finalizeAgentRun,
-} = require("../mcp/lib/agent-run-completion.js");
+} = require("../mcp/core/session/agent-run-completion.js");
 const {
   applyWaveMerge,
   mergeWaveHandoffs,
@@ -368,35 +370,35 @@ const {
   waveStatus,
   writeHandoff,
   writeWaveHandoff: writeWaveHandoffRaw,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   readPipelineAnalytics,
   readPipelineEvents,
   readSessionArtifactSummary,
-} = require("../mcp/lib/pipeline-analytics.js");
+} = require("../mcp/core/telemetry/pipeline-analytics.js");
 const {
   promoteSurfaceLeads,
   readSurfaceLeads,
   recordSurfaceLeads,
-} = require("../mcp/lib/surface-leads.js");
+} = require("../mcp/core/frontier/surface-leads.js");
 const {
   importHttpTraffic,
-} = require("../mcp/lib/tools/import-http-traffic.js");
+} = require("../mcp/tools/import-http-traffic.js");
 const {
   bountyPublicIntel,
-} = require("../mcp/lib/tools/public-intel.js");
+} = require("../mcp/tools/public-intel.js");
 const {
   importStaticArtifact,
-} = require("../mcp/lib/tools/import-static-artifact.js");
+} = require("../mcp/tools/repo/import-static-artifact.js");
 const {
   readHttpAudit,
-} = require("../mcp/lib/tools/read-http-audit.js");
+} = require("../mcp/tools/read-http-audit.js");
 const {
   staticScan,
-} = require("../mcp/lib/tools/static-scan.js");
+} = require("../mcp/tools/repo/static-scan.js");
 const {
   redactTextSensitiveValues,
   redactUrlSensitiveValues,
@@ -544,6 +546,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_run_belief_residual",
   "bob_query_intervention_calculus",
   "bob_plan_belief_experiment",
+  "bob_compile_contract_binding",
   "bob_train_belief_model",
   "bob_read_belief_model_info",
   "bob_elicit_belief",
@@ -1055,7 +1058,7 @@ const LEGACY_PHASE_TO_LIFECYCLE_STATE = Object.freeze({
 
 function readCurrentLifecycleState(domain) {
   try {
-    const nucleusPath = require("../mcp/lib/paths.js").sessionNucleusPath(domain);
+    const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
     if (fs.existsSync(nucleusPath)) {
       const parsed = JSON.parse(fs.readFileSync(nucleusPath, "utf8"));
       if (parsed && typeof parsed.lifecycle_state === "string") return parsed.lifecycle_state;
@@ -1116,12 +1119,12 @@ function syncNucleusFromStateJson(domain) {
     const stateDoc = JSON.parse(fs.readFileSync(sp, "utf8"));
     const expectedState = LEGACY_PHASE_TO_LIFECYCLE_STATE[stateDoc.phase] || null;
     if (!expectedState) return;
-    const nucleusPath = require("../mcp/lib/paths.js").sessionNucleusPath(domain);
+    const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
     if (!fs.existsSync(nucleusPath)) return;
     const nucleus = JSON.parse(fs.readFileSync(nucleusPath, "utf8"));
     if (nucleus.lifecycle_state === expectedState) return;
-    const { buildSessionNucleus } = require("../mcp/lib/governance-contracts.js");
-    const { writeJsonDocument } = require("../mcp/lib/fabric-common.js");
+    const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
+    const { writeJsonDocument } = require("../mcp/core/io/storage.js");
     const next = buildSessionNucleus({
       target_domain: nucleus.target_domain,
       target_url: nucleus.scope_policy && nucleus.scope_policy.target_url,
@@ -1210,6 +1213,14 @@ function seedSessionState(domain, overrides = {}) {
     auth_status: "pending",
     ...legacyEgressStateFields(),
     operator_note: null,
+    // The state normalizer defaults an ABSENT value to false (session-state-
+    // contracts.js) while the nucleus operator-constraint normalizer defaults it
+    // to true (governance-contracts.js), so a legacy seed that omits it makes the
+    // normalized state.json (false) and its nucleus (true) disagree and every
+    // advance fails canonicalizeStateProjection. Carry the normalized-legacy
+    // value explicitly so state and nucleus agree; tests needing the required
+    // path override this to true.
+    handoff_provenance_required: false,
     verification_schema_version: null,
     verification_attempt_id: null,
     verification_snapshot_hash: null,
@@ -1225,6 +1236,17 @@ function seedSessionState(domain, overrides = {}) {
   delete state.explored;
   delete state.terminally_blocked;
   delete state.lead_surface_ids;
+  // Post-D.1 production state.json always carries the canonical lifecycle_state
+  // (session-state-contracts.js buildInitialSessionState). Legacy fixtures set
+  // only `phase`; persist the phase-derived lifecycle_state so the seeded state
+  // and its nucleus agree. Commit-time sessionNucleusFromState reads
+  // state.lifecycle_state (absent -> SETUP) and does NOT consult `phase`, so
+  // without this the seed nucleus (phase-mapped, e.g. OPEN_FRONTIER) and the
+  // commit projection (SETUP) diverge and canonicalizeStateProjection rejects
+  // every advance with "stateProjection nucleus_hash does not match nextNucleus".
+  if (state.lifecycle_state == null) {
+    state.lifecycle_state = LEGACY_PHASE_TO_LIFECYCLE_STATE[state.phase] || "SETUP";
+  }
   // Mirror production wave-merge-settler: each terminally-blocked seed entry
   // also lands in state.blocked_prereq_history so summarizeBlockedPrereqs
   // (which now groups history by (kind, identifier_hint) restricted to the
@@ -1259,34 +1281,19 @@ function seedSessionState(domain, overrides = {}) {
   // Skip when overrides already wrote a nucleus or the fixture is testing
   // legacy-only normalization.
   try {
-    const nucleusPath = require("../mcp/lib/paths.js").sessionNucleusPath(domain);
+    const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
     if (!fs.existsSync(nucleusPath)) {
-      const { buildSessionNucleus } = require("../mcp/lib/governance-contracts.js");
-      const { writeJsonDocument } = require("../mcp/lib/fabric-common.js");
-      const lifecycleState = state.lifecycle_state
-        || LEGACY_PHASE_TO_LIFECYCLE_STATE[state.phase]
-        || "SETUP";
-      const nucleus = buildSessionNucleus({
-        target_domain: domain,
-        target_url: state.target_url,
-        scope_policy: {
-          target_url: state.target_url,
-          checkpoint_mode: state.checkpoint_mode,
-          deep_mode: state.deep_mode,
-          block_internal_hosts: state.block_internal_hosts,
-          allow_internal_hosts: false,
-        },
-        egress_identity: {
-          egress_profile: state.egress_profile,
-          egress_region: state.egress_region,
-          proxy_configured: state.proxy_configured,
-          egress_profile_identity_hash: state.egress_profile_identity_hash,
-          egress_profile_identity_version: state.egress_profile_identity_version,
-        },
-        auth_context: { auth_status: state.auth_status || "pending" },
-        operator_constraint: {},
-        lifecycle_state: lifecycleState,
-      });
+      const { sessionNucleusFromState } = require("../mcp/core/governance/index.js");
+      const { writeJsonDocument } = require("../mcp/core/io/storage.js");
+      // Build the seed nucleus with the SAME projection production initSession
+      // uses (session-state.js sessionNucleusFromState), so the seeded nucleus
+      // is by construction the canonical projection of this exact state.json.
+      // A hand-rolled buildSessionNucleus drifts from it (egress_profile_identity_
+      // source shape, operator_constraint.handoff_provenance_required default,
+      // lifecycle_state), and every bob_advance_session then fails
+      // canonicalizeStateProjection's nucleus_hash parity check. The persisted
+      // state.lifecycle_state above keeps the projection off the SETUP default.
+      const nucleus = sessionNucleusFromState(state);
       writeJsonDocument(nucleusPath, nucleus);
     }
   } catch {}
@@ -1295,11 +1302,14 @@ function seedSessionState(domain, overrides = {}) {
   // currentLeadSurfaceIds) see the seeded state after D.3 removed the
   // state.json arrays.
   try {
-    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+      const {
+        appendClosureRecordedEvent,
+        appendFrontierEvent,
+      } = require("../mcp/core/frontier/frontier-events.js");
     if (legacyClosures && legacyClosures.length > 0) {
       for (const surfaceId of legacyClosures) {
         if (typeof surfaceId !== "string" || !surfaceId) continue;
-        appendFrontierEvent({
+        appendClosureRecordedEvent({
           target_domain: domain,
           kind: "closure.recorded",
           surface_id: surfaceId,
@@ -1415,7 +1425,7 @@ function seedAssignments(domain, waveNumber, assignments) {
   // this, normalizeAssignmentRouteMetadata throws on any SC assignment.
   // Test cases that explicitly want to forge alternate route metadata
   // pass it directly on the assignment and we preserve it.
-  const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+  const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
   const persistedAssignments = assignments.map((assignment) => {
     const surface = surfaceById.get(assignment.surface_id);
     const surfaceTypeRaw = surface && typeof surface.surface_type === "string"
@@ -1654,6 +1664,13 @@ function seedVerificationPipeline(domain, results) {
       try { fs.rmSync(paths.markdown, { force: true }); } catch {}
     }
     try { fs.rmSync(path.join(verifyDir, "verification-attempts"), { recursive: true, force: true }); } catch {}
+    // Drop the prior session nucleus before re-seeding: the re-seed rewrites
+    // state.json to a fresh CHAIN state (no operator_note, etc.), but
+    // seedSessionState only writes a nucleus when one is ABSENT. A surviving
+    // nucleus from the test's first seed would then disagree with the rewritten
+    // state (operator_constraint, lifecycle) and the pipeline's transitionPhase
+    // advance would fail canonicalizeStateProjection's parity check.
+    try { fs.rmSync(require("../mcp/core/io/paths.js").sessionNucleusPath(domain), { force: true }); } catch {}
     seedSessionState(domain, { phase: "CHAIN" });
     JSON.parse(transitionPhase({
       target_domain: domain,
@@ -1750,11 +1767,11 @@ function evidencePack(findingId = "F-1", overrides = {}) {
 // that binds them. The positive demonstrates high (the finding's severity) so B1's
 // demonstrated-severity ceiling is also satisfied.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface-a") {
-  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
-  const { appendJsonlLine } = require("../mcp/lib/storage.js");
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
+  const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
@@ -1948,7 +1965,7 @@ async function withMockSafeFetch(routes, fn, { dnsRecords = {} } = {}) {
 async function withMockSmartContractRpcLookup(dnsRecords, fn) {
   const {
     setSmartContractRpcLookupForTesting,
-  } = require("../mcp/lib/sc-egress-policy.js");
+  } = require("../mcp/domains/blockchain/smart-contracts/sc-egress-policy.js");
   setSmartContractRpcLookupForTesting((hostname, options, callback) => {
     const cb = typeof options === "function" ? options : callback;
     const records = dnsRecords[hostname] || [{ address: "93.184.216.34", family: 4 }];
@@ -1964,7 +1981,7 @@ async function withMockSmartContractRpcLookup(dnsRecords, fn) {
 async function withMockSmartContractHttpRequest(handler, fn) {
   const {
     setSmartContractHttpRequestForTesting,
-  } = require("../mcp/lib/sc-http-client.js");
+  } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   setSmartContractHttpRequestForTesting(handler);
   try {
     return await fn();
@@ -2029,6 +2046,28 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
       meta: { tool: "__unknown_tool__", version: 1 },
     });
   });
+});
+
+test("role model loads before registry installation and validates lazily on first registry use", () => {
+  const probe = spawnSync(process.execPath, ["-e", [
+    "const roleModel = require('./mcp/core/dispatch/role-model.js');",
+    "if (!roleModel.ROLE_DEFINITIONS.orchestrator) throw new Error('role model did not load');",
+    "let protectedByRegistry = false;",
+    "try { roleModel.mcpToolNamesForRole('orchestrator'); }",
+    "catch (error) {",
+    "  if (!/tool registry is not installed/.test(error.message)) throw error;",
+    "  protectedByRegistry = true;",
+    "}",
+    "if (!protectedByRegistry) throw new Error('role-model assertion did not run lazily');",
+    "require('./mcp/tools/tool-registry.js');",
+    "if (!roleModel.mcpToolNamesForRole('orchestrator').includes('bob_read_session_nucleus')) {",
+    "  throw new Error('role model did not validate after composition-root installation');",
+    "}",
+  ].join("\n")], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
 });
 
 test("MCP tool manifest exposes required policy metadata for every tool", () => {
@@ -2199,6 +2238,9 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
     ],
     "CB-B3_experiment_loop": [
       "bob_plan_belief_experiment",
+    ],
+    "CB-B8_contract_compiler": [
+      "bob_compile_contract_binding",
     ],
     "CB-B5_calibrated_factor_model": [
       "bob_train_belief_model",
@@ -3659,7 +3701,7 @@ function seedCompleteBareFinding(domain) {
 test("completion-depth gate fires on a complete surface whose only basis is an unexecuted finding; a coverage row clears it", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
-    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
     seedCompleteBareFinding(domain);
 
     const before = completionDepthGapForCompleteSurfaces(domain);
@@ -3683,7 +3725,7 @@ test("completion-depth gate fires on a complete surface whose only basis is an u
 test("completion-depth gate clears a complete surface when its finding carries a re-derived executed differential", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
-    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
     seedCompleteBareFinding(domain);
     assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 1);
 
@@ -3697,9 +3739,9 @@ test("completion-depth gate clears a complete surface when its finding carries a
 test("completion-depth gate is forgery-closed: a hand-written verified_pass whose source rows do not MAC-resolve does not clear the surface", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
-    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
-    const { findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
-    const { appendJsonlLine } = require("../mcp/lib/storage.js");
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
+    const { findingDifferentialVerifiedJsonlPath } = require("../mcp/core/io/paths.js");
+    const { appendJsonlLine } = require("../mcp/core/io/storage.js");
     seedCompleteBareFinding(domain);
 
     // Hand-write a bare verified_pass for F-1 citing source rows that resolve to nothing.
@@ -3732,11 +3774,11 @@ test("completion-depth gate is forgery-closed: a hand-written verified_pass whos
 // bind leaves). Mints a REAL bound cross-stack verified_pass whose offensive cause is surfaceId.
 async function seedCrossStackComposition(domain, surfaceId, findingId) {
   const crypto = require("node:crypto");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { canonicalizeExploitTarget, appendCandidateClaim } = require("../mcp/lib/claims.js");
-  const { verifyCompositionPath } = require("../mcp/lib/composition-live-verifier.js");
-  const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/lib/paths.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { canonicalizeExploitTarget, appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+  const { verifyCompositionPath } = require("../mcp/core/differential/index.js");
+  const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/core/io/paths.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
   const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
   const { CONSUME_TEMPLATE_ID, DECOY_HASH, DECOY_RUN_ID, appendDecoyCapture } = require("./helpers/cross-stack-decoy.js");
   const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, ...opts });
@@ -3795,7 +3837,7 @@ async function seedCrossStackComposition(domain, surfaceId, findingId) {
 test("completion-depth gate clears a complete cross-stack offensive surface bound to a re-verified composition verified_pass (no coverage)", () => withTempHome(() => withIsolatedSigner(async () => {
   const domain = "example.com";
   const SURFACE = "surface:web-a";
-  const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+  const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
 
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
   seedAttackSurfaces(domain, [{ id: SURFACE, hosts: [`https://${domain}`], priority: "HIGH" }]);
@@ -3832,8 +3874,8 @@ test("completion-depth gate clears a complete cross-stack offensive surface boun
 test("completion-depth gate FAILS CLOSED when the handoff doc is unreadable (corrupt claims.jsonl) — never silently disables", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
-    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
-    const { claimsJsonlPath } = require("../mcp/lib/paths.js");
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
+    const { claimsJsonlPath } = require("../mcp/core/io/paths.js");
     seedCompleteBareFinding(domain);
     // A single malformed claims.jsonl line makes findingPayloadsFromClaims (called inside
     // buildWaveHandoffsDocument, the sole enumerator of complete surfaces) throw. The gate
@@ -3849,8 +3891,8 @@ test("completion-depth gate FAILS CLOSED when the handoff doc is unreadable (cor
 test("completion-depth gate FAILS CLOSED when listWaveAssignmentNumbers THROWS (populated session dir unreadable) — distinct from the legitimate empty", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
-    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
-    const waveHandoffStore = require("../mcp/lib/wave-handoff-store.js");
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
+    const waveHandoffStore = require("../mcp/core/waves/wave-handoff-store.js");
     seedCompleteBareFinding(domain);
     // listWaveAssignmentNumbers returns [] for a missing session dir (no throw); it THROWS only
     // when an EXISTING session dir cannot be enumerated (readdir FS error / dir replaced). That
@@ -3871,7 +3913,7 @@ test("completion-depth gate FAILS CLOSED when listWaveAssignmentNumbers THROWS (
 test("completion-depth gate is VACUOUS (missing empty) for a no-waves session — listWaveAssignmentNumbers returns [], never throws", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
-    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
     // No session / no wave-assignment files: the legitimate empty enumeration is RETURNED (not a
     // throw), so the gate proceeds vacuously — the throw→fail-closed change must NOT block this.
     assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
@@ -5050,7 +5092,13 @@ test("missing session state errors surface on read and mutating state tools", ()
     const domain = "example.com";
 
     assert.throws(() => readSessionState({ target_domain: domain }), /Missing session state:/);
-    assert.throws(() => transitionPhase({ target_domain: domain, to_phase: "AUTH" }), /Missing session state:/);
+    // A6L: advanceSession now reads the VERIFIED nucleus first (fail closed,
+    // no silent fallback to state.json), so an uninitialized session surfaces
+    // as a missing/unverifiable nucleus rather than a missing state.json.
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "AUTH" }),
+      /session nucleus missing or unverifiable/,
+    );
     assert.throws(
       () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
       /Missing session state:/,
@@ -5105,12 +5153,19 @@ test("legacy state normalization is applied while unknown fields remain on disk 
       // F.2: state.json was hand-written without a frontier-events.jsonl, so
       // the materialized views never produced and frontier_view_hashes is null.
       frontier_view_hashes: null,
+      // A6L: this legacy state.json has no session-nucleus.json on disk, so
+      // the verified-nucleus probe reports false.
+      verified: false,
     });
 
-    // Cycle D.1 routes the legacy AUTH transition through bob_advance_session.
-    // The legacy session has no nucleus on disk; readSessionNucleus synthesizes
-    // one from state.json, the advance lands on lifecycle_state OPEN_FRONTIER,
-    // and the legacy phase projection in state.json is refreshed to "EVALUATE".
+    // Cycle D.1 routes the legacy AUTH transition through bob_advance_session,
+    // which (A6L) now requires a VERIFIED nucleus and fails closed rather than
+    // silently synthesizing one from state.json. Establish that verified
+    // nucleus first via the locked migration entry point — exactly the
+    // workflow A6L adds for a legacy session that predates nucleus tracking.
+    require("../mcp/core/session/session-authority-migration.js").migrateLegacySessionAuthority(domain);
+    // The advance then lands on lifecycle_state OPEN_FRONTIER, and the legacy
+    // phase projection in state.json is refreshed to "EVALUATE".
     // unknown-field preservation, target normalization, and the rewritten state
     // all continue to apply.
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
@@ -5957,7 +6012,7 @@ test("compactSessionState exposes terminally_blocked_count derived from frontier
     // Cycle D.3 moved blocker authority to frontier-events.jsonl; the
     // terminally_blocked_count surfaced by compactSessionState now folds
     // blocker.asserted events with the surface-state markers.
-    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
     appendFrontierEvent({
       target_domain: domain,
       kind: "blocker.asserted",
@@ -6016,7 +6071,7 @@ test("normalizeSessionStateDocument silently drops legacy explored / terminally_
 });
 
 test("computeOpenRequeueSurfaceIds excludes terminally_blocked surfaces (options-bag signature)", () => {
-  const { computeOpenRequeueSurfaceIds } = require("../mcp/lib/frontier-readiness.js");
+  const { computeOpenRequeueSurfaceIds } = require("../mcp/core/frontier/frontier-readiness.js");
   const records = [
     { surface_id: "surface-a", endpoint: "GET /a", status: "requeue", logged_at: "2026-05-02T00:00:00Z", wave: "w1", agent: "a1" },
     { surface_id: "surface-b", endpoint: "GET /b", status: "requeue", logged_at: "2026-05-02T00:00:00Z", wave: "w1", agent: "a1" },
@@ -6030,7 +6085,7 @@ test("computeOpenRequeueSurfaceIds excludes terminally_blocked surfaces (options
 });
 
 test("attack-surface readiness defaults missing priorities to HIGH", () => {
-  const { computeAttackSurfaceCoverage } = require("../mcp/lib/frontier-readiness.js");
+  const { computeAttackSurfaceCoverage } = require("../mcp/core/frontier/frontier-readiness.js");
   const coverage = computeAttackSurfaceCoverage(
     [
       { id: "missing-open" },
@@ -6095,7 +6150,7 @@ test("EVALUATE -> CHAIN gate exposes blocked_high_surface_ids and blocks transit
         buildTerminallyBlockedEntry("surface-b", "auth_missing", "attacker", { reason: "no profile" }),
       ],
     });
-    const { computeFrontierReadiness } = require("../mcp/lib/frontier-readiness.js");
+    const { computeFrontierReadiness } = require("../mcp/core/frontier/frontier-readiness.js");
     const fullState = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
     const gate = computeFrontierReadiness(domain, fullState);
     assert.equal(gate.coverage.non_low_explored, 1);
@@ -6181,7 +6236,7 @@ test("bob_apply_wave_merge adds surface_status: complete surfaces to state.explo
     assert.equal(result.status, "merged");
     assert.equal(result.state.explored_count, 1);
     // Verify the surface landed in the frontier closure projection (D.3).
-    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    const { currentClosures } = require("../mcp/core/frontier/frontier-projections.js");
     assert.deepEqual(currentClosures(domain).map((c) => c.surface_id), ["surface-a"]);
   });
 });
@@ -6309,7 +6364,7 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
     assert.ok(!Object.prototype.hasOwnProperty.call(fullState, "terminally_blocked"));
     // The frontier projection now sources surface state; verify the closure
     // event landed in the ledger.
-    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    const { currentClosures } = require("../mcp/core/frontier/frontier-projections.js");
     const closures = currentClosures(domain);
     assert.deepEqual(closures.map((c) => c.surface_id), ["surface-a"]);
   });
@@ -6740,7 +6795,7 @@ test("bob_apply_wave_merge requeues unfinished coverage without treating tested 
     // Cycle D.3 moved surface-closure authority to the frontier ledger.
     // All five evaluators declared complete, so the frontier-projections
     // currentClosures returns all five.
-    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    const { currentClosures } = require("../mcp/core/frontier/frontier-projections.js");
     const closureIds = currentClosures(domain).map((closure) => closure.surface_id).sort();
     assert.deepEqual(closureIds, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
   });
@@ -6883,7 +6938,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
     seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
     let fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    const { currentBlockers } = require("../mcp/core/frontier/frontier-projections.js");
     assert.equal(currentBlockers(domain).length, 0);
     assert.equal(fullState.blocked_prereq_history.length, 1);
 
@@ -6963,7 +7018,7 @@ test("bob_apply_wave_merge promotes recurring auth_missing even when the prereq 
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "auth_missing");
-    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    const { currentBlockers } = require("../mcp/core/frontier/frontier-projections.js");
     assert.equal(currentBlockers(domain).length, 1);
     assert.ok(!result.merge.requeue_surface_ids.includes("surface-auth"));
   });
@@ -7017,7 +7072,7 @@ test("bob_apply_wave_merge requeues a blocked_prereq surface when its auth capab
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
     assert.ok(result.merge.requeue_surface_ids.includes("surface-auth"));
-    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    const { currentBlockers } = require("../mcp/core/frontier/frontier-projections.js");
     assert.equal(currentBlockers(domain).length, 0);
   });
 });
@@ -7132,7 +7187,7 @@ test("bob_clear_terminal_block removes a surface from terminally_blocked and rec
     // Cycle D.3 moved blocker authority to frontier-events.jsonl; the
     // clear path reads the ledger, not state.terminally_blocked. Seed a
     // blocker.asserted event to drive the projection.
-    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
     appendFrontierEvent({
       target_domain: domain,
       kind: "blocker.asserted",
@@ -7173,7 +7228,7 @@ test("bob_clear_terminal_block rejects clearing while a wave is pending", () => 
       evaluation_wave: 1,
       pending_wave: 2,
     });
-    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
     appendFrontierEvent({
       target_domain: domain,
       kind: "blocker.asserted",
@@ -8448,7 +8503,7 @@ test("tampered tokenized handoff JSON is invalid and cannot complete the surface
     // Cycle D.3: state.explored was deleted; surface closures are now
     // projected from frontier-events.jsonl. The tampered handoff was
     // requeued, so no closures should have been recorded.
-    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    const { currentClosures } = require("../mcp/core/frontier/frontier-projections.js");
     assert.deepEqual(currentClosures(domain), []);
   });
 });
@@ -9041,7 +9096,12 @@ test("evaluator SubagentStop hook blocks evidence markers before REPORT or EXPLO
     }, { home: tempHome });
 
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /REPORT or EXPLORE/);
+    // The evidence-marker gate migrated from legacy phase vocabulary
+    // ("REPORT or EXPLORE") to the nucleus-bound lifecycle re-entry check
+    // (agent-run-completion.js): a marker is only eligible after a
+    // governance.lifecycle.advanced event binding the current nucleus and a
+    // REPORT/GRADE -> OPEN_FRONTIER re-entry. The block_code is unchanged.
+    assert.match(result.stderr, /REPORT\/GRADE -> OPEN_FRONTIER re-entry/);
 
     const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
@@ -10329,7 +10389,7 @@ test("normalizeFindingRecord backfills capability_pack metadata for legacy web r
   // carry capability_pack. Read-side derives the pack triple from
   // surface_type so downstream consumers never see null and don't need to
   // re-implement the surface_type→pack mapping.
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   const legacyFinding = normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -10354,7 +10414,7 @@ test("normalizeFindingRecord backfills capability_pack metadata for legacy SC ro
   // Legacy SC findings carry sc_evidence.chain_family. Backfill must derive
   // the right pack — smart_contract_evm for chain_family="evm",
   // smart_contract_substrate for chain_family="substrate", etc.
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   const legacyEvm = normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -10446,7 +10506,7 @@ test("classifySurfaceCapability returns a non-throwing unroutable result for sma
   // returns a structured unroutable result (routable:false, capability_pack:null,
   // unroutable_reason) so downstream records a non-halting disposition instead of
   // mis-arming a web evaluator on an on-chain target.
-  const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+  const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
 
   const missing = classifySurfaceCapability({ id: "surface-mystery", surface_type: "smart_contract" });
   assert.strictEqual(missing.routable, false);
@@ -10464,7 +10524,7 @@ test("normalizeAssignmentRouteMetadata throws on smart_contract assignment witho
   // assignment lacking the triple. That meant a smart_contract assignment
   // whose route metadata had been dropped (forged file, half-rolled-back
   // upgrade, etc.) got rubber-stamped as web. Fail loudly instead.
-  const { normalizeAssignmentRouteMetadata } = require("../mcp/lib/capability-packs.js");
+  const { normalizeAssignmentRouteMetadata } = require("../mcp/core/capability/capability-packs.js");
   assert.throws(
     () => normalizeAssignmentRouteMetadata({
       agent: "a1",
@@ -10542,7 +10602,7 @@ test("recordFinding stamps the routed capability pack on the embedded claim payl
 });
 
 test("normalizeFindingRecord forbids sc_evidence on legacy null-surface rows (back-compat smuggling)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // A legacy row may have surface_type=null. The original guard forbade
   // sc_evidence only on surface_type="web", so a malicious or buggy row
   // could carry SC replay data while being routed as web by verifiers.
@@ -10688,7 +10748,7 @@ test("bob_record_finding accepts SVM sc_evidence with chain_family='svm' and bas
 });
 
 test("sc_evidence rejects chain_family='svm' with EVM-style 0x address", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -10716,7 +10776,7 @@ test("sc_evidence rejects chain_family='svm' with EVM-style 0x address", () => {
 });
 
 test("sc_evidence rejects chain_family='evm' with base58 svm pubkey", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -10744,7 +10804,7 @@ test("sc_evidence rejects chain_family='evm' with base58 svm pubkey", () => {
 });
 
 test("sc_evidence rejects chain_family='svm' with unknown cluster", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -10772,7 +10832,7 @@ test("sc_evidence rejects chain_family='svm' with unknown cluster", () => {
 });
 
 test("sc_evidence rejects chain_family='svm' with base58 alphabet violation (0/O/I/l)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // "0" is not in the base58 alphabet — a pubkey that contains it must be rejected.
   // System Program prefix with one '0' substituted in.
   assert.throws(() => normalizeFindingRecord({
@@ -10802,7 +10862,7 @@ test("sc_evidence rejects chain_family='svm' with base58 alphabet violation (0/O
 });
 
 test("sc_evidence rejects unknown chain_family value", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -10830,7 +10890,7 @@ test("sc_evidence rejects unknown chain_family value", () => {
 });
 
 test("sc_evidence chain_family defaults to 'evm' when omitted (back-compat)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // A legacy row may have no chain_family field at all. The normalizer
   // defaults to 'evm' so existing findings.jsonl rows keep validating.
   const finding = normalizeFindingRecord({
@@ -10863,7 +10923,7 @@ test("sc_evidence chain_family defaults to 'evm' when omitted (back-compat)", ()
 });
 
 test("foundry runner translates Success/Failure to Pass/Fail and caps tests[] at 100", () => {
-  const { summarizeForgeJson } = require("../mcp/lib/foundry-runner.js");
+  const { summarizeForgeJson } = require("../mcp/domains/blockchain/smart-contracts/foundry-runner.js");
   // Two suites, mix of statuses including unknown.
   const result = summarizeForgeJson({
     "Vault.t.sol:VaultTest": {
@@ -10897,7 +10957,7 @@ test("foundry runner translates Success/Failure to Pass/Fail and caps tests[] at
 });
 
 test("sc_evidence svm pubkey rejects strings that pass alphabet but decode to <32 bytes", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // 32 chars of valid base58 alphabet that are NOT leading-1s decode to ~23 bytes
   // (32 * log2(58) / 8 ≈ 23.4). The alphabet+length regex passes; the decode-length
   // check must catch it. Use a deterministic 32-char string with no leading "1".
@@ -11014,7 +11074,7 @@ test("bob_record_finding accepts Sui sc_evidence with chain_family='sui' and 0x6
 });
 
 test("sc_evidence normalizes Move shorthand address (0x1) to canonical 64-hex form", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // Aptos prints framework addresses as shorthand: "0x1" is the std lib,
   // canonically "0x000...001". The normalizer must left-pad so two findings
   // recorded against "0x1" and "0x0000...0001" share the same dedupe key.
@@ -11047,7 +11107,7 @@ test("sc_evidence normalizes Move shorthand address (0x1) to canonical 64-hex fo
 });
 
 test("sc_evidence rejects chain_family='aptos' with unknown network", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -11075,7 +11135,7 @@ test("sc_evidence rejects chain_family='aptos' with unknown network", () => {
 });
 
 test("sc_evidence rejects chain_family='sui' with unknown network", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -11103,7 +11163,7 @@ test("sc_evidence rejects chain_family='sui' with unknown network", () => {
 });
 
 test("sc_evidence rejects Move family with non-hex address", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // Aptos evaluator accidentally pasted a base58 svm pubkey. Move normalizer
   // must reject because address fails the 0x+hex regex.
   assert.throws(() => normalizeFindingRecord({
@@ -11133,7 +11193,7 @@ test("sc_evidence rejects Move family with non-hex address", () => {
 });
 
 test("sc_evidence rejects Move family with empty 0x address (no hex chars)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // 0x with zero hex chars is technically not a Move address (Aptos shorthand
   // requires at least one hex char). Regex {1,64} prevents the empty case.
   assert.throws(() => normalizeFindingRecord({
@@ -11163,7 +11223,7 @@ test("sc_evidence rejects Move family with empty 0x address (no hex chars)", () 
 });
 
 test("sc_evidence rejects chain_family='aptos' with integer chain_id (must be string network)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // Aptos has an integer chain_id (1 = mainnet) used for replay protection,
   // but our schema keys RPC pools by network NAME. Reject integers to avoid
   // ambiguity with EVM chain_id integer convention.
@@ -11284,7 +11344,7 @@ test("bob_record_finding accepts CosmWasm sc_evidence with chain_family='cosmwas
 });
 
 test("sc_evidence rejects chain_family='substrate' with unknown network", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -11312,7 +11372,7 @@ test("sc_evidence rejects chain_family='substrate' with unknown network", () => 
 });
 
 test("sc_evidence rejects chain_family='cosmwasm' with unknown network", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -11340,7 +11400,7 @@ test("sc_evidence rejects chain_family='cosmwasm' with unknown network", () => {
 });
 
 test("sc_evidence rejects chain_family='substrate' with EVM 0x... address (alphabet violation)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // SS58 alphabet excludes 0/O/I/l, so an EVM address fails the base58 check.
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
@@ -11369,7 +11429,7 @@ test("sc_evidence rejects chain_family='substrate' with EVM 0x... address (alpha
 });
 
 test("sc_evidence rejects chain_family='substrate' with too-short SS58", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // 30 chars is below the 45-char SS58 length floor.
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
@@ -11398,7 +11458,7 @@ test("sc_evidence rejects chain_family='substrate' with too-short SS58", () => {
 });
 
 test("sc_evidence rejects chain_family='cosmwasm' with bad bech32 checksum", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // Last 6 chars of valid bech32 mutated to break the polymod checksum.
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
@@ -11427,7 +11487,7 @@ test("sc_evidence rejects chain_family='cosmwasm' with bad bech32 checksum", () 
 });
 
 test("sc_evidence rejects chain_family='cosmwasm' with EVM 0x... address (no bech32 separator)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   assert.throws(() => normalizeFindingRecord({
     id: "F-1",
     target_domain: "example.com",
@@ -11455,7 +11515,7 @@ test("sc_evidence rejects chain_family='cosmwasm' with EVM 0x... address (no bec
 });
 
 test("sc_evidence rejects chain_family='cosmwasm' with mixed-case bech32 (spec violation)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // BIP-0173 explicitly forbids mixed-case in bech32; either fully lowercase
   // or fully uppercase is allowed, but never both. We mirror that rule.
   assert.throws(() => normalizeFindingRecord({
@@ -11485,7 +11545,7 @@ test("sc_evidence rejects chain_family='cosmwasm' with mixed-case bech32 (spec v
 });
 
 test("sc_evidence svm pubkey accepts the 32-char System Program (all-zero pubkey)", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // 11111111111111111111111111111111 — 32 chars, base58-decodes to 32 zero
   // bytes. The System Program is a legitimate Solana pubkey at 32 chars.
   // The new decode-length check must not regress on this fixture.
@@ -11517,7 +11577,7 @@ test("sc_evidence svm pubkey accepts the 32-char System Program (all-zero pubkey
 });
 
 test("anchor runner classifies cargo/solana/yarn missing as anchor_dependency_missing", () => {
-  const { classifyAnchorFailure } = require("../mcp/lib/anchor-runner.js");
+  const { classifyAnchorFailure } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
   const cargoMissing = classifyAnchorFailure(
     { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
     false,
@@ -11555,7 +11615,7 @@ test("anchor runner classifies cargo/solana/yarn missing as anchor_dependency_mi
 });
 
 test("anchor runner classifies jest/ts-mocha config as anchor_test_runner_unknown", () => {
-  const { classifyAnchorFailure } = require("../mcp/lib/anchor-runner.js");
+  const { classifyAnchorFailure } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
   const jestRunner = classifyAnchorFailure(
     { ok: false, exit_code: 1, stderr: "Running test command: jest --testPathPattern=...", stdout: "" },
     false, // parseResult.ok = false (no mocha JSON)
@@ -11590,7 +11650,7 @@ test("anchor runner classifies jest/ts-mocha config as anchor_test_runner_unknow
 });
 
 test("anchor runner summarizes mocha JSON Pass/Fail and caps tests[] at 100", () => {
-  const { summarizeAnchorMochaJson } = require("../mcp/lib/anchor-runner.js");
+  const { summarizeAnchorMochaJson } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
   // Mocha JSON shape: stats + tests array. err empty = passed; err present = failed.
   const result = summarizeAnchorMochaJson({
     stats: { tests: 3, passes: 1, failures: 1, pending: 1 },
@@ -11624,7 +11684,7 @@ test("anchor runner summarizes mocha JSON Pass/Fail and caps tests[] at 100", ()
 });
 
 test("anchor runner rejects extra_args not in the allowlist", async () => {
-  const { runAnchorTest } = require("../mcp/lib/anchor-runner.js");
+  const { runAnchorTest } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
   // Use os.homedir() as the workdir (real, under-home, exists). The args
   // validator runs before subprocess spawn, so this assertion fires without
   // requiring anchor in PATH.
@@ -11638,7 +11698,7 @@ test("anchor runner rejects extra_args not in the allowlist", async () => {
 });
 
 test("anchor runner rejects symlink-escaping harness paths", async () => {
-  const { runAnchorTest } = require("../mcp/lib/anchor-runner.js");
+  const { runAnchorTest } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
   const home = os.homedir();
   const tmpRoot = path.join(os.tmpdir(), "bob-anchor-symlink-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(tmpRoot, { recursive: true });
@@ -11659,7 +11719,7 @@ test("anchor runner rejects symlink-escaping harness paths", async () => {
 });
 
 test("svm rpc pool resolves cluster ladders and rejects private hosts", () => {
-  const { resolveSvmRpcEndpoints, isPublicHttpsUrl } = require("../mcp/lib/svm-rpc-pool.js");
+  const { resolveSvmRpcEndpoints, isPublicHttpsUrl } = require("../mcp/domains/blockchain/smart-contracts/svm-rpc-pool.js");
   const mainnet = resolveSvmRpcEndpoints("mainnet-beta");
   assert.ok(Array.isArray(mainnet) && mainnet.length >= 2, "mainnet-beta has multiple endpoints");
   assert.ok(mainnet.every((url) => url.startsWith("https://")), "all endpoints are https");
@@ -11671,7 +11731,7 @@ test("svm rpc pool resolves cluster ladders and rejects private hosts", () => {
 });
 
 test("svm rpc pool env override is read with the dashed-cluster key shape", () => {
-  const { resolveSvmRpcEndpoints, envKeyForCluster } = require("../mcp/lib/svm-rpc-pool.js");
+  const { resolveSvmRpcEndpoints, envKeyForCluster } = require("../mcp/domains/blockchain/smart-contracts/svm-rpc-pool.js");
   // mainnet-beta should map to BOB_SVM_RPCS_MAINNET_BETA
   assert.equal(envKeyForCluster("mainnet-beta"), "BOB_SVM_RPCS_MAINNET_BETA");
   const previous = process.env.BOB_SVM_RPCS_MAINNET_BETA;
@@ -11686,7 +11746,7 @@ test("svm rpc pool env override is read with the dashed-cluster key shape", () =
 });
 
 test("svm-fetch-program parses BPFLoaderUpgradeable Program account discriminator", () => {
-  const svmFetchProgram = require("../mcp/lib/tools/svm-fetch-program.js");
+  const svmFetchProgram = require("../mcp/tools/blockchain/svm-fetch-program.js");
   const { parseProgramAccount, parseProgramDataAccount, base58Encode } = svmFetchProgram._internals;
   // System Program zeroed pubkey (32 bytes).
   const sysProgramBytes = Buffer.alloc(32, 0);
@@ -11744,7 +11804,7 @@ test("svm tools register with verifier and evidence role bundles (so balanced/br
 // ----------------------------------------------------------------------
 
 test("aptos rpc pool resolves network ladders and rejects private hosts", () => {
-  const { resolveAptosRpcEndpoints, isPublicHttpsUrl } = require("../mcp/lib/aptos-rpc-pool.js");
+  const { resolveAptosRpcEndpoints, isPublicHttpsUrl } = require("../mcp/domains/blockchain/smart-contracts/aptos-rpc-pool.js");
   const mainnet = resolveAptosRpcEndpoints("mainnet");
   assert.ok(Array.isArray(mainnet) && mainnet.length >= 1, "mainnet has at least one endpoint");
   assert.ok(mainnet.every((url) => url.startsWith("https://")), "all endpoints are https");
@@ -11758,7 +11818,7 @@ test("aptos rpc pool resolves network ladders and rejects private hosts", () => 
 });
 
 test("aptos rpc pool env override is read with BOB_APTOS_RPCS_<NETWORK>", () => {
-  const { resolveAptosRpcEndpoints, envKeyForNetwork } = require("../mcp/lib/aptos-rpc-pool.js");
+  const { resolveAptosRpcEndpoints, envKeyForNetwork } = require("../mcp/domains/blockchain/smart-contracts/aptos-rpc-pool.js");
   assert.equal(envKeyForNetwork("mainnet"), "BOB_APTOS_RPCS_MAINNET");
   const previous = process.env.BOB_APTOS_RPCS_MAINNET;
   process.env.BOB_APTOS_RPCS_MAINNET = "https://override.example.com/v1";
@@ -11772,7 +11832,7 @@ test("aptos rpc pool env override is read with BOB_APTOS_RPCS_<NETWORK>", () => 
 });
 
 test("sui rpc pool resolves network ladders and rejects private hosts", () => {
-  const { resolveSuiRpcEndpoints, isPublicHttpsUrl } = require("../mcp/lib/sui-rpc-pool.js");
+  const { resolveSuiRpcEndpoints, isPublicHttpsUrl } = require("../mcp/domains/blockchain/smart-contracts/sui-rpc-pool.js");
   const mainnet = resolveSuiRpcEndpoints("mainnet");
   assert.ok(Array.isArray(mainnet) && mainnet.length >= 1, "mainnet has at least one endpoint");
   assert.ok(mainnet.every((url) => url.startsWith("https://")), "all endpoints are https");
@@ -11787,7 +11847,7 @@ test("sui rpc pool resolves network ladders and rejects private hosts", () => {
 });
 
 test("sui rpc pool env override is read with BOB_SUI_RPCS_<NETWORK> while localnet stays unsupported by default", () => {
-  const { resolveSuiRpcEndpoints, envKeyForNetwork } = require("../mcp/lib/sui-rpc-pool.js");
+  const { resolveSuiRpcEndpoints, envKeyForNetwork } = require("../mcp/domains/blockchain/smart-contracts/sui-rpc-pool.js");
   assert.equal(envKeyForNetwork("mainnet"), "BOB_SUI_RPCS_MAINNET");
   withEnv({
     BOB_SUI_RPCS_MAINNET: "https://override.example.com/rpc",
@@ -11800,12 +11860,12 @@ test("sui rpc pool env override is read with BOB_SUI_RPCS_<NETWORK> while localn
 });
 
 test("smart-contract RPC pools enforce HTTPS/public-host policy on env overrides", () => {
-  const { resolveEvmRpcEndpoints } = require("../mcp/lib/evm-rpc-pool.js");
-  const { resolveSvmRpcEndpoints } = require("../mcp/lib/svm-rpc-pool.js");
-  const { resolveAptosRpcEndpoints } = require("../mcp/lib/aptos-rpc-pool.js");
-  const { resolveSuiRpcEndpoints } = require("../mcp/lib/sui-rpc-pool.js");
-  const { resolveSubstrateRpcEndpoints } = require("../mcp/lib/substrate-rpc-pool.js");
-  const { resolveCosmwasmRpcEndpoints } = require("../mcp/lib/cosmwasm-rpc-pool.js");
+  const { resolveEvmRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/evm-rpc-pool.js");
+  const { resolveSvmRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/svm-rpc-pool.js");
+  const { resolveAptosRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/aptos-rpc-pool.js");
+  const { resolveSuiRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/sui-rpc-pool.js");
+  const { resolveSubstrateRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/substrate-rpc-pool.js");
+  const { resolveCosmwasmRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-rpc-pool.js");
 
   withEnv({
     BOB_EVM_RPCS_1: "http://public.example/rpc,https://127.0.0.1/rpc,https://public-rpc.example/rpc",
@@ -11829,8 +11889,8 @@ test("smart-contract RPC pools enforce HTTPS/public-host policy on env overrides
 });
 
 test("smart-contract egress policy blocks DNS-private RPC endpoints before fetch and redacts secrets", async () => {
-  const { isPublicHttpsUrl } = require("../mcp/lib/sc-egress-policy.js");
-  const { isBlockedInternalHost } = require("../mcp/lib/url-surface.js");
+  const { isPublicHttpsUrl } = require("../mcp/domains/blockchain/smart-contracts/sc-egress-policy.js");
+  const { isBlockedInternalHost } = require("../mcp/core/url-surface.js");
   assert.equal(isPublicHttpsUrl("https://198.18.0.1/rpc"), false);
   assert.equal(isPublicHttpsUrl("https://[2001:db8::1]/rpc"), false);
   assert.equal(isPublicHttpsUrl("https://[64:ff9b::0a00:1]/rpc"), false);
@@ -11867,7 +11927,7 @@ test("smart-contract egress policy blocks DNS-private RPC endpoints before fetch
 });
 
 test("smart-contract HTTP client pins the request lookup to the preflight DNS answer", async () => {
-  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const { requestPublicHttpsText } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   let observedAddress = null;
   const response = await withMockSmartContractRpcLookup({
     "rpc.example.test": [{ address: "93.184.216.34", family: 4 }],
@@ -11891,7 +11951,7 @@ test("smart-contract HTTP client pins the request lookup to the preflight DNS an
 });
 
 test("smart-contract HTTP client pins IPv6 answers", async () => {
-  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const { requestPublicHttpsText } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   let observedAddress = null;
   const response = await withMockSmartContractRpcLookup({
     "rpc-v6.example.test": [{ address: "2606:4700:4700::1111", family: 6 }],
@@ -11911,7 +11971,7 @@ test("smart-contract HTTP client pins IPv6 answers", async () => {
 });
 
 test("smart-contract HTTP client surfaces AggregateError inner connection codes", async () => {
-  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const { requestPublicHttpsText } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   const requestImpl = (requestOptions, _callback) => {
     const req = new EventEmitter();
     req.write = () => {};
@@ -11947,7 +12007,7 @@ test("smart-contract HTTP client surfaces AggregateError inner connection codes"
 });
 
 test("smart-contract HTTP client fails closed after its byte cap", async () => {
-  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const { requestPublicHttpsText } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   let requestDestroyed = false;
   let responseDestroyed = false;
   const requestImpl = (requestOptions, callback) => {
@@ -11991,7 +12051,7 @@ test("smart-contract HTTP client fails closed after its byte cap", async () => {
 });
 
 test("smart-contract HTTP client does not follow redirects", async () => {
-  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const { requestPublicHttpsText } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   let calls = 0;
   const response = await withMockSmartContractRpcLookup({
     "rpc.example.test": [{ address: "93.184.216.34", family: 4 }],
@@ -12017,7 +12077,7 @@ test("smart-contract HTTP client does not follow redirects", async () => {
 });
 
 test("smart-contract egress policy blocks DNS rebinding before pinned HTTP request", async () => {
-  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const { requestPublicHttpsText } = require("../mcp/domains/blockchain/smart-contracts/sc-http-client.js");
   let called = false;
   await assert.rejects(
     () => withMockSmartContractRpcLookup({
@@ -12044,7 +12104,7 @@ test("smart-contract egress policy blocks DNS rebinding before pinned HTTP reque
 });
 
 test("smart-contract egress policy bounds DNS lookup time before fetch", async () => {
-  const { filterResolvedPublicRpcEndpoints } = require("../mcp/lib/sc-egress-policy.js");
+  const { filterResolvedPublicRpcEndpoints } = require("../mcp/domains/blockchain/smart-contracts/sc-egress-policy.js");
   const started = Date.now();
   const result = await filterResolvedPublicRpcEndpoints(["https://slow-rpc.example.test/rpc"], {
     lookup: () => {},
@@ -12061,7 +12121,7 @@ test("smart-contract egress policy redacts malformed endpoint secrets and strips
   const {
     directSmartContractSubprocessEnv,
     redactRpcEndpoint,
-  } = require("../mcp/lib/sc-egress-policy.js");
+  } = require("../mcp/domains/blockchain/smart-contracts/sc-egress-policy.js");
   const secret = "rpc-secret-token";
   const redacted = redactRpcEndpoint(`not-a-url api_key=${secret}#fragment`);
   assert.doesNotMatch(redacted, new RegExp(secret));
@@ -12135,7 +12195,7 @@ test("smart-contract egress policy redacts malformed endpoint secrets and strips
 });
 
 test("smart-contract source fetch errors redact Etherscan API keys from response bodies", async () => {
-  const { fetchVerifiedSource } = require("../mcp/lib/evm-source.js");
+  const { fetchVerifiedSource } = require("../mcp/domains/blockchain/smart-contracts/evm-source.js");
   const secret = "etherscan-body-secret";
   await withMockSmartContractHttpRequest(async (url) => {
     const urlText = String(url);
@@ -12164,19 +12224,27 @@ test("smart-contract source fetch errors redact Etherscan API keys from response
 });
 
 test("every smart-contract client and fork runner uses the shared DNS-aware egress policy", () => {
+  const jsonRpcClientFiles = [
+    "mcp/domains/blockchain/smart-contracts/evm-client.js",
+    "mcp/domains/blockchain/smart-contracts/svm-client.js",
+    "mcp/domains/blockchain/smart-contracts/sui-client.js",
+    "mcp/domains/blockchain/smart-contracts/substrate-client.js",
+  ];
+  for (const file of jsonRpcClientFiles) {
+    const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+    assert.match(source, /makeJsonRpcClient/, `${file} must compose the shared JSON-RPC transport`);
+    assert.doesNotMatch(source, /filter\(isPublicHttpsUrl\)/, `${file} must not silently drop back to sync-only endpoint filtering`);
+  }
   const policyFiles = [
-    "mcp/lib/evm-client.js",
-    "mcp/lib/svm-client.js",
-    "mcp/lib/aptos-client.js",
-    "mcp/lib/sui-client.js",
-    "mcp/lib/substrate-client.js",
-    "mcp/lib/cosmwasm-client.js",
-    "mcp/lib/foundry-runner.js",
-    "mcp/lib/anchor-runner.js",
-    "mcp/lib/aptos-runner.js",
-    "mcp/lib/sui-runner.js",
-    "mcp/lib/substrate-runner.js",
-    "mcp/lib/cosmwasm-runner.js",
+    "mcp/domains/blockchain/smart-contracts/aptos-client.js",
+    "mcp/domains/blockchain/smart-contracts/cosmwasm-client.js",
+    "mcp/domains/blockchain/smart-contracts/json-rpc-transport.js",
+    "mcp/domains/blockchain/smart-contracts/foundry-runner.js",
+    "mcp/domains/blockchain/smart-contracts/anchor-runner.js",
+    "mcp/domains/blockchain/smart-contracts/aptos-runner.js",
+    "mcp/domains/blockchain/smart-contracts/sui-runner.js",
+    "mcp/domains/blockchain/smart-contracts/substrate-runner.js",
+    "mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js",
   ];
   for (const file of policyFiles) {
     const source = fs.readFileSync(path.join(ROOT, file), "utf8");
@@ -12185,31 +12253,28 @@ test("every smart-contract client and fork runner uses the shared DNS-aware egre
     assert.doesNotMatch(source, /filter\(isPublicHttpsUrl\)/, `${file} must not silently drop back to sync-only endpoint filtering`);
   }
   const nodeHttpFiles = [
-    "mcp/lib/evm-client.js",
-    "mcp/lib/svm-client.js",
-    "mcp/lib/aptos-client.js",
-    "mcp/lib/sui-client.js",
-    "mcp/lib/substrate-client.js",
-    "mcp/lib/cosmwasm-client.js",
-    "mcp/lib/evm-source.js",
+    "mcp/domains/blockchain/smart-contracts/aptos-client.js",
+    "mcp/domains/blockchain/smart-contracts/cosmwasm-client.js",
+    "mcp/domains/blockchain/smart-contracts/json-rpc-transport.js",
+    "mcp/domains/blockchain/smart-contracts/evm-source.js",
   ];
   for (const file of nodeHttpFiles) {
     const source = fs.readFileSync(path.join(ROOT, file), "utf8");
     assert.match(source, /requestPublicHttpsText/, `${file} must use the shared pinned SC HTTPS client`);
     assert.doesNotMatch(source, /\bfetch\s*\(/, `${file} must not use ambient fetch for SC HTTP`);
   }
-  const pinnedHttpSource = fs.readFileSync(path.join(ROOT, "mcp/lib/sc-http-client.js"), "utf8");
+  const pinnedHttpSource = fs.readFileSync(path.join(ROOT, "mcp/domains/blockchain/smart-contracts/sc-http-client.js"), "utf8");
   assert.match(pinnedHttpSource, /https\.request/, "SC HTTP client must own the direct HTTPS socket");
   assert.match(pinnedHttpSource, /lookup:\s*pinnedLookup/, "SC HTTP client must pass the pinned lookup into the HTTPS request");
   assert.match(pinnedHttpSource, /agent:\s*false/, "SC HTTP client must not reuse https.globalAgent sockets");
   const runnerFiles = [
-    "mcp/lib/foundry-runner.js",
-    "mcp/lib/halmos-runner.js",
-    "mcp/lib/anchor-runner.js",
-    "mcp/lib/aptos-runner.js",
-    "mcp/lib/sui-runner.js",
-    "mcp/lib/substrate-runner.js",
-    "mcp/lib/cosmwasm-runner.js",
+    "mcp/domains/blockchain/smart-contracts/foundry-runner.js",
+    "mcp/domains/blockchain/smart-contracts/halmos-runner.js",
+    "mcp/domains/blockchain/smart-contracts/anchor-runner.js",
+    "mcp/domains/blockchain/smart-contracts/aptos-runner.js",
+    "mcp/domains/blockchain/smart-contracts/sui-runner.js",
+    "mcp/domains/blockchain/smart-contracts/substrate-runner.js",
+    "mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js",
   ];
   for (const file of runnerFiles) {
     const source = fs.readFileSync(path.join(ROOT, file), "utf8");
@@ -12217,15 +12282,15 @@ test("every smart-contract client and fork runner uses the shared DNS-aware egre
     assert.match(source, /redactRpcEndpointText/, `${file} must redact raw subprocess excerpts`);
     assert.doesNotMatch(source, /env:\s*\{\s*\.\.\.process\.env/, `${file} must not inherit proxy env wholesale`);
   }
-  for (const file of ["mcp/lib/aptos-client.js", "mcp/lib/cosmwasm-client.js"]) {
+  for (const file of ["mcp/domains/blockchain/smart-contracts/aptos-client.js", "mcp/domains/blockchain/smart-contracts/cosmwasm-client.js"]) {
     const source = fs.readFileSync(path.join(ROOT, file), "utf8");
     assert.match(source, /requestPublicHttpsText\(url/, `${file} must re-check and pin the constructed REST URL before request`);
   }
 });
 
 test("smart-contract runner parsers redact endpoint secrets from structured failures", () => {
-  const { summarizeForgeJson } = require("../mcp/lib/foundry-runner.js");
-  const { summarizeHalmosOutput } = require("../mcp/lib/halmos-runner.js");
+  const { summarizeForgeJson } = require("../mcp/domains/blockchain/smart-contracts/foundry-runner.js");
+  const { summarizeHalmosOutput } = require("../mcp/domains/blockchain/smart-contracts/halmos-runner.js");
   const secret = "parser-secret-token";
   const endpoint = `https://rpc.example/rpc?api_key=${secret}`;
 
@@ -12257,7 +12322,7 @@ test("smart-contract runner parsers redact endpoint secrets from structured fail
 });
 
 test("parseMoveTestStdout parses Move unit test output line-by-line", () => {
-  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  const { parseMoveTestStdout } = require("../mcp/domains/blockchain/smart-contracts/move-test-output.js");
   const stdout = [
     "Running Move unit tests",
     "[ PASS    ] 0x42::vault::test_deposit_ok",
@@ -12286,7 +12351,7 @@ test("parseMoveTestStdout parses Move unit test output line-by-line", () => {
 });
 
 test("parseMoveTestStdout captures inline failure reason from Sui-style '; ABORTED at code N' suffix", () => {
-  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  const { parseMoveTestStdout } = require("../mcp/domains/blockchain/smart-contracts/move-test-output.js");
   // Sui adds the abort code/module on the same line as [ FAIL ].
   const stdout = [
     "Running Move unit tests",
@@ -12301,7 +12366,7 @@ test("parseMoveTestStdout captures inline failure reason from Sui-style '; ABORT
 });
 
 test("parseMoveTestStdout redacts endpoint secrets in failure reasons", () => {
-  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  const { parseMoveTestStdout } = require("../mcp/domains/blockchain/smart-contracts/move-test-output.js");
   const secret = "move-parser-secret";
   const stdout = [
     "Running Move unit tests",
@@ -12341,7 +12406,7 @@ test("smart-contract text redaction handles JSON, bearer, path secrets, and pres
 });
 
 test("parseMoveTestStdout caps tests[] at 100 and sets truncated", () => {
-  const { parseMoveTestStdout, MOVE_TESTS_CAP } = require("../mcp/lib/move-test-output.js");
+  const { parseMoveTestStdout, MOVE_TESTS_CAP } = require("../mcp/domains/blockchain/smart-contracts/move-test-output.js");
   assert.equal(MOVE_TESTS_CAP, 100);
   const lines = ["Running Move unit tests"];
   for (let i = 0; i < 150; i += 1) {
@@ -12355,7 +12420,7 @@ test("parseMoveTestStdout caps tests[] at 100 and sets truncated", () => {
 });
 
 test("parseMoveTestStdout returns ok=false when the stdout has no test lines or result line", () => {
-  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  const { parseMoveTestStdout } = require("../mcp/domains/blockchain/smart-contracts/move-test-output.js");
   // Compiler crash output — no [ PASS ]/[ FAIL ] and no "Test result:".
   const stdout = "error[E04001]: ...build failed\nCompilation aborted.\n";
   const r = parseMoveTestStdout(stdout);
@@ -12364,7 +12429,7 @@ test("parseMoveTestStdout returns ok=false when the stdout has no test lines or 
 });
 
 test("aptos runner classifies cargo/move-cli missing as aptos_dependency_missing", () => {
-  const { classifyAptosFailure } = require("../mcp/lib/aptos-runner.js");
+  const { classifyAptosFailure } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
   const cargoMissing = classifyAptosFailure(
     { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
     false,
@@ -12378,7 +12443,7 @@ test("aptos runner classifies cargo/move-cli missing as aptos_dependency_missing
 });
 
 test("aptos runner classifies Move compilation errors as move_compile_failed", () => {
-  const { classifyAptosFailure } = require("../mcp/lib/aptos-runner.js");
+  const { classifyAptosFailure } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
   const compilerErr = classifyAptosFailure(
     { ok: false, exit_code: 1, stderr: "", stdout: "error[E04001]: name not in scope" },
     false,
@@ -12393,7 +12458,7 @@ test("aptos runner classifies Move compilation errors as move_compile_failed", (
 });
 
 test("sui runner classifies cargo/move-cli missing as sui_dependency_missing", () => {
-  const { classifySuiFailure } = require("../mcp/lib/sui-runner.js");
+  const { classifySuiFailure } = require("../mcp/domains/blockchain/smart-contracts/sui-runner.js");
   const cargoMissing = classifySuiFailure(
     { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
     false,
@@ -12402,7 +12467,7 @@ test("sui runner classifies cargo/move-cli missing as sui_dependency_missing", (
 });
 
 test("aptos runner rejects extra_args not in the allowlist", async () => {
-  const { runAptosTest } = require("../mcp/lib/aptos-runner.js");
+  const { runAptosTest } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
   await assert.rejects(async () => runAptosTest({
     workdir: os.homedir(),
     matchTest: "test_x",
@@ -12413,7 +12478,7 @@ test("aptos runner rejects extra_args not in the allowlist", async () => {
 });
 
 test("sui runner rejects extra_args not in the allowlist", async () => {
-  const { runSuiTest } = require("../mcp/lib/sui-runner.js");
+  const { runSuiTest } = require("../mcp/domains/blockchain/smart-contracts/sui-runner.js");
   await assert.rejects(async () => runSuiTest({
     workdir: os.homedir(),
     matchTest: "test_x",
@@ -12424,7 +12489,7 @@ test("sui runner rejects extra_args not in the allowlist", async () => {
 });
 
 test("aptos runner rejects symlink-escaping harness paths", async () => {
-  const { runAptosTest } = require("../mcp/lib/aptos-runner.js");
+  const { runAptosTest } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
   const home = os.homedir();
   const tmpRoot = path.join(os.tmpdir(), "bob-aptos-symlink-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(tmpRoot, { recursive: true });
@@ -12445,7 +12510,7 @@ test("aptos runner rejects symlink-escaping harness paths", async () => {
 });
 
 test("aptos-client normalizes Move shorthand 0x1 to canonical 64-hex form", () => {
-  const { normalizeMoveAddress, isMoveAddress } = require("../mcp/lib/aptos-client.js");
+  const { normalizeMoveAddress, isMoveAddress } = require("../mcp/domains/blockchain/smart-contracts/aptos-client.js");
   assert.equal(isMoveAddress("0x1"), true);
   assert.equal(isMoveAddress("0x"), false);
   assert.equal(isMoveAddress("11111111111111111111111111111111"), false);
@@ -12454,14 +12519,14 @@ test("aptos-client normalizes Move shorthand 0x1 to canonical 64-hex form", () =
 });
 
 test("sui-client normalizes Move shorthand 0x2 to canonical 64-hex form", () => {
-  const { normalizeMoveAddress, isMoveAddress } = require("../mcp/lib/sui-client.js");
+  const { normalizeMoveAddress, isMoveAddress } = require("../mcp/domains/blockchain/smart-contracts/sui-client.js");
   assert.equal(isMoveAddress("0x2"), true);
   assert.equal(normalizeMoveAddress("0x2"), "0x" + "0".repeat(63) + "2");
 });
 
 test("Aptos and CosmWasm REST clients append paths before query-bearing endpoint secrets", async () => {
-  const { getAccountResource } = require("../mcp/lib/aptos-client.js");
-  const { getContractInfo } = require("../mcp/lib/cosmwasm-client.js");
+  const { getAccountResource } = require("../mcp/domains/blockchain/smart-contracts/aptos-client.js");
+  const { getContractInfo } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-client.js");
   const requested = [];
   await withMockSmartContractHttpRequest(async (url) => {
     requested.push(String(url));
@@ -12496,7 +12561,7 @@ test("Aptos and CosmWasm REST clients append paths before query-bearing endpoint
 });
 
 test("assignment-brief summarizeRpcPoolForBrief dispatches to aptos and sui pool summaries", () => {
-  const { summarizeRpcPoolForBrief } = require("../mcp/lib/evm-rpc-pool.js");
+  const { summarizeRpcPoolForBrief } = require("../mcp/domains/blockchain/smart-contracts/evm-rpc-pool.js");
   const aptos = summarizeRpcPoolForBrief("aptos", "mainnet");
   assert.equal(aptos.chain_family, "aptos");
   assert.equal(aptos.network, "mainnet");
@@ -12508,7 +12573,7 @@ test("assignment-brief summarizeRpcPoolForBrief dispatches to aptos and sui pool
 });
 
 test("assignment-brief RPC pool summaries redact credentialed operator endpoints", () => {
-  const { summarizeRpcPoolForBrief } = require("../mcp/lib/evm-rpc-pool.js");
+  const { summarizeRpcPoolForBrief } = require("../mcp/domains/blockchain/smart-contracts/evm-rpc-pool.js");
   const secret = "brief-secret-token";
   withEnv({
     BOB_EVM_RPCS_1: `https://user:pass@rpc.example/rpc?api_key=${secret}`,
@@ -12520,7 +12585,7 @@ test("assignment-brief RPC pool summaries redact credentialed operator endpoints
 });
 
 test("assignment-brief summarizeRpcPoolForBrief dispatches to substrate and cosmwasm pool summaries", () => {
-  const { summarizeRpcPoolForBrief } = require("../mcp/lib/evm-rpc-pool.js");
+  const { summarizeRpcPoolForBrief } = require("../mcp/domains/blockchain/smart-contracts/evm-rpc-pool.js");
   const substrate = summarizeRpcPoolForBrief("substrate", "polkadot");
   assert.equal(substrate.chain_family, "substrate");
   assert.equal(substrate.network, "polkadot");
@@ -12532,7 +12597,7 @@ test("assignment-brief summarizeRpcPoolForBrief dispatches to substrate and cosm
 });
 
 test("parseCargoTestStdout parses cargo unit test output line-by-line", () => {
-  const { parseCargoTestStdout } = require("../mcp/lib/cargo-test-output.js");
+  const { parseCargoTestStdout } = require("../mcp/domains/blockchain/smart-contracts/cargo-test-output.js");
   const stdout = [
     "running 4 tests",
     "test tests::works ... ok",
@@ -12562,7 +12627,7 @@ test("parseCargoTestStdout parses cargo unit test output line-by-line", () => {
 });
 
 test("parseCargoTestStdout redacts endpoint secrets in failure reasons", () => {
-  const { parseCargoTestStdout } = require("../mcp/lib/cargo-test-output.js");
+  const { parseCargoTestStdout } = require("../mcp/domains/blockchain/smart-contracts/cargo-test-output.js");
   const secret = "cargo-parser-secret";
   const stdout = [
     "running 1 test",
@@ -12582,7 +12647,7 @@ test("parseCargoTestStdout redacts endpoint secrets in failure reasons", () => {
 });
 
 test("parseCargoTestStdout caps tests[] at 100 and sets truncated", () => {
-  const { parseCargoTestStdout, CARGO_TESTS_CAP } = require("../mcp/lib/cargo-test-output.js");
+  const { parseCargoTestStdout, CARGO_TESTS_CAP } = require("../mcp/domains/blockchain/smart-contracts/cargo-test-output.js");
   assert.equal(CARGO_TESTS_CAP, 100);
   const lines = ["running 150 tests"];
   for (let i = 0; i < 150; i += 1) {
@@ -12596,7 +12661,7 @@ test("parseCargoTestStdout caps tests[] at 100 and sets truncated", () => {
 });
 
 test("parseCargoTestStdout returns ok=false when stdout has no test lines or result line", () => {
-  const { parseCargoTestStdout } = require("../mcp/lib/cargo-test-output.js");
+  const { parseCargoTestStdout } = require("../mcp/domains/blockchain/smart-contracts/cargo-test-output.js");
   const stdout = "error[E0432]: unresolved import\nCompilation aborted.\n";
   const r = parseCargoTestStdout(stdout);
   assert.equal(r.ok, false);
@@ -12604,7 +12669,7 @@ test("parseCargoTestStdout returns ok=false when stdout has no test lines or res
 });
 
 test("substrate runner classifies cargo missing as substrate_dependency_missing", () => {
-  const { classifySubstrateFailure } = require("../mcp/lib/substrate-runner.js");
+  const { classifySubstrateFailure } = require("../mcp/domains/blockchain/smart-contracts/substrate-runner.js");
   const cargoMissing = classifySubstrateFailure(
     { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
     false,
@@ -12625,7 +12690,7 @@ test("substrate runner classifies cargo missing as substrate_dependency_missing"
 });
 
 test("cosmwasm runner classifies cargo missing as cosmwasm_dependency_missing", () => {
-  const { classifyCosmwasmFailure } = require("../mcp/lib/cosmwasm-runner.js");
+  const { classifyCosmwasmFailure } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js");
   const cargoMissing = classifyCosmwasmFailure(
     { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
     false,
@@ -12644,7 +12709,7 @@ test("cosmwasm runner classifies cargo missing as cosmwasm_dependency_missing", 
 });
 
 test("substrate runner rejects extra_args not in the cargo allowlist", async () => {
-  const { runSubstrateTest } = require("../mcp/lib/substrate-runner.js");
+  const { runSubstrateTest } = require("../mcp/domains/blockchain/smart-contracts/substrate-runner.js");
   // Need a real Cargo.toml to pass the harness path check. Use a temp dir.
   const tmpRoot = path.join(os.homedir(), "bob-substrate-allowlist-test-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(tmpRoot, { recursive: true });
@@ -12672,7 +12737,7 @@ test("substrate runner rejects extra_args not in the cargo allowlist", async () 
 });
 
 test("cosmwasm runner rejects extra_args not in the cargo allowlist", async () => {
-  const { runCosmwasmTest } = require("../mcp/lib/cosmwasm-runner.js");
+  const { runCosmwasmTest } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js");
   const tmpRoot = path.join(os.homedir(), "bob-cosmwasm-allowlist-test-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(tmpRoot, { recursive: true });
   fs.writeFileSync(path.join(tmpRoot, "Cargo.toml"), "[package]\nname = \"test\"\nversion = \"0.1.0\"\n");
@@ -12690,7 +12755,7 @@ test("cosmwasm runner rejects extra_args not in the cargo allowlist", async () =
 });
 
 test("substrate runner rejects harness without Cargo.toml at root", async () => {
-  const { runSubstrateTest } = require("../mcp/lib/substrate-runner.js");
+  const { runSubstrateTest } = require("../mcp/domains/blockchain/smart-contracts/substrate-runner.js");
   const tmpRoot = path.join(os.homedir(), "bob-substrate-no-cargo-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(tmpRoot, { recursive: true });
   try {
@@ -12706,7 +12771,7 @@ test("substrate runner rejects harness without Cargo.toml at root", async () => 
 });
 
 test("cosmwasm runner rejects harness without Cargo.toml at root", async () => {
-  const { runCosmwasmTest } = require("../mcp/lib/cosmwasm-runner.js");
+  const { runCosmwasmTest } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js");
   const tmpRoot = path.join(os.homedir(), "bob-cosmwasm-no-cargo-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(tmpRoot, { recursive: true });
   try {
@@ -12722,7 +12787,7 @@ test("cosmwasm runner rejects harness without Cargo.toml at root", async () => {
 });
 
 test("bech32 mixed-case rejection happens at findings layer with stable error shape", () => {
-  const { normalizeBech32Address } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeBech32Address } = require("../mcp/core/finding-contracts.js");
   // BIP-0173 forbids mixed-case bech32 — the spec is explicit. We test the
   // normalizer directly so it's clear which layer enforces this.
   assert.equal(normalizeBech32Address("Osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese"), null);
@@ -12737,7 +12802,7 @@ test("bech32 mixed-case rejection happens at findings layer with stable error sh
 });
 
 test("substrate-client rejects malformed SS58", () => {
-  const { isSs58Address } = require("../mcp/lib/substrate-client.js");
+  const { isSs58Address } = require("../mcp/domains/blockchain/smart-contracts/substrate-client.js");
   assert.equal(isSs58Address("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"), true);
   assert.equal(isSs58Address("0x" + "ab".repeat(20)), false);
   assert.equal(isSs58Address("osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5"), false);
@@ -12746,7 +12811,7 @@ test("substrate-client rejects malformed SS58", () => {
 });
 
 test("cosmwasm-client rejects malformed bech32", () => {
-  const { isBech32Address } = require("../mcp/lib/cosmwasm-client.js");
+  const { isBech32Address } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-client.js");
   assert.equal(isBech32Address("osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese"), true);
   assert.equal(isBech32Address("0x" + "ab".repeat(20)), false);
   assert.equal(isBech32Address("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"), false);
@@ -12754,7 +12819,7 @@ test("cosmwasm-client rejects malformed bech32", () => {
 });
 
 test("sc_evidence rejects EVM-canonical 40-hex address when chain_family is aptos or sui", () => {
-  const { normalizeFindingRecord } = require("../mcp/lib/finding-contracts.js");
+  const { normalizeFindingRecord } = require("../mcp/core/finding-contracts.js");
   // A evaluator pastes Vitalik's address (or any 0x + 40 hex EVM address) into a
   // Move-family sc_evidence. Without the EVM-shape rejection, the address
   // would silently be left-padded to 64 hex and stored as a Move address
@@ -12821,7 +12886,7 @@ test("sc_evidence rejects EVM-canonical 40-hex address when chain_family is apto
 });
 
 test("aptos runner classifies CLI usage errors as aptos_dependency_missing", () => {
-  const { classifyAptosFailure } = require("../mcp/lib/aptos-runner.js");
+  const { classifyAptosFailure } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
   // Old aptos CLI (pre-1.0) doesn't support --package-dir.
   const oldPackageDir = classifyAptosFailure(
     { ok: false, exit_code: 1, stderr: "error: unrecognized argument --package-dir", stdout: "" },
@@ -12841,7 +12906,7 @@ test("aptos runner classifies CLI usage errors as aptos_dependency_missing", () 
 });
 
 test("sui runner classifies CLI usage errors as sui_dependency_missing", () => {
-  const { classifySuiFailure } = require("../mcp/lib/sui-runner.js");
+  const { classifySuiFailure } = require("../mcp/domains/blockchain/smart-contracts/sui-runner.js");
   // Older sui CLIs may not accept --filter / --path.
   const oldFilter = classifySuiFailure(
     { ok: false, exit_code: 1, stderr: "error: unrecognized argument --filter", stdout: "" },
@@ -13342,15 +13407,20 @@ test("verification v2 archive recovers attempt_id from snapshot when state has l
   });
 });
 
-test("verification v2 CHAIN -> VERIFY rejects when manifest refresh fails", () => {
+test("verification v2 CHAIN -> VERIFY survives a postcommit manifest-write failure", () => {
   withTempHome(() => {
     const domain = "manifest-fail.example.com";
     seedSessionState(domain, { phase: "CHAIN" });
     seedFinding(domain);
     const manifestPath = verificationManifestPath(domain);
-    // writeFileAtomic uses fs.renameSync to move a tempfile onto the target path.
-    // Intercept the rename when the destination is the manifest to simulate a
-    // manifest write failure without touching the snapshot or state writes.
+    // refreshVerificationManifest is strictly POSTCOMMIT best-effort: it runs
+    // only after commitSessionAuthority has durably committed the VERIFY advance
+    // and can never fail the call or roll it back (lifecycle-state-drift.test.js
+    // Test H covers the function-level mock; this exercises the lower-level
+    // writeFileAtomic->renameSync failure at the manifest path). writeFileAtomic
+    // uses fs.renameSync to move a tempfile onto the target; intercept the rename
+    // to the manifest to simulate the write failure without touching the snapshot
+    // or the CAS state/nucleus writes.
     const originalRenameSync = fs.renameSync;
     fs.renameSync = (from, to) => {
       if (to === manifestPath) {
@@ -13358,21 +13428,24 @@ test("verification v2 CHAIN -> VERIFY rejects when manifest refresh fails", () =
       }
       return originalRenameSync(from, to);
     };
+    let result = null;
+    let captured = null;
     try {
-      assert.throws(
-        () => transitionPhase({ target_domain: domain, to_phase: "VERIFY" }),
-        /simulated manifest write failure/,
-      );
+      result = JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
+    } catch (error) {
+      captured = error;
     } finally {
       fs.renameSync = originalRenameSync;
     }
-    // The transition should have refused to publish the new attempt as durable
-    // state once the manifest write fails. The CR-flagged race was that state
-    // would advance silently while the manifest was missing.
+    // The postcommit manifest failure must be swallowed: the advance is already
+    // durable, so it neither throws nor rolls back. State advances to VERIFY and
+    // the attempt is bound; only the best-effort manifest mirror is left stale.
+    assert.equal(captured, null, "a postcommit manifest failure must not fail the advance");
+    assert.equal(result && result.advanced, true);
     const stateOnDisk = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
-    assert.equal(stateOnDisk.phase, "CHAIN");
-    assert.equal(stateOnDisk.verification_attempt_id ?? null, null);
-    assert.equal(stateOnDisk.verification_snapshot_hash ?? null, null);
+    assert.equal(stateOnDisk.lifecycle_state, "VERIFY");
+    assert.notEqual(stateOnDisk.verification_attempt_id ?? null, null);
+    assert.notEqual(stateOnDisk.verification_snapshot_hash ?? null, null);
   });
 });
 
@@ -17598,10 +17671,10 @@ test("bob_import_static_artifact stores redacted session-owned content and rejec
 
 test("bob_import_harness stores a session-owned harness, rejects unsafe imports, and flips native_fuzz_shape", () => {
   withTempHome(() => {
-    const { importHarness, hasAcquiredHarness, readHarnessRecordsFromJsonl } = require("../mcp/lib/harness-store.js");
-    const { harnessPath, harnessesJsonlPath } = require("../mcp/lib/paths.js");
-    const { initRepoSession, buildRepoInventory } = require("../mcp/lib/repo-target.js");
-    const { loadNativeFuzzShape } = require("../mcp/lib/repo-env.js");
+    const { importHarness, hasAcquiredHarness, readHarnessRecordsFromJsonl } = require("../mcp/core/harness-store.js");
+    const { harnessPath, harnessesJsonlPath } = require("../mcp/core/io/paths.js");
+    const { initRepoSession, buildRepoInventory } = require("../mcp/domains/repo/repo-target.js");
+    const { loadNativeFuzzShape } = require("../mcp/domains/repo/repo-env.js");
     const harness = "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*d,unsigned long n){ char k[]=\"api_key=supersecretvalue123\"; (void)k; return n>0&&d[0]; }";
 
     // content-only: filesystem path imports are rejected.
@@ -17647,8 +17720,8 @@ test("bob_import_harness stores a session-owned harness, rejects unsafe imports,
 
 test("bob_import_seed_corpus stores a batch of grammar-generated seeds and resolves the newest corpus dir", () => {
   withTempHome(() => {
-    const { importSeedCorpus, hasAcquiredSeedCorpus, newestSeedCorpusDir, readSeedCorpusRecordsFromJsonl } = require("../mcp/lib/seed-corpus-store.js");
-    const { seedCorpusEntryDir, seedCorpusJsonlPath } = require("../mcp/lib/paths.js");
+    const { importSeedCorpus, hasAcquiredSeedCorpus, newestSeedCorpusDir, readSeedCorpusRecordsFromJsonl } = require("../mcp/domains/repo/seed-corpus-store.js");
+    const { seedCorpusEntryDir, seedCorpusJsonlPath } = require("../mcp/core/io/paths.js");
     const domain = "example.com";
 
     // content-only: path imports rejected.

@@ -14,12 +14,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendCandidateClaim, reproVerifiedGapForNativeReportableFindings } = require("../mcp/lib/claims.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { verifyReproReproduction } = require("../mcp/lib/repro-replay-verifier.js");
-const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
-const { repoCommandRunsJsonlPath } = require("../mcp/lib/paths.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
+const { appendCandidateClaim, reproVerifiedGapForNativeReportableFindings } = require("../mcp/core/claims/claims.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { verifyReproReproduction } = require("../mcp/domains/repo/repro-replay-verifier.js");
+const { resetForTests: resetMaterializationDebounce } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
+const { repoCommandRunsJsonlPath } = require("../mcp/core/io/paths.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const { persistingRunner } = require("./helpers/repro-run-pair.js");
 
 const ASAN_CRASH = `==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511

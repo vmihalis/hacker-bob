@@ -37,36 +37,36 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordSurfaceLeadsTool = require("../mcp/lib/tools/record-surface-leads.js");
-const promoteSurfaceLeadsTool = require("../mcp/lib/tools/promote-surface-leads.js");
+const recordSurfaceLeadsTool = require("../mcp/tools/record-surface-leads.js");
+const promoteSurfaceLeadsTool = require("../mcp/tools/promote-surface-leads.js");
 const {
   previewSurfaceLeadPromotion,
   readSurfaceLeads,
-} = require("../mcp/lib/lead-promotion.js");
+} = require("../mcp/core/frontier/lead-promotion.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
-const { ToolError, ERROR_CODES } = require("../mcp/lib/envelope.js");
+} = require("../mcp/core/session/session-state.js");
+const { ToolError, ERROR_CODES } = require("../mcp/core/io/envelope.js");
 const {
   STIGMERGIC_PRODUCERS,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 const {
   STIGMERGIC_CONSUMERS,
-} = require("../mcp/lib/stigmergic-consumers.js");
+} = require("../mcp/core/stigmergic-consumers.js");
 const {
   DEFAULT_SCANNERS,
   scanTranscript,
-} = require("../mcp/lib/friction-scanners.js");
+} = require("../mcp/core/friction-scanners.js");
 const {
   sessionDir,
   attackSurfacePath,
   pipelineEventsJsonlPath,
   queuePolicyPath,
   surfaceIndexPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   currentSurfaces,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -428,7 +428,7 @@ test("Y-D21: a smart_contract lead carries chain_family/chain_id/contract_addres
 });
 
 test("uniqueSurfaceId is a deterministic function of lead identity (re-promotion stable, distinct leads distinct)", () => {
-  const { _internals } = require("../mcp/lib/lead-promotion.js");
+  const { _internals } = require("../mcp/core/frontier/lead-promotion.js");
   const lead = { id: "L1", key: "k1", title: "Admin API", hosts: ["https://a.example.com"], endpoints: ["/api/admin"] };
   const id1 = _internals.uniqueSurfaceId(lead);
   // The same lead must mint the same id on a later wave so re-promotion folds

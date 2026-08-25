@@ -53,39 +53,39 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const initSessionTool = require("../mcp/lib/tools/init-session.js");
-const advanceSessionTool = require("../mcp/lib/tools/advance-session.js");
-const recordSurfaceLeadsTool = require("../mcp/lib/tools/record-surface-leads.js");
-const promoteSurfaceLeadsTool = require("../mcp/lib/tools/promote-surface-leads.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { writeChainAttempt } = require("../mcp/lib/chain-attempts.js");
-const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
-const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
-const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
-const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const initSessionTool = require("../mcp/tools/init-session.js");
+const advanceSessionTool = require("../mcp/tools/advance-session.js");
+const recordSurfaceLeadsTool = require("../mcp/tools/record-surface-leads.js");
+const promoteSurfaceLeadsTool = require("../mcp/tools/promote-surface-leads.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { writeChainAttempt } = require("../mcp/core/chain-attempts.js");
+const scheduleTasksTool = require("../mcp/tools/schedule-tasks.js");
+const writeVerificationRoundTool = require("../mcp/tools/write-verification-round.js");
+const writeEvidencePacksTool = require("../mcp/tools/write-evidence-packs.js");
+const writeGradeVerdictTool = require("../mcp/tools/write-grade-verdict.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
+const finalizeReportTool = require("../mcp/tools/finalize-report.js");
 
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   readReportSnapshots,
-} = require("../mcp/lib/report-snapshots.js");
+} = require("../mcp/core/report-snapshots.js");
 const {
   finalVerificationHash,
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   claimFreezePath,
   evidencePackPaths,
@@ -99,8 +99,8 @@ const {
   taskQueuePath,
   verificationRoundPaths,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
-const { appendJsonlLine: appendFindingDifferentialRow } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/paths.js");
+const { appendJsonlLine: appendFindingDifferentialRow } = require("../mcp/core/io/storage.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -362,11 +362,11 @@ function driveRealizationFlow(domain) {
   // exploited_safely positive + blocked_by_defense control (demonstrated severity >= the
   // finding's), then the verdict line binding them.
   {
-    const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-    const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-    const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-    const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-    const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+    const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+    const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+    const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+    const { offensiveRowHash } = require("../mcp/core/differential/index.js");
+    const { offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
     for (const findingId of findingIds) {
       const demonstratedSeverity = findingId === findingIds[0] ? "high" : "medium";
       const mkRow = (suffix, outcome, ch) => {

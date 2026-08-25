@@ -11,12 +11,12 @@ the existing wave scheduler and graph scheduler can consume.
 
 The repository already has the start of this axis:
 
-- `mcp/lib/target-classes.js` includes `phishing_fraud`.
-- `mcp/lib/target-class-pack-derivation.js` maps `phishing_fraud` to four
+- `mcp/core/target-classes.js` includes `phishing_fraud`.
+- `mcp/core/capability/target-class-pack-derivation.js` maps `phishing_fraud` to four
   auxiliary tools.
 - `test/wave-brief-target-class.test.js` and
   `test/derive-pack-with-target-class.test.js` pin the target-class threading.
-- `mcp/lib/queue-policy.js` carries `target_class_default` and
+- `mcp/core/io/queue-policy.js` carries `target_class_default` and
   `subdomain_enum_circuit_breaker_threshold`.
 
 Plane Z builds on that substrate by adding richer phishing-kit pack semantics

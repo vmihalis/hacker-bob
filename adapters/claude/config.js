@@ -4,13 +4,13 @@ const {
   TOOL_MANIFEST,
   TOOLS,
   toolNamesForRoleBundle,
-} = require("../../mcp/lib/tool-registry.js");
+} = require("../../mcp/tools/tool-registry.js");
 const {
   mcpToolNamesForRole,
-} = require("../../mcp/lib/role-model.js");
+} = require("../../mcp/core/dispatch/role-model.js");
 const {
   evaluatorAgentNamesForCapabilityPacks,
-} = require("../../mcp/lib/capability-packs.js");
+} = require("../../mcp/core/capability/capability-packs.js");
 
 const BASE_PERMISSIONS = Object.freeze([
   "Bash(mkdir *)",

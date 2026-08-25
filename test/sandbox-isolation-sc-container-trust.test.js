@@ -27,21 +27,21 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { verifyInvariantDifferential } = require("../mcp/lib/invariant-runner.js");
+const { verifyInvariantDifferential } = require("../mcp/core/invariant-runner.js");
 const { seedInvariantRunPair } = require("./helpers/invariant-run-seed.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/lib/sandbox-isolation-gate.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   handoffSigningPrivateKeyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function withTempHome(fn, mode) {
   const previousHome = process.env.HOME;

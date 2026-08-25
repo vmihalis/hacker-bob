@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   parseSchemaDoc,
   parseOpenApi3,
-} = require("../mcp/lib/schema-contracts.js");
+} = require("../mcp/core/schema-contracts.js");
 
 const MINIMAL_OPENAPI_3 = Object.freeze({
   openapi: "3.0.3",

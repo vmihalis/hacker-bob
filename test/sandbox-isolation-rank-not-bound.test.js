@@ -15,28 +15,28 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
 const {
   ensureHandoffSigningKey,
   signRowViaIsolatedSignerOrLocal,
-} = require("../mcp/lib/handoff-signing-key.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {
   evaluateVerdictSandboxGate,
   findingsBackedByKeyedLedger,
   sandboxDowngradeWarning,
   emitSandboxDowngradeWarning,
   SANDBOX_REMEDIATION,
-} = require("../mcp/lib/sandbox-isolation-gate.js");
+} = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   offensiveRunsJsonlPath,
   claimsJsonlPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/io/paths.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) { return char.repeat(64); }
 const KEYED_SURFACE = "surface:billing-profile";

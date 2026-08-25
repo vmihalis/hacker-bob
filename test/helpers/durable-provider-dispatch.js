@@ -9,17 +9,17 @@ const {
   assertAttemptJournalAppend,
   normalizeAttemptJournalEntry,
   normalizeEffectDispatchRecord,
-} = require("../../mcp/lib/instrument-lease-contract.js");
+} = require("../../mcp/domains/physical/instrument-lease-contract.js");
 const {
   createDurableInstrumentLeaseStore,
   createDurableInstrumentProviderDispatchPort,
-} = require("../../mcp/lib/instrument-lease-store.js");
+} = require("../../mcp/domains/physical/instrument-lease-store.js");
 const {
   createDeterministicMockDispatchAuthorityPort,
-} = require("../../mcp/lib/physical-dispatch-authority.js");
+} = require("../../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   hashCanonicalJson,
-} = require("../../mcp/lib/verification-contracts.js");
+} = require("../../mcp/core/verification/verification-contracts.js");
 
 function digest(label, value = null) {
   return hashCanonicalJson({ label, value });

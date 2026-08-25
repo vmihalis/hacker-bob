@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
-const checkpointContract = require("../mcp/lib/physical-inventory-checkpoint.js");
+const checkpointContract = require("../mcp/domains/physical/physical-inventory-checkpoint.js");
 const {
   PHYSICAL_INVENTORY_CAPTURE_DOMAIN,
   READINESS_BLOCKERS,
@@ -23,10 +23,10 @@ const {
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest: clockPublicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

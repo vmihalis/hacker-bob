@@ -23,26 +23,36 @@ const {
   ORACLE_KIND_VALUES,
   MINT_TOOL_ID,
   REREAD_TOOL_ID,
-} = require("../mcp/lib/offensive-secondorder-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/domains/web/offensive-secondorder-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 const {
   attackSurfacePath,
+  findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   secondorderTokensJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
-} = require("../mcp/lib/claims.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyFindingDifferential } = require("../mcp/lib/finding-differential-verifier.js");
+} = require("../mcp/core/claims/claims.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
+const {
+  OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  offensiveRowHash,
+  readFindingDifferentialVerifiedSummary,
+  verifyFindingDifferential,
+} = require("../mcp/core/differential/index.js");
+const {
+  hashCanonicalJson,
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -102,6 +112,24 @@ function decoyFor(domain, handle) {
   return binding ? binding.decoy : null;
 }
 
+function appendForgedFindingDifferentialVerdict(domain, body) {
+  const recordBody = {
+    version: 1,
+    target_domain: domain,
+    ts: "2026-08-23T00:00:00.000Z",
+    finding_id: "F-FORGE",
+    result: "verified_pass",
+    reason: "executed_finding_differential_flip",
+    surface_id: SURFACE_ID,
+    source: "offensive_runs",
+    ...body,
+  };
+  const record = { ...recordBody, results_hash: hashCanonicalJson(recordBody) };
+  fs.mkdirSync(path.dirname(findingDifferentialVerifiedJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(findingDifferentialVerifiedJsonlPath(domain), `${JSON.stringify(record)}\n`, "utf8");
+  return record;
+}
+
 // An injected re-read response: a JSON body reflected at the observation endpoint. The
 // seam ignores the URL (Bob-controlled channel) and returns a response-like { status,
 // bodyBytes }, so the producer runs its real parse + exact-leaf oracle.
@@ -120,7 +148,7 @@ test("ceiling registry: bob_secondorder_reread is a hard MEDIUM; bob_secondorder
 });
 
 test("the module never requires child_process (strictly in-process + safeFetch)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "offensive-secondorder-producer.js"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "domains", "web", "offensive-secondorder-producer.js"), "utf8");
   assert.ok(!/child_process/.test(src), "must not reference child_process");
 });
 
@@ -383,4 +411,49 @@ test("the surfaced positive + the decoy-silent control flip to a verified_pass (
     control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
   });
   assert.equal(verdict.result, "verified_pass", JSON.stringify(verdict));
+  assert.equal(verdict.proof_record.proof_mode, OBSERVED_INVARIANT_CANARY_PROOF_MODE);
+  assert.equal(verdict.proof_record.design_hash, OBSERVED_INVARIANT_CANARY_DESIGN_HASH);
+  assert.equal(verdict.proof_record.finding_id, "F-1");
+  assert.equal(verdict.proof_record.parsed_leaf.match, "exact_leaf");
+  assert.equal(verdict.proof_record.parsed_leaf.extractor, "secondorder_reread_json_exact_leaf_v1");
+  assert.match(verdict.proof_record.parsed_leaf.canary_sha256, /^[0-9a-f]{64}$/);
+  assert.match(verdict.proof_record.proof_hash, /^[0-9a-f]{64}$/);
+  assert.equal(verdict.proof_record.control_refs[0].row_id, pos.run_id);
+  assert.equal(verdict.proof_record.control_refs[1].row_id, ctl.run_id);
+  assert.ok(!JSON.stringify(verdict.proof_record).includes(c1), "proof record carries canary digest, never the raw canary");
+
+  const summaryEntry = readFindingDifferentialVerifiedSummary(domain).verified_by_finding["F-1"];
+  assert.ok(summaryEntry, "second-order proof survives read-time re-derivation");
+  assert.equal(summaryEntry.proof_record.proof_mode, OBSERVED_INVARIANT_CANARY_PROOF_MODE);
+  assert.equal(summaryEntry.proof_record.proof_hash, verdict.proof_record.proof_hash);
+}));
+
+test("a forged second-order verified_pass without observed-invariant canary proof is excluded at read time", () => withTempHome(async () => {
+  const domain = "so-forged-proof.example.test";
+  setupSession(domain);
+  const m1 = await secondorderMint(mintArgs(domain));
+  const c1 = canaryFor(domain, m1.token_handle);
+  const pos = await secondorderReread(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { observation_source: jsonSource({ data: { comment: { body: c1 } } }) },
+  );
+  const m2 = await secondorderMint(mintArgs(domain));
+  const ctl = await secondorderReread(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { observation_source: jsonSource({ data: { comment: { body: "unrelated" } } }) },
+  );
+  const rows = readOffensiveRunRecords(domain);
+  const positiveRow = rows.find((row) => row.run_id === pos.run_id);
+  const controlRow = rows.find((row) => row.run_id === ctl.run_id);
+  appendForgedFindingDifferentialVerdict(domain, {
+    finding_id: "F-FORGE",
+    positive_run_id: pos.run_id,
+    positive_row_hash: offensiveRowHash(positiveRow),
+    control_run_id: ctl.run_id,
+    control_row_hash: offensiveRowHash(controlRow),
+  });
+
+  const summary = readFindingDifferentialVerifiedSummary(domain);
+  assert.equal(summary.verified_pass_count, 1, "the raw forged verdict line exists");
+  assert.equal(summary.verified_by_finding["F-FORGE"], undefined, "second-order rows without a re-derived canary proof do not close");
 }));

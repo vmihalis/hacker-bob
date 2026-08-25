@@ -25,7 +25,7 @@ const {
   PRODUCER_IDS,
   getProducer,
   isKnownProducerId,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 
 const REPO_ROOT = path.join(__dirname, "..");
 

@@ -24,10 +24,10 @@ const {
   normalizePhysicalResourceArbiterState,
   normalizePhysicalResourceQueueTicket,
   transitionPhysicalResourceArbiter,
-} = require("../../../mcp/lib/physical-resource-arbiter.js");
+} = require("../../../mcp/domains/physical/physical-resource-arbiter.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const RESOURCE_ARBITER_STATE_PORT_VERSION = 1;
 const RESOURCE_ARBITER_STORE_VERSION = 1;

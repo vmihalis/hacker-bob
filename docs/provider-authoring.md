@@ -49,10 +49,10 @@ language:
 
 Use the factories and normalizers exported by
 `packages/bob-instrument-contracts/lib/` and
-`mcp/lib/physical-resource-contract.js`. Do not construct normalized objects by
+`mcp/core/physical-resource-contracts.js`. Do not construct normalized objects by
 copying their JSON shape: Bob uses private brands at authority boundaries.
 
-`mcp/lib/physical-provider-authoring.js` is the executable assembly validator.
+`mcp/domains/physical/physical-provider-authoring.js` is the executable assembly validator.
 `createPhysicalProviderAuthoringManifest` accepts the branded descriptor,
 operation registry, effect registry, and normalized resource bundles and emits
 only their closed, content-addressed authoring projection. The projection never

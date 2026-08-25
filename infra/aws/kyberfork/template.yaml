@@ -5,7 +5,7 @@ Transform: AWS::Serverless-2016-10-31
 # SUPERSEDED (fx-kyber-iac) — this stack is NOT deployed.
 #
 # KYBERFORK-SPEC.md's own REFRAMED 2026-07-09 banner (top of file) explains
-# why: hacker-bob's SC/EVM axis (mcp/lib/sc-egress-policy.js) unconditionally
+# why: hacker-bob's SC/EVM axis (mcp/domains/blockchain/smart-contracts/sc-egress-policy.js) unconditionally
 # rejects RFC1918/private RPC endpoints, with ZERO coupling to the web-axis
 # lab-attestation carve-out this in-VPC anvil node + kyberfork.internal
 # private-DNS design depended on. That makes this stack's own architecture
@@ -15,7 +15,7 @@ Transform: AWS::Serverless-2016-10-31
 #
 # Kyber now runs via a PUBLIC ARCHIVE FORK instead: bob_foundry_run(chain_id=1,
 # fork_block=17050000) resolves through hacker-bob's own DEFAULT_PUBLIC_RPC_LADDER
-# (mcp/lib/evm-rpc-pool.js), reached from inside the deny-egress microVM over
+# (mcp/domains/blockchain/smart-contracts/evm-rpc-pool.js), reached from inside the deny-egress microVM over
 # exactly ONE declared archive-RPC egress path — see
 # infra/aws/hacker-bob-stack/template.yaml's ArchiveRpcGatewayEgressRule +
 # ArchiveRpcAllowedDomainList/ArchiveRpcDenyAllDomainList Route 53 Resolver

@@ -2,9 +2,10 @@
 
 const fs = require("fs");
 const path = require("path");
+require("../../mcp/tools/tool-registry.js");
 const {
   roleDefinition,
-} = require("../../mcp/lib/role-model.js");
+} = require("../../mcp/core/dispatch/role-model.js");
 const {
   codexRoleSpec,
 } = require("../../adapters/codex/role-specs.js");
@@ -14,11 +15,11 @@ const {
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
   substituteProducerCatalogue,
-} = require("../../mcp/lib/capability-packs-rendering.js");
+} = require("../../mcp/core/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
-} = require("../../mcp/lib/capability-playbooks.js");
-const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+} = require("../../mcp/core/capability/capability-playbooks.js");
+const { evaluatorRoleSpecs } = require("../../mcp/core/capability/capability-packs.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 // Cross-cutting Codex worker contracts (surface-discovery/auth/chain/verifier/evidence/
@@ -224,7 +225,7 @@ function applyCodexHostText(document) {
   return document
     .replace(
       "{{STATUS_UPDATE_CACHE_COMMAND}}",
-      "node -e \"const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));\"",
+      "node -e \"const update=require('./mcp/core/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));\"",
     )
     .replace(/Use host-normal agent permissions by default/g, "Use Codex worker-agent permissions by default")
     .replace(/Evaluator waves MUST use the host's asynchronous\/background worker mechanism when available\./g, "Evaluator waves MUST use Codex `spawn_agent` workers and must respect host capacity.")
@@ -341,13 +342,13 @@ function renderUpdateSkill() {
     "## Read Cache",
     "Read the passive local cache without network access:",
     "```bash",
-    "node -e \"const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));\"",
+    "node -e \"const update=require('./mcp/core/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));\"",
     "```",
     "",
     "## Check Latest",
     "Run this only when the operator explicitly asks to check for updates:",
     "```bash",
-    "node -e \"const update=require('./mcp/lib/update-check.js'); update.checkForUpdate(process.cwd(), { includeChangelog: true }).then((result) => console.log(update.renderUpdatePlan(result))).catch((error) => { console.error(error.message || String(error)); process.exit(1); });\"",
+    "node -e \"const update=require('./mcp/core/update-check.js'); update.checkForUpdate(process.cwd(), { includeChangelog: true }).then((result) => console.log(update.renderUpdatePlan(result))).catch((error) => { console.error(error.message || String(error)); process.exit(1); });\"",
     "```",
     "",
     "## Apply Update",
@@ -369,7 +370,7 @@ function renderExportSkill() {
     "",
     "Run from the project root. The command has no v1 flags:",
     "```bash",
-    "node -e \"const exporter=require('./mcp/lib/bob-export.js'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));\"",
+    "node -e \"const exporter=require('./mcp/core/bob-export.js'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));\"",
     "```",
     "",
     "Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not evaluate, resume sessions, or interact with targets.",
@@ -387,7 +388,7 @@ function renderEgressSkill() {
     "",
     "Run from the project root:",
     "```bash",
-    "node ./mcp/lib/egress-cli.js \"$PWD\" $ARGUMENTS",
+    "node ./mcp/core/egress-cli.js \"$PWD\" $ARGUMENTS",
     "```",
     "",
     "Rules:",

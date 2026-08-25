@@ -9,8 +9,8 @@ const {
   validateHandoffProvenance,
   normalizeDiscoveredPivots,
   normalizeSpawnedChildren,
-} = require("../mcp/lib/wave-handoff-contracts.js");
-const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/core/session/nested-spawn.js");
 
 test("B5: normalizeDiscoveredPivots accepts bounded pivot entries and rejects malformed ones", () => {
   assert.deepEqual(normalizeDiscoveredPivots(undefined), [], "absent => empty");
@@ -28,8 +28,8 @@ test("B5: normalizeDiscoveredPivots accepts bounded pivot entries and rejects ma
 });
 
 test("B6: normalizeSpawnedChildren bounds the self-report; validateSpawnFanout is the detective cross-check", () => {
-  const { validateSpawnFanout } = require("../mcp/lib/nested-spawn.js");
-  const writeHandoffTool = require("../mcp/lib/tools/write-wave-handoff.js");
+  const { validateSpawnFanout } = require("../mcp/core/session/nested-spawn.js");
+  const writeHandoffTool = require("../mcp/tools/write-wave-handoff.js");
   assert.deepEqual(
     writeHandoffTool.inputSchema.properties.spawned_children.items.required,
     ["subagent_type", "cell_key"],

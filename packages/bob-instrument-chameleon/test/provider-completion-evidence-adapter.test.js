@@ -50,10 +50,10 @@ const {
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const SESSION_HASH = "a".repeat(64);
 const LINEAGE_DOMAIN = "hacker-bob/provider-worker-vault-execution-lineage/v1";

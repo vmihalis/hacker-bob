@@ -24,17 +24,17 @@ const assert = require("node:assert/strict");
 const {
   TARGET_CLASS_VALUES,
   assertTargetClass,
-} = require("../mcp/lib/target-classes.js");
+} = require("../mcp/core/target-classes.js");
 const {
   AUXILIARY_TOOLS_BY_TARGET_CLASS,
   deriveAuxiliaryToolsForTargetClass,
-} = require("../mcp/lib/target-class-pack-derivation.js");
+} = require("../mcp/core/capability/target-class-pack-derivation.js");
 const {
   derivePackForNode,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 
 const PHISHING_AUX_TOOLS = [
   "bob_public_intel",

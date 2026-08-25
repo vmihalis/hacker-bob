@@ -15,18 +15,18 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { writeGradeVerdict, readGradeVerdict } = require("../mcp/lib/grade-verdict-store.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { writeGradeVerdict, readGradeVerdict } = require("../mcp/core/grade-verdict-store.js");
 const { seedInvariantRunPair } = require("./helpers/invariant-run-seed.js");
-const { verifyInvariantDifferential } = require("../mcp/lib/invariant-runner.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+const { verifyInvariantDifferential } = require("../mcp/core/invariant-runner.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   offensiveRunsJsonlPath,
   findingDifferentialVerifiedJsonlPath,
@@ -34,11 +34,11 @@ const {
   gradeArtifactPaths,
   sandboxIsolationPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_ISOLATION_SCHEMA_VERSION,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";
@@ -233,7 +233,7 @@ function forgeAttestedFlag(domain) {
   fs.writeFileSync(sandboxIsolationPath(domain), `${JSON.stringify(forged, null, 2)}\n`);
 }
 
-const gateModule = require("../mcp/lib/sandbox-isolation-gate.js");
+const gateModule = require("../mcp/core/verdict-sandbox-gate.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 test("withIsolatedSigner forces evaluateVerdictSandboxGate to decision:allow and restores the real function in finally", () => {

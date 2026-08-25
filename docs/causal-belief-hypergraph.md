@@ -70,23 +70,23 @@ table; there is still exactly one scheduler and one gate.
 
 Already shipped (Tier 1 substrate -- reuse, with anchors):
 
-- Typed, content-addressed graph: `mcp/lib/surface-graph.js:14` `NODE_TYPES`,
+- Typed, content-addressed graph: `mcp/core/frontier/surface-graph.js:14` `NODE_TYPES`,
   `:28` `EDGE_TYPES` (`edge_hash` via `normalizeEdge`).
 - Principal x Credential x Endpoint -> Effect, already computed:
-  `mcp/lib/auth-differential.js:130` (`unauth_succeeds_where_auth_blocked`).
+  `mcp/core/auth-differential.js:130` (`unauth_succeeds_where_auth_blocked`).
 - PolicyGate facts: `schema-contracts.js` `claimed_auth`; on-chain role matrix
-  `mcp/lib/tools/evm-role-table.js`.
-- Contract DSL with witnesses: `mcp/lib/contracts.js:70` `WITNESS_KIND_VALUES`,
+  `mcp/tools/blockchain/evm-role-table.js`.
+- Contract DSL with witnesses: `mcp/core/contract/contracts.js:70` `WITNESS_KIND_VALUES`,
   `:77` `relational_value_match`.
-- Typed-fact ledger + projection: `mcp/lib/frontier-events.js:33`
-  `FRONTIER_EVENT_KINDS`, folded by `mcp/lib/frontier-materializer.js`.
+- Typed-fact ledger + projection: `mcp/core/frontier/frontier-events.js:33`
+  `FRONTIER_EVENT_KINDS`, folded by `mcp/core/frontier/frontier-materializer.js`.
 - One dispatch authority: the TaskGraph materializer + `bob_propose_hypothesis`
-  (`mcp/lib/tools/propose-hypothesis.js:72` `suggested_contract`).
-- One promotion gate: `mcp/lib/lead-scoring.js:35` `evidenceScore` -> `:97`
+  (`mcp/tools/propose-hypothesis.js:72` `suggested_contract`).
+- One promotion gate: `mcp/core/frontier/lead-scoring.js:35` `evidenceScore` -> `:97`
   `confidenceFromScore`.
-- Verification hash + replay battery: `mcp/lib/verification.js` +
+- Verification hash + replay battery: `mcp/core/verification/verification.js` +
   `computeAdjudicationPlanHash`; `state_sensitive` and replay triggers already
-  ship (`mcp/lib/verification-round-store.js:134`, `verification.js:684`).
+  ship (`mcp/core/verification/verification-round-store.js:134`, `verification.js:684`).
 
 Does not exist anywhere in Bob (Tier 2 inference engine -- net-new, grep-confirmed
 zero hits for factor-graph / sampler / belief-state / information-gain / posterior
@@ -109,7 +109,7 @@ prefix avoids collision with the shipped capability-hypergraph nodes (`S1..S10`,
 
 ## Authority and guardrails
 
-The belief plane is advisory and derived; `mcp/lib/lifecycle-gates.js`, the tool
+The belief plane is advisory and derived; `mcp/core/session/lifecycle-gates.js`, the tool
 registry, role bundles, egress binding, claim freeze, verification, grade, and
 report remain authoritative. The engine is allowed to be ambitious *because* it
 never holds authority. Guardrails:
@@ -188,8 +188,8 @@ Each node: **TIER** / **ACTION** (`extend_existing`, `merge`, `layer_on`, or
 
 ### CB-S1 -- Authority preservation
 
-**ACTION.** `extend_existing` (`mcp/lib/role-model.js` read-only pattern;
-`mcp/lib/paths.js` `AUDIT_GRADED_PATHS`).
+**ACTION.** `extend_existing` (`mcp/core/dispatch/role-model.js` read-only pattern;
+`mcp/core/io/paths.js` `AUDIT_GRADED_PATHS`).
 
 Belief outputs are derived, recomputable, **scratch**. Belief read/query tools are
 `network_access:false`, `mutating:false`. The one belief write that touches a
@@ -202,9 +202,9 @@ asserts refusal (the current suite proves grants, not denials).
 
 ### CB-S2 -- Provenance and secret-safety
 
-**ACTION.** `extend_existing` (`mcp/lib/sensitive-material.js`
+**ACTION.** `extend_existing` (`mcp/core/redaction/sensitive-material.js`
 `validateNoSensitiveMaterial`; `mcp/redaction.js` `redactTextSensitiveValues`;
-enum convention `mcp/lib/claims.js:84` `EVIDENCE_REFERENCE_KIND_VALUES`).
+enum convention `mcp/core/claims/claims.js:84` `EVIDENCE_REFERENCE_KIND_VALUES`).
 
 Every belief edge/fact carries a provenance value from a closed enum
 (`observed_http`, `observed_traffic`, `declared_schema`, `static_code`,
@@ -220,8 +220,8 @@ evidence or prior.
 
 ### CB-1 -- Mechanism projection over the surface graph
 
-**ACTION.** `extend_existing` (`mcp/lib/surface-graph.js` taxonomy;
-`mcp/lib/surface-graph-builder.js` builders; fed by `auth-differential.js`,
+**ACTION.** `extend_existing` (`mcp/core/frontier/surface-graph.js` taxonomy;
+`mcp/core/frontier/surface-graph-builder.js` builders; fed by `auth-differential.js`,
 `evm-role-table.js`, `symbol-surface-index.js`, `chain-state-tree.js`).
 
 **DO.** Add the missing node/edge types -- `principal`, `credential`,
@@ -233,9 +233,9 @@ new store. This is the typed fact layer the engine reasons over.
 
 ### CB-2 -- Object-authorization mechanism template
 
-**ACTION.** `merge` into `mcp/lib/invariant-template-corpus.js` +
-`mcp/lib/oss-rootcause-family-corpus.js` + `mcp/lib/contracts.js` witness DSL;
-mechanism id from `mcp/lib/cwe-catalog.js` (`CWE-284/862/863`).
+**ACTION.** `merge` into `mcp/core/mechanism/invariant-template-corpus.js` +
+`mcp/domains/repo/oss-rootcause-family-corpus.js` + `mcp/core/contract/contracts.js` witness DSL;
+mechanism id from `mcp/core/scoring/cwe-catalog.js` (`CWE-284/862/863`).
 
 **DO.** Add `object_authorization` as a template record in the existing corpus
 shape (`required_entities`, `interventions`, `positive_controls`,
@@ -245,8 +245,8 @@ is the structural prior the belief engine instantiates per surface.
 
 ### CB-3 -- Typed-fact intake (reuse frontier-events)
 
-**ACTION.** `layer_on` (`mcp/lib/frontier-events.js` `observation.recorded`;
-`mcp/lib/frontier-materializer.js`; `http-records.js`, `schema-contracts-store.js`;
+**ACTION.** `layer_on` (`mcp/core/frontier/frontier-events.js` `observation.recorded`;
+`mcp/core/frontier/frontier-materializer.js`; `http-records.js`, `schema-contracts-store.js`;
 the `capability-observations.js` "add a derived fact" precedent).
 
 **DO.** Do not build a second extractor tier. The belief window reads the typed
@@ -256,7 +256,7 @@ surface, and claims/verification; any genuinely new derived fact is added via th
 
 ## Tier 2 -- Inference engine (net-new, first-class)
 
-This is the capability. Each node here is new code under `mcp/lib/belief/*`. None
+This is the capability. Each node here is new code under `mcp/core/belief/*`. None
 of it duplicates a store or an authority; it reads Tier 1 and emits through
 Tier 3.
 
@@ -282,7 +282,7 @@ latents given evidence so far. This is the structural break from `lead-scoring`:
 that engine produces a heuristic point score from keyword weights; CB-B1 maintains
 a distribution over unobservable mechanism state that evidence updates.
 
-**DO.** Define `mcp/lib/belief/belief-window.js` (schema, latent variables,
+**DO.** Define `mcp/core/belief/belief-window.js` (schema, latent variables,
 factor bindings, provenance, content-addressed window hash). Hard caps on
 variables, factors, and serialized size; oversized windows refuse with
 `belief_window_too_large`.
@@ -318,7 +318,7 @@ hypothesis (e.g. expected reduction in entropy of `gate_effectiveness`). This is
 the function that makes Bob pick experiments a heuristic ranker would never
 prioritize.
 
-**DO.** `mcp/lib/belief/intervention-calculus.js`: do-operator over the belief
+**DO.** `mcp/core/belief/intervention-calculus.js`: do-operator over the belief
 window, predicted-effect, per-control posterior deltas, and an information-gain
 ranking of candidate interventions. Confounders are explicit latent alternatives
 the calculus must be able to discriminate, not prose.
@@ -351,7 +351,7 @@ The loop never spawns its own dispatcher or records its own claims. It chooses,
 the materializer dispatches, the evaluator observes, the claim/verification plane
 adjudicates.
 
-**DO.** `mcp/lib/belief/experiment-loop.js` as an advisory planner that emits
+**DO.** `mcp/core/belief/experiment-loop.js` as an advisory planner that emits
 `propose_hypothesis` Contracts and consumes their observed outcomes; a bound on
 loop iterations per hypothesis; full provenance on every belief update.
 
@@ -379,7 +379,7 @@ boundary). This stays inside the prior's support -- no new authority, no
 laundering -- and is the engine's largest reachable source of novel findings. The
 same marginals feed the residual diagnostic (`CB-B6`).
 
-**DO.** `mcp/lib/belief/factor-graph.js` with a **pure-JS deterministic sampler
+**DO.** `mcp/core/belief/factor-graph.js` with a **pure-JS deterministic sampler
 first** (seeded; same seed + window hash -> same marginals within tolerance). An
 optional Python/JAX/THRML backend may follow only if release policy permits and
 must never become an npm install requirement. Persist `belief-samples` as scratch
@@ -449,7 +449,7 @@ Two non-gating sinks, and an inverted LLM role:
   trust only through the one existing gate (`record-candidate-claim` with real
   intervention evidence); it is never a self-validated template.
 
-**DO.** `mcp/lib/belief/residual.js` deriving the residual from the `CB-B4`
+**DO.** `mcp/core/belief/residual.js` deriving the residual from the `CB-B4`
 marginals (deterministic, replay-checkable); the `residual_anomaly` provenance
 value; a bounded human-routed record; a priority-hint input to `CB-C1` that cannot
 change dispatch authority.
@@ -465,8 +465,8 @@ generation is not.
 
 ### CB-C1 -- Belief into the one scheduler
 
-**ACTION.** `layer_on` (`mcp/lib/lead-scoring.js` score+rationale ->
-`mcp/lib/ranking.js` `priorityFromScore` -> `mcp/lib/wave-planner.js:50`
+**ACTION.** `layer_on` (`mcp/core/frontier/lead-scoring.js` score+rationale ->
+`mcp/core/ranking.js` `priorityFromScore` -> `mcp/core/waves/wave-planner.js:50`
 `compareSurfaces` / graph scheduler; `queue-policy` recorded into the hash-bound
 `SchedulerDecision`).
 

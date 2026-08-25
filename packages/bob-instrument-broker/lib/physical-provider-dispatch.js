@@ -22,14 +22,14 @@ const {
 } = require("./resource-reservations.js");
 const {
   normalizeOpaqueRef,
-} = require("../../../mcp/lib/physical-quantities.js");
+} = require("../../../mcp/domains/physical/physical-quantities.js");
 const {
   normalizePhysicalResourceBundle,
   normalizeResourceAllocation,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   assertProviderCompletionEvidenceAdapter,
 } = require("../../bob-instrument-contracts/lib/instrument-provider-contract.js");
@@ -38,7 +38,7 @@ const {
   claimPhysicalDispatchExecutionAuthority,
   projectCurrentPhysicalDispatchExecutionAuthority,
   takePhysicalDispatchExecutionAuthorityClaimOwnership,
-} = require("../../../mcp/lib/physical-dispatch-authority.js");
+} = require("../../../mcp/domains/physical/physical-dispatch-authority.js");
 
 const PHYSICAL_PROVIDER_DISPATCH_VERSION = 1;
 const MAX_COMMANDS = 4096;

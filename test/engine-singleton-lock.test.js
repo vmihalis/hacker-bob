@@ -40,9 +40,9 @@ function withTempHome(fn) {
 // process exits on its own almost right away -- with no relation to the
 // singleton lock at all -- which would make this test pass or fail for the
 // wrong reason. We open the pipe and deliberately never end() it.
-function spawnEngine(home, { timeoutMs = 5000 } = {}) {
+function spawnEngine(home, { timeoutMs = 5000, env = {} } = {}) {
   const child = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -129,6 +129,52 @@ test("a second `node mcp/server.js` against an already-locked session root refus
   });
 });
 
+test("a second engine refused under a custom BOB_SESSIONS_ROOT reports the actual configured root, not the hardcoded default", async () => {
+  await withTempHome(async (home) => {
+    const customRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-custom-sessions-root-"));
+    fs.chmodSync(customRoot, 0o700);
+    try {
+      const customEnv = { env: { BOB_SESSIONS_ROOT: customRoot } };
+      const first = spawnEngine(home, customEnv);
+      const firstOutcome = await first.outcome;
+      assert.ok(firstOutcome.ready, `first engine instance must reach the ready banner: ${firstOutcome.stderr}`);
+      assert.ok(
+        firstOutcome.stderr.includes(customRoot),
+        `ready banner must name the custom session root; got: ${firstOutcome.stderr}`,
+      );
+      assert.equal(
+        firstOutcome.stderr.includes("~/hacker-bob-sessions/"),
+        false,
+        `ready banner must not fall back to the hardcoded default; got: ${firstOutcome.stderr}`,
+      );
+
+      try {
+        const second = spawnEngine(home, customEnv);
+        const secondOutcome = await second.outcome;
+        assert.equal(secondOutcome.exited, true, "second engine instance must exit (not hang serving)");
+        assert.notEqual(secondOutcome.code, 0, "second engine instance must exit non-zero");
+        assert.ok(
+          REFUSAL_BANNER.test(secondOutcome.stderr),
+          `second engine instance must print a refusal message on stderr; got: ${secondOutcome.stderr}`,
+        );
+        assert.ok(
+          secondOutcome.stderr.includes(customRoot),
+          `refusal message must name the actual boot-frozen session root, not a hardcoded default; got: ${secondOutcome.stderr}`,
+        );
+        assert.equal(
+          secondOutcome.stderr.includes("~/hacker-bob-sessions/"),
+          false,
+          `refusal message must not fall back to the hardcoded default; got: ${secondOutcome.stderr}`,
+        );
+      } finally {
+        await killAndWait(first.child);
+      }
+    } finally {
+      fs.rmSync(customRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 test("a crash-left same-host lock is reclaimed only after its owner PID is absent", async () => {
   await withTempHome(async (home) => {
     const first = spawnEngine(home);
@@ -186,9 +232,9 @@ test("same-host live, foreign-host dead, malformed, and linked lock ownership fa
     await withTempHome(async (home) => {
       const previousHome = process.env.HOME;
       process.env.HOME = home;
-      delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
-      const { acquireEngineSingletonLock } = require("../mcp/lib/engine-lock.js");
-      const { engineLockPath } = require("../mcp/lib/paths.js");
+      delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
+      const { acquireEngineSingletonLock } = require("../mcp/core/io/engine-lock.js");
+      const { engineLockPath } = require("../mcp/core/io/paths.js");
       try {
         fs.mkdirSync(path.dirname(engineLockPath()), { recursive: true, mode: 0o700 });
         fs.writeFileSync(
@@ -201,7 +247,7 @@ test("same-host live, foreign-host dead, malformed, and linked lock ownership fa
       } finally {
         fs.rmSync(engineLockPath(), { force: true });
         process.env.HOME = previousHome;
-        delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+        delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
       }
     });
   }
@@ -209,9 +255,9 @@ test("same-host live, foreign-host dead, malformed, and linked lock ownership fa
   await withTempHome(async (home) => {
     const previousHome = process.env.HOME;
     process.env.HOME = home;
-    delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
-    const { acquireEngineSingletonLock } = require("../mcp/lib/engine-lock.js");
-    const { engineLockPath } = require("../mcp/lib/paths.js");
+    delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
+    const { acquireEngineSingletonLock } = require("../mcp/core/io/engine-lock.js");
+    const { engineLockPath } = require("../mcp/core/io/paths.js");
     try {
       fs.mkdirSync(path.dirname(engineLockPath()), { recursive: true, mode: 0o700 });
       fs.writeFileSync(engineLockPath(), "not-json\n", { mode: 0o600 });
@@ -219,16 +265,16 @@ test("same-host live, foreign-host dead, malformed, and linked lock ownership fa
     } finally {
       fs.rmSync(engineLockPath(), { force: true });
       process.env.HOME = previousHome;
-      delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+      delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     }
   });
 
   await withTempHome(async (home) => {
     const previousHome = process.env.HOME;
     process.env.HOME = home;
-    delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
-    const { acquireEngineSingletonLock } = require("../mcp/lib/engine-lock.js");
-    const { engineLockPath } = require("../mcp/lib/paths.js");
+    delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
+    const { acquireEngineSingletonLock } = require("../mcp/core/io/engine-lock.js");
+    const { engineLockPath } = require("../mcp/core/io/paths.js");
     const sibling = path.join(home, "dead-owner.json");
     try {
       fs.mkdirSync(path.dirname(engineLockPath()), { recursive: true, mode: 0o700 });
@@ -246,7 +292,7 @@ test("same-host live, foreign-host dead, malformed, and linked lock ownership fa
       fs.rmSync(engineLockPath(), { force: true });
       fs.rmSync(sibling, { force: true });
       process.env.HOME = previousHome;
-      delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+      delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     }
   });
 });
@@ -255,12 +301,12 @@ test("a legacy same-host dead-owner record is migrated by exact recovery", async
   await withTempHome(async (home) => {
     const previousHome = process.env.HOME;
     process.env.HOME = home;
-    delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+    delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     const {
       acquireEngineSingletonLock,
       releaseEngineSingletonLock,
-    } = require("../mcp/lib/engine-lock.js");
-    const { engineLockPath } = require("../mcp/lib/paths.js");
+    } = require("../mcp/core/io/engine-lock.js");
+    const { engineLockPath } = require("../mcp/core/io/paths.js");
     try {
       fs.mkdirSync(path.dirname(engineLockPath()), { recursive: true, mode: 0o700 });
       fs.writeFileSync(engineLockPath(), `${JSON.stringify({
@@ -277,7 +323,7 @@ test("a legacy same-host dead-owner record is migrated by exact recovery", async
       releaseEngineSingletonLock();
       fs.rmSync(engineLockPath(), { force: true });
       process.env.HOME = previousHome;
-      delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+      delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     }
   });
 });
@@ -305,13 +351,13 @@ test("acquireEngineSingletonLock returns false (never throws) when another proce
   await withTempHome(async (home) => {
     const previousHome = process.env.HOME;
     process.env.HOME = home;
-    delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+    delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     const {
       acquireEngineSingletonLock,
       releaseEngineSingletonLock,
-    } = require("../mcp/lib/engine-lock.js");
-    const { engineLockPath } = require("../mcp/lib/paths.js");
-    const { writeFileExclusiveAtomic } = require("../mcp/lib/storage.js");
+    } = require("../mcp/core/io/engine-lock.js");
+    const { engineLockPath } = require("../mcp/core/io/paths.js");
+    const { writeFileExclusiveAtomic } = require("../mcp/core/io/storage.js");
     try {
       // Simulate "another process already holds the lock": write the lock
       // file directly via the SAME primitive acquireEngineSingletonLock uses,
@@ -333,7 +379,7 @@ test("acquireEngineSingletonLock returns false (never throws) when another proce
       releaseEngineSingletonLock();
       fs.rmSync(engineLockPath(), { force: true });
       process.env.HOME = previousHome;
-      delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+      delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     }
   });
 });
@@ -345,12 +391,12 @@ test("acquireEngineSingletonLock/releaseEngineSingletonLock: in-process double-a
     // Fresh require per HOME swap is unnecessary -- engineLockPath() reads
     // os.homedir() (and therefore process.env.HOME) at CALL time, not at
     // require time, so re-requiring the already-cached module is fine.
-    delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+    delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     const {
       acquireEngineSingletonLock,
       releaseEngineSingletonLock,
       _isEngineSingletonLockHeldForTest,
-    } = require("../mcp/lib/engine-lock.js");
+    } = require("../mcp/core/io/engine-lock.js");
     try {
       assert.equal(_isEngineSingletonLockHeldForTest(), false);
       assert.equal(acquireEngineSingletonLock(), true, "first acquire must succeed");
@@ -370,7 +416,7 @@ test("acquireEngineSingletonLock/releaseEngineSingletonLock: in-process double-a
     } finally {
       releaseEngineSingletonLock();
       process.env.HOME = previousHome;
-      delete require.cache[require.resolve("../mcp/lib/engine-lock.js")];
+      delete require.cache[require.resolve("../mcp/core/io/engine-lock.js")];
     }
   });
 });

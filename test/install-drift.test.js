@@ -103,6 +103,23 @@ function sidecarsUnder(root) {
   return found.sort();
 }
 
+function runtimeModulePaths(runtimeDir) {
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules") continue;
+        walk(abs);
+      } else if (entry.isFile() && entry.name.endsWith(".js")) {
+        found.push(path.relative(runtimeDir, abs));
+      }
+    }
+  };
+  walk(runtimeDir);
+  return found.sort();
+}
+
 function freshWorkspace(prefix) {
   return { workspace: throwawayDir(prefix), home: throwawayDir(`${prefix}-home`) };
 }
@@ -626,16 +643,16 @@ test("both copy families require the one shared guard implementation", () => {
     "a copy family spells the preservation suffix itself instead of importing it");
 });
 
-test("the mcp/lib wholesale replace preserves local work outside the wiped root", () => {
+test("the mcp/core wholesale replace preserves local work outside the wiped subtree", () => {
   const { workspace, home } = freshWorkspace("treewipe");
   install(workspace, home);
 
-  // scripts/install.js rmSync's the whole mcp/lib root before re-copying it,
+  // scripts/install.js rmSync's each wholly owned runtime subtree before re-copying it,
   // so a local edit there dies before any copyFile guard sees the destination.
-  const libDir = path.join(workspace, "mcp", "lib");
-  const libFiles = fs.readdirSync(libDir).filter((name) => name.endsWith(".js"));
+  const libDir = path.join(workspace, "mcp", "core");
+  const libFiles = runtimeModulePaths(libDir);
   assert.ok(libFiles.length >= 50,
-    `expected >= 50 installed mcp/lib modules, saw ${libFiles.length}`);
+    `expected >= 50 installed mcp modules, saw ${libFiles.length}`);
 
   const edited = path.join(libDir, libFiles[0]);
   const operatorBytes = `${fs.readFileSync(edited, "utf8")}\n// operator debug hook\n`;
@@ -649,30 +666,30 @@ test("the mcp/lib wholesale replace preserves local work outside the wiped root"
 
   const preservedRoot = `${libDir}${PRESERVED_LOCAL_SUFFIX}`;
   assert.ok(fs.existsSync(preservedRoot),
-    "mcp/lib was wiped without preserving local work");
+    "mcp/core was wiped without preserving local work");
   assert.ok(!preservedRoot.startsWith(`${libDir}${path.sep}`),
     "the preserved tree must live OUTSIDE the wiped root");
 
   const editedPreserved = path.join(preservedRoot, libFiles[0]);
-  assert.ok(fs.existsSync(editedPreserved), `local edit to mcp/lib/${libFiles[0]} was destroyed`);
+  assert.ok(fs.existsSync(editedPreserved), `local edit to mcp/core/${libFiles[0]} was destroyed`);
   assert.equal(fs.readFileSync(editedPreserved, "utf8"), operatorBytes);
   assert.ok(fs.existsSync(path.join(preservedRoot, "operator-only-module.js")),
-    "an operator-authored module inside mcp/lib was destroyed");
+    "an operator-authored module inside mcp/core was destroyed");
 
   // Both are named in the run summary.
   let named = 0;
-  for (const rel of [`mcp/lib/${libFiles[0]}`, "mcp/lib/operator-only-module.js"]) {
+  for (const rel of [`mcp/core/${libFiles[0]}`, "mcp/core/operator-only-module.js"]) {
     assert.ok(summary.preservedLocalFiles.some((entry) => entry.original_path === rel),
       `preserved path missing from summary: ${rel}`);
     named += 1;
   }
   assert.equal(named, 2);
 
-  // The wipe still did its job: mcp/lib holds the fresh runtime.
+  // The wipe still did its job: mcp/core holds the fresh runtime.
   assert.equal(
     sha256(fs.readFileSync(edited)),
-    sha256(fs.readFileSync(path.join(ROOT, "mcp", "lib", libFiles[0]))),
-    "mcp/lib must still be replaced with the shipped runtime",
+    sha256(fs.readFileSync(path.join(ROOT, "mcp", "core", libFiles[0]))),
+    "mcp/core must still be replaced with the shipped runtime",
   );
   assert.ok(!fs.existsSync(orphan), "the wholesale replace must still clear the root");
 
@@ -680,10 +697,10 @@ test("the mcp/lib wholesale replace preserves local work outside the wiped root"
   // must be proven to have actually run the tree replace, or "zero preserved"
   // would pass vacuously on a no-op.
   const third = install(workspace, home);
-  const libAgain = third.preservedLocalFiles.filter((entry) => entry.original_path.startsWith("mcp/lib/"));
-  const rewritten = fs.readdirSync(libDir).filter((name) => name.endsWith(".js"));
+  const libAgain = third.preservedLocalFiles.filter((entry) => entry.original_path.startsWith("mcp/core/"));
+  const rewritten = runtimeModulePaths(libDir);
   assert.ok(rewritten.length >= 50,
-    `positive control failed: the third install left only ${rewritten.length} mcp/lib modules`);
+    `positive control failed: the third install left only ${rewritten.length} mcp modules`);
   assert.ok(third.installedFileOwnershipCount >= 300,
     `positive control failed: the third install recorded only ${third.installedFileOwnershipCount} files`);
   assert.equal(libAgain.length, 0,
@@ -699,10 +716,10 @@ test("a SECOND drift event at the same tree path keeps BOTH preserved copies", (
   const { workspace, home } = freshWorkspace("treewipe2");
   install(workspace, home);
 
-  const libDir = path.join(workspace, "mcp", "lib");
-  const libFiles = fs.readdirSync(libDir).filter((name) => name.endsWith(".js")).sort();
+  const libDir = path.join(workspace, "mcp", "core");
+  const libFiles = runtimeModulePaths(libDir);
   assert.ok(libFiles.length >= 50,
-    `expected >= 50 installed mcp/lib modules, saw ${libFiles.length}`);
+    `expected >= 50 installed mcp modules, saw ${libFiles.length}`);
   const victim = path.join(libDir, libFiles[0]);
   const preservedRoot = `${libDir}${PRESERVED_LOCAL_SUFFIX}`;
 
@@ -721,12 +738,17 @@ test("a SECOND drift event at the same tree path keeps BOTH preserved copies", (
   const third = install(workspace, home);
 
   // Counter + hardcoded floor: BOTH copies must be on disk.
-  const siblings = fs.readdirSync(preservedRoot).filter((name) => name.startsWith(libFiles[0])).sort();
+  const preservedVictim = path.join(preservedRoot, libFiles[0]);
+  const preservedVictimDir = path.dirname(preservedVictim);
+  const preservedVictimName = path.basename(preservedVictim);
+  const siblings = fs.readdirSync(preservedVictimDir)
+    .filter((name) => name.startsWith(preservedVictimName))
+    .sort();
   assert.ok(siblings.length >= 2,
     `the second drift event overwrote the first preserved copy: only ${siblings.length} copies `
     + `beside ${preservedRoot} (${siblings.join(", ")})`);
 
-  const bodies = siblings.map((name) => fs.readFileSync(path.join(preservedRoot, name), "utf8"));
+  const bodies = siblings.map((name) => fs.readFileSync(path.join(preservedVictimDir, name), "utf8"));
   assert.ok(bodies.includes(editOneBytes), "EDIT ONE was destroyed by the second drift event");
   assert.ok(bodies.includes(editTwoBytes), "EDIT TWO was not preserved");
   assert.equal(new Set(bodies).size, bodies.length,
@@ -734,8 +756,8 @@ test("a SECOND drift event at the same tree path keeps BOTH preserved copies", (
 
   // ...and the two runs must report DIFFERENT preserved paths, or the operator
   // cannot tell that two separate copies exist.
-  const p2 = second.preservedLocalFiles.filter((entry) => entry.original_path === `mcp/lib/${libFiles[0]}`);
-  const p3 = third.preservedLocalFiles.filter((entry) => entry.original_path === `mcp/lib/${libFiles[0]}`);
+  const p2 = second.preservedLocalFiles.filter((entry) => entry.original_path === `mcp/core/${libFiles[0]}`);
+  const p3 = third.preservedLocalFiles.filter((entry) => entry.original_path === `mcp/core/${libFiles[0]}`);
   assert.equal(p2.length, 1, `run 2 must name the preserved path once, named ${p2.length}`);
   assert.equal(p3.length, 1, `run 3 must name the preserved path once, named ${p3.length}`);
   assert.notEqual(p2[0].preserved_path, p3[0].preserved_path,
@@ -997,7 +1019,7 @@ test("a receipt that silently normalizes to zero says so out loud", () => {
   // their edits were saved for files they had never touched.
   const files = [];
   for (let index = 0; index < 600; index += 1) {
-    files.push({ path: `mcp/lib/mod-${index}.js`, byte_size: 10, sha256: "c".repeat(64), mode: 0o644 });
+    files.push({ path: `mcp/mod-${index}.js`, byte_size: 10, sha256: "c".repeat(64), mode: 0o644 });
   }
   assert.equal(files.length, 600, "fixture broken: the receipt is not populated");
 
@@ -1014,7 +1036,7 @@ test("a receipt that silently normalizes to zero says so out loud", () => {
   const poisoned = {
     [INSTALLED_FILE_OWNERSHIP_KEY]: {
       version: INSTALLED_FILE_OWNERSHIP_VERSION,
-      files: [...files, { path: "mcp/lib/bad.js", byte_size: 10, sha256: "c".repeat(64), mode: 99999 }],
+      files: [...files, { path: "mcp/bad.js", byte_size: 10, sha256: "c".repeat(64), mode: 99999 }],
     },
   };
   assert.equal(declaredInstalledFileOwnershipCount(poisoned), 601);
@@ -1198,19 +1220,19 @@ test("family A: a SYMLINKED destination is preserved, not written through", () =
 });
 
 // ---------------------------------------------------------------------------
-// 10. THE WHOLESALE mcp/lib REPLACE MUST REFUSE A GUTTED SOURCE.
+// 10. THE WHOLESALE mcp REPLACE MUST REFUSE A GUTTED SOURCE.
 // ---------------------------------------------------------------------------
 
-test("the mcp/lib replace refuses a source below the runtime-module floor", () => {
+test("the mcp replace refuses a source below the runtime-module floor", () => {
   const { workspace, home } = freshWorkspace("libfloor");
   install(workspace, home, ["claude"]);
 
-  const libDir = path.join(workspace, "mcp", "lib");
-  const before = fs.readdirSync(libDir).filter((name) => name.endsWith(".js"));
+  const libDir = path.join(workspace, "mcp");
+  const before = runtimeModulePaths(libDir);
   assert.ok(before.length >= 50,
-    `fixture broken: expected >= 50 installed mcp/lib modules, saw ${before.length}`);
+    `fixture broken: expected >= 50 installed mcp modules, saw ${before.length}`);
 
-  // A source root identical to the repo except that mcp/lib ships one module:
+  // A source root identical to the repo except that the owned mcp trees ship only a few modules:
   // an empty extraction, a partial tarball, or a packaging change that moved
   // the modules off the .js/.sh copy predicate. The preservation sweep CANNOT
   // rescue this — it skips every file still matching its recorded digest — so
@@ -1219,14 +1241,20 @@ test("the mcp/lib replace refuses a source below the runtime-module floor", () =
   const gutted = alternateSourceRoot("libfloor-src", {
     realDirs: ["mcp"],
     mutate(root) {
-      const lib = path.join(root, "mcp", "lib");
-      fs.unlinkSync(lib);
+      const lib = path.join(root, "mcp");
+      fs.rmSync(lib, { recursive: true, force: true });
       fs.mkdirSync(lib);
-      fs.writeFileSync(path.join(lib, "only-module.js"), "module.exports = {};\n", "utf8");
+      for (const runtimeTree of ["core", "domains", "tools", "fuzz", "lib"]) {
+        fs.mkdirSync(path.join(lib, runtimeTree), { recursive: true });
+        fs.writeFileSync(path.join(lib, runtimeTree, "only-module.js"), "module.exports = {};\n", "utf8");
+      }
+      for (const name of ["server.js", "auto-signup.js", "redaction.js", "browser-driver.js"]) {
+        fs.copyFileSync(path.join(ROOT, "mcp", name), path.join(lib, name));
+      }
     },
   });
-  assert.equal(fs.readdirSync(path.join(gutted, "mcp", "lib")).length, 1,
-    "fixture broken: the gutted source is not gutted");
+  assert.ok(runtimeModulePaths(path.join(gutted, "mcp")).length < 50,
+    "fixture broken: the gutted source still meets the runtime floor");
 
   let message = null;
   try {
@@ -1234,12 +1262,12 @@ test("the mcp/lib replace refuses a source below the runtime-module floor", () =
   } catch (error) {
     message = error.message;
   }
-  assert.ok(message, "a gutted mcp/lib source was accepted and the installed runtime was wiped");
-  assert.ok(message.includes("mcp/lib"), `the refusal must name the tree: ${message}`);
+  assert.ok(message, "a gutted mcp source was accepted and the installed runtime was wiped");
+  assert.ok(message.includes("mcp"), `the refusal must name the tree: ${message}`);
   assert.ok(/\b50\b/u.test(message), `the refusal must name the floor: ${message}`);
 
   // And it refused BEFORE the destination was destroyed.
-  const after = fs.readdirSync(libDir).filter((name) => name.endsWith(".js"));
+  const after = runtimeModulePaths(libDir);
   assert.equal(after.length, before.length,
     `the installed runtime lost ${before.length - after.length} modules despite the refusal`);
 

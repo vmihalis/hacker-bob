@@ -973,11 +973,11 @@ test("launcher context has a stable Node 20 canonical binary golden vector", () 
   const bytes = Buffer.from(context.context_b64, "base64url");
   assert.equal(bytes.length, 1291);
   assert.equal(context.context_digest,
-    "0999272cc9aadcc0f72fc9c83e3549b437e50bb062f23f0230bce720aef40827");
+    "31a32a4b39d2772d0f19eb07139946bfa5adcc6cdf6efd4268105445a834a387");
   assert.equal(bytes.subarray(0, 96).toString("hex"),
     "48425048444c433100010001001600000483503d8ee46d581c649966569ae095e27041de83322e8e0480e5539e00d2d5d8746c61756e636865722d6b65793a676f6c64656e2d763148425048444c423100010023000100000004000000010002");
   assert.equal(bytes.subarray(-96).toString("hex"),
-    "e342f43d9d06710d04e96fcf6e59d37d78373a99b6fdf3a1f42735a331325418bc03b28127a046f7cbf52dd06ff4544ab938520d5c0ab7c4ba84775a722b19cf99e200504c8e679a9b2cad7925ecf8d24cbecf324d8aaa6d45f7cdc8f4a5af06");
+    "e342f43d9d06710d04e96fcf6e59d37d78373a99b6fdf3a1f42735a33132541854f668f570f770b7819eecc71cc6fedab8cbe06e97206435aa7156f6359a9a09bbce64bd3450e67fa8dcd5e7732c154aab17e59836f54331ac96f1857ddb4c0c");
   assert.deepEqual(CUSTODIAN.verifyNativeDispatchLauncherContext(context), {
     version: 1,
     algorithm: "ed25519",

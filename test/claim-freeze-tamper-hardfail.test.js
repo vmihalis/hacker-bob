@@ -21,11 +21,11 @@ const path = require("node:path");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { reclampSeveritiesAgainstFreeze } = require("../mcp/lib/verification-round-store.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { claimFreezePath } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/claims/claim-freeze.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { reclampSeveritiesAgainstFreeze } = require("../mcp/core/verification/verification-round-store.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { claimFreezePath } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

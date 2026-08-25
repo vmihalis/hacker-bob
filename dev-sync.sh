@@ -89,7 +89,8 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/.hacker-bob/knowledge/"*.json "$BOB_DIR/knowledge/"
   cp "$SCRIPT_DIR/.hacker-bob/bypass-tables/"*.txt "$BOB_DIR/bypass-tables/"
 
-  mkdir -p "$TARGET_ABS/mcp/lib"
+  rm -rf "$TARGET_ABS/mcp"
+  mkdir -p "$TARGET_ABS/mcp"
   # Top-level mcp/ runtime files. scripts/install.js MCP_TOP_LEVEL_RUNTIME_FILES is the canonical,
   # test-enforced list (install-smoke.test.js pins it == the real top-level mcp/*.js); keep these in
   # step with it. browser-driver.js — the Patchright driver server.js spawns — is the file the installer
@@ -98,11 +99,13 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/browser-driver.js" "$TARGET_ABS/mcp/"
-  # Mirror the entire dev mcp/lib tree so every split-module subdir lands
-  # (tools/, waves/, body-resolvers/, belief/, future). A per-subdir copy list
-  # silently drops new dirs and crashes server.js with "Cannot find module".
-  rm -rf "$TARGET_ABS/mcp/lib"
-  cp -R "$SCRIPT_DIR/mcp/lib" "$TARGET_ABS/mcp/lib"
+  # Mirror the installer-owned runtime trees without copying local workspace
+  # dependencies such as mcp/node_modules. Keep this list aligned with
+  # scripts/install.js MCP_RUNTIME_TREE_NAMES.
+  local tree
+  for tree in core domains tools fuzz; do
+    cp -R "$SCRIPT_DIR/mcp/$tree" "$TARGET_ABS/mcp/$tree"
+  done
   chmod +x "$TARGET_ABS/mcp/server.js"
 }
 
@@ -134,7 +137,7 @@ sync_claude_adapter() {
   chmod +x "$CLAUDE_DIR/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/agent-run-stop.js" "$CLAUDE_DIR/hooks/bob-egress.js" "$CLAUDE_DIR/hooks/bob-export.js" "$CLAUDE_DIR/hooks/bob-update.js" "$CLAUDE_DIR/hooks/bob-check-update.js" "$CLAUDE_DIR/hooks/bob-check-update-worker.js"
   cp "$SCRIPT_DIR/.claude/bob/egress-profiles.example.json" "$CLAUDE_DIR/bob/"
   if [[ ! -f "$CLAUDE_DIR/bob/egress-profiles.json" ]]; then
-    node -e 'const e=require(process.argv[1]); e.writeEgressProfilesDocument(process.argv[2], e.defaultEgressProfilesDocument())' "$SCRIPT_DIR/mcp/lib/egress-profiles.js" "$TARGET_ABS"
+    node -e 'const e=require(process.argv[1]); e.writeEgressProfilesDocument(process.argv[2], e.defaultEgressProfilesDocument())' "$SCRIPT_DIR/mcp/core/egress-profiles.js" "$TARGET_ABS"
   fi
   rm -f "$CLAUDE_DIR/commands/bountyagent.md" "$CLAUDE_DIR/commands/bountyagentdebug.md"
   rm -f "$CLAUDE_DIR/commands/bob/evaluate.md" "$CLAUDE_DIR/commands/bob/status.md" "$CLAUDE_DIR/commands/bob/debug.md" "$CLAUDE_DIR/commands/bob/update.md"

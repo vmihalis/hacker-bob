@@ -8,23 +8,23 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   pendingDomains,
   resetForTests,
   scheduleMaterialization,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   withSessionLock,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   frontierEventsJsonlPath,
   surfaceIndexPath,
   taskQueuePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -40,7 +40,7 @@ const {
   workerBundleManifestDigest,
   workerBundleReservationReceiptDigest,
 } = require("../lib/worker-bundle-attestation.js");
-const { hashCanonicalJson } = require("../../../mcp/lib/verification-contracts.js");
+const { hashCanonicalJson } = require("../../../mcp/core/verification/verification-contracts.js");
 
 const FIXED_NOW = "2026-07-19T04:00:00.000Z";
 

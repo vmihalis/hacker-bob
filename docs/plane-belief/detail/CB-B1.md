@@ -4,7 +4,7 @@
 
 - `id`: `CB-B1`
 - `action`: `build_new` (reopened + reworked under path A-prime)
-- `anchor`: `mcp/lib/belief/belief-window.js`
+- `anchor`: `mcp/core/belief/belief-window.js`
 - `status`: `done`
 
 ## Contract
@@ -17,7 +17,7 @@ string match on the effect id.
 
 ## What changed (path A-prime)
 
-`mcp/lib/belief/belief-window.js`:
+`mcp/core/belief/belief-window.js`:
 
 - DELETED `idorLikeEffect` / `publicObjectEffect` (the regexes) and
   `posteriorForEffectivePermission` (the hardcoded `{allowed:0.88,...}` triples),

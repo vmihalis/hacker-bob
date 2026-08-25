@@ -22,52 +22,55 @@ const {
   projectPhysicalScopeNucleusAxis,
   projectVerifiedPhysicalScopeImport,
   resolvePhysicalScopeCompatibility,
-} = require("../mcp/lib/physical-scope.js");
+} = require("../mcp/domains/physical/physical-scope.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
   normalizeScopePolicy,
   sessionNucleusHash,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   executeTool,
-} = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/dispatch/dispatch.js");
 const {
   installPhysicalSessionBootstrapResolver,
   resolvePhysicalSessionBootstrapImport,
-} = require("../mcp/lib/physical-session-runtime.js");
+} = require("../mcp/domains/physical/physical-session-runtime.js");
 const {
   createTestPhysicalVerdictResolverPort,
   installPhysicalVerdictResolver,
   installTestPhysicalVerdictResolver,
   resolvePhysicalVerdict,
-} = require("../mcp/lib/physical-verdict-runtime.js");
+} = require("../mcp/domains/physical/physical-verdict-runtime.js");
 const {
   physicalSessionBootstrapPath,
   sessionNucleusPath,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readJsonFile,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   readVerifiedPhysicalSessionBootstrapJournal,
-} = require("../mcp/lib/physical-session-journal.js");
+} = require("../mcp/domains/physical/physical-session-journal.js");
+const {
+  readSessionEvents,
+} = require("../mcp/core/session/session-events.js");
 const {
   authorizeToolCall,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 const {
   getRegisteredTool,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   setOperatorNote,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -1309,9 +1312,19 @@ test("physical-only session front door is effect-free, durable, idempotent, and 
       assert.equal(nucleus.physical_scope.axis_digest, state.physical_scope.axis_digest);
       assert.equal(journal.status, "complete");
       assert.equal(journal.nucleus_hash, nucleus.nucleus_hash);
+      assert.equal(journal.state_hash, hashCanonicalJson(state));
       assert.match(journal.bootstrap_binding_digest, /^[a-f0-9]{64}$/);
       assert.match(journal.signed_import_digest, /^[a-f0-9]{64}$/);
       assert.match(journal.replay_reservation_receipt_digest, /^[a-f0-9]{64}$/);
+      const initializedEvents = readSessionEvents(domain)
+        .filter((event) => event.kind === "governance.session.initialized");
+      assert.equal(initializedEvents.length, 1);
+      assert.equal(initializedEvents[0].nucleus_hash, nucleus.nucleus_hash);
+      assert.equal(initializedEvents[0].payload.nucleus_hash, nucleus.nucleus_hash);
+      assert.equal(
+        initializedEvents[0].payload.physical_scope_axis_digest,
+        state.physical_scope.axis_digest,
+      );
       const serializedArtifacts = JSON.stringify({ state, nucleus, journal });
       assert.doesNotMatch(serializedArtifacts, /authorization-record:engagement-1/);
       assert.doesNotMatch(serializedArtifacts, /auth-proof:operator-import-1/);
@@ -1564,7 +1577,7 @@ test("post-replay bootstrap failure leaves a durable pending journal and exact r
       fs.fsyncSync = originalFsync;
     }
     try {
-      const { target_domain: domain } = require("../mcp/lib/physical-session-identity.js")
+      const { target_domain: domain } = require("../mcp/core/session/synthetic-session-identity-contracts.js")
         .derivePhysicalSessionIdentity(importRef);
       assert.equal(fs.existsSync(physicalSessionBootstrapPath(domain)), true);
       const pending = readVerifiedPhysicalSessionBootstrapJournal(domain);

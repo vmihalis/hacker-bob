@@ -12,56 +12,56 @@ const {
   buildPhysicalCampaignClosurePreflight,
   createPhysicalCampaignEd25519SignerPort,
   createPhysicalCampaignEd25519VerifierPort,
-} = require("../mcp/lib/physical-campaign-closure.js");
+} = require("../mcp/domains/physical/physical-campaign-closure.js");
 const {
   initializePhysicalCampaignCoordinator,
   physicalCampaignClosureReadiness,
   readVerifiedPhysicalCampaignCompletionState,
   readVerifiedPhysicalCampaignClosureManifest,
   routePhysicalCampaignSegment,
-} = require("../mcp/lib/physical-campaign-coordinator.js");
+} = require("../mcp/domains/physical/physical-campaign-coordinator.js");
 const {
   createPhysicalCampaignAnchorPort,
   installPhysicalCampaignAnchorResolver,
-} = require("../mcp/lib/physical-campaign-anchor.js");
+} = require("../mcp/domains/physical/physical-campaign-anchor.js");
 const {
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   LEDGER_PRESSURE_REFUSE_THRESHOLD,
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendCellProposal,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   physicalCampaignDir,
   physicalSessionBootstrapPath,
   sessionDir,
   sessionNucleusPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readVerifiedSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildInitialSessionState,
-} = require("../mcp/lib/session-state-contracts.js");
+} = require("../mcp/core/session/session-state-contracts.js");
 const {
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/physical-scope-axis.js");
+} = require("../mcp/core/session/physical-scope-axis-contract.js");
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");

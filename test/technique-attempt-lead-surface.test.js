@@ -29,13 +29,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordSurfaceLeadsTool = require("../mcp/lib/tools/record-surface-leads.js");
-const promoteSurfaceLeadsTool = require("../mcp/lib/tools/promote-surface-leads.js");
+const recordSurfaceLeadsTool = require("../mcp/tools/record-surface-leads.js");
+const promoteSurfaceLeadsTool = require("../mcp/tools/promote-surface-leads.js");
 const {
   logTechniqueAttempt,
   selectTechniquePacks,
-} = require("../mcp/lib/technique-packs.js");
-const { ToolError, ERROR_CODES } = require("../mcp/lib/envelope.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
+const { ToolError, ERROR_CODES } = require("../mcp/core/io/envelope.js");
 const {
   sessionDir,
   attackSurfacePath,
@@ -43,7 +43,7 @@ const {
   surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

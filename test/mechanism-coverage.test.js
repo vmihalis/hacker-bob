@@ -11,7 +11,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
 const {
   isFindingBackedEffect,
   parseObjectAuthEffectEndpoint,
@@ -19,7 +19,7 @@ const {
   compositionBriefForPath,
   coveredTransitionHops,
   enumerateCandidatePaths,
-} = require("../mcp/lib/mechanism-coverage.js");
+} = require("../mcp/core/mechanism-coverage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -109,12 +109,12 @@ test("F1: the path space is deterministic given identical ledgers", () => {
 test("F1: a covered A2 transition surfaces as a verified cross-surface hop", () => {
   withTempHome(() => {
     const domain = "f1-transition.example.com";
-    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-    const { materializeFrontier } = require("../mcp/lib/frontier-materializer.js");
-    const { appendTransitionProposal } = require("../mcp/lib/task-graph-events.js");
-    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
-    const { logCellCoverage } = require("../mcp/lib/coverage.js");
-    const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
+    const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+    const { materializeFrontier } = require("../mcp/core/frontier/frontier-materializer.js");
+    const { appendTransitionProposal } = require("../mcp/core/waves/task-graph-events.js");
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/core/io/queue-policy.js");
+    const { logCellCoverage } = require("../mcp/core/frontier/coverage.js");
+    const { transitionEdgeToken } = require("../mcp/core/session/assignment-brief.js");
 
     for (const sid of ["surface:l1", "surface:l2"]) {
       appendFrontierEvent({ target_domain: domain, kind: "surface.observed", ts: "2026-05-31T00:00:00.000Z", surface_id: sid, payload: { title: sid } });
@@ -242,7 +242,7 @@ test("F1: bob_query_surface_graph mode covered_paths returns the path space (no 
   withTempHome(() => {
     const domain = "f1-tool.example.com";
     seedAuthDiffMechanism(domain);
-    const tool = require("../mcp/lib/tools/query-surface-graph.js");
+    const tool = require("../mcp/tools/query-surface-graph.js");
     assert.equal(tool.name, "bob_query_surface_graph", "F1 reuses the existing tool — no new tool registered");
     const result = tool.handler({ target_domain: domain, mode: "covered_paths" });
     assert.equal(result.total_enumerated, 2);

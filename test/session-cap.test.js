@@ -22,19 +22,19 @@ const {
   sessionCapPath,
   verifyAttestationToken,
   SESSION_CAP_MODE,
-} = require("../mcp/lib/session-cap.js");
+} = require("../mcp/core/session/session-cap.js");
 
 const {
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   normalizeQueuePolicy,
   writeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 const {
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

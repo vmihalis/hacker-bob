@@ -15,21 +15,21 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { coverageClosureStat } = require("../mcp/lib/coverage-closure.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { materializeFrontier } = require("../mcp/lib/frontier-materializer.js");
-const { logCellCoverage } = require("../mcp/lib/coverage.js");
+const { coverageClosureStat } = require("../mcp/core/frontier/coverage-closure.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { materializeFrontier } = require("../mcp/core/frontier/frontier-materializer.js");
+const { logCellCoverage } = require("../mcp/core/frontier/coverage.js");
 const {
   normalizeGradeVerdictDocument,
   renderGradeVerdictMarkdown,
-} = require("../mcp/lib/grade-verdict-store.js");
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const { planCellsForSurface } = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/grade-verdict-store.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const { planCellsForSurface } = require("../mcp/core/session/assignment-brief.js");
 const {
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -54,10 +54,10 @@ function seedOssCellFloor(domain) {
     payload: { title: "harness-x", surface_type: "oss_native_code" },
   });
   materializeFrontier(domain, { write: true });
-  const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+  const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/core/io/queue-policy.js");
   // Lift the per-surface child cap so all 9 floor cells materialize as nodes.
   writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
-  const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+  const floor = require("../mcp/tools/materialize-cell-floor.js").handler;
   JSON.parse(floor({ target_domain: domain }));
   return "surface:harness-x";
 }

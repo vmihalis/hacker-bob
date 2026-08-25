@@ -13,10 +13,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const readCandidateClaimsTool = require("../mcp/lib/tools/read-candidate-claims.js");
-const { findingPayloadsFromClaims } = require("../mcp/lib/tools/record-candidate-claim.js");
-const { deriveCvss31 } = require("../mcp/lib/cvss31.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const readCandidateClaimsTool = require("../mcp/tools/read-candidate-claims.js");
+const { findingPayloadsFromClaims } = require("../mcp/tools/record-candidate-claim.js");
+const { deriveCvss31 } = require("../mcp/core/scoring/cvss31.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

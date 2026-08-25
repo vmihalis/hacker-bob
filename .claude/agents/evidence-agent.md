@@ -127,7 +127,7 @@ Your final response after the readback must be compact summary-only, must not in
 
 ## Capability pack verifier table
 
-Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+Generated from `mcp/core/capability/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
 
 | capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |
 |---|---|---|---|---|---|---|

@@ -27,16 +27,16 @@ const {
   auditConfirmRequest,
   assertNoForbiddenInputs,
   SCOPE_VALIDATION_OPTS,
-} = require("../mcp/lib/offensive-http-common.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { readHttpAuditRecordsFromJsonl } = require("../mcp/lib/http-records.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { readSessionStateStrict } = require("../mcp/lib/session-state-store.js");
-const { attackSurfacePath, surfaceRoutesPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/web/offensive-http-common.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { readHttpAuditRecordsFromJsonl } = require("../mcp/core/io/http-records.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { readSessionStateStrict } = require("../mcp/core/session/session-state-store.js");
+const { attackSurfacePath, surfaceRoutesPath } = require("../mcp/core/io/paths.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

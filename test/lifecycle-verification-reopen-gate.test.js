@@ -6,16 +6,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { initSession } = require("../mcp/lib/session-state.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   evaluateLifecycleTransition,
   isTransitionAllowed,
-} = require("../mcp/lib/lifecycle-gates.js");
-const { verificationSnapshotPath, sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
+const { verificationSnapshotPath, sessionDir } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

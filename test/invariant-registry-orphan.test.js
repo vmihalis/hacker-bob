@@ -12,7 +12,7 @@ const path = require("node:path");
 
 const {
   REGISTRY, ALLOWLIST_UNDOCUMENTED, SELF_FILES, knownTags, enforcingSites,
-} = require("../mcp/lib/invariant-registry.js");
+} = require("../mcp/core/invariant-registry.js");
 const {
   run, extractTags, assertSelfFilesComplete,
 } = require("../scripts/check-invariant-registry.js");
@@ -46,15 +46,15 @@ test("I6 reopenability is registered and bound to ALLOWED_TRANSITIONS", () => {
   const entry = REGISTRY["I6"];
   assert.ok(entry, "I6 must have a registry entry (closes I6)");
   const files = entry.enforced_by.map((s) => `${s.file}:${s.symbol}`);
-  assert.ok(files.includes("mcp/lib/lifecycle-gates.js:ALLOWED_TRANSITIONS"),
+  assert.ok(files.includes("mcp/core/session/lifecycle-gates.js:ALLOWED_TRANSITIONS"),
     "I6 must point at the back-edge table");
   const src = fs.readFileSync(
-    path.join(__dirname, "..", "mcp", "lib", "lifecycle-gates.js"), "utf8");
+    path.join(__dirname, "..", "mcp", "core", "session", "lifecycle-gates.js"), "utf8");
   assert.match(src, /ALLOWED_TRANSITIONS/);
   // The I6 tag must be anchored as a COMMENT in lifecycle-gates.js.
   assert.match(src, /(?:^|\s)\/\/\s*(?:[A-Za-z0-9-]+\s+)?I6\b/m,
     "I6 tag must be anchored as a // comment in lifecycle-gates.js");
-  const { ALLOWED_TRANSITIONS } = require("../mcp/lib/lifecycle-gates.js");
+  const { ALLOWED_TRANSITIONS } = require("../mcp/core/session/lifecycle-gates.js");
   for (const from of ["CLAIM_FREEZE", "VERIFY", "GRADE", "REPORT"]) {
     assert.ok(ALLOWED_TRANSITIONS[from].includes("OPEN_FRONTIER"),
       `${from} -> OPEN_FRONTIER back-edge must remain (I6)`);
@@ -69,7 +69,7 @@ test("S14 enforced_by binds a UNIQUE S14 symbol, not the generic `checkout`", ()
   assert.ok(symbols.includes("assertContainerCheckoutDest"),
     "S14 must bind the run-scoped /src boundary guard");
   const src = fs.readFileSync(
-    path.join(__dirname, "..", "mcp", "lib", "repo-env.js"), "utf8");
+    path.join(__dirname, "..", "mcp", "domains", "repo", "repo-env.js"), "utf8");
   assert.match(src, /assertContainerCheckoutDest/);
   // The S14 tag anchor must be a comment in repo-env.js (the // S14 control... line).
   assert.match(src, /(?:^|\s)\/\/\s*(?:[A-Za-z0-9-]+\s+)?S14\b/m,
@@ -86,7 +86,7 @@ test("CLASS: a new un-registered, un-allowlisted tag would be flagged", () => {
 });
 
 test("CLASS: a registry entry pointing at a missing symbol is dangling", () => {
-  const file = "mcp/lib/lifecycle-gates.js";
+  const file = "mcp/core/session/lifecycle-gates.js";
   const text = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
   assert.equal(text.includes("ALLOWED_TRANSITIONS"), true);
   assert.equal(text.includes("ALLOWED_TRANSITIONS_RENAMED_v2"), false);
@@ -126,7 +126,7 @@ test("SELF_FILES covers every file that mirrors all registry keys", () => {
     "no unlisted file may mirror the full registry key set (would mask orphans)");
   // And SELF_FILES is exactly the registry+driver+test trio.
   assert.deepEqual([...SELF_FILES].sort(), [
-    "mcp/lib/invariant-registry.js",
+    "mcp/core/invariant-registry.js",
     "scripts/check-invariant-registry.js",
     "test/invariant-registry-orphan.test.js",
   ].sort());

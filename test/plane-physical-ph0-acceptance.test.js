@@ -20,33 +20,33 @@ const {
   createDurableInstrumentLeaseBrokerPort,
   createDurableInstrumentLeaseStore,
   createDurableInstrumentProviderDispatchPort,
-} = require("../mcp/lib/instrument-lease-store.js");
+} = require("../mcp/domains/physical/instrument-lease-store.js");
 const {
   acquireInstrumentLease,
   beginInstrumentRestoration,
   normalizeAttemptJournalEntry,
   normalizeSignedStopRequest,
   requestInstrumentLeaseStop,
-} = require("../mcp/lib/instrument-lease-contract.js");
+} = require("../mcp/domains/physical/instrument-lease-contract.js");
 const {
   PROVIDER_METHODS,
   buildNormalizedOperationRegistry,
   defineProviderDescriptor,
   normalizePrepareRequest,
   normalizePublicResult,
-} = require("../mcp/lib/instrument-provider-contract.js");
+} = require("../mcp/domains/physical/instrument-provider-contract.js");
 const {
   buildDurableReceiptTrustRegistry,
   buildExecutedEvidenceRegistry,
   verifyRegisteredEvidence,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   assertVerifiedPhysicalClaimProjection,
   buildPhysicalObserverEnrollmentRegistry,
   buildPhysicalReceiptTrustRegistry,
   normalizePhysicalExperimentPlan,
   observerAttemptBindingDigest,
-} = require("../mcp/lib/physical-experiment-contract.js");
+} = require("../mcp/domains/physical/physical-experiment-contract.js");
 const {
   ACTIVE_PHYSICAL_EXECUTION_GRANT_DOMAIN,
   activePhysicalExecutionGrantSignatureInputDigest,
@@ -55,19 +55,19 @@ const {
   normalizeCleanupInvocation,
   normalizeMcpPhysicalExecutionRequest,
   projectVerifiedActivePhysicalExecutionGrant,
-} = require("../mcp/lib/physical-authority.js");
+} = require("../mcp/domains/physical/physical-authority.js");
 const {
   createActivePhysicalDispatchAuthorityPort,
-} = require("../mcp/lib/physical-dispatch-authority.js");
+} = require("../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   createInProcessBackupKeyCustodyFixture,
 } = require("./helpers/artifact-vault-backup-key-custody.js");

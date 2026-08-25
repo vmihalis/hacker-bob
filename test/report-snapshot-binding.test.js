@@ -24,40 +24,40 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const finalizeReportTool = require("../mcp/tools/finalize-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   _setApprovalBackendForTest,
   _setApprovalHmacKeyForTest,
-} = require("../mcp/lib/approval-store.js");
+} = require("../mcp/core/approval-store.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const {
   loadGradeVerdictHash,
-} = require("../mcp/lib/report-finalize.js");
+} = require("../mcp/core/report-finalize.js");
 const {
   normalizeProofBundlesDocument,
-} = require("../mcp/lib/proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
 const {
   verifyReproReproduction,
-} = require("../mcp/lib/repro-replay-verifier.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   readReportSnapshots,
-} = require("../mcp/lib/report-snapshots.js");
+} = require("../mcp/core/report-snapshots.js");
 const {
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   evidencePackPaths,
   gradeArtifactPaths,
@@ -70,18 +70,18 @@ const {
   verificationRoundPaths,
   claimFreezePath,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   finalVerificationHash,
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   appendJsonlLine,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   persistingRunner,
 } = require("./helpers/repro-run-pair.js");
@@ -108,11 +108,11 @@ async function withTempHome(fn) {
 // re-resolves the verdict against these MAC-covered rows, so a bare ledger line no longer
 // suffices.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface:billing-profile") {
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-  const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
+  const { offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
@@ -180,6 +180,33 @@ function seedSessionState(domain, overrides = {}) {
     ...overrides,
   };
   writeFileAtomic(statePath(domain), `${JSON.stringify(state, null, 2)}\n`);
+  const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
+  if (!fs.existsSync(nucleusPath)) {
+    const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
+    const { writeJsonDocument } = require("../mcp/core/io/storage.js");
+    const nucleus = buildSessionNucleus({
+      target_domain: domain,
+      target_url: state.target_url,
+      scope_policy: {
+        target_url: state.target_url,
+        checkpoint_mode: state.checkpoint_mode,
+        deep_mode: state.deep_mode,
+        block_internal_hosts: state.block_internal_hosts,
+        allow_internal_hosts: false,
+      },
+      egress_identity: {
+        egress_profile: state.egress_profile,
+        egress_region: state.egress_region,
+        proxy_configured: state.proxy_configured,
+        egress_profile_identity_hash: state.egress_profile_identity_hash,
+        egress_profile_identity_version: state.egress_profile_identity_version,
+      },
+      auth_context: { auth_status: state.auth_status || "pending" },
+      operator_constraint: {},
+      lifecycle_state: state.lifecycle_state || "SETUP",
+    });
+    writeJsonDocument(nucleusPath, nucleus);
+  }
   return state;
 }
 

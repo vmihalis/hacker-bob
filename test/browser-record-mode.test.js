@@ -32,15 +32,15 @@ const {
   TOOL_MANIFEST,
   TOOLS,
   toolNamesForRoleBundle,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
-} = require("../mcp/lib/session-authority.js");
-const browserSessions = require("../mcp/lib/browser-sessions.js");
+} = require("../mcp/core/session/session-authority.js");
+const browserSessions = require("../mcp/domains/web/browser-sessions.js");
 const {
   readTrafficRecordsFromJsonl,
   importHttpTraffic,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 
 const PATCHRIGHT_AVAILABLE = browserSessions.isPatchrightAvailable();
 // Real record-mode capture needs a hostable headless driver session: a Chromium
@@ -65,7 +65,7 @@ const BROWSER_BUNDLES = Object.freeze([
 function loadHandler(toolName) {
   const moduleSlug = toolName.replace(/^bob_/, "").replace(/_/g, "-");
   // eslint-disable-next-line import/no-dynamic-require, node/no-missing-require
-  const mod = require(path.join("..", "mcp", "lib", "tools", `${moduleSlug}.js`));
+  const mod = require(path.join("..", "mcp", "tools", "web", `${moduleSlug}.js`));
   return mod.handler;
 }
 
@@ -141,6 +141,33 @@ function seedSessionStateForDomain(home, domain) {
     egress_profile_legacy_migration: null,
   };
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
+  if (!fs.existsSync(nucleusPath)) {
+    const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
+    const { writeJsonDocument } = require("../mcp/core/io/storage.js");
+    const nucleus = buildSessionNucleus({
+      target_domain: domain,
+      target_url: state.target_url,
+      scope_policy: {
+        target_url: state.target_url,
+        checkpoint_mode: state.checkpoint_mode,
+        deep_mode: state.deep_mode,
+        block_internal_hosts: state.block_internal_hosts,
+        allow_internal_hosts: false,
+      },
+      egress_identity: {
+        egress_profile: state.egress_profile,
+        egress_region: state.egress_region,
+        proxy_configured: state.proxy_configured,
+        egress_profile_identity_hash: state.egress_profile_identity_hash,
+        egress_profile_identity_version: state.egress_profile_identity_version,
+      },
+      auth_context: { auth_status: state.auth_status || "pending" },
+      operator_constraint: {},
+      lifecycle_state: state.lifecycle_state || "SETUP",
+    });
+    writeJsonDocument(nucleusPath, nucleus);
+  }
 }
 
 // ── Registry contracts ──
@@ -600,7 +627,7 @@ test("smoke: captured URL can be re-targeted via bob_http_scan (mutate-and-repla
     // may fail with a network/transport error; the assertion only requires
     // that scope validation passed and the tool produced a structured
     // response (not a thrown exception).
-    const scanHandler = require("../mcp/lib/tools/http-scan.js").handler;
+    const scanHandler = require("../mcp/tools/web/http-scan.js").handler;
     const raw = await scanHandler({
       target_domain: domain,
       method: "GET",

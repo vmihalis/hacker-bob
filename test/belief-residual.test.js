@@ -6,16 +6,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
 const {
   buildResidualDiagnostic,
   runBeliefResidual,
-} = require("../mcp/lib/belief/residual.js");
-const { queryBeliefSignals } = require("../mcp/lib/belief/authority.js");
-const runBeliefResidualTool = require("../mcp/lib/tools/run-belief-residual.js");
-const { buildBeliefWindow } = require("../mcp/lib/belief/belief-window.js");
-const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
+} = require("../mcp/core/belief/residual.js");
+const { queryBeliefSignals } = require("../mcp/core/belief/authority.js");
+const runBeliefResidualTool = require("../mcp/tools/run-belief-residual.js");
+const { buildBeliefWindow } = require("../mcp/core/belief/belief-window.js");
+const elicitBeliefTool = require("../mcp/tools/elicit-belief.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

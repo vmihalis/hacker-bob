@@ -15,15 +15,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const writeVerificationRoundTool = require("../mcp/tools/write-verification-round.js");
 const {
   CLAIM_TEXT_LIMITS,
   SECRET_DETECTION_BYPASS_FIELDS,
-} = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/tools/record-candidate-claim.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   fieldObservedPayload,
 } = require("./fixtures/o2-field-observed-payload.js");
@@ -162,7 +162,7 @@ test("Y.0 hotfix 2 (O3): write-verification-round inputSchema artifact_hashes pa
 test("Y.0 hotfix 2 (O3): normalizeArtifactHashes accepts md5 and sha256, rejects non-canonical hashes", () => {
   // Validate at the store layer (the wrapWriteTool surface) so the round-trip
   // works end-to-end; the round-store enforces the same regex.
-  const { normalizeVerificationRoundDocument } = require("../mcp/lib/verification-round-store.js");
+  const { normalizeVerificationRoundDocument } = require("../mcp/core/verification/verification-round-store.js");
   const findingIdSet = new Set(["F-1"]);
   const md5 = "a".repeat(32);
   const sha256 = "b".repeat(64);

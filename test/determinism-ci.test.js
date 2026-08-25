@@ -15,52 +15,52 @@ const crypto = require("node:crypto");
 
 const {
   ingestSchemaDoc,
-} = require("../mcp/lib/schema-contracts-store.js");
+} = require("../mcp/core/schema-contracts-store.js");
 const {
   runDocDelta,
   readResults: readDocDeltaResults,
-} = require("../mcp/lib/doc-delta-runner.js");
+} = require("../mcp/domains/repo/doc-delta-runner.js");
 const {
   runAuthDifferential,
   readResults: readAuthDifferentialResults,
-} = require("../mcp/lib/auth-differential-runner.js");
+} = require("../mcp/core/auth-differential-runner.js");
 const {
   appendEdges,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   buildSurfaceGraph,
-} = require("../mcp/lib/surface-graph-builder.js");
+} = require("../mcp/core/frontier/surface-graph-builder.js");
 const {
   normalizeEvidencePacksDocument,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   normalizeProofBundlesDocument,
-} = require("../mcp/lib/proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
 const {
   verifyReproReproduction,
-} = require("../mcp/lib/repro-replay-verifier.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
 const {
   proofBundlePaths,
   repoCommandRunsJsonlPath,
   repoRunsDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   persistingRunner,
 } = require("./helpers/repro-run-pair.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   indexStaticResults,
   readStaticAnalysisIndex,
-} = require("../mcp/lib/static-analysis-index.js");
+} = require("../mcp/domains/repo/static-analysis-index.js");
 
 const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
 const FIXTURE_STATIC_ANALYSIS_SARIF = fs.readFileSync(

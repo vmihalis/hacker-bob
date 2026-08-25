@@ -4,7 +4,7 @@
 
 - `id`: `CB-B2`
 - `action`: `build_new`
-- `anchor`: `mcp/lib/belief/intervention-calculus.js`
+- `anchor`: `mcp/core/belief/intervention-calculus.js`
 - `status`: `done`
 
 ## Contract
@@ -16,7 +16,7 @@ artifacts, records claims, or schedules work.
 
 ## Implementation
 
-- `mcp/lib/belief/intervention-calculus.js` emits `intervention-calculus.v1`
+- `mcp/core/belief/intervention-calculus.js` emits `intervention-calculus.v1`
   rankings from `belief-window.v1` and CB-B4 sampler marginals.
 - Object-authorization interventions include selector swaps, public-object
   checks, no-auth controls, victim-auth controls, nonexistent-object checks,

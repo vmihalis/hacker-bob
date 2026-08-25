@@ -655,7 +655,8 @@ test("ExportSecurityHubFunction uses the slim Node 22 function plus generated pu
   assert.match(fn, /Handler:\s*index\.handler/);
   assert.match(fn, /CodeUri:\s*functions\/export-security-hub/);
   assert.match(fn, /!Ref AsffBuilderLayer/);
-  assert.match(fn, /ASFF_BUILDER_PATH:\s*\/opt\/lib\/asff-builder\.js/);
+  assert.match(fn, /ASFF_BUILDER_PATH:\s*\/opt\/lib\/domains\/repo\/asff-builder\.js/);
+  assert.match(fn, /VERIFICATION_CONTRACTS_PATH:\s*\/opt\/lib\/core\/verification\/verification-contracts\.js/);
   assert.match(fn, /Role:\s*!GetAtt ExportSecurityHubRole\.Arn/);
   assert.match(fn, /GRADE_FREEZE_BUCKET:\s*!Ref EvidenceBucket/);
   assert.match(fn, /SECURITY_HUB_PRODUCT_ARN:/);

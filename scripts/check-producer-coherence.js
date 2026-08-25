@@ -59,15 +59,15 @@ const path = require("path");
 const {
   PRODUCER_PACKS,
   ARTIFACT_KIND_VALUES,
-} = require("../mcp/lib/producer-packs.js");
-const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/dispatch/producer-packs.js");
+const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
 const { spawnCapableAgentNames } = require("./lib/claude-role-renderer.js");
 const {
   STIGMERGIC_PRODUCERS,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 const {
   STIGMERGIC_CONSUMERS,
-} = require("../mcp/lib/stigmergic-consumers.js");
+} = require("../mcp/core/stigmergic-consumers.js");
 
 const ROOT = path.join(__dirname, "..");
 

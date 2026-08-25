@@ -16,22 +16,22 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { attackSurfacePath } = require("../mcp/lib/paths.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
-const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-const { startWave } = require("../mcp/lib/waves.js");
+const { attackSurfacePath } = require("../mcp/core/io/paths.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
+const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+const { startWave } = require("../mcp/core/waves/waves.js");
 const {
   DEFAULT_QUEUE_POLICY,
   LEAN_PROFILE,
   normalizeQueuePolicy,
   writeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 const {
   appendSpawnLedgerEntry,
   readSpawnLedgerEntries,
   spawnLedgerTotal,
-} = require("../mcp/lib/spawn-ledger.js");
-const { planNextWave } = require("../mcp/lib/wave-planner.js");
+} = require("../mcp/core/session/spawn-ledger.js");
+const { planNextWave } = require("../mcp/core/waves/wave-planner.js");
 
 const HINTS = ["idor", "ssrf", "xss", "ssti", "auth_bypass"];
 

@@ -37,11 +37,11 @@ const {
   isCapabilityPackDispatchable,
   getCapabilityPackContextBudget,
   techniqueCompatibilityPackId,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 const {
   loadTechniqueRegistry,
   techniquePackSupportsCapability,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 
 // Load the shipped registry once, the same cwd-independent way production does
 // (loadTechniqueRegistry -> resourceCandidatePaths), so this suite is stable

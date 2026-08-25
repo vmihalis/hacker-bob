@@ -20,7 +20,7 @@ const CHAMELEON_NATIVE_BOOTSTRAP_SEMANTICS = deepFreeze({
   "source_profile_digest": "06068561354baa5d45118cfa2b11dc28f993d17eb61572030fd1edcb103c3bd9",
   "upstream_declaration_source_sha256": "12c17b902e413984b688cfb06d6822b4581a3c2efaf2fbdf2fcc1fe67a640a68",
   "upstream_registry_source_sha256": "3d79043158be47c12ba3f706a8e673c845fd73c5c0ef6e310c924bcdfe99177c",
-  "local_bootstrap_source_sha256": "5e06c7bfbdaafa5e18f61067146ee2ce3503dbc84bc48ab7e465f78a61e433ff",
+  "local_bootstrap_source_sha256": "745250cab8fea7c6351cd14ce2d7654145ae84d2ad55e173d628214154476915",
   "local_operations_source_sha256": "36aaccbf5b92989e196ac8343f716c9a259743faa436b18bc6de091f4a0ebc04",
   "operations": [
     {
@@ -75,7 +75,7 @@ const CHAMELEON_NATIVE_BOOTSTRAP_SEMANTICS = deepFreeze({
       ]
     }
   ],
-  "table_digest": "9e5e01a25f9042e3c9d792f359430adb03b3a475b8a6956540309448de8fda0a"
+  "table_digest": "a6521acaf31b7d56e4c52a63e5f64d9ce086c5b1b2156eb0459e7830dd6bde50"
 });
 
 module.exports = Object.freeze({ CHAMELEON_NATIVE_BOOTSTRAP_SEMANTICS });

@@ -24,7 +24,7 @@ const {
   resolveAndVerifyPlanePhysicalGateEvidence,
   resolveAndVerifyPlanePhysicalGateEvidenceBatch,
   revokePlanePhysicalGateEvidenceSigner,
-} = require("../mcp/lib/plane-physical-gate-evidence.js");
+} = require("../mcp/domains/physical/plane-physical-gate-evidence.js");
 
 const CLASSES = ["engineering", "review", "hil", "qualification"];
 
@@ -838,7 +838,7 @@ test("release snapshot receipt is nonsemantic despite readiness-module cache poi
   );
 
   const releasePath = require.resolve(
-    "../mcp/lib/plane-physical-release-readiness.js",
+    "../mcp/domains/physical/plane-physical-release-readiness.js",
   );
   const originalCacheEntry = require.cache[releasePath];
   require.cache[releasePath] = {
@@ -893,7 +893,7 @@ test("release snapshot receipt is nonsemantic despite readiness-module cache poi
   for (const field of forbidden) {
     assert.equal(Object.hasOwn(signedRecord, field), false, `signed ${field}`);
   }
-  const gateModule = require("../mcp/lib/plane-physical-gate-evidence.js");
+  const gateModule = require("../mcp/domains/physical/plane-physical-gate-evidence.js");
   assert.equal(gateModule.commitPlanePhysicalGateEvidenceReleaseDecision, undefined);
   assert.ok(Object.isFrozen(gateModule));
 });
@@ -1215,7 +1215,7 @@ test("lock refuses a live owner and recovers killed owner and candidate crashes"
   }), { flag: "wx", mode: 0o600 });
   const modulePath = path.join(
     __dirname,
-    "../mcp/lib/plane-physical-gate-evidence.js",
+    "../mcp/domains/physical/plane-physical-gate-evidence.js",
   );
   const childSource = String.raw`
     "use strict";
@@ -1398,7 +1398,7 @@ test("bootstrap recovers SIGKILL during staged store-key and authority writes", 
   });
   const modulePath = path.join(
     __dirname,
-    "../mcp/lib/plane-physical-gate-evidence.js",
+    "../mcp/domains/physical/plane-physical-gate-evidence.js",
   );
   const childSource = String.raw`
     "use strict";

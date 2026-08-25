@@ -9,18 +9,18 @@ const {
   dashboardUsageText,
   parseDashboardArgs,
   startDashboardServer,
-} = require("../mcp/lib/dashboard.js");
+} = require("../mcp/core/telemetry/dashboard.js");
 const {
   repoInventoryPath,
   pipelineEventsJsonlPath,
   frontierEventsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   normalizePipelineEvent,
-} = require("../mcp/lib/pipeline-events.js");
+} = require("../mcp/core/telemetry/pipeline-events.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

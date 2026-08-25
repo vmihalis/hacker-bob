@@ -16,12 +16,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const producerFloorTool = require("../mcp/lib/tools/materialize-producer-floor.js");
+const producerFloorTool = require("../mcp/tools/materialize-producer-floor.js");
 const { planProducerFloor } = producerFloorTool;
-const { PRODUCER_PACKS } = require("../mcp/lib/producer-packs.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { materializeFrontier } = require("../mcp/lib/frontier-materializer.js");
-const initContractSessionTool = require("../mcp/lib/tools/init-contract-session.js");
+const { PRODUCER_PACKS } = require("../mcp/core/dispatch/producer-packs.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { materializeFrontier } = require("../mcp/core/frontier/frontier-materializer.js");
+const initContractSessionTool = require("../mcp/tools/blockchain/init-contract-session.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

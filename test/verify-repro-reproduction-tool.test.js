@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { TOOL_MODULES } = require("../mcp/lib/tools/index.js");
+const { TOOL_MODULES } = require("../mcp/tools/index.js");
 
 function findTool(name) {
   return TOOL_MODULES.find((t) => t.name === name) || null;

@@ -45,7 +45,7 @@ const SKILL_PATH = path.join(
   "SKILL.md",
 );
 const CHAIN_BUILDER_PATH = path.join(AGENTS_DIR, "chain-builder.md");
-const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "lib", "tools");
+const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "tools");
 
 const GRAPH_TOOL_NAMES = [
   "bob_propose_hypothesis",
@@ -135,7 +135,7 @@ test("(c) regenerated SKILL.md CHAIN-state references at least one Y.11-granted 
 test("(d) Y.9 stigmergy pair (chain_attempts_ledger ↔ chain_builder_prompt_body_read_before_propose) matches chain-builder.md prompt body", () => {
   const {
     STIGMERGIC_CONSUMERS,
-  } = require("../mcp/lib/stigmergic-consumers.js");
+  } = require("../mcp/core/stigmergic-consumers.js");
   const entry = STIGMERGIC_CONSUMERS.find(
     (c) => c.consumer_id === "chain_builder_prompt_body_read_before_propose",
   );
@@ -228,12 +228,12 @@ test("(f) fixture chain-builder dispatch produces at least 1 bob_propose_hypothe
   try {
     // Force re-resolution of any HOME-dependent module state.
     for (const key of Object.keys(require.cache)) {
-      if (key.includes("/mcp/lib/")) {
+      if (key.includes("/mcp/")) {
         delete require.cache[key];
       }
     }
     const proposeHypothesis = require(
-      path.join(REPO_ROOT, "mcp", "lib", "tools", "propose-hypothesis.js"),
+      path.join(REPO_ROOT, "mcp", "tools", "propose-hypothesis.js"),
     );
     assert.equal(proposeHypothesis.name, "bob_propose_hypothesis");
     assert.ok(
@@ -260,7 +260,7 @@ test("(f) fixture chain-builder dispatch produces at least 1 bob_propose_hypothe
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
     for (const key of Object.keys(require.cache)) {
-      if (key.includes("/mcp/lib/")) {
+      if (key.includes("/mcp/")) {
         delete require.cache[key];
       }
     }

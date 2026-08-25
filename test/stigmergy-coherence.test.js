@@ -31,10 +31,10 @@ const {
 } = require("../scripts/check-stigmergy-coherence.js");
 const {
   STIGMERGIC_PRODUCERS,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 const {
   STIGMERGIC_CONSUMERS,
-} = require("../mcp/lib/stigmergic-consumers.js");
+} = require("../mcp/core/stigmergic-consumers.js");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
@@ -91,7 +91,7 @@ test("fixture drift (iii): consumer references non-manifested producer produces 
   const fixtureConsumer = Object.freeze({
     consumer_id: "fixture_drift_iii_consumer",
     source_location: Object.freeze({
-      file: "mcp/lib/stigmergic-consumers.js",
+      file: "mcp/core/stigmergic-consumers.js",
       token_or_regex: "STIGMERGIC_CONSUMERS",
     }),
     producer_id: "this_producer_id_is_not_in_the_manifest",

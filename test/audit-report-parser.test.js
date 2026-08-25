@@ -13,7 +13,7 @@ const {
   queryAuditReports,
   classifyVulnerability,
   normalizeSeverity,
-} = require("../mcp/lib/audit-report-parser.js");
+} = require("../mcp/core/audit-report-parser.js");
 
 function uniqueDomain(prefix = "bob-audit-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

@@ -16,10 +16,10 @@ const {
   createPhysicalCampaignEd25519VerifierPort,
   sealPhysicalCampaignClosureSegment,
   verifyPhysicalCampaignClosureSegment,
-} = require("../mcp/lib/physical-campaign-closure.js");
+} = require("../mcp/domains/physical/physical-campaign-closure.js");
 const {
   LEDGER_PRESSURE_REFUSE_THRESHOLD,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 
 function digest(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");

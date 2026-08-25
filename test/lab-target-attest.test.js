@@ -23,9 +23,9 @@ const {
   parseLabAuthorization,
   labTargetPermitted,
   labAuthorizationForTarget,
-} = require("../mcp/lib/lab-target-attest.js");
-const { assertHttpScopeDomain, validateHttpScanScope } = require("../mcp/lib/scope.js");
-const { isAuditGradedPath, labAuthorizationPath, sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/lab-target-attest.js");
+const { assertHttpScopeDomain, validateHttpScanScope } = require("../mcp/core/scope.js");
+const { isAuditGradedPath, labAuthorizationPath, sessionDir } = require("../mcp/core/io/paths.js");
 
 // The model-suppliable INTENT — NO secret. Authorization comes from the operator
 // env vars, never from this object (the legacy `ack` field is ignored).
@@ -236,7 +236,7 @@ test("validateHttpScanScope pins scope to the exact attested host", () => {
 test("attestation persists to an audit-graded artifact and is read back without opts", () => {
   withTempHome((home) => {
     // Lazy-require so initSession resolves the temp HOME for its session root.
-    const { initSession } = require("../mcp/lib/session-state.js");
+    const { initSession } = require("../mcp/core/session/session-state.js");
     const result = JSON.parse(initSession({
       target_domain: "192.168.1.53",
       target_url: "http://192.168.1.53/",
@@ -297,7 +297,7 @@ test("labAuthorizationForTarget fails closed for a missing sidecar or absent ope
 
 test("lab_authorization cannot be combined with block_internal_hosts", () => {
   withTempHome(() => {
-    const { initSession } = require("../mcp/lib/session-state.js");
+    const { initSession } = require("../mcp/core/session/session-state.js");
     assert.throws(
       () => initSession({
         target_domain: "192.168.1.53",
@@ -312,7 +312,7 @@ test("lab_authorization cannot be combined with block_internal_hosts", () => {
 
 test("lab_authorization requires the default (direct) egress profile, not a proxy", () => {
   withTempHome(() => {
-    const { initSession } = require("../mcp/lib/session-state.js");
+    const { initSession } = require("../mcp/core/session/session-state.js");
     // A proxy-backed egress would scan the attested private target from the
     // proxy's network rather than the operator's lab network — reject it.
     assert.throws(

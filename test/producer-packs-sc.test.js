@@ -14,9 +14,9 @@ const {
   ARTIFACT_KIND_VALUES,
   PRODUCER_PACKS,
   classifyScProducer,
-} = require("../mcp/lib/producer-packs.js");
-const { CHAIN_FAMILY_VALUES } = require("../mcp/lib/constants.js");
-const { planProducerFloor } = require("../mcp/lib/tools/materialize-producer-floor.js");
+} = require("../mcp/core/dispatch/producer-packs.js");
+const { CHAIN_FAMILY_VALUES } = require("../mcp/core/constants/shared-vocabulary.js");
+const { planProducerFloor } = require("../mcp/tools/materialize-producer-floor.js");
 const {
   checkLegB,
   checkLegC,

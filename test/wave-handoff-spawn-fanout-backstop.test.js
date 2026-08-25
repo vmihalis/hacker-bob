@@ -16,20 +16,20 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { attackSurfacePath, sessionDir } = require("../mcp/lib/paths.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
-const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-const { startWave } = require("../mcp/lib/waves.js");
-const { writeWaveHandoff } = require("../mcp/lib/waves/wave-assignment-store.js");
-const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
-const { logCoverage } = require("../mcp/lib/coverage.js");
-const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+const { attackSurfacePath, sessionDir } = require("../mcp/core/io/paths.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
+const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+const { startWave } = require("../mcp/core/waves/waves.js");
+const { writeWaveHandoff } = require("../mcp/core/waves/wave-assignment-store.js");
+const { buildChildFanoutPlanForSurface } = require("../mcp/core/session/assignment-brief.js");
+const { logCoverage } = require("../mcp/core/frontier/coverage.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/core/session/nested-spawn.js");
 const {
   DEFAULT_QUEUE_POLICY,
   LEAN_PROFILE,
   normalizeQueuePolicy,
   writeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 
 const HINTS = ["idor", "ssrf", "xss", "ssti", "auth_bypass"];
 const SPAWN_CHILD_TYPE = FANOUT_ROLE_REGISTRY.child.subagent_type;

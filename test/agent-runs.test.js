@@ -13,10 +13,10 @@ const {
   readAgentRuns,
   settleAgentRunFromHandoff,
   syntheticTaskIdForWaveAssignment,
-} = require("../mcp/lib/agent-runs.js");
+} = require("../mcp/core/session/agent-runs.js");
 const {
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

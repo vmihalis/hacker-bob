@@ -12,13 +12,14 @@ const {
   detectAdapterId,
   getAdapter,
 } = require("../adapters/index.js");
-const { clearUpdateCache } = require("../mcp/lib/update-check.js");
+const { clearUpdateCache } = require("../mcp/core/update-check.js");
 const { commandExists } = require("./lib/command-exists.js");
 const {
   CANONICAL_INSTALL_SUPPORT_FILES,
   CANONICAL_RUNTIME_PACKAGE_ROOTS,
   MCP_TOP_LEVEL_RUNTIME_FILES,
   isCanonicalRuntimePackageFile,
+  isPackableMcpRuntimeFile,
   sourceTreeFiles,
 } = require("./lib/package-policy.js");
 const {
@@ -344,7 +345,7 @@ function writeTextFile(filePath, content) {
   recordInstalledFile(filePath, guard);
 }
 
-function copyDirRecursive(sourceDir, destinationDir, predicate) {
+function copyDirRecursive(sourceDir, destinationDir, predicate, relativeRoot = sourceDir) {
   fs.mkdirSync(destinationDir, { recursive: true });
   const copied = [];
   for (const name of fs.readdirSync(sourceDir).sort()) {
@@ -353,11 +354,11 @@ function copyDirRecursive(sourceDir, destinationDir, predicate) {
     const stat = fs.statSync(source);
     if (stat.isDirectory()) {
       if (name === "node_modules") continue;
-      copied.push(...copyDirRecursive(source, destination, predicate));
+      copied.push(...copyDirRecursive(source, destination, predicate, relativeRoot));
       continue;
     }
     if (!stat.isFile()) continue;
-    const relative = path.relative(sourceDir, source);
+    const relative = path.relative(relativeRoot, source);
     if (predicate && !predicate(relative, name)) continue;
     copyFile(source, destination);
     copied.push(path.relative(destinationDir, destination));
@@ -371,7 +372,15 @@ function copyDirRecursive(sourceDir, destinationDir, predicate) {
 // moved the modules off the copy predicate. Hardcoded on purpose: "copied
 // something" is satisfied by copying one file, and the destination has already
 // been removed by the time the copy runs.
-const MIN_MCP_LIB_RUNTIME_MODULES = 50;
+const MIN_MCP_RUNTIME_MODULES = 50;
+const MCP_RUNTIME_TREE_NAMES = Object.freeze(["core", "domains", "tools", "fuzz"]);
+
+function isInstallableMcpRuntimeTreeFile(treeName, relativePath) {
+  if (!MCP_RUNTIME_TREE_NAMES.includes(treeName) || typeof relativePath !== "string") return false;
+  const segments = relativePath.split(/[\\/]/u);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+  return isPackableMcpRuntimeFile(`mcp/${treeName}/${segments.join("/")}`);
+}
 
 // Counts what copyDirRecursive WOULD copy, without copying it, so the refusal
 // can happen BEFORE the destination is destroyed rather than after.
@@ -399,10 +408,10 @@ function countTreeFiles(sourceDir, predicate) {
 // (copied.length === 0) throw new Error(resourceSet.emptyMessage)`), raised
 // from "not empty" to a real floor because this destination is wiped first.
 function assertRuntimeModuleFloor(count, { stage, sourceDir }) {
-  if (count >= MIN_MCP_LIB_RUNTIME_MODULES) return count;
+  if (count >= MIN_MCP_RUNTIME_MODULES) return count;
   throw new Error(
-    `Refusing to replace the installed mcp/lib runtime: ${stage} reports ${count} modules from ${sourceDir}, `
-    + `below the required floor of ${MIN_MCP_LIB_RUNTIME_MODULES}. `
+    `Refusing to replace the installed mcp runtime: ${stage} reports ${count} modules from ${sourceDir}, `
+    + `below the required floor of ${MIN_MCP_RUNTIME_MODULES}. `
     + "Installing this would leave the runtime wiped. Re-fetch or re-extract the Bob source and try again.",
   );
 }
@@ -2245,7 +2254,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   // permits deletion of a retired Bob filename only while its bytes and filesystem identity still match;
   // operator-created or locally modified siblings survive. The manifest is the single source of truth;
   // install-smoke.test.js pins it EQUAL to the real source top-level mcp/*.js so additions/deletions
-  // cannot silently drift. lib/ + its subdirs are copied separately below.
+  // cannot silently drift.
   const removedRetiredMcpTopLevelRuntimeFiles = pruneRetiredMcpTopLevelRuntimeFiles(
     targetAbs,
     previousInstallMetadata,
@@ -2254,76 +2263,64 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
-  // mcp/lib is a wholly Bob-owned runtime root (unlike the surrounding mcp/
-  // directory, where operators may keep their own top-level files). Replace the
-  // complete owned root before copying so a root module or whole subdirectory
-  // removed by a newer Bob release cannot survive an upgrade and later be loaded
-  // through a fixed-path dynamic require. mcp/node_modules is a sibling and is
-  // intentionally untouched: the dependency copier preserves its foreign/stale
-  // packages and operator-owned .bin entries under its separately disclosed
-  // assurance contract. The enrolled lifecycle-custodian mutation registry has
-  // no mcp/lib selection and its production helper remains deliberately
-  // unavailable, so this canonical root still uses a pathname-based Node replace;
-  // doctor's lifecycle-custodian check remains non-authorizing until that native
-  // contract is expanded and qualified.
-  const sourceLibDir = path.join(sourceRoot, "mcp", "lib");
-  const targetLibDir = path.join(mcpDir, "lib");
-  if (path.resolve(sourceLibDir) !== path.resolve(targetLibDir)) {
-    // The rmSync below is a WHOLESALE replace, so it destroys local work
-    // before any copyFile guard can see the destination. Sweep drifted or
-    // unrecorded files into mcp/lib.bob-local first — OUTSIDE the root being
-    // removed, or the rmSync would take the preserved copies with it. Files
-    // that already match the incoming source, and files that still match
-    // Bob's recorded digest (including modules a newer release drops), are
-    // left for the replace exactly as before.
-    // Copy .js modules plus any .sh build assets a module reads at load time
-    // (e.g. repo-env.js resolves a native-fuzz build script under mcp/lib/fuzz/).
-    // Dropping a load-time .sh asset crashes mcp/server.js startup the same way a
-    // dropped subdir would, so the runtime-copy must carry both.
-    const runtimeModulePredicate = (relative, name) => name.endsWith(".js") || name.endsWith(".sh");
-    // FLOOR FIRST, before anything is destroyed. The preservation sweep below
-    // cannot rescue this case by design — it skips every file still matching
-    // its recorded digest — so an empty or gutted source would wipe the
-    // installed runtime, preserve nothing, warn nothing, and report success.
-    assertRuntimeModuleFloor(countTreeFiles(sourceLibDir, runtimeModulePredicate), {
+  // Replace each Bob-owned runtime subtree independently. The surrounding mcp/
+  // root remains mixed ownership.
+  const sourceRuntimeRoot = path.join(sourceRoot, "mcp");
+  if (path.resolve(sourceRuntimeRoot) !== path.resolve(mcpDir)) {
+    const runtimeTrees = MCP_RUNTIME_TREE_NAMES.map((name) => ({
+      name,
+      sourceTree: path.join(sourceRuntimeRoot, name),
+      targetTree: path.join(mcpDir, name),
+      predicate: (relative) => isInstallableMcpRuntimeTreeFile(name, relative),
+    }));
+    for (const tree of runtimeTrees) {
+      let stat = null;
+      try {
+        stat = fs.statSync(tree.sourceTree);
+      } catch {
+        stat = null;
+      }
+      if (!stat || !stat.isDirectory()) {
+        throw new Error(`Refusing to install an incomplete mcp runtime: missing source tree ${tree.sourceTree}`);
+      }
+    }
+    const shippedRuntimeModuleCount = runtimeTrees.reduce(
+      (count, tree) => count + countTreeFiles(tree.sourceTree, tree.predicate),
+      0,
+    );
+    assertRuntimeModuleFloor(shippedRuntimeModuleCount, {
       stage: "the shipped source",
-      sourceDir: sourceLibDir,
+      sourceDir: sourceRuntimeRoot,
     });
-    guardBeforeTreeReplace({
-      targetTree: targetLibDir,
-      sourceTree: sourceLibDir,
-      preservedTree: `${targetLibDir}${PRESERVED_LOCAL_SUFFIX}`,
-    });
-    // POSITIVE CONTROL for the sweep immediately above. guardBeforeTreeReplace
-    // returns [] both when it preserved nothing AND when no guard is armed at
-    // all — identical return, opposite meanings — and the next line is the most
-    // destructive statement in this installer. Refuse to run it unarmed rather
-    // than let "the guard ran and found nothing" be indistinguishable from "no
-    // guard ran". This is also the real consumer of activeInstallDriftGuard().
     if (!activeInstallDriftGuard()) {
       throw new Error(
-        "Refusing to replace the installed mcp/lib runtime with the install drift guard disarmed: "
-        + "local edits under mcp/lib would be destroyed with no sidecar and no warning.",
+        "Refusing to replace the installed mcp runtime with the install drift guard disarmed: "
+        + "local edits under mcp would be destroyed with no sidecar and no warning.",
       );
     }
-    fs.rmSync(targetLibDir, { recursive: true, force: true });
-    // The return value is NOT discarded: a copy that starts healthy and ends
-    // short (a mid-copy failure, a source mutated underneath us) is the same
-    // wiped runtime as an empty source.
-    const copiedRuntimeModules = copyDirRecursive(
-      sourceLibDir,
-      targetLibDir,
-      runtimeModulePredicate,
-    );
-    assertRuntimeModuleFloor(copiedRuntimeModules.length, {
+    let copiedRuntimeModuleCount = 0;
+    for (const tree of runtimeTrees) {
+      guardBeforeTreeReplace({
+        targetTree: tree.targetTree,
+        sourceTree: tree.sourceTree,
+        preservedTree: `${tree.targetTree}${PRESERVED_LOCAL_SUFFIX}`,
+      });
+      fs.rmSync(tree.targetTree, { recursive: true, force: true });
+      copiedRuntimeModuleCount += copyDirRecursive(
+        tree.sourceTree,
+        tree.targetTree,
+        tree.predicate,
+      ).length;
+    }
+    assertRuntimeModuleFloor(copiedRuntimeModuleCount, {
       stage: "the completed copy",
-      sourceDir: sourceLibDir,
+      sourceDir: sourceRuntimeRoot,
     });
   }
   // The offensive arsenal image digest lockfile is operator-minted JSON data (scripts/build-offensive-image.sh).
-  // The recursive mcp/lib copy above is .js/.sh-only, so copy this .json explicitly. Absent until the image is pinned.
-  const offensiveImageLock = path.join(sourceRoot, "mcp", "lib", "offensive-image.json");
-  const targetImageLock = path.join(mcpDir, "lib", "offensive-image.json");
+  // The recursive runtime copy above excludes JSON, so copy this lock explicitly. Absent until the image is pinned.
+  const offensiveImageLock = path.join(sourceRoot, "mcp", "offensive-image.json");
+  const targetImageLock = path.join(mcpDir, "offensive-image.json");
   if (fs.existsSync(offensiveImageLock)) {
     copyFile(offensiveImageLock, targetImageLock);
   } else {
@@ -2477,7 +2474,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   let sessionCap = null;
   try {
     const { ensureSessionCapNonce, sessionCapPath } = require(
-      path.join(targetAbs, "mcp", "lib", "session-cap.js"),
+      path.join(targetAbs, "mcp", "core", "session", "session-cap.js"),
     );
     ensureSessionCapNonce();
     sessionCap = sessionCapPath();
@@ -2796,6 +2793,7 @@ module.exports = {
   detectInstalledAdapterIds,
   installProject,
   installedAdapterIds,
+  isInstallableMcpRuntimeTreeFile,
   neutralInstallMetadataPath,
   neutralVersionPath,
   patchrightAvailable,

@@ -10,55 +10,55 @@ const {
   classifyRepoReachability,
   detectNetworkReachability,
   safeReadText,
-} = require("../mcp/lib/reachability.js");
+} = require("../mcp/core/frontier/reachability.js");
 const {
   VERIFICATION_ROUND_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/constants/shared-vocabulary.js");
 const {
   capabilityBlockerCeilingViolations,
   computeReachabilityDisposition,
   normalizeReachabilityDispositionStamp,
-} = require("../mcp/lib/reachability-ceiling.js");
+} = require("../mcp/core/frontier/reachability-ceiling.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   sessionDir,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   mergeWaveHandoffs,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   sha256Hex,
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 function withRepo(files, fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bob-reachability-"));

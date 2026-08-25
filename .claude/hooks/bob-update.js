@@ -2,7 +2,7 @@
 "use strict";
 
 const path = require("path");
-const update = require(path.join(__dirname, "..", "..", "mcp", "lib", "update-check.js"));
+const update = require(path.join(__dirname, "..", "..", "mcp", "core", "update-check.js"));
 
 function claudeInstallCommand(result) {
   const packageName = (result && result.package_name) || update.PACKAGE_NAME;

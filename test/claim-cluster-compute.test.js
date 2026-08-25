@@ -15,17 +15,17 @@ const path = require("path");
 
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   readClaimClusters,
-} = require("../mcp/lib/claim-clusters.js");
+} = require("../mcp/core/claims/claim-clusters.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   correlateClaims,
-} = require("../mcp/lib/claim-correlator.js");
+} = require("../mcp/core/claims/claim-correlator.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

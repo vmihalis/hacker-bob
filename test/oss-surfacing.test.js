@@ -28,7 +28,7 @@ const {
   TASK_LENSES,
   isTaskLens,
   normalizeTaskLens,
-} = require("../mcp/lib/task-lenses.js");
+} = require("../mcp/core/session/task-lenses.js");
 const {
   ASSIGNMENT_BRIEF_SLICE_REGISTRY,
   OSS_BRIEF_SLICE_REGISTRY,
@@ -37,39 +37,39 @@ const {
   buildBriefExtrasForProfile,
   briefSliceRegistryForProfile,
   isOssLens,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   OSS_OBSERVATION_KIND_VALUES,
   OSS_OBSERVATION_BUILDERS,
   buildOssObservationPayload,
   isOssObservationKind,
   recordOssObservation,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   CLI_TOOL_PACKS,
   selectCliToolPacks,
-} = require("../mcp/lib/cli-tool-packs.js");
+} = require("../mcp/core/dispatch/cli-tool-packs.js");
 const {
   OSS_TECHNIQUE_PACKS,
   OSS_TECHNIQUE_PACK_ID_ALIASES,
   TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
   findOssTechniquePack,
   resolveOssTechniquePackId,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   promoteSurfaceLeadsForWave,
   recordStaticAnalysisLeads,
-} = require("../mcp/lib/lead-promotion.js");
+} = require("../mcp/core/frontier/lead-promotion.js");
 const {
   readSurfaceLeadsDocument,
-} = require("../mcp/lib/lead-intake.js");
+} = require("../mcp/core/frontier/lead-intake.js");
 const {
   CAPABILITY_PACKS,
   classifySurfaceCapability,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 

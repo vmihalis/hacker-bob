@@ -41,36 +41,36 @@ const {
   appendCandidateClaim,
   evidenceReferenceLookupKey,
   normalizeEvidenceReferenceShape,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   assertCompletenessAgainstFreeze,
   buildClaimFreeze,
   iterateFrozenEvidenceRefs,
   projectCodeBoundObservedRefs,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   normalizeEvidencePacksDocument,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   initRepoSession,
   repoCheck,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   claimFreezePath,
   repoChecksJsonlPath,
   repoCommandRunsJsonlPath,
   repoRunsDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
 
