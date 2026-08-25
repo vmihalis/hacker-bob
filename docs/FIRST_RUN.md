@@ -7,17 +7,18 @@ This guide walks through a clean install into one project directory and a short 
 Choose the project directory where you will run your host CLI, then install Bob into that directory. Claude is the default adapter:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project
+npm install --global hacker-bob@latest
+hacker-bob install /path/to/your/project
 cd /path/to/your/project
 ```
 
 Other adapters use the same target directory with an explicit adapter flag:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter codex
-npx -y hacker-bob@latest install /path/to/your/project --adapter generic-mcp
-npx -y hacker-bob@latest install /path/to/your/project --adapter kimi
-npx -y hacker-bob@latest install /path/to/your/project --adapter all
+hacker-bob install /path/to/your/project --adapter codex
+hacker-bob install /path/to/your/project --adapter generic-mcp
+hacker-bob install /path/to/your/project --adapter kimi
+hacker-bob install /path/to/your/project --adapter all
 ```
 
 The installer writes shared runtime files into `mcp/` and `.hacker-bob/`, then writes the selected adapter surface. Claude uses `.claude/`, Codex uses direct `$bob-*` skills in `~/.codex/skills` plus `.codex/plugins/hacker-bob`, `.agents/plugins/marketplace.json`, and Codex cache/config activation for MCP wiring, Kimi uses `.kimi/skills` with `.kimi/mcp.json`, and generic MCP uses root `.mcp.json` plus `.hacker-bob/generic-mcp/` prompt docs. Codex exposes Bob as `$bob-evaluate`, `$bob-status`, `$bob-debug`, `$bob-update`, `$bob-export`, and `$bob-egress` skills. Kimi exposes Bob as `/skill:bob-evaluate`, `/skill:bob-status`, `/skill:bob-debug`, `/skill:bob-update`, `/skill:bob-export`, and `/skill:bob-egress`. A global npm install adds the `hacker-bob` command to your `PATH`, but it does not install Bob into every project automatically.
@@ -72,7 +73,7 @@ WARN: optional_capsolver - CAPSOLVER_API_KEY is not set; CAPTCHA solving is disa
 No required problems found.
 ```
 
-The exact list can grow as diagnostics improve. Treat any `ERROR` line as something to fix before starting a evaluate. Optional tools can be missing without blocking first use.
+The exact list can grow as diagnostics improve. Treat any `ERROR` line as something to fix before starting an evaluation. Optional tools can be missing without blocking first use.
 
 If doctor reports `WARN: install_version` or `WARN: install_metadata_json` and mentions legacy `.claude/bob/` metadata, the runtime can still read the legacy fallback. Rerun the installer to write neutral `.hacker-bob/` metadata.
 
@@ -99,7 +100,7 @@ For Claude, run:
 /bob-status
 ```
 
-For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files. Bob writes session state under `~/hacker-bob-sessions/<target_domain>/`; the pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or auto-copied — clean up a leftover legacy root now with `hacker-bob install --purge-legacy-session-root [--yes]`.
+For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files. Bob writes session state under `~/hacker-bob-sessions/<target_domain>/`. The pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or auto-copied. Inspect cleanup of a leftover legacy root with `hacker-bob install /path/to/your/project --purge-legacy-session-root`. Add `--yes` to that command to confirm deletion.
 
 For Codex, invoke `$bob-status`. For Kimi, invoke `/skill:bob-status`. For generic MCP hosts, list the `hacker-bob` tools or call a read-only status tool through the host's MCP UI.
 
@@ -117,9 +118,9 @@ Do not use a real company, public service, customer environment, or bug bounty t
 
 ### Private / lab targets (loopback & RFC1918)
 
-By default Bob's scope kernel rejects any non-public target — bare IPs, loopback, and RFC1918 hosts all fail with "not a public DNS domain", because a registrable public domain is the ownership signal Bob relies on. To scan a private lab host that **you own and are authorized to test**, the **operator** must enable the escape out-of-band; the agent cannot enable it for itself (it controls tool arguments, but never the server's environment):
+By default Bob's scope kernel rejects any non-public target: bare IPs, loopback, and RFC1918 hosts all fail with "not a public DNS domain", because a registrable public domain is the ownership signal Bob relies on. To scan a private lab host that **you own and are authorized to test**, the **operator** must enable the escape out-of-band; the agent cannot enable it for itself (it controls tool arguments, but never the server's environment):
 
-1. Set **two** operator controls in the MCP server's environment, and keep them set for the whole session (they are re-checked at every scan, not only at init — if you relaunch the server without them, scans of the lab target start failing with "not a public DNS domain"):
+1. Set **two** operator controls in the MCP server's environment, and keep them set for the whole session. They are re-checked at every scan, not only at initialization. If you relaunch the server without them, scans of the lab target start failing with "not a public DNS domain":
 
    ```text
    export BOB_LAB_TARGET_ACK=i-own-and-am-authorized-to-test-these-private-targets
@@ -128,7 +129,7 @@ By default Bob's scope kernel rejects any non-public target — bare IPs, loopba
 
 2. Declare intent at init by passing `lab_authorization: { "private_targets": true }` to `bob_init_session` with `target_domain` set to that host.
 
-All three are required. Without the env vars the declaration alone does nothing, and the grant is **bound to the host(s) named in `BOB_LAB_TARGET`** — so an active session cannot be turned against a neighboring private host. Only IPv4 loopback (`127.0.0.0/8`) and RFC1918 (`10/8`, `172.16/12`, `192.168/16`) are eligible; IPv6, link-local (`169.254/16`), cloud-metadata, and `.internal`/`.local` names are never eligible even with the attestation. The attestation is recorded as an audit-graded session artifact, pins scope to that one host, and requires the default (direct) egress profile.
+All three are required. Without the environment variables the declaration alone does nothing, and the grant is **bound to the host(s) named in `BOB_LAB_TARGET`**, so an active session cannot be turned against a neighboring private host. Only IPv4 loopback (`127.0.0.0/8`) and RFC1918 (`10/8`, `172.16/12`, `192.168/16`) are eligible; IPv6, link-local (`169.254/16`), cloud-metadata, and `.internal`/`.local` names are never eligible even with the attestation. The attestation is recorded as an audit-graded session artifact, pins scope to that one host, and requires the default (direct) egress profile.
 
 ## Lifecycle States
 

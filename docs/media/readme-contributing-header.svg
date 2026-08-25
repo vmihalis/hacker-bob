@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="180" viewBox="0 0 1200 180" role="img" aria-labelledby="title desc">
+  <title id="title">Hacker Bob contributor operations</title>
+  <desc id="desc">Build, verify, and explain contributions to Hacker Bob.</desc>
+  <rect width="1200" height="180" fill="#050508"/>
+  <rect x="1" y="1" width="1198" height="178" fill="none" stroke="#2B261B" stroke-width="2"/>
+  <rect width="10" height="180" fill="#F0B510"/>
+  <g transform="translate(28 10)">
+    <path d="M20 150L42 68Q52 16 105 10Q158 16 168 68L190 150L148 164H62Z" fill="#F4F0E6"/>
+    <path d="M66 72L105 45L144 72V125L105 157L66 125Z" fill="#050508"/>
+    <rect x="77" y="89" width="22" height="22" fill="#F0B510"/>
+    <rect x="111" y="89" width="22" height="22" fill="#F0B510"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+    <text x="260" y="56" fill="#F0B510" font-size="13" font-weight="800" letter-spacing="3">HACKER BOB / CONTRIBUTING</text>
+    <text x="260" y="111" fill="#F4F0E6" font-family="Arial Black, Arial, sans-serif" font-size="42" font-weight="900">CONTRIBUTOR OPERATIONS</text>
+    <text x="263" y="145" fill="#8A8376" font-size="14" font-weight="700" letter-spacing="2">BUILD  /  VERIFY  /  EXPLAIN</text>
+  </g>
+</svg>

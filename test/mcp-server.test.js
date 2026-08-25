@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("crypto");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { EventEmitter } = require("events");
 const Module = require("module");
 const { Readable } = require("stream");
@@ -24,6 +24,7 @@ const {
   computeAdjudicationPlanHash,
 } = require("../mcp/core/verification/verification-contracts.js");
 const {
+  agentRunStopSeenDir,
   verificationReplayLeaseDir,
 } = require("../mcp/core/io/paths.js");
 const {
@@ -359,6 +360,7 @@ const {
 } = require("../mcp/domains/web/signup.js");
 const {
   finalizeAgentRun,
+  recordAgentCompletionTelemetry,
 } = require("../mcp/core/session/agent-run-completion.js");
 const {
   applyWaveMerge,
@@ -1995,6 +1997,24 @@ function runEvaluatorSubagentStop(payload, { home, env = {} }) {
     input: JSON.stringify(payload),
     encoding: "utf8",
     env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: path.join(__dirname, ".."), ...env },
+  });
+}
+
+function runEvaluatorSubagentStopAsync(payload, { home, env = {} }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(__dirname, "..", ".claude", "hooks", "agent-run-stop.js")], {
+      env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: path.join(__dirname, ".."), ...env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
+    child.stdin.end(JSON.stringify(payload));
   });
 }
 
@@ -9015,6 +9035,185 @@ test("evaluator SubagentStop hook blocks missing final marker", () => {
     assert.equal(rows[0].block_code, "missing_marker");
     assert.equal(rows[0].target_domain, null);
     assert.equal(rows[0].telemetry_source, "agent-run-stop");
+  });
+});
+
+function readAgentRunStopMarkers() {
+  const dir = agentRunStopSeenDir();
+  return fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((name) => /^[0-9a-f]{16}$/.test(name))
+    : [];
+}
+
+function retainedSuppressedPhantomRows() {
+  const summary = readToolTelemetry({ include_agent_runs: true })
+    .agent_runs.suppressed_phantom_block_rows;
+  assert.equal(summary.scope, "retained_workspace_window");
+  assert.equal(summary.max_records, 5000);
+  return summary.total;
+}
+
+test("evaluator SubagentStop atomically dedupes concurrent phantom retries per transcript", () => {
+  return withTempHome(async (tempHome) => {
+    const payload = {
+      last_assistant_message: "I wrote notes but no marker.",
+      transcript_path: path.join(tempHome, "transcript-storm.jsonl"),
+    };
+    const [first, second] = await Promise.all([
+      runEvaluatorSubagentStopAsync(payload, { home: tempHome }),
+      runEvaluatorSubagentStopAsync(payload, { home: tempHome }),
+    ]);
+
+    assert.equal(first.status, 2);
+    assert.equal(second.status, 2);
+    const rows = readJsonl(toolInvocationTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].block_code, "missing_marker");
+
+    const markers = readAgentRunStopMarkers();
+    assert.equal(markers.length, 1);
+    const marker = JSON.parse(fs.readFileSync(path.join(agentRunStopSeenDir(), markers[0]), "utf8"));
+    assert.equal(marker.version, 2);
+    assert.equal(retainedSuppressedPhantomRows(), 1);
+  });
+});
+
+test("evaluator SubagentStop keeps phantom rows from distinct transcripts separate", () => {
+  withTempHome((tempHome) => {
+    for (const name of ["a", "b"]) {
+      const result = runEvaluatorSubagentStop({
+        last_assistant_message: `No marker ${name}.`,
+        transcript_path: path.join(tempHome, `transcript-${name}.jsonl`),
+      }, { home: tempHome });
+      assert.equal(result.status, 2);
+    }
+
+    assert.equal(readJsonl(toolInvocationTelemetryPath()).length, 2);
+    assert.equal(readAgentRunStopMarkers().length, 2);
+    assert.equal(retainedSuppressedPhantomRows(), 0);
+  });
+});
+
+test("evaluator SubagentStop serializes cross-transcript suppression accounting", () => {
+  return withTempHome(async (tempHome) => {
+    const payloads = ["a", "b"].map((suffix) => ({
+      last_assistant_message: "I wrote notes but no marker.",
+      transcript_path: path.join(tempHome, `transcript-${suffix}.jsonl`),
+    }));
+    for (const payload of payloads) {
+      const first = runEvaluatorSubagentStop(payload, { home: tempHome });
+      assert.equal(first.status, 2);
+    }
+
+    const suppressed = await Promise.all(payloads.map((payload) => (
+      runEvaluatorSubagentStopAsync(payload, { home: tempHome })
+    )));
+
+    assert.ok(suppressed.every((result) => result.status === 2));
+    assert.equal(readJsonl(toolInvocationTelemetryPath()).length, 2);
+    assert.equal(retainedSuppressedPhantomRows(), 2);
+  });
+});
+
+test("phantom dedupe bounds its workspace marker window", () => {
+  withTempHome((tempHome) => {
+    const dir = agentRunStopSeenDir();
+    fs.mkdirSync(dir, { recursive: true });
+    for (let index = 0; index < 5000; index += 1) {
+      const name = index.toString(16).padStart(16, "0");
+      fs.writeFileSync(path.join(dir, name), JSON.stringify({ version: 2 }));
+    }
+
+    const transcriptPath = path.join(tempHome, "transcript-retention.jsonl");
+    const result = runEvaluatorSubagentStop({
+      last_assistant_message: "No marker at the retention boundary.",
+      transcript_path: transcriptPath,
+    }, { home: tempHome });
+
+    assert.equal(result.status, 2);
+    const markers = readAgentRunStopMarkers();
+    const expectedKey = crypto.createHash("sha256").update(transcriptPath).digest("hex").slice(0, 16);
+    assert.equal(markers.length, 5000);
+    assert.ok(markers.includes(expectedKey));
+  });
+});
+
+test("phantom dedupe never suppresses real-coordinate blocked rows", () => {
+  withTempHome(() => {
+    const transcriptPath = path.join(os.tmpdir(), "phantom-unit-transcript.jsonl");
+    const phantom = {
+      status: "blocked",
+      block_code: "malformed_marker",
+      marker: null,
+    };
+    recordAgentCompletionTelemetry(phantom, { transcript_path: transcriptPath });
+    recordAgentCompletionTelemetry(phantom, { transcript_path: transcriptPath });
+
+    const realBlocked = {
+      status: "blocked",
+      block_code: "malformed_marker",
+      marker: {
+        target_domain: "example.com",
+        wave: "w0",
+        agent: "a1",
+        surface_id: "surface-a",
+      },
+    };
+    recordAgentCompletionTelemetry(realBlocked, { transcript_path: transcriptPath });
+    recordAgentCompletionTelemetry(realBlocked, { transcript_path: transcriptPath });
+
+    const rows = readJsonl(toolInvocationTelemetryPath());
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].target_domain, null);
+    assert.equal(rows[1].target_domain, "example.com");
+    assert.equal(rows[2].target_domain, "example.com");
+    assert.equal(retainedSuppressedPhantomRows(), 1);
+  });
+});
+
+test("phantom dedupe fails open without a transcript key", () => {
+  withTempHome((tempHome) => {
+    for (const name of ["A", "B"]) {
+      const result = runEvaluatorSubagentStop({
+        last_assistant_message: `No marker and no transcript ${name}.`,
+      }, { home: tempHome });
+      assert.equal(result.status, 2);
+    }
+
+    assert.equal(readJsonl(toolInvocationTelemetryPath()).length, 2);
+    assert.equal(fs.existsSync(agentRunStopSeenDir()), false);
+  });
+});
+
+test("phantom dedupe honors telemetry opt-out", () => {
+  withTempHome((tempHome) => {
+    const result = runEvaluatorSubagentStop({
+      last_assistant_message: "No marker with telemetry disabled.",
+      transcript_path: path.join(tempHome, "transcript-optout.jsonl"),
+    }, { home: tempHome, env: { BOUNTY_TELEMETRY: "0" } });
+
+    assert.equal(result.status, 2);
+    assert.equal(fs.existsSync(toolInvocationTelemetryPath()), false);
+    assert.equal(fs.existsSync(agentRunStopSeenDir()), false);
+  });
+});
+
+test("phantom dedupe marks a transcript only after its first row is written", () => {
+  withTempHome((tempHome) => {
+    const payload = {
+      last_assistant_message: "No marker while the telemetry sink is broken.",
+      transcript_path: path.join(tempHome, "transcript-fail-open.jsonl"),
+    };
+    const jsonlPath = toolInvocationTelemetryPath();
+    fs.mkdirSync(jsonlPath, { recursive: true });
+
+    assert.equal(runEvaluatorSubagentStop(payload, { home: tempHome }).status, 2);
+    assert.equal(readAgentRunStopMarkers().length, 0);
+
+    fs.rmSync(jsonlPath, { recursive: true, force: true });
+    assert.equal(runEvaluatorSubagentStop(payload, { home: tempHome }).status, 2);
+    assert.equal(readJsonl(toolInvocationTelemetryPath()).length, 1);
+    assert.equal(readAgentRunStopMarkers().length, 1);
   });
 });
 

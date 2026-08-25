@@ -27,6 +27,7 @@ const {
 const {
   redactPhysicalSensitiveValues,
 } = require("../physical-sensitive-material-contracts.js");
+const { readSuppressedPhantomBlockRows } = require("./phantom-stop-dedupe.js");
 
 const TOOL_TELEMETRY_VERSION = 1;
 const TOOL_INVOCATION_TELEMETRY_VERSION = 1;
@@ -928,6 +929,7 @@ function summarizeToolInvocationTelemetryEvents(events, {
     filters,
     total_runs: events.length,
     malformed_lines: readResult ? readResult.malformed_lines : 0,
+    suppressed_phantom_block_rows: readSuppressedPhantomBlockRows(env),
     totals: {
       runs: events.length,
       by_status: byStatus,

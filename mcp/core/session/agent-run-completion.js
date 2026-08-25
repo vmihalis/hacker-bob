@@ -1,6 +1,5 @@
 "use strict";
 
-const fs = require("fs");
 const {
   assertNonEmptyString,
   parseAgentId,
@@ -15,9 +14,8 @@ const {
 const {
   attackSurfacePath,
 } = require("../io/paths.js");
-const {
-  readJsonFile,
-} = require("../io/storage.js");
+const { readJsonFile } = require("../io/storage.js");
+const { recordPhantomBlockRowOnce } = require("../telemetry/phantom-stop-dedupe.js");
 const {
   readResults: readAuthDifferentialResults,
 } = require("../auth-differential-runner.js");
@@ -187,6 +185,7 @@ const {
 } = require("../io/envelope.js");
 const {
   safeRecordToolInvocationTelemetry,
+  telemetryEnabled,
 } = require("../telemetry/tool-telemetry.js");
 const {
   safeRecordEvaluatorStoppedPipelineEvent,
@@ -1135,6 +1134,15 @@ function telemetryInput(evaluation, {
   };
 }
 
+const PHANTOM_NULL_COORD_BLOCK_CODES = new Set(["missing_marker", "malformed_marker"]);
+
+function isPhantomNullCoordBlockRow(input) {
+  return Boolean(input)
+    && input.status === "blocked"
+    && PHANTOM_NULL_COORD_BLOCK_CODES.has(input.blockCode)
+    && input.target_domain == null && input.wave == null && input.agent == null;
+}
+
 function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // Evidence-mode input is already a fully-formed telemetry record (the hook
   // builds it directly because evidence runs have no wave/agent and skip the
@@ -1156,11 +1164,20 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
     return evaluation;
   }
   const input = telemetryInput(evaluation, options);
-  safeRecordToolInvocationTelemetry(input);
-  safeRecordEvaluatorStoppedPipelineEvent(
-    input,
-    safeGovernanceContextForDomain(input.target_domain),
-  );
+  const recordRow = () => {
+    const recorded = safeRecordToolInvocationTelemetry(input);
+    safeRecordEvaluatorStoppedPipelineEvent(
+      input,
+      safeGovernanceContextForDomain(input.target_domain),
+    );
+    return recorded != null;
+  };
+  if (isPhantomNullCoordBlockRow(input)) {
+    if (!telemetryEnabled(process.env)) recordRow();
+    else recordPhantomBlockRowOnce(input, recordRow, process.env);
+    return input;
+  }
+  recordRow();
   return input;
 }
 

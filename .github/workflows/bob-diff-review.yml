@@ -12,8 +12,9 @@
 #   ANTHROPIC_API_KEY  — Anthropic API key (pay-per-use fallback) for the runner.
 #                        At least one of ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY
 #                        is required; OAuth wins when both are set.
-#   BOB_INSTALL_TOKEN  — GitHub App token or PAT (read:packages + contents:read)
-#                        used to pull @bobnetsec/* packages from GitHub Packages.
+#   BOB_INSTALL_TOKEN  — Classic PAT with read:packages, used to pull
+#                        @bobnetsec/* packages from GitHub Packages. Add classic
+#                        repo scope only if it also checks out private source.
 #   BOB_VERSION        — Bob release tag used for the shared workspace cache.
 ###############################################################################
 
@@ -58,7 +59,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Fetch enough history for the diff to be accurate.
           fetch-depth: 0
@@ -94,7 +95,7 @@ jobs:
 
       - name: Checkout trusted Bob action source
         if: steps.bob-secrets.outputs.has_credentials == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           ref: ${{ github.base_ref }}

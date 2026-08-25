@@ -23,6 +23,13 @@
 - Retired the one-time `~/bounty-agent-telemetry/agent-runs.jsonl` → `tool-invocations.jsonl` telemetry-file migration. The telemetry directory itself (`~/bounty-agent-telemetry`, overridable via `BOUNTY_TELEMETRY_DIR`) is unchanged; only the pre-rename file migration is removed.
 - Added the opt-in, destructive `hacker-bob install --purge-legacy-session-root` flag to remove a leftover pre-v2.0 legacy session root. It is dry-run by default and requires `--yes` to delete, names the absolute path it removes, never touches the canonical `~/hacker-bob-sessions` root or the home directory, and only removes `~/bounty-agent-telemetry` when `--include-legacy-telemetry` is also passed.
 
+### Installation and packaged documentation
+
+- The primary install path now installs the `hacker-bob` command globally before installing Bob into a project. This path works with the current npm release and leaves `hacker-bob doctor` available for verification.
+- The npm package now includes the images, animations, VHS tapes, and receipt source referenced by its README. Package and release checks keep the packed tarball below the enforced 4 MB ceiling.
+- Raised the per-file runtime dependency copy ceiling from 256 MB to 512 MB. The previous limit rejected the 325 MB native Claude CLI shipped by `@anthropic-ai/claude-agent-sdk` 0.3.241 during a clean global install; the independent 2 GB graph ceiling remains unchanged.
+- Installer completion hints now use `<authorized-target>` and state the authorization requirement instead of suggesting a real domain.
+
 ## [2.0.1] - 2026-06-08
 
 First npm publication of the v2 line. `v2.0.0` was tagged but never released to npm; the registry `latest` remained on the v1.3.x maintenance line. `2.0.1` publishes the accumulated v2.0.x work on top of the [2.0.0] topology.

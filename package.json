@@ -63,6 +63,7 @@
     "docs/**/*.html",
     "!docs/bob-architecture-event.html",
     "docs/**/*.png",
+    "!docs/media/readme-hero.png",
     "!docs/media/doctor-ok.png",
     "!docs/media/evaluate-start.png",
     "!docs/media/status-fresh.png",
@@ -175,10 +176,10 @@
     "install-browser": "npx patchright install chromium"
   },
   "dependencies": {
-    "@babel/parser": "^7.29.7",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.167",
+    "@anthropic-ai/claude-agent-sdk": "0.3.246",
     "@aws-sdk/client-s3": "^3.709.0",
     "@aws-sdk/client-securityhub": "^3.709.0",
+    "@babel/parser": "^7.29.7",
     "proxy-agent": "^8.0.1",
     "psl": "^1.15.0",
     "ws": "^8.18.0"

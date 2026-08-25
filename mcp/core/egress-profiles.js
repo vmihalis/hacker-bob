@@ -6,6 +6,7 @@ const path = require("path");
 const { redactUrlSensitiveValues } = require("../redaction.js");
 const {
   readJsonFile,
+  writeJsonDocument,
 } = require("./io/storage.js");
 const {
   projectRoot: runtimeProjectRoot,
@@ -199,8 +200,7 @@ function writeEgressProfilesDocument(projectRoot, document, options = {}) {
       rejectExistingSymlink: true,
     });
   } else {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+    writeJsonDocument(filePath, normalized);
   }
   return normalized;
 }
@@ -235,8 +235,7 @@ function ensureEgressProfilesExample(projectRoot = projectRootFromMcp(), options
       rejectExistingSymlink: true,
     });
   } else {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(exampleEgressProfilesDocument(), null, 2)}\n`, "utf8");
+    writeJsonDocument(filePath, exampleEgressProfilesDocument());
   }
   return filePath;
 }
