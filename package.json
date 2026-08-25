@@ -130,6 +130,7 @@
     "check:syntax": "node --check bin/hacker-bob.js && node --check scripts/install.js && node --check scripts/lifecycle.js && node --check scripts/run-physical-package-tests.js && node --check scripts/lib/lifecycle-custodian-contract.js && node --check scripts/lib/lifecycle-custodian.js && node --check scripts/lib/optional-provider-registry.js && node --check scripts/lib/optional-provider-lifecycle.js && node --check scripts/lib/physical-package-test-matrix.js && node --check scripts/lib/static-runtime-inspection.js && find mcp .claude/hooks packages/bob-artifact-vault packages/bob-instrument-broker packages/bob-instrument-contracts packages/bob-instrument-chameleon packages/bob-instrument-chameleon-worker-runtime packages/bob-instrument-deterministic packages/bob-instrument-native-prebuild-trust packages/bob-instrument-principal-acl-darwin -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
     "check:agent-tools": "node scripts/generate-agent-tools.js --check",
     "check:authority-inventory": "node scripts/authority-inventory.js --check",
+    "update:tool-composition-contract": "UPDATE_TOOL_COMPOSITION_CONTRACT=1 node --test test/tool-composition-contract.test.js",
     "check:skill": "node scripts/generate-hacker-bob-skill.js --check",
     "check:codex-skill": "node scripts/generate-codex-skills.js --check",
     "check:kimi-skill": "node scripts/generate-kimi-roles.js --check",

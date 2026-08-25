@@ -128,8 +128,12 @@ function buildToolCompositionSnapshot() {
 }
 
 test("tool composition registry surfaces match the committed contract", () => {
+  const actual = buildToolCompositionSnapshot();
+  if (process.env.UPDATE_TOOL_COMPOSITION_CONTRACT === "1") {
+    fs.writeFileSync(FIXTURE_PATH, `${JSON.stringify(actual, null, 2)}\n`);
+  }
   const expected = JSON.parse(fs.readFileSync(FIXTURE_PATH, "utf8"));
-  assert.deepEqual(buildToolCompositionSnapshot(), expected);
+  assert.deepEqual(actual, expected);
 });
 
 test("closure-relevant tool proof metadata is paired and exposed in the manifest", () => {
