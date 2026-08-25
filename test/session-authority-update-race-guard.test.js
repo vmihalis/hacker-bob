@@ -461,6 +461,9 @@ for (const member of ["state", "nucleus", "events"]) {
         const victim = `${failedFile}.outside`;
         const sidecar = `${failedFile}.hardlink`;
         const realLinkSync = fs.linkSync;
+        if (mutation === "file") fs.writeFileSync(victim, "outside replacement file\n");
+        if (mutation === "symlink") fs.writeFileSync(victim, "victim survives\n");
+        if (mutation === "hardlink") fs.writeFileSync(victim, "hardlink victim survives\n");
         let injected = false;
         let ambiguousQuarantinePath = null;
         fs.linkSync = function injectedLink(source, destination) {
@@ -473,15 +476,13 @@ for (const member of ["state", "nucleus", "events"]) {
             if (["file", "symlink", "directory", "hardlink"].includes(mutation)) {
               fs.unlinkSync(failedFile);
               if (mutation === "file") {
-                fs.writeFileSync(failedFile, "outside replacement file\n");
+                fs.renameSync(victim, failedFile);
               } else if (mutation === "symlink") {
-                fs.writeFileSync(victim, "victim survives\n");
                 fs.symlinkSync(victim, failedFile);
               } else if (mutation === "directory") {
                 fs.mkdirSync(failedFile);
               } else {
-                fs.writeFileSync(victim, "hardlink victim survives\n");
-                fs.linkSync(victim, failedFile);
+                realLinkSync(victim, failedFile);
               }
             }
             if (mutation === "nlink") fs.linkSync(failedFile, sidecar);
@@ -667,6 +668,8 @@ test("update rollback preserves a predecessor replacement and rethrows the froze
     const before = snapshotFiles(domain);
     const primary = frozenFailure("injected nucleus quarantine failure");
     const sentinel = Buffer.from("outside state replacement\n");
+    const replacementPath = `${stateFile}.outside`;
+    fs.writeFileSync(replacementPath, sentinel);
     const realLinkSync = fs.linkSync;
     let injected = false;
     fs.linkSync = function injectedLink(source, destination) {
@@ -675,7 +678,7 @@ test("update rollback preserves a predecessor replacement and rethrows the froze
           && isCasTempFor(nucleusFile, destination)) {
         injected = true;
         fs.unlinkSync(stateFile);
-        fs.writeFileSync(stateFile, sentinel);
+        fs.renameSync(replacementPath, stateFile);
         throw primary;
       }
       return realLinkSync(source, destination);
