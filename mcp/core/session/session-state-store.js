@@ -60,20 +60,17 @@ function sessionStateMissing(error) {
   return /Missing session state:/.test(error && error.message ? error.message : String(error));
 }
 
-function blockInternalHostsRequestPolicy(domain, args = {}, {
-  allowMissingSession = false,
-} = {}) {
+// PURE composition: given a session's block_internal_hosts floor (or null when no
+// session policy is available yet) and the request args, apply the "explicit true
+// only tightens" rule and return the effective policy. No I/O -- this is the exact
+// tightening logic blockInternalHostsRequestPolicy previously inlined around a fresh
+// state.json read; extracted so a frozen per-call session-authority context (see
+// session-authority-context.js's block_internal_hosts_policy field) can supply the
+// session floor without re-reading state.json a second time within the same call.
+function composeBlockInternalHostsPolicy(sessionPolicy, args = {}) {
   const explicitBlock = args.block_internal_hosts == null
     ? null
     : assertBoolean(args.block_internal_hosts, "block_internal_hosts");
-  let sessionPolicy = null;
-  try {
-    sessionPolicy = blockInternalHostsPolicyFields(readSessionStateStrict(domain).state);
-  } catch (error) {
-    if (!allowMissingSession || !sessionStateMissing(error)) {
-      throw error;
-    }
-  }
 
   if (sessionPolicy && sessionPolicy.block_internal_hosts === true) {
     return {
@@ -96,8 +93,23 @@ function blockInternalHostsRequestPolicy(domain, args = {}, {
   };
 }
 
+function blockInternalHostsRequestPolicy(domain, args = {}, {
+  allowMissingSession = false,
+} = {}) {
+  let sessionPolicy = null;
+  try {
+    sessionPolicy = blockInternalHostsPolicyFields(readSessionStateStrict(domain).state);
+  } catch (error) {
+    if (!allowMissingSession || !sessionStateMissing(error)) {
+      throw error;
+    }
+  }
+  return composeBlockInternalHostsPolicy(sessionPolicy, args);
+}
+
 module.exports = {
   blockInternalHostsRequestPolicy,
+  composeBlockInternalHostsPolicy,
   readSessionStateStrict,
   sessionStateMissing,
   writeSessionStateDocument,

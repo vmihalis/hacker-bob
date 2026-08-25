@@ -437,6 +437,18 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
+    module: "mcp/core/belief/organs/product-model.js",
+    guards: Object.freeze([
+      "test/belief-product-model.test.js",
+    ]),
+  }),
+  Object.freeze({
+    module: "mcp/core/belief/contract-compiler.js",
+    guards: Object.freeze([
+      "test/contract-compiler.test.js",
+    ]),
+  }),
+  Object.freeze({
     module: "mcp/core/belief/belief-window.js",
     guards: Object.freeze([
       "test/belief-window.test.js",

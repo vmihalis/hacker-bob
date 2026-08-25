@@ -1,8 +1,11 @@
 "use strict";
 
-module.exports = Object.freeze([
+const sessionInitializerTools = Object.freeze([
   require("../init-session.js"),
   require("../repo/init-repo-session.js"),
+]);
+
+const sessionAfterSpecializedSessionTools = Object.freeze([
   require("../repo/repo-inventory.js"),
   require("../repo/repo-prepare-env.js"),
   require("../repo/repo-docker-run.js"),
@@ -34,3 +37,23 @@ module.exports = Object.freeze([
   require("../clear-terminal-block.js"),
   require("../finalize-report.js"),
 ]);
+
+const sessionWaveTools = [
+  ...sessionInitializerTools,
+  ...sessionAfterSpecializedSessionTools,
+];
+
+Object.defineProperty(sessionWaveTools, "sessionInitializerTools", {
+  value: sessionInitializerTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+Object.defineProperty(sessionWaveTools, "sessionAfterSpecializedSessionTools", {
+  value: sessionAfterSpecializedSessionTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+
+module.exports = Object.freeze(sessionWaveTools);

@@ -197,7 +197,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     output_path: path.join(".claude", "skills", "bob-evaluate-runner", "SKILL.md"),
     name: "bob-evaluate-runner",
     description: "Hacker Bob orchestrator runtime — invoked by /bob-evaluate. Do not call directly.",
-    disable_model_invocation: true,
+    disable_model_invocation: false,
     argument_hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
     local_tools: Object.freeze(["Task", "Read"]),
   }),

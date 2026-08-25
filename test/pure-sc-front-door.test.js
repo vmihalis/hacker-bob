@@ -80,10 +80,22 @@ test("a pure contract target seeds a smart_contract surface and bob_advance_sess
     assert.equal(fs.existsSync(httpAuditJsonlPath(domain)), false, "no http-audit.jsonl for a pure contract target");
     assert.equal(fs.existsSync(attackSurfacePath(domain)), false, "no attack_surface.json for a pure contract target");
 
+    // Contract init creates verified SETUP authority immediately; advance moves
+    // that same contracts-only scope rather than synthesizing it from state.
+    const setupNucleus = await executeTool("bob_read_session_nucleus", { target_domain: domain });
+    assert.equal(setupNucleus.ok, true, `expected setup read-nucleus ok:true, got ${JSON.stringify(setupNucleus)}`);
+    assert.equal(setupNucleus.data.nucleus.lifecycle_state, "SETUP");
+    assert.equal(setupNucleus.data.nucleus.scope_policy.target_url, undefined);
+    assert.equal(setupNucleus.data.nucleus.scope_policy.target_repo, undefined);
+    assert.ok(
+      Array.isArray(setupNucleus.data.nucleus.scope_policy.target_contracts)
+        && setupNucleus.data.nucleus.scope_policy.target_contracts.length >= 1,
+      `expected setup contracts-axis scope_policy, got ${JSON.stringify(setupNucleus.data.nucleus.scope_policy.target_contracts)}`,
+    );
+
     // The REAL dispatch advance: the contracts axis flows through the governance
-    // kernel (sessionNucleusFromState -> normalizeScopePolicy accepts a
-    // contracts-only scope_policy), the gate's forced materializeFrontier folds the
-    // seeded contract surface in, seed_surfaces_present is satisfied, and the
+    // kernel, the gate's forced materializeFrontier folds the seeded contract
+    // surface in, seed_surfaces_present is satisfied, and the
     // advance commits ok:true.
     const advance = await executeTool("bob_advance_session", { target_domain: domain, to_state: "OPEN_FRONTIER" });
     assert.equal(advance.ok, true, `expected advance ok:true, got ${JSON.stringify(advance)}`);
@@ -96,6 +108,7 @@ test("a pure contract target seeds a smart_contract surface and bob_advance_sess
     assert.equal(nucleus.ok, true, `expected read-nucleus ok:true, got ${JSON.stringify(nucleus)}`);
     assert.equal(nucleus.data.nucleus.lifecycle_state, "OPEN_FRONTIER");
     const scopePolicy = nucleus.data.nucleus.scope_policy;
+    assert.deepEqual(scopePolicy, setupNucleus.data.nucleus.scope_policy);
     assert.equal(scopePolicy.target_url, undefined, "pure contract nucleus carries no target_url");
     assert.equal(scopePolicy.target_repo, undefined, "pure contract nucleus carries no target_repo");
     assert.ok(

@@ -31,6 +31,7 @@ const {
   rankAttackSurfaces,
 } = require("../ranking.js");
 const {
+  buildClassLatticeCoverageProduct,
   buildCoverageSummaryForSurface,
   readCoverageRecordsFromJsonl,
 } = require("../frontier/coverage.js");
@@ -1182,6 +1183,29 @@ function planCellsForSurface(args) {
   return plan && plan.children.length > 0 ? plan : null;
 }
 
+function buildClassLatticeCoverageForSurface({ domain, surfaceObj, surfaceId, coverageRecords }) {
+  try {
+    const { CHILD_FANOUT_HARD_CAP } = require("../capability/capability-pack-derivation.js");
+    const plan = deriveCellFloorForSurface({
+      domain,
+      surfaceObj,
+      surfaceId,
+      coverageSummary: null,
+      remainingDepth: 1,
+      maxChildren: CHILD_FANOUT_HARD_CAP,
+    });
+    if (!plan || !Array.isArray(plan.children) || plan.children.length === 0) return null;
+    return buildClassLatticeCoverageProduct({
+      target_domain: domain,
+      surface_id: surfaceId,
+      expected_cells: plan.children,
+      coverage_records: coverageRecords,
+    });
+  } catch {
+    return null;
+  }
+}
+
 // The transition-cell's coverage identity (A2): a deterministic, bounded
 // projection of the REAL (from_surface, to_surface, transition_kind). It is the
 // coverage row's surface_id, so a transition coverage row is keyed disjoint from
@@ -1489,10 +1513,17 @@ function readAssignmentBrief(args) {
   // The evaluator's bob_log_coverage row (keyed surface_id x bug_class x
   // auth_profile x status) is the cell-floor reconciliation input the
   // OPEN_FRONTIER engine prunes covered cells against, not mere housekeeping.
+  const coverageRecords = readCoverageRecordsFromJsonl(domain);
   const coverageSummary = buildCoverageSummaryForSurface(
-    readCoverageRecordsFromJsonl(domain),
+    coverageRecords,
     assignment.surface_id,
   );
+  const coverageFrontier = buildClassLatticeCoverageForSurface({
+    domain,
+    surfaceObj,
+    surfaceId: assignment.surface_id,
+    coverageRecords,
+  });
 
   // CN (coverage-nesting) — bounded (bug_class x auth_role) child fan-out plan.
   // null (key omitted) under the default queue policy (max_spawn_depth=1), so
@@ -1603,6 +1634,7 @@ function readAssignmentBrief(args) {
       waf_blocked_omitted: wafResult.omitted,
     },
     coverage_summary: coverageSummary,
+    ...(coverageFrontier ? { coverage_frontier: coverageFrontier } : {}),
     ranking_summary: surfaceObj.ranking || null,
     // CN (coverage-nesting) — present only when an operator enabled nesting
     // AND the surface has uncovered (bug_class x auth_role) cells; omitted by

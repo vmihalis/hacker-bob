@@ -1,30 +1,18 @@
 "use strict";
 
 const { initRepoSession } = require("../../domains/repo/repo-target.js");
-const { withSessionLock } = require("../../core/io/storage.js");
-const { readSessionStateStrict, writeSessionStateDocument } = require("../../core/session/session-state-store.js");
-const { bindAndSeedContracts, prepareContractCompanion } = require("../../domains/blockchain/contract-target.js");
+const {
+  prepareContractCompanion,
+  seedVerifiedContractCompanion,
+} = require("../../domains/blockchain/contract-target.js");
 
 // O-P6 MIXED program: the repo axis is PRIMARY; an OPTIONAL contracts companion
 // binds the chain authority (chain_authority_hash) + seeds one smart_contract
 // surface per contract ALONGSIDE the repo session, unioned into the same
 // frontier. Scope stays independent — the pre-handler chain scope gate reads the
 // persisted target_contracts, so the repo axis never authorizes a chain tuple
-// outside this set. The companion seeds AFTER the primary repo session exists so
-// a Y-D21 chain-family reject fails closed without binding into state.json.
-function bindContractCompanion(companion, domain) {
-  return withSessionLock(domain, () => {
-    const { raw, state } = readSessionStateStrict(domain);
-    const seedResult = bindAndSeedContracts({ target: domain }, companion.contracts);
-    const nextState = {
-      ...state,
-      target_contracts: companion.target_contracts,
-      chain_authority_hash: companion.chain_authority_hash,
-    };
-    writeSessionStateDocument(domain, raw, nextState);
-    return seedResult;
-  });
-}
+// outside this set. The companion is authority-bound in the original create UOW;
+// postcommit seeding is verified and retryable for only that exact binding.
 
 function handler(args) {
   // Validate the contracts companion shape BEFORE creating the repo session so a
@@ -40,21 +28,20 @@ function handler(args) {
     commit: args.commit,
     deep_mode: args.deep_mode,
     egress_profile: args.egress_profile,
+    contract_companion: companion,
   });
-  // The companion binds at session CREATION only; a resume (created:false)
-  // returns the existing binding untouched.
-  if (!companion || result.created !== true) {
+  if (!companion) {
     return JSON.stringify({
       version: 1,
       ...result,
     });
   }
-  const seedResult = bindContractCompanion(companion, result.target_domain);
+  const seedResult = seedVerifiedContractCompanion(result.target_domain, companion);
   return JSON.stringify({
     version: 1,
     ...result,
-    target_contracts: companion.target_contracts,
-    chain_authority_hash: companion.chain_authority_hash,
+    target_contracts: seedResult.target_contracts,
+    chain_authority_hash: seedResult.chain_authority_hash,
     seeded_surfaces: seedResult.seeded.map((s) => s.surface_id),
   });
 }

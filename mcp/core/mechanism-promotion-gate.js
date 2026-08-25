@@ -77,6 +77,9 @@ const STAY_NOT_TIER3 = "not_a_tier3_candidate";
 const STAY_INSUFFICIENT_DISTINCT = "insufficient_distinct_executed_differentials";
 const STAY_NO_REFUTED_FORGERY = "no_refuted_forgery_on_record";
 const STAY_NO_HUMAN_CONTROL = "no_human_confirmed_discriminating_control";
+const STAY_LEARNED_MEASUREMENT_ADVISORY_ONLY = "learned_measurement_advisory_only";
+const HOLD_LEARNED_MEASUREMENT_ADVISORY_ONLY = "learned_measurement_requires_independent_registered_proof";
+const HOLD_LEARNED_MEASUREMENT_NOT_ADMISSIBLE = "learned_measurement_not_admissible";
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -98,6 +101,20 @@ function isTier3Candidate(candidate) {
   // advisory status, it requires it stated.
   if (candidate.claim_authority !== false) return false;
   return true;
+}
+
+function isLearnedMeasurementRecord(value) {
+  if (!isPlainObject(value)) return false;
+  return value.kind === "learned_semantic_measurement"
+    || value.proof_mode === "learned_measurement_advisory_v1"
+    || value.evidence_category === "learned_measurement";
+}
+
+function isLearnedMeasurementCandidate(candidate) {
+  if (!isPlainObject(candidate)) return false;
+  return isLearnedMeasurementRecord(candidate)
+    || candidate.mechanism_kind === "learned_semantic_judge"
+    || candidate.oracle_tier === "tier2_learned_judge";
 }
 
 // One executed differential COUNTS toward K only if it is an executed,
@@ -210,6 +227,20 @@ function evaluatePromotion(candidate, evidence, options) {
 
   // Subject gate first: a non-tier-3 / non-advisory record is not a promotion
   // subject at all. Promotion is a single 3 -> 2 step; nothing else qualifies.
+  // A Tier-2 learned judge is even narrower: it is a measurement instrument for
+  // canary-irreducible semantics. It may be signed/admissible/advisory, but it is
+  // never a reusable closure mechanism, regardless of K flips or operator flags.
+  if (isLearnedMeasurementCandidate(candidate)) {
+    return Object.freeze({
+      promote: false,
+      target_tier: SOURCE_TIER,
+      reason: STAY_LEARNED_MEASUREMENT_ADVISORY_ONLY,
+      distinct_count: flips.distinct_count,
+      required_k: required,
+      distinct_keys: flips.distinct_keys,
+      conditions,
+    });
+  }
   if (!isTier3Candidate(candidate)) {
     return Object.freeze({
       promote: false,
@@ -248,6 +279,29 @@ function evaluatePromotion(candidate, evidence, options) {
   });
 }
 
+function evaluateLearnedMeasurementClosure(evidence) {
+  const ev = isPlainObject(evidence) ? evidence : {};
+  const rows = Array.isArray(ev.learned_measurements)
+    ? ev.learned_measurements.filter(isLearnedMeasurementRecord)
+    : [];
+  const inadmissible = rows.find((row) => !(
+    row.admission
+    && row.admission.admissible === true
+    && row.advisory === true
+    && row.claim_authority === false
+    && row.closure_authority === false
+  ));
+  return Object.freeze({
+    close: false,
+    disposition: "HOLD",
+    reason: inadmissible
+      ? HOLD_LEARNED_MEASUREMENT_NOT_ADMISSIBLE
+      : HOLD_LEARNED_MEASUREMENT_ADVISORY_ONLY,
+    learned_measurement_count: rows.length,
+    independent_registered_proof_required: true,
+  });
+}
+
 module.exports = {
   SOURCE_TIER,
   PROMOTED_TIER,
@@ -258,10 +312,16 @@ module.exports = {
   STAY_INSUFFICIENT_DISTINCT,
   STAY_NO_REFUTED_FORGERY,
   STAY_NO_HUMAN_CONTROL,
+  STAY_LEARNED_MEASUREMENT_ADVISORY_ONLY,
+  HOLD_LEARNED_MEASUREMENT_ADVISORY_ONLY,
+  HOLD_LEARNED_MEASUREMENT_NOT_ADMISSIBLE,
   isTier3Candidate,
+  isLearnedMeasurementRecord,
+  isLearnedMeasurementCandidate,
   executedFlipKey,
   countDistinctExecutedFlips,
   hasRefutedForgeryOnRecord,
   hasHumanConfirmedControl,
   evaluatePromotion,
+  evaluateLearnedMeasurementClosure,
 };

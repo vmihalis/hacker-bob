@@ -16,7 +16,10 @@ const {
   findSchedulerDecisionByAssignmentBatchId,
   readCurrentTaskQueueHash,
 } = require("./scheduler-decisions.js");
-const { appendFrontierEvent } = require("../frontier/frontier-events.js");
+const {
+  appendClosureRecordedEvent,
+  appendFrontierEvent,
+} = require("../frontier/frontier-events.js");
 
 // Max times a (kind, hint) tuple may be capability-cleared+requeued before it must promote
 // to an operator-clearable terminal — bounds the reprieve so a present-but-broken handle
@@ -527,7 +530,7 @@ function appendBlockerPromotionFrontierEvents(domain, promotions, waveNumber) {
 function appendClosureFrontierEvents(domain, completedSurfaceIds, waveNumber) {
   for (const surfaceId of completedSurfaceIds) {
     try {
-      appendFrontierEvent({
+      appendClosureRecordedEvent({
         target_domain: domain,
         kind: "closure.recorded",
         surface_id: surfaceId,

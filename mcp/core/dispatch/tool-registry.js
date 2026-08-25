@@ -29,6 +29,8 @@ const VALID_ROLE_BUNDLES = Object.freeze([
   ...chainSpecificEvaluatorBundles(),
 ]);
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const PROOF_MODE_PATTERN = /^[a-z][a-z0-9_:-]{0,127}$/;
+const HEX64_RE = /^[0-9a-f]{64}$/i;
 const SESSION_AXIS_VALUES = Object.freeze(["url", "repo", "contracts", "physical"]);
 const REMOVED_TOOL_FIELDS = Object.freeze([
   ["hook", "required"].join("_"),
@@ -46,6 +48,8 @@ const REQUIRED_FIELDS = Object.freeze([
   "scope_required",
   "sensitive_output",
   "session_artifacts_written",
+  "proof_mode",
+  "design_hash",
 ]);
 
 function assertBooleanField(entry, field) {
@@ -103,6 +107,32 @@ function normalizeCapabilityId(entry) {
   return entry.capability_id;
 }
 
+function normalizeProofMode(entry) {
+  if (entry.proof_mode == null) {
+    return null;
+  }
+  if (typeof entry.proof_mode !== "string" || !PROOF_MODE_PATTERN.test(entry.proof_mode)) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid proof_mode`);
+  }
+  return entry.proof_mode;
+}
+
+function normalizeDesignHash(entry, proofMode) {
+  if (entry.design_hash == null) {
+    if (proofMode != null) {
+      throw new Error(`tool registry entry for ${entry.name} declares proof_mode without design_hash`);
+    }
+    return null;
+  }
+  if (proofMode == null) {
+    throw new Error(`tool registry entry for ${entry.name} declares design_hash without proof_mode`);
+  }
+  if (typeof entry.design_hash !== "string" || !HEX64_RE.test(entry.design_hash)) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid design_hash`);
+  }
+  return entry.design_hash.toLowerCase();
+}
+
 function normalizeScopeUrlFields(entry) {
   if (!Object.prototype.hasOwnProperty.call(entry, "scope_url_fields")) {
     return [];
@@ -143,6 +173,11 @@ function defineTool(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("tool registry entry must be an object");
   }
+  entry = {
+    proof_mode: null,
+    design_hash: null,
+    ...entry,
+  };
   for (const field of REMOVED_TOOL_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(entry, field)) {
       throw new Error(`tool registry entry for ${entry.name || "<unknown>"} declares removed hook authority metadata`);
@@ -200,6 +235,8 @@ function defineTool(entry) {
   if (effectSurface.some((surface) => !surface.endsWith(".observe")) && entry.mutating !== true) {
     throw new Error(`tool registry entry for ${entry.name} declares an effectful surface without mutating`);
   }
+  const proofMode = normalizeProofMode(entry);
+  const designHash = normalizeDesignHash(entry, proofMode);
   return Object.freeze({
     ...entry,
     inputSchema: deepFreeze(cloneJsonCompatible(entry.inputSchema)),
@@ -209,6 +246,8 @@ function defineTool(entry) {
     scope_url_fields: normalizeScopeUrlFields(entry),
     required_session_axes: requiredSessionAxes,
     effect_surface: effectSurface,
+    proof_mode: proofMode,
+    design_hash: designHash,
   });
 }
 
@@ -322,6 +361,8 @@ function installToolRegistry(toolModules) {
       scope_url_fields: frozenStringArray(tool.scope_url_fields),
       required_session_axes: frozenStringArray(tool.required_session_axes),
       effect_surface: frozenStringArray(tool.effect_surface),
+      proof_mode: tool.proof_mode,
+      design_hash: tool.design_hash,
     });
     return manifest;
   }, {}));

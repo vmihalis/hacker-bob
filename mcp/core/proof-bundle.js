@@ -68,7 +68,21 @@ const {
 
 const PROOF_BUNDLES_VERSION = 1;
 const CALLER_PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
-const PROOF_BUNDLE_KINDS = Object.freeze([...CALLER_PROOF_BUNDLE_KINDS, "capability_pack"]);
+const OBSERVED_INVARIANT_CANARY_PROOF_MODE = "observed_invariant_canary_v1";
+const OBSERVED_INVARIANT_CANARY_DESIGN = Object.freeze({
+  version: 1,
+  proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  extractor: "secondorder_reread_json_exact_leaf_v1",
+  source_ledger: "offensive_runs",
+  source_tool_id: "bob_secondorder_reread",
+  source_oracle_kind: "second_order_reread",
+  positive_outcome: "exploited_safely",
+  control_outcome: "blocked_by_defense",
+  closure_predicate: "positive exact parsed leaf contains Bob-minted canary and decoy is silent; separate reachable control proves its unreturned decoy is silent",
+  llm_verdict_allowed: false,
+});
+const OBSERVED_INVARIANT_CANARY_DESIGN_HASH = hashCanonicalJson(OBSERVED_INVARIANT_CANARY_DESIGN);
+const PROOF_BUNDLE_KINDS = Object.freeze([...CALLER_PROOF_BUNDLE_KINDS, "capability_pack", OBSERVED_INVARIANT_CANARY_PROOF_MODE]);
 const MAX_REPLAY_COMMAND_TOKENS = 64;
 const MAX_REPLAY_COMMAND_TOKEN_CHARS = 2048;
 const MAX_REPLAY_SUMMARY_CHARS = 2000;
@@ -607,6 +621,88 @@ function normalizeCapabilityPackArtifact(artifact, { index }) {
   return normalized;
 }
 
+function assertObservedInvariantCanaryControlRef(ref, fieldName) {
+  if (!isPlainObject(ref)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  assertNonEmptyString(ref.role, `${fieldName}.role`);
+  if (ref.ledger !== "offensive_runs") {
+    throw new Error(`${fieldName}.ledger must be offensive_runs`);
+  }
+  assertNonEmptyString(ref.row_id, `${fieldName}.row_id`);
+  assertHex64(ref.row_hash, `${fieldName}.row_hash`);
+  assertHex64(ref.stdout_hash, `${fieldName}.stdout_hash`);
+  assertHex64(ref.stderr_hash, `${fieldName}.stderr_hash`);
+  if (ref.role === "decoy_silent_control") {
+    assertHex64(ref.decoy_sha256, `${fieldName}.decoy_sha256`);
+  }
+}
+
+function assertObservedInvariantCanaryProofRecord(proofRecord, { index, findingId }) {
+  if (proofRecord.proof_mode !== OBSERVED_INVARIANT_CANARY_PROOF_MODE) {
+    throw new Error(`artifacts[${index}].proof_record.proof_mode must be ${OBSERVED_INVARIANT_CANARY_PROOF_MODE}`);
+  }
+  if (assertHex64(proofRecord.design_hash, `artifacts[${index}].proof_record.design_hash`) !== OBSERVED_INVARIANT_CANARY_DESIGN_HASH) {
+    throw new Error(`artifacts[${index}].proof_record.design_hash does not match the registered ${OBSERVED_INVARIANT_CANARY_PROOF_MODE} design`);
+  }
+  if (assertNonEmptyString(proofRecord.finding_id, `artifacts[${index}].proof_record.finding_id`) !== findingId) {
+    throw new Error(`artifacts[${index}].proof_record.finding_id does not match proof bundle finding_id ${findingId}`);
+  }
+  if (!isPlainObject(proofRecord.surface)) {
+    throw new Error(`artifacts[${index}].proof_record.surface must be an object`);
+  }
+  assertNonEmptyString(proofRecord.surface.surface_id, `artifacts[${index}].proof_record.surface.surface_id`);
+  assertNonEmptyString(proofRecord.surface.observation_target, `artifacts[${index}].proof_record.surface.observation_target`);
+  if (!isPlainObject(proofRecord.session_nucleus)) {
+    throw new Error(`artifacts[${index}].proof_record.session_nucleus must be an object`);
+  }
+  assertNonEmptyString(proofRecord.session_nucleus.target_domain, `artifacts[${index}].proof_record.session_nucleus.target_domain`);
+  assertHex64(proofRecord.session_nucleus.nucleus_hash, `artifacts[${index}].proof_record.session_nucleus.nucleus_hash`);
+  if (!isPlainObject(proofRecord.parsed_leaf)) {
+    throw new Error(`artifacts[${index}].proof_record.parsed_leaf must be an object`);
+  }
+  if (proofRecord.parsed_leaf.extractor !== "secondorder_reread_json_exact_leaf_v1") {
+    throw new Error(`artifacts[${index}].proof_record.parsed_leaf.extractor must be secondorder_reread_json_exact_leaf_v1`);
+  }
+  if (proofRecord.parsed_leaf.match !== "exact_leaf") {
+    throw new Error(`artifacts[${index}].proof_record.parsed_leaf.match must be exact_leaf`);
+  }
+  assertHex64(proofRecord.parsed_leaf.canary_sha256, `artifacts[${index}].proof_record.parsed_leaf.canary_sha256`);
+  assertHex64(proofRecord.parsed_leaf.positive_stdout_hash, `artifacts[${index}].proof_record.parsed_leaf.positive_stdout_hash`);
+  assertHex64(proofRecord.parsed_leaf.positive_stderr_hash, `artifacts[${index}].proof_record.parsed_leaf.positive_stderr_hash`);
+  assertInteger(proofRecord.parsed_leaf.leaf_depth, `artifacts[${index}].proof_record.parsed_leaf.leaf_depth`, { min: 0 });
+  if (!Array.isArray(proofRecord.control_refs) || proofRecord.control_refs.length < 2) {
+    throw new Error(`artifacts[${index}].proof_record.control_refs must contain positive and control refs`);
+  }
+  proofRecord.control_refs.forEach((ref, refIndex) => {
+    assertObservedInvariantCanaryControlRef(ref, `artifacts[${index}].proof_record.control_refs[${refIndex}]`);
+  });
+  const roles = new Set(proofRecord.control_refs.map((ref) => ref.role));
+  if (!roles.has("positive_canary_reread") || !roles.has("decoy_silent_control")) {
+    throw new Error(`artifacts[${index}].proof_record.control_refs must include positive_canary_reread and decoy_silent_control`);
+  }
+  const suppliedProofHash = assertHex64(proofRecord.proof_hash, `artifacts[${index}].proof_record.proof_hash`);
+  const { proof_hash: _proofHash, ...proofHashBody } = proofRecord;
+  const expectedProofHash = hashCanonicalJson(proofHashBody);
+  if (suppliedProofHash !== expectedProofHash) {
+    throw new Error(`artifacts[${index}].proof_record.proof_hash does not match canonical canary proof record`);
+  }
+}
+
+function normalizeObservedInvariantCanaryArtifact(artifact, { index, findingId }) {
+  if (!isPlainObject(artifact)) {
+    throw new Error(`artifacts[${index}] must be an object`);
+  }
+  const proofRecord = isPlainObject(artifact.proof_record) ? artifact.proof_record : artifact;
+  assertObservedInvariantCanaryProofRecord(proofRecord, { index, findingId });
+  const normalized = {
+    artifact_kind: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+    proof_record: cloneJsonValue(proofRecord, `artifacts[${index}].proof_record`),
+  };
+  validateNoSensitiveMaterial(normalized, `artifacts[${index}]`);
+  return normalized;
+}
+
 function normalizeArtifacts(pack, bundleKind, {
   domain,
   findingId,
@@ -636,8 +732,42 @@ function normalizeArtifacts(pack, bundleKind, {
     if (bundleKind === "capability_pack") {
       return normalizeCapabilityPackArtifact(artifact, { index });
     }
+    if (bundleKind === OBSERVED_INVARIANT_CANARY_PROOF_MODE) {
+      return normalizeObservedInvariantCanaryArtifact(artifact, { index, findingId });
+    }
     return normalizeDifferentialArtifact(artifact, { domain, index, findingId });
   });
+}
+
+function normalizeProofBundleMetadata(pack, bundleKind, artifacts) {
+  if (bundleKind !== OBSERVED_INVARIANT_CANARY_PROOF_MODE) {
+    if (pack.proof_mode != null || pack.design_hash != null) {
+      throw new Error(`proof_mode/design_hash are only valid on ${OBSERVED_INVARIANT_CANARY_PROOF_MODE} proof bundles`);
+    }
+    return {};
+  }
+  const proofModes = new Set();
+  const designHashes = new Set();
+  for (const artifact of artifacts) {
+    const proofRecord = artifact.proof_record || {};
+    proofModes.add(proofRecord.proof_mode);
+    designHashes.add(proofRecord.design_hash);
+  }
+  if (proofModes.size !== 1 || designHashes.size !== 1) {
+    throw new Error(`${OBSERVED_INVARIANT_CANARY_PROOF_MODE} proof bundle artifacts must share one proof_mode/design_hash`);
+  }
+  const proofMode = [...proofModes][0];
+  const designHash = [...designHashes][0];
+  if (pack.proof_mode != null && pack.proof_mode !== proofMode) {
+    throw new Error(`proof bundle proof_mode does not match artifact proof_record.proof_mode`);
+  }
+  if (pack.design_hash != null && assertHex64(pack.design_hash, "design_hash") !== designHash) {
+    throw new Error(`proof bundle design_hash does not match artifact proof_record.design_hash`);
+  }
+  return {
+    proof_mode: proofMode,
+    design_hash: designHash,
+  };
 }
 
 function zeroTimestampFields(value) {
@@ -675,6 +805,8 @@ function computeProofBundleHash(pack) {
   return hashCanonicalJson({
     finding_id: pack.finding_id,
     bundle_kind: pack.bundle_kind,
+    ...(pack.proof_mode != null ? { proof_mode: pack.proof_mode } : {}),
+    ...(pack.design_hash != null ? { design_hash: pack.design_hash } : {}),
     artifacts: Array.isArray(pack.artifacts) ? pack.artifacts.map(proofBundleHashArtifact) : [],
   });
 }
@@ -697,15 +829,18 @@ function normalizeProofBundle(pack, {
     throw new Error(`Proof bundle references non-reportable final finding_id: ${findingId}`);
   }
   const bundleKind = assertEnumValue(pack.bundle_kind, PROOF_BUNDLE_KINDS, "bundle_kind");
+  const artifacts = normalizeArtifacts(pack, bundleKind, {
+    domain,
+    findingId,
+    repoCommandRunRows,
+    invariantRunRows,
+  });
+  const proofMetadata = normalizeProofBundleMetadata(pack, bundleKind, artifacts);
   const normalized = {
     finding_id: findingId,
     bundle_kind: bundleKind,
-    artifacts: normalizeArtifacts(pack, bundleKind, {
-      domain,
-      findingId,
-      repoCommandRunRows,
-      invariantRunRows,
-    }),
+    ...proofMetadata,
+    artifacts,
   };
   normalized.bundle_hash = computeProofBundleHash(normalized);
   if (pack.bundle_hash != null) {
@@ -898,6 +1033,11 @@ function renderProofBundlesMarkdown(document) {
         lines.push(`  - Terminal Cells: ${artifact.terminal_cell_count}`);
         lines.push(`  - Active Effects: ${artifact.active_effect_count}`);
         lines.push(`  - Unexplained Residue: ${artifact.residue_cell_count}`);
+      } else if (artifact.artifact_kind === OBSERVED_INVARIANT_CANARY_PROOF_MODE) {
+        const proofRecord = artifact.proof_record || {};
+        lines.push(`  - Proof Mode: ${escapeMarkdownText(proofRecord.proof_mode || OBSERVED_INVARIANT_CANARY_PROOF_MODE)}`);
+        lines.push(`  - Design Hash: ${escapeMarkdownText(proofRecord.design_hash || "")}`);
+        lines.push(`  - Proof Hash: ${escapeMarkdownText(proofRecord.proof_hash || "")}`);
       }
     }
     lines.push("");

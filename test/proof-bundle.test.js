@@ -8,6 +8,8 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  CALLER_PROOF_BUNDLE_KINDS,
+  PROOF_BUNDLE_KINDS,
   normalizeProofBundlesDocument,
   writeProofBundles,
 } = require("../mcp/core/proof-bundle.js");
@@ -24,6 +26,13 @@ const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   initSession,
 } = require("../mcp/core/session/session-state.js");
+const {
+  OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+} = require("../mcp/core/differential/index.js");
+const {
+  hashCanonicalJson,
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   pipelineEventsJsonlPath,
   proofBundlePaths,
@@ -60,6 +69,147 @@ async function withTempHome(fn) {
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
+
+test("observed invariant canary is a registered internal proof-bundle kind", () => {
+  assert.ok(PROOF_BUNDLE_KINDS.includes(OBSERVED_INVARIANT_CANARY_PROOF_MODE));
+  assert.equal(CALLER_PROOF_BUNDLE_KINDS.includes(OBSERVED_INVARIANT_CANARY_PROOF_MODE), false);
+});
+
+function canaryProofRecord({ findingId = "F-1", overrides = {}, recomputeHash = true } = {}) {
+  const body = {
+    version: 1,
+    proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+    design_hash: OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+    finding_id: findingId,
+    surface: {
+      surface_id: "surface-canary",
+      observation_target: "https://canary-proof.example.test/ai/search",
+    },
+    session_nucleus: {
+      target_domain: "canary-proof.example.test",
+      nucleus_hash: "a".repeat(64),
+      lifecycle_state: "VERIFY",
+    },
+    parsed_leaf: {
+      extractor: "secondorder_reread_json_exact_leaf_v1",
+      match: "exact_leaf",
+      canary_sha256: "b".repeat(64),
+      leaf_depth: 2,
+      positive_stdout_hash: "c".repeat(64),
+      positive_stderr_hash: "d".repeat(64),
+    },
+    control_refs: [
+      {
+        role: "positive_canary_reread",
+        ledger: "offensive_runs",
+        row_id: "so-positive-1",
+        row_hash: "1".repeat(64),
+        stdout_hash: "c".repeat(64),
+        stderr_hash: "d".repeat(64),
+      },
+      {
+        role: "decoy_silent_control",
+        ledger: "offensive_runs",
+        row_id: "so-control-1",
+        row_hash: "2".repeat(64),
+        stdout_hash: "e".repeat(64),
+        stderr_hash: "f".repeat(64),
+        decoy_sha256: "3".repeat(64),
+      },
+    ],
+    ...overrides,
+  };
+  if (recomputeHash) {
+    body.proof_hash = hashCanonicalJson(body);
+  } else if (overrides.proof_hash == null) {
+    body.proof_hash = "4".repeat(64);
+  }
+  return body;
+}
+
+function canaryProofBundle({ proofRecord = canaryProofRecord(), findingId = "F-1", overrides = {} } = {}) {
+  return {
+    finding_id: findingId,
+    bundle_kind: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+    artifacts: [{ proof_record: proofRecord }],
+    ...overrides,
+  };
+}
+
+test("observed-invariant canary proof bundle carries proof metadata and refuses forged soft rows", () => {
+  const baseSets = {
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+  };
+  const document = normalizeProofBundlesDocument({
+    version: 1,
+    target_domain: "canary-proof.example.test",
+    packs: [canaryProofBundle()],
+  }, baseSets);
+  const pack = document.packs[0];
+  assert.equal(pack.proof_mode, OBSERVED_INVARIANT_CANARY_PROOF_MODE);
+  assert.equal(pack.design_hash, OBSERVED_INVARIANT_CANARY_DESIGN_HASH);
+  assert.equal(pack.artifacts[0].proof_record.proof_mode, OBSERVED_INVARIANT_CANARY_PROOF_MODE);
+
+  const missingDesign = canaryProofRecord({ overrides: { design_hash: undefined } });
+  delete missingDesign.design_hash;
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: missingDesign })],
+    }, baseSets),
+    /proof_record\.design_hash/,
+  );
+
+  const softMode = canaryProofRecord({
+    overrides: { proof_mode: "soft_llm_verdict" },
+    recomputeHash: true,
+  });
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: softMode })],
+    }, baseSets),
+    /proof_record\.proof_mode must be observed_invariant_canary_v1/,
+  );
+
+  const wrongDesign = canaryProofRecord({
+    overrides: { design_hash: "5".repeat(64) },
+    recomputeHash: true,
+  });
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: wrongDesign })],
+    }, baseSets),
+    /design_hash does not match the registered observed_invariant_canary_v1 design/,
+  );
+
+  const tamperedHash = canaryProofRecord({
+    overrides: {
+      parsed_leaf: {
+        extractor: "secondorder_reread_json_exact_leaf_v1",
+        match: "exact_leaf",
+        canary_sha256: "6".repeat(64),
+        leaf_depth: 2,
+        positive_stdout_hash: "c".repeat(64),
+        positive_stderr_hash: "d".repeat(64),
+      },
+    },
+    recomputeHash: false,
+  });
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: tamperedHash })],
+    }, baseSets),
+    /proof_hash does not match canonical canary proof record/,
+  );
+});
 
 function seedFinding(domain, overrides = {}) {
   return JSON.parse(recordFindingTool.handler({

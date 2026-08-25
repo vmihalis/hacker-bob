@@ -62,8 +62,9 @@ const TRANSITION_GATES = Object.freeze({
   // live (the a7/distributor-v2 bounce) re-enters VERIFY later and triggers
   // archiveCurrentV2Attempt (mcp/core/verification/verification.js), forcing a full re-freeze
   // + re-verification. The gate refuses unless override:"operator_force" — the
-  // deliberate operator abandon-and-reopen path recorded as
-  // governance.lifecycle.override. GRADE -> OPEN_FRONTIER is intentionally NOT
+  // deliberate operator abandon-and-reopen path, whose override/override_reason
+  // fold into the same governance.lifecycle.advanced event as any other advance.
+  // GRADE -> OPEN_FRONTIER is intentionally NOT
   // gated: reaching GRADE means verification already COMPLETED (gateVerifyToGrade
   // required completeness), so the canonical grader-HOLD re-mine archives a
   // finished attempt and re-freezes fresh — that is the intended flow, not a
@@ -793,8 +794,8 @@ function gateOpenFrontierToClaimFreeze(context) {
 // VERIFY archives the in-flight attempt and re-freezes from scratch. A
 // requeued surface must not bounce that snapshot as a side effect of routine
 // frontier re-entry. The operator can still do it deliberately via
-// override:"operator_force" (advanceSession records a
-// governance.lifecycle.override event with this blocker list).
+// override:"operator_force" (advanceSession folds override/override_reason
+// and this blocker list into the single governance.lifecycle.advanced event).
 function gateVerificationReopen(context) {
   const blockers = [];
   let state;

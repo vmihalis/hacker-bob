@@ -83,13 +83,17 @@ const {
   detectCrash,
 } = require("./sanitizer-report.js");
 const {
-  readSessionStateStrict,
-} = require("../../core/session/session-state-store.js");
+  getOrVerifySessionAuthorityContext,
+} = require("../../core/session/session-authority-context.js");
 const {
   assertHistoryAvailableForRef,
   normalizeHistoryRef,
   readRepoSession,
 } = require("./repo-target.js");
+const {
+  bindRepoHostIdentity,
+  revalidateRepoHostIdentity,
+} = require("./repo-host-boundary.js");
 // Cycle B: KEY the LIVE repo-command-runs.jsonl row with a domain-separated ed25519
 // signature so a forged run row needs the signing key, not just a recomputable content
 // hash. Signed at WRITE inside the producer's withSessionLock; verified at the read-time
@@ -1118,6 +1122,7 @@ async function prepareRepoEnv({
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
+  const repoIdentity = bindRepoHostIdentity(domain);
   const repoRoot = repoSession.target_repo.root_path;
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
     throw new ToolError(
@@ -1202,8 +1207,13 @@ async function prepareRepoEnv({
   // injected into the build args.
   let egressProfileResolved = null;
   try {
-    const { state } = readSessionStateStrict(domain);
-    const profileName = egressProfileNameOverride || state.egress_profile || "default";
+    // The bound default is read from the current/fresh verified authority
+    // context (never raw state.json) so an ad hoc reader can no longer drift
+    // from the nucleus's egress identity; an explicit override still narrows
+    // per-call as before.
+    const authorityContext = getOrVerifySessionAuthorityContext(domain);
+    const boundProfileName = authorityContext.egress_identity && authorityContext.egress_identity.egress_profile;
+    const profileName = egressProfileNameOverride || boundProfileName || "default";
     egressProfileResolved = resolveEgressProfile(profileName);
   } catch (error) {
     if (normalizedAllowNetwork) {
@@ -1270,6 +1280,9 @@ async function prepareRepoEnv({
   // phase 2 below, after the lock is released. That ordering also matches
   // the contract that artefacts are durable on disk before any out-of-process
   // side effect fires.
+  // REPO-HOST-2: revalidate immediately before the Dockerfile.bob /
+  // repo-env.json write.
+  revalidateRepoHostIdentity(repoIdentity);
   const persisted = withSessionLock(domain, () => {
     const dockerfilePath = dockerfileBobPath(domain);
     const repoEnvPath = repoEnvJsonPath(domain);
@@ -1301,6 +1314,10 @@ async function prepareRepoEnv({
     const runner = runtime && typeof runtime.execFile === "function"
       ? runtime.execFile
       : execFilePromise;
+    // REPO-HOST-2: revalidate immediately before the docker build spawn --
+    // the build context (contextPath: repoRoot above) is mounted straight
+    // from the host repo root.
+    revalidateRepoHostIdentity(repoIdentity);
     try {
       await runner(argv.command, argv.args, { timeout: timeoutMs, env: { ...process.env, ...(argv.env || {}) } });
     } catch (error) {
@@ -2201,6 +2218,7 @@ async function repoDockerRun({
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
+  const repoIdentity = bindRepoHostIdentity(domain);
   const repoRoot = repoSession.target_repo.root_path;
   const sessionRoot = sessionDir(domain);
   const workDir = repoWorkDir(domain);
@@ -2343,8 +2361,13 @@ async function repoDockerRun({
   // thread the proxy_url into the run-time --env flags.
   let egressProfileResolved = null;
   try {
-    const { state } = readSessionStateStrict(domain);
-    const profileName = egressProfileNameOverride || state.egress_profile || "default";
+    // The bound default is read from the current/fresh verified authority
+    // context (never raw state.json) so an ad hoc reader can no longer drift
+    // from the nucleus's egress identity; an explicit override still narrows
+    // per-call as before.
+    const authorityContext = getOrVerifySessionAuthorityContext(domain);
+    const boundProfileName = authorityContext.egress_identity && authorityContext.egress_identity.egress_profile;
+    const profileName = egressProfileNameOverride || boundProfileName || "default";
     egressProfileResolved = resolveEgressProfile(profileName);
   } catch (error) {
     if (normalizedAllowNetwork) {
@@ -2524,6 +2547,9 @@ async function repoDockerRun({
     );
   }
   if (normalizedCheckout) {
+    // REPO-HOST-2: revalidate immediately before differential materialization
+    // reads/copies out of the host repo root.
+    revalidateRepoHostIdentity(repoIdentity);
     await materializeDifferentialCheckoutTree({
       repoRoot,
       checkoutRoot,
@@ -2545,6 +2571,14 @@ async function repoDockerRun({
     fs.writeFileSync(stdoutPath, "");
     fs.writeFileSync(stderrPath, "");
   });
+  // REPO-HOST-2: revalidate immediately before the docker run spawn -- covers
+  // both the checkout case (mount is the run-scoped checkout tree, itself
+  // materialized from repoRoot above) and the common non-checkout case
+  // (checkoutSrcRoot === repoRoot, mounted directly into the run). Kept
+  // outside the spawn's try/catch so a TOCTOU rejection surfaces as its own
+  // repo_host_root_identity_mismatch error, not folded into the generic
+  // docker_run_spawn_failed wrapper.
+  revalidateRepoHostIdentity(repoIdentity);
   let runResult;
   try {
     runResult = await runtimeImpl.run({

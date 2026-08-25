@@ -28,6 +28,7 @@
 
 const { computeResponseSignature } = require("../auth-differential.js");
 const { OBJECT_AUTH_CONTROLS } = require("./intervention-calculus.js");
+const { inferFailureMode } = require("../validity/index.js");
 
 const OBJECT_AUTH_CONTROL_SET = new Set(OBJECT_AUTH_CONTROLS);
 // computeResponseSignature.response_class for a 2xx body-return.
@@ -99,6 +100,13 @@ async function runProbe(fetch_fn, validate_scope_fn, target_domain, { method, ur
     response_class: signature.response_class,
     body_hash: signature.body_hash,
     sensitive_field_count: signature.sensitive_field_count,
+    failure_mode: inferFailureMode({
+      control: auth_profile === "stale" ? "stale_session_check" : null,
+      reached: signature.response_class === REACHED_RESPONSE_CLASS,
+      status: parsed.status,
+      response_class: signature.response_class,
+      body: parsed.body,
+    }),
     reached: signature.response_class === REACHED_RESPONSE_CLASS,
   };
 }
@@ -157,6 +165,7 @@ async function runObjectAuthControlProbe(input) {
       reached: result.reached === true,
       status: result.status,
       response_class: result.response_class,
+      failure_mode: result.failure_mode || null,
     };
     if (isNonEmptyString(entry.evidence_ref)) controlEntry.evidence_ref = entry.evidence_ref;
     controls[entry.control] = controlEntry;

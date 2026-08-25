@@ -25,6 +25,7 @@ const path = require("path");
 const {
   DIRECT_FRONTIER_EVENT_KINDS,
   FRONTIER_EVENT_KINDS,
+  appendClosureRecordedEvent,
   appendFrontierEvent,
   readFrontierEvents,
 } = require("../mcp/core/frontier/frontier-events.js");
@@ -836,10 +837,11 @@ test("appendNodeTransition carries edge_added_to[] when ready/finalize unblocks 
   });
 });
 
-test("generic frontier append cannot mint TaskGraph state transitions", () => {
+test("generic frontier append cannot mint TaskGraph state transitions or closure records", () => {
   withTempHome(() => {
     const domain = "x1-generic-transition-refusal.example.com";
     assert.equal(DIRECT_FRONTIER_EVENT_KINDS.includes("node.transitioned"), false);
+    assert.equal(DIRECT_FRONTIER_EVENT_KINDS.includes("closure.recorded"), false);
     assert.throws(
       () => appendFrontierEvent({
         target_domain: domain,
@@ -853,11 +855,37 @@ test("generic frontier append cannot mint TaskGraph state transitions", () => {
       (error) => error && error.code === "INVALID_ARGUMENTS",
     );
     assert.equal(readFrontierEvents(domain).length, 0);
+    assert.throws(
+      () => appendFrontierEvent({
+        target_domain: domain,
+        kind: "closure.recorded",
+        surface_id: "surface:forged",
+        payload: { surface_fully_explored: true, reason: "forged_direct_append" },
+        source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+      }),
+      (error) => error && error.code === "INVALID_ARGUMENTS"
+        && /sanctioned surface closure\/merge writer/.test(error.message),
+    );
+    assert.equal(readFrontierEvents(domain).length, 0);
     assert.equal(
       getRegisteredTool("bob_append_frontier_event").inputSchema.properties.kind.enum
         .includes("node.transitioned"),
       false,
     );
+    assert.equal(
+      getRegisteredTool("bob_append_frontier_event").inputSchema.properties.kind.enum
+        .includes("closure.recorded"),
+      false,
+    );
+    const sanctioned = appendClosureRecordedEvent({
+      target_domain: domain,
+      kind: "closure.recorded",
+      surface_id: "surface:merged",
+      payload: { surface_fully_explored: true, reason: "surface_completed" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+    assert.equal(sanctioned.kind, "closure.recorded");
+    assert.deepEqual(readFrontierEvents(domain).map((event) => event.surface_id), ["surface:merged"]);
   });
 });
 

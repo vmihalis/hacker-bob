@@ -1,8 +1,6 @@
 "use strict";
 
 const fs = require("fs");
-const path = require("path");
-const os = require("os");
 const {
   assertNonEmptyString,
   parseAgentId,
@@ -16,7 +14,6 @@ const {
 } = require("./assignments.js");
 const {
   attackSurfacePath,
-  sessionDir,
 } = require("../io/paths.js");
 const {
   readJsonFile,
@@ -50,8 +47,9 @@ function isEvidenceMarker(marker) {
 
 // Validate the post-report evidence marker shape — distinct from wave-mode
 // markers because evidence runs have no wave/agent context. The orchestrator
-// permits these only after REPORT (or during EXPLORE) when an operator asks
-// the evaluator to amplify a single finding's evidence.
+// permits these only after REPORT, or after a REPORT/GRADE -> OPEN_FRONTIER
+// re-entry, when an operator asks the evaluator to amplify a single
+// finding's evidence.
 function evidenceMarkerValidationError(marker) {
   if (!cleanString(marker && marker.target_domain)) {
     return {
@@ -62,16 +60,48 @@ function evidenceMarkerValidationError(marker) {
   if (cleanString(marker.wave) || cleanString(marker.agent)) {
     return {
       block_code: "malformed_marker",
-      reason: "Post-report evidence marker must not include wave or agent; use the normal wave marker for EXPLORE evaluators.",
+      reason: "Post-report evidence marker must not include wave or agent; use the normal wave marker for post-frontier evaluators.",
     };
   }
   return null;
 }
 
-// Read state.phase from disk (not via MCP) because the hook process may not
-// have the MCP server in scope at SubagentStop time. Phase must be REPORT or
-// EXPLORE for evidence runs to be allowed; outside that window we block to
-// prevent accidental evidence collection during EVALUATE/CHAIN/VERIFY/GRADE.
+function evidenceWindowFromLifecycleAdvance(targetDomain, nucleus) {
+  const { readSessionEvents } = require("./session-events.js");
+  let events;
+  try {
+    events = readSessionEvents(targetDomain);
+  } catch (error) {
+    return {
+      ok: false,
+      block_code: "evidence_events_unreadable",
+      reason: `Post-report evidence marker requires readable session-events.jsonl for ${targetDomain}: ${error.message || String(error)}`,
+    };
+  }
+  const advanceEvents = events.filter((event) => event.kind === "governance.lifecycle.advanced");
+  const latest = advanceEvents.length > 0 ? advanceEvents[advanceEvents.length - 1] : null;
+  const bindsCurrentNucleus = latest
+    && latest.nucleus_hash === nucleus.nucleus_hash
+    && latest.payload
+    && latest.payload.nucleus_hash === nucleus.nucleus_hash;
+  const reenteredFromReportOrGrade = latest
+    && latest.payload
+    && latest.payload.to_state === "OPEN_FRONTIER"
+    && (latest.payload.from_state === "REPORT" || latest.payload.from_state === "GRADE");
+  if (bindsCurrentNucleus && reenteredFromReportOrGrade) return { ok: true };
+  return {
+    ok: false,
+    block_code: "evidence_phase_mismatch",
+    reason: `Post-report evidence marker requires the latest governance.lifecycle.advanced event for ${targetDomain} to bind the current nucleus hash and record a REPORT/GRADE -> OPEN_FRONTIER re-entry; the latest recorded advance does not qualify.`,
+  };
+}
+
+// Evidence-marker eligibility is grant-adjacent and must fail closed. It is
+// driven only by the VERIFIED session nucleus (readVerifiedSessionNucleus —
+// a partially-written / drifted / tampered state.json can never gate this
+// hook) plus the latest governance.lifecycle.advanced event bound to that
+// nucleus hash; no field on state.json is read, and no earlier/stale advance
+// record or phase value can grant admission.
 function evaluateEvidenceCompletion(marker) {
   const targetDomain = cleanString(marker && marker.target_domain);
   if (!targetDomain) {
@@ -81,66 +111,28 @@ function evaluateEvidenceCompletion(marker) {
       reason: "Post-report evidence marker missing target_domain.",
     };
   }
-  const home = os.homedir();
-  if (!home) {
-    return {
-      ok: false,
-      block_code: "evidence_state_unreadable",
-      reason: "Post-report evidence marker could not resolve $HOME for session state read.",
-    };
-  }
-  const statePath = path.join(sessionDir(targetDomain), "state.json");
-  let state;
+  let nucleus;
   try {
-    state = readJsonFile(statePath, { label: "state.json" });
+    const { readVerifiedSessionNucleus } = require("../governance/index.js");
+    nucleus = readVerifiedSessionNucleus(targetDomain);
   } catch (error) {
     return {
       ok: false,
-      block_code: "evidence_state_unreadable",
-      reason: `Post-report evidence marker could not read session state: ${error.message || String(error)}`,
+      block_code: "evidence_nucleus_unverified",
+      reason: `Post-report evidence marker requires a verified session nucleus for ${targetDomain}: ${error.message || String(error)}`,
     };
   }
-  // Post-report evidence runs are allowed only when the session has reached
-  // REPORT (or re-entered OPEN_FRONTIER from REPORT — the legacy EXPLORE
-  // window). The lifecycle vocabulary is lossy here: OPEN_FRONTIER covers both
-  // active EVALUATE (block) and post-report EXPLORE (allow), so the legacy
-  // phase remains the discriminator for that one ambiguous lifecycle state.
-  //
-  // Step 4: session-nucleus.json is the single source of truth for lifecycle
-  // state; state.json is a projection of it. Source lifecycle_state from the
-  // nucleus so a partially-written / drifted state.json can never gate this
-  // hook against the authoritative lifecycle (the REPORT vs CLAIM_FREEZE drift
-  // class). The nucleus read is best-effort: the hook process may not have the
-  // MCP server in scope at SubagentStop time (and the session may predate the
-  // nucleus), so on any read failure fall back to state.json's own copy.
-  const allowedLifecycleStates = new Set(["REPORT", "OPEN_FRONTIER"]);
-  const allowedLegacyPhases = new Set(["REPORT", "EXPLORE"]);
-  let lifecycleState = state && state.lifecycle_state;
-  const legacyPhase = state && state.phase;
-  try {
-    const { readSessionNucleus } = require("../governance/index.js");
-    const nucleus = readSessionNucleus(targetDomain);
-    if (nucleus && typeof nucleus.lifecycle_state === "string") {
-      lifecycleState = nucleus.lifecycle_state;
-    }
-  } catch (_error) {
-    // Nucleus unavailable (hook out of MCP scope, or legacy session without a
-    // nucleus). Keep the state.json-derived lifecycle_state above.
-  }
-  // REPORT is unambiguous at the lifecycle level and is sourced from the
-  // nucleus. OPEN_FRONTIER is ambiguous (EVALUATE vs EXPLORE), so it is only an
-  // evidence window when the legacy phase confirms the EXPLORE re-entry. When
-  // no lifecycle_state is available at all (legacy disk), fall back entirely to
-  // the legacy phase.
-  const lifecycleAllowed = lifecycleState === "REPORT"
-    || (lifecycleState === "OPEN_FRONTIER" && legacyPhase && allowedLegacyPhases.has(legacyPhase));
-  const legacyAllowed = !lifecycleState && legacyPhase && allowedLegacyPhases.has(legacyPhase);
-  if (!state || (!lifecycleAllowed && !legacyAllowed)) {
+  const lifecycleState = nucleus.lifecycle_state;
+  if (lifecycleState !== "REPORT" && lifecycleState !== "OPEN_FRONTIER") {
     return {
       ok: false,
       block_code: "evidence_phase_mismatch",
-      reason: `Post-report evidence marker is allowed only when lifecycle_state is REPORT or OPEN_FRONTIER (legacy phase REPORT or EXPLORE); current lifecycle_state is ${lifecycleState || "unknown"} / phase ${legacyPhase || "unknown"}.`,
+      reason: `Post-report evidence marker is allowed only when lifecycle_state is REPORT, or OPEN_FRONTIER as a REPORT/GRADE re-entry; current lifecycle_state is ${lifecycleState || "unknown"}.`,
     };
+  }
+  if (lifecycleState === "OPEN_FRONTIER") {
+    const window = evidenceWindowFromLifecycleAdvance(targetDomain, nucleus);
+    if (!window.ok) return window;
   }
   return {
     ok: true,

@@ -2,10 +2,10 @@
 
 const { initSession } = require("../core/session/session-state.js");
 const { ERROR_CODES, ToolError } = require("../core/io/envelope.js");
-const { withSessionLock } = require("../core/io/storage.js");
-const { publicSessionState } = require("../core/session/session-state-contracts.js");
-const { readSessionStateStrict, writeSessionStateDocument } = require("../core/session/session-state-store.js");
-const { bindAndSeedContracts, prepareContractCompanion } = require("../domains/blockchain/contract-target.js");
+const {
+  prepareContractCompanion,
+  seedVerifiedContractCompanion,
+} = require("../domains/blockchain/contract-target.js");
 
 // O-P6 MIXED program: the url axis is PRIMARY; an OPTIONAL contracts companion
 // binds the chain authority (chain_authority_hash) + seeds one smart_contract
@@ -13,28 +13,9 @@ const { bindAndSeedContracts, prepareContractCompanion } = require("../domains/b
 // frontier. Scope stays independent — these contracts never widen the HTTP/PSL
 // scope, and the web axis never authorizes a chain tuple outside this set (the
 // pre-handler chain scope gate reads the persisted target_contracts). The
-// companion seeds AFTER the primary web session exists so a Y-D21 chain-family
-// reject fails closed without binding the chain authority into state.json.
-function bindContractCompanion(companion, initResultJson, domain) {
-  const seeded = withSessionLock(domain, () => {
-    const { raw, state } = readSessionStateStrict(domain);
-    const seedResult = bindAndSeedContracts({ target: domain }, companion.contracts);
-    const nextState = {
-      ...state,
-      target_contracts: companion.target_contracts,
-      chain_authority_hash: companion.chain_authority_hash,
-    };
-    writeSessionStateDocument(domain, raw, nextState);
-    return { nextState, seedResult };
-  });
-  return JSON.stringify({
-    ...JSON.parse(initResultJson),
-    state: publicSessionState(seeded.nextState),
-    target_contracts: companion.target_contracts,
-    chain_authority_hash: companion.chain_authority_hash,
-    seeded_surfaces: seeded.seedResult.seeded.map((s) => s.surface_id),
-  });
-}
+// Companion effects seed only after the canonical state+nucleus+event UOW has
+// bound the chain authority. Exact-binding retries reuse existing seed events
+// and append only those missing from an interrupted first call.
 
 // Cycle O.1: web-mode init_session refuses target_repo with a structured
 // pointer to bob_init_repo_session. Cross-mode sessions are opt-in via a
@@ -52,18 +33,17 @@ function handler(args) {
   const companion = (args && args.contracts != null)
     ? prepareContractCompanion(args.contracts)
     : null;
-  const initResultJson = initSession(args);
+  const initResultJson = initSession(args, { contractCompanion: companion });
   if (!companion) return initResultJson;
-  // The companion binds at session CREATION only; a resume returns the existing
-  // binding untouched so a re-init never overwrites the already-bound
-  // target_contracts / chain_authority_hash. Fail-closed: any creation signal
-  // that is not exactly `created:true` (including an indeterminable one) skips
-  // the read-modify-write re-bind. Parse the init result once for both the
-  // creation check and the domain.
   const initResult = JSON.parse(initResultJson);
-  if (initResult.created !== true) return initResultJson;
   const domain = initResult.state.target;
-  return bindContractCompanion(companion, initResultJson, domain);
+  const seedResult = seedVerifiedContractCompanion(domain, companion);
+  return JSON.stringify({
+    ...initResult,
+    target_contracts: seedResult.target_contracts,
+    chain_authority_hash: seedResult.chain_authority_hash,
+    seeded_surfaces: seedResult.seeded.map((seed) => seed.surface_id),
+  });
 }
 
 module.exports = Object.freeze({
@@ -81,23 +61,6 @@ module.exports = Object.freeze({
       },
       "deep_mode": {
         "type": "boolean"
-      },
-      "target_kind": {
-        "type": "string",
-        "enum": ["web", "repo"],
-        "description": "Defaults to web. Repo sessions should normally use bob_init_repo_session."
-      },
-      "repo": {
-        "type": "object",
-        "description": "Repo metadata for target_kind=repo.",
-        "properties": {
-          "root_path": { "type": "string" },
-          "source_url": { "type": "string" },
-          "branch": { "type": "string" },
-          "commit": { "type": "string" },
-          "default_branch": { "type": "string" }
-        },
-        "required": ["root_path"]
       },
       "checkpoint_mode": {
         "type": "string",
@@ -157,7 +120,8 @@ module.exports = Object.freeze({
     "required": [
       "target_domain",
       "target_url"
-    ]
+    ],
+    "additionalProperties": false
   },
   handler,
   role_bundles: ["orchestrator"],

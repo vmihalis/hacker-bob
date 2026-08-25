@@ -10,7 +10,6 @@ const {
 } = require("./session-state-vocabulary.js");
 const {
   sessionDir,
-  sessionNucleusPath,
   statePath,
   surfaceIndexPath,
   taskQueuePath,
@@ -19,7 +18,6 @@ const {
   isSessionDirEffectivelyEmpty,
   readJsonFile,
   withSessionLock,
-  writeFileAtomic,
 } = require("../io/storage.js");
 const {
   ERROR_CODES,
@@ -36,11 +34,14 @@ const {
   LIFECYCLE_STATE_VALUES,
   normalizeLifecycleState,
   normalizeOperatorConstraint,
+  readVerifiedSessionNucleus,
+  sessionNucleusFromState,
 } = require("../governance/index.js");
 const {
-  appendSessionEvent,
-} = require("./session-events.js");
+  commitSessionAuthority,
+} = require("./session-authority-unit-of-work.js");
 const {
+  appendClosureRecordedEvent,
   appendFrontierEvent,
 } = require("../frontier/frontier-events.js");
 const {
@@ -50,14 +51,8 @@ const {
   evaluateLifecycleTransition,
 } = require("./lifecycle-gates.js");
 const {
-  readSessionNucleus,
-} = require("../governance/index.js");
-const {
   hashCanonicalJson,
 } = require("../verification/verification-contracts.js");
-const {
-  writeJsonDocument,
-} = require("../io/storage.js");
 const {
   safeAppendPipelineEventDirect,
 } = require("../telemetry/pipeline-events.js");
@@ -109,100 +104,217 @@ function assertBlockInternalHostsCompatibleWithEgress(policy, profile) {
   );
 }
 
-function assertSessionEgressIdentity(domain, profile, { source = "egress_request" } = {}) {
+function assertSessionEgressIdentity(domain, profile, { source = "egress_request", authorityContext = null } = {}) {
   const identityFields = egressProfileStateFields(profile);
-  let bound = false;
 
-  try {
-    withSessionLock(domain, () => {
-      const { raw, state } = readSessionStateStrict(domain);
-      if (!state.egress_profile_identity_hash) {
-        const migratedAt = new Date().toISOString();
-        const nextState = {
-          ...state,
-          ...identityFields,
-          egress_profile_identity_bound_at: migratedAt,
-          egress_profile_identity_bind_source: "legacy_migration",
-          egress_profile_legacy_migration: {
-            migrated_at: migratedAt,
-            source,
-            previous_unbound: true,
-            previous: {
-              egress_profile: state.egress_profile,
-              egress_region: state.egress_region,
-              proxy_configured: state.proxy_configured,
-              egress_profile_identity_hash: state.egress_profile_identity_hash,
-              egress_profile_identity_version: state.egress_profile_identity_version,
-            },
+  // Fast, lock-free, zero-read path: a frozen per-call session-authority context (see
+  // session-authority-context.js) already carries a verified, already-bound
+  // egress_identity for this exact domain. When it exact-matches the requested
+  // profile, this is the identical "already bound" branch the locked path below
+  // returns after its own nucleus read -- consume the frozen value instead of
+  // performing a second, independently-timed verified read within the same call.
+  // Any mismatch (unbound, drifted, or a different domain) falls through unchanged to
+  // the locked path, which re-verifies fresh and is the sole authority for a WRITE.
+  if (
+    authorityContext
+    && authorityContext.target_domain === domain
+    && authorityContext.egress_identity
+    && authorityContext.egress_identity.egress_profile_identity_hash
+    && authorityContext.egress_identity.egress_profile_identity_hash === identityFields.egress_profile_identity_hash
+    && authorityContext.egress_identity.egress_profile_identity_version === identityFields.egress_profile_identity_version
+  ) {
+    return {
+      ...identityFields,
+      session_state_present: true,
+      session_identity_bound: false,
+    };
+  }
+
+  return withSessionLock(domain, () => {
+    // Egress binding is grant-adjacent, so the prior nucleus must be
+    // verified first -- never a silent direct write against an unverifiable
+    // or missing session-nucleus.json. A legacy state-only session (no
+    // verifiable nucleus) is denied here rather than migrated inline;
+    // migration remains A7/A6L's exclusive path (bob_advance_session).
+    let priorNucleus;
+    try {
+      priorNucleus = readVerifiedSessionNucleus(domain);
+    } catch (error) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `session nucleus missing or unverifiable for ${domain}; call bob_init_session first (${error.message || String(error)})`,
+        {
+          target_domain: domain,
+          requested: {
+            egress_profile: identityFields.egress_profile,
+            egress_region: identityFields.egress_region,
+            proxy_configured: identityFields.proxy_configured,
+            egress_profile_identity_hash: identityFields.egress_profile_identity_hash,
+            egress_profile_identity_version: identityFields.egress_profile_identity_version,
           },
-        };
-        writeSessionStateDocument(domain, raw, nextState);
-        safeAppendPipelineEventDirect(domain, "egress_identity_bound", {
-          lifecycle_state: state.lifecycle_state,
-          status: "bound",
-          source,
-          legacy_migration: true,
-          ...identityFields,
-        }, buildGovernanceContext(nextState));
-        bound = true;
-        return;
-      }
+        },
+      );
+    }
 
+    const priorEgress = (priorNucleus.egress_identity && typeof priorNucleus.egress_identity === "object")
+      ? priorNucleus.egress_identity
+      : {};
+
+    if (priorEgress.egress_profile_identity_hash) {
       if (
-        state.egress_profile_identity_hash !== identityFields.egress_profile_identity_hash ||
-        state.egress_profile_identity_version !== identityFields.egress_profile_identity_version
+        priorEgress.egress_profile_identity_hash !== identityFields.egress_profile_identity_hash ||
+        priorEgress.egress_profile_identity_version !== identityFields.egress_profile_identity_version
       ) {
         throw new ToolError(
           ERROR_CODES.STATE_CONFLICT,
-          `egress profile drift for ${domain}: session is bound to ${state.egress_profile} (${state.egress_profile_identity_hash}); requested ${identityFields.egress_profile} (${identityFields.egress_profile_identity_hash})`,
+          `egress profile drift for ${domain}: session is bound to ${priorEgress.egress_profile} (${priorEgress.egress_profile_identity_hash}); requested ${identityFields.egress_profile} (${identityFields.egress_profile_identity_hash})`,
           {
             target_domain: domain,
             expected: {
-              egress_profile: state.egress_profile,
-              egress_region: state.egress_region,
-              proxy_configured: state.proxy_configured,
-              egress_profile_identity_hash: state.egress_profile_identity_hash,
-              egress_profile_identity_version: state.egress_profile_identity_version,
+              egress_profile: priorEgress.egress_profile,
+              egress_region: priorEgress.egress_region,
+              proxy_configured: priorEgress.proxy_configured,
+              egress_profile_identity_hash: priorEgress.egress_profile_identity_hash,
+              egress_profile_identity_version: priorEgress.egress_profile_identity_version,
             },
             requested: identityFields,
           },
         );
       }
-    });
-  } catch (error) {
-    if (!sessionStateMissing(error)) throw error;
-    throw new ToolError(
-      ERROR_CODES.STATE_CONFLICT,
-      `egress profile identity requires an initialized session for ${domain}; call bob_init_session before egress-bound requests`,
-      {
-        target_domain: domain,
-        requested: {
+      // Matching, already-bound identity: verified read-only, zero writes.
+      // priorNucleus alone does not tell us whether state.json exists (a
+      // nucleus-only session never acquires one), so presence is checked
+      // directly rather than assumed, consistent with the first-bind branch
+      // below deriving it from an actual state read.
+      return {
+        ...identityFields,
+        session_state_present: fs.existsSync(statePath(domain)),
+        session_identity_bound: false,
+      };
+    }
+
+    // First bind / legacy migration. Optional state read: a nucleus-only
+    // session (no state.json) is never forced to acquire one as a side
+    // effect of binding -- stateProjection stays null in that case.
+    let raw = {};
+    let state = null;
+    try {
+      ({ raw, state } = readSessionStateStrict(domain));
+    } catch (error) {
+      if (!sessionStateMissing(error)) throw error;
+    }
+
+    const migratedAt = new Date().toISOString();
+    let nextNucleus;
+    let stateProjection;
+    if (state === null) {
+      // Nucleus-only session: no state.json to reconcile against, so the
+      // next nucleus is derived from the verified prior nucleus directly.
+      nextNucleus = buildSessionNucleus({
+        target_domain: priorNucleus.target_domain,
+        target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,
+        scope_policy: priorNucleus.scope_policy,
+        egress_identity: {
           egress_profile: identityFields.egress_profile,
           egress_region: identityFields.egress_region,
           proxy_configured: identityFields.proxy_configured,
           egress_profile_identity_hash: identityFields.egress_profile_identity_hash,
           egress_profile_identity_version: identityFields.egress_profile_identity_version,
+          egress_profile_identity_source: identityFields.egress_profile_identity_source,
+        },
+        auth_context: priorNucleus.auth_context,
+        operator_constraint: priorNucleus.operator_constraint,
+        lifecycle_state: priorNucleus.lifecycle_state,
+        physical_scope: priorNucleus.physical_scope,
+        repo_hash: priorNucleus.repo_hash,
+      });
+      stateProjection = null;
+    } else {
+      const nextState = {
+        ...state,
+        ...identityFields,
+        egress_profile_identity_bound_at: migratedAt,
+        egress_profile_identity_bind_source: "legacy_migration",
+        egress_profile_legacy_migration: {
+          migrated_at: migratedAt,
+          source,
+          previous_unbound: true,
+          previous: {
+            egress_profile: state.egress_profile,
+            egress_region: state.egress_region,
+            proxy_configured: state.proxy_configured,
+            egress_profile_identity_hash: state.egress_profile_identity_hash,
+            egress_profile_identity_version: state.egress_profile_identity_version,
+          },
+        },
+      };
+      // A state-backed migration derives the canonical nucleus FROM the
+      // reconciled state (the same convention initSession and
+      // migrateLegacySessionAuthority use), so nucleus/state parity is
+      // proven by construction rather than by independently rebuilding the
+      // nucleus from priorNucleus fields that may have drifted from a
+      // legacy state.json's own defaults (e.g. handoff_provenance_required).
+      nextNucleus = sessionNucleusFromState(nextState, {
+        physical_scope: priorNucleus.physical_scope,
+        repo_hash: priorNucleus.repo_hash,
+      });
+      stateProjection = { rawDocument: raw, nextState };
+    }
+
+    commitSessionAuthority({
+      targetDomain: domain,
+      nextNucleus,
+      stateProjection,
+      event: {
+        target_domain: domain,
+        kind: "governance.egress_identity.bound",
+        nucleus_hash: nextNucleus.nucleus_hash,
+        payload: {
+          prior_nucleus_hash: priorNucleus.nucleus_hash,
+          nucleus_hash: nextNucleus.nucleus_hash,
+          egress_profile_identity_hash: identityFields.egress_profile_identity_hash,
+          egress_profile_identity_version: identityFields.egress_profile_identity_version,
+          source,
+          legacy_migration: true,
+          ...identityFields,
         },
       },
-    );
-  }
+      expectedNucleusHash: priorNucleus.nucleus_hash,
+    });
 
-  return {
-    ...identityFields,
-    session_state_present: true,
-    session_identity_bound: bound,
-  };
+    // Postcommit best-effort telemetry mirror, built from the committed
+    // nucleus (never proxy secrets) -- cannot alter or gate the outcome of
+    // the durable CAS commit above.
+    try {
+      safeAppendPipelineEventDirect(domain, "egress_identity_bound", {
+        lifecycle_state: nextNucleus.lifecycle_state,
+        status: "bound",
+        source,
+        legacy_migration: true,
+        ...identityFields,
+      }, buildGovernanceContextFromNucleus(nextNucleus));
+    } catch {
+      // Telemetry is best-effort only; the bind already committed durably.
+    }
+
+    return {
+      ...identityFields,
+      session_state_present: state !== null,
+      session_identity_bound: true,
+    };
+  });
 }
 
 function resolveAndAssertSessionEgressIdentity(domain, requestedProfile = "default", options = {}) {
   const profile = resolveEgressProfile(requestedProfile, options);
   const identity = assertSessionEgressIdentity(domain, profile, {
     source: options.source || "egress_request",
+    authorityContext: options.authorityContext || null,
   });
   return { profile, identity };
 }
 
-function initSession(args) {
+function initSession(args, { contractCompanion = null } = {}) {
   // Operator-attested lab/private-target authorization (OFF by default,
   // fail-closed). When present, a loopback/RFC1918 target_domain that the
   // public-DNS gate would reject is permitted for this session only.
@@ -253,7 +365,39 @@ function initSession(args) {
     const filePath = statePath(domain);
 
     if (fs.existsSync(filePath)) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session already initialized: ${filePath}`);
+      // Public web-only re-initialization retains its historical conflict.
+      // The private companion path alone may resume, and only when both durable
+      // authority projections already carry this exact web+chain binding.
+      if (!contractCompanion) {
+        throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session already initialized: ${filePath}`);
+      }
+      let state;
+      let verified;
+      try {
+        state = readSessionStateStrict(domain).state;
+        verified = readVerifiedSessionNucleus(domain);
+      } catch (error) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Session resume failed: ${error.message || String(error)}`,
+        );
+      }
+      const projected = sessionNucleusFromState(state);
+      if (state.target_url !== targetUrl
+          || state.chain_authority_hash !== contractCompanion.chain_authority_hash
+          || verified.scope_policy.chain_authority_hash !== contractCompanion.chain_authority_hash
+          || projected.nucleus_hash !== verified.nucleus_hash) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Session already initialized for a different web or contracts authority: ${filePath}`,
+        );
+      }
+      return JSON.stringify({
+        version: 1,
+        created: false,
+        session_dir: dir,
+        state: publicSessionState(state),
+      });
     }
     if (!isSessionDirEffectivelyEmpty(dir)) {
       throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session directory is not empty: ${dir}`);
@@ -262,46 +406,41 @@ function initSession(args) {
     const egressProfile = resolveEgressProfile(requestedEgressProfile);
     assertBlockInternalHostsCompatibleWithEgress(internalHostPolicy, egressProfile);
     const egressFields = egressProfileStateFields(egressProfile);
-    const sessionNucleus = buildSessionNucleus({
-      target_domain: domain,
-      target_url: targetUrl,
-      scope_policy: {
-        target_domain: domain,
-        target_url: targetUrl,
-        ...internalHostPolicy,
-      },
-      egress_identity: egressFields,
-      auth_context: {
-        auth_status: "pending",
-      },
-      operator_constraint: {
-        handoff_provenance_required: true,
-      },
-    });
-    writeJsonDocument(sessionNucleusPath(domain), sessionNucleus);
-    appendSessionEvent({
-      target_domain: domain,
-      kind: "governance.session.initialized",
-      nucleus_hash: sessionNucleus.nucleus_hash,
-      payload: {
-        nucleus_hash: sessionNucleus.nucleus_hash,
-        scope_policy_hash: hashCanonicalJson(sessionNucleus.scope_policy),
-        egress_identity_hash: hashCanonicalJson(sessionNucleus.egress_identity),
-        auth_context_hash: hashCanonicalJson(sessionNucleus.auth_context),
-        operator_constraint_hash: hashCanonicalJson(sessionNucleus.operator_constraint),
-      },
-    });
-    // bob_init_session is the URL primary axis. It leaves the smart-contract
-    // axis fields at their builder defaults (target_contracts: [],
-    // chain_authority_hash: null); an empty target_contracts is not the
-    // contracts axis, so this stays a single-axis (url) session under the
-    // exactly-one-primary-axis normalization in normalizeSessionStateDocument.
-    const state = buildInitialSessionState(sessionNucleus.target_domain, sessionNucleus.scope_policy.target_url, {
+    // Construct the compatibility state first, then derive the canonical
+    // SessionNucleus from that exact projection. A mixed companion is therefore
+    // part of the original create-CAS authority, never a later state-only bind.
+    const state = buildInitialSessionState(domain, targetUrl, {
       deepMode,
       egressProfile,
-      blockInternalHostsPolicy: sessionNucleus.scope_policy,
+      blockInternalHostsPolicy: internalHostPolicy,
+      targetContracts: contractCompanion ? contractCompanion.target_contracts : [],
+      chainAuthorityHash: contractCompanion ? contractCompanion.chain_authority_hash : null,
     });
-    writeSessionStateDocument(domain, {}, state);
+    const sessionNucleus = sessionNucleusFromState(state);
+    commitSessionAuthority({
+      targetDomain: domain,
+      nextNucleus: sessionNucleus,
+      stateProjection: {
+        rawDocument: {},
+        nextState: state,
+      },
+      event: {
+        target_domain: domain,
+        kind: "governance.session.initialized",
+        nucleus_hash: sessionNucleus.nucleus_hash,
+        payload: {
+          nucleus_hash: sessionNucleus.nucleus_hash,
+          scope_policy_hash: hashCanonicalJson(sessionNucleus.scope_policy),
+          egress_identity_hash: hashCanonicalJson(sessionNucleus.egress_identity),
+          auth_context_hash: hashCanonicalJson(sessionNucleus.auth_context),
+          operator_constraint_hash: hashCanonicalJson(sessionNucleus.operator_constraint),
+          ...(contractCompanion
+            ? { chain_authority_hash: contractCompanion.chain_authority_hash }
+            : {}),
+        },
+      },
+      expectedNucleusHash: null,
+    });
     // Persist the operator attestation as an audit-graded session artifact, so
     // the scope kernel can read it on later scoped calls and an agent cannot
     // forge it via the Write tool. No-op when no attestation was supplied.
@@ -406,6 +545,20 @@ function readFrontierViewHashes(domain) {
   }
 }
 
+// Descriptor-pins state once through the canonical state parser
+// (readSessionStateStrict) and separately probes nucleus verification through
+// the verified-only accessor; it never reopens state.json a second time to
+// derive a fallback nucleus (that legacy projection belongs solely to
+// bob_read_session_nucleus / readSessionNucleusProjection).
+function sessionNucleusIsVerified(domain) {
+  try {
+    readVerifiedSessionNucleus(domain);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readSessionState(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const { state } = readSessionStateStrict(domain);
@@ -413,6 +566,7 @@ function readSessionState(args) {
     version: 1,
     state: publicSessionState(state),
     frontier_view_hashes: readFrontierViewHashes(domain),
+    verified: sessionNucleusIsVerified(domain),
   });
 }
 
@@ -423,53 +577,104 @@ function readStateSummary(args) {
     version: 1,
     state: compactSessionState(state),
     frontier_view_hashes: readFrontierViewHashes(domain),
+    verified: sessionNucleusIsVerified(domain),
   });
 }
 
 function applyOperatorConstraintUpdate(domain, transform) {
-  const priorNucleus = readSessionNucleus(domain);
-  if (!priorNucleus || typeof priorNucleus !== "object") {
-    throw new ToolError(
-      ERROR_CODES.STATE_CONFLICT,
-      `session nucleus missing for ${domain}; call bob_init_session first`,
-    );
-  }
-  const priorConstraint = (priorNucleus.operator_constraint && typeof priorNucleus.operator_constraint === "object")
-    ? priorNucleus.operator_constraint
-    : {};
-  const nextConstraintInput = transform({ ...priorConstraint });
-  const operatorConstraint = normalizeOperatorConstraint(nextConstraintInput);
-  const nextNucleus = buildSessionNucleus({
-    target_domain: priorNucleus.target_domain,
-    target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,
-    scope_policy: priorNucleus.scope_policy,
-    egress_identity: priorNucleus.egress_identity,
-    auth_context: priorNucleus.auth_context,
-    operator_constraint: operatorConstraint,
-    lifecycle_state: priorNucleus.lifecycle_state,
-    physical_scope: priorNucleus.physical_scope,
-    // Preserve the repo session's pinned repo_hash across nucleus rewrites; it is
-    // the O-D6 docker image-tag binding and dropping it makes bob_repo_docker_run
-    // crash (readRepoSession -> null repo_hash -> buildImageTag null.slice).
-    repo_hash: priorNucleus.repo_hash,
+  return withSessionLock(domain, () => {
+    // Operator-constraint updates are grant-adjacent (they rewrite governance
+    // authority), so the prior nucleus must be verified — never a silent
+    // fallback to an unverifiable or missing session-nucleus.json. A legacy
+    // state-only session (no verifiable nucleus) is denied here rather than
+    // migrated inline; migration remains A7/A6L's exclusive path.
+    let priorNucleus;
+    try {
+      priorNucleus = readVerifiedSessionNucleus(domain);
+    } catch (error) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `session nucleus missing or unverifiable for ${domain}; call bob_init_session first (${error.message || String(error)})`,
+      );
+    }
+    const priorConstraint = (priorNucleus.operator_constraint && typeof priorNucleus.operator_constraint === "object")
+      ? priorNucleus.operator_constraint
+      : {};
+    const nextConstraintInput = transform({ ...priorConstraint });
+    const operatorConstraint = normalizeOperatorConstraint(nextConstraintInput);
+
+    // Optional state read: a nucleus-only session (no state.json) is never
+    // forced to acquire one as a side effect of an operator-note set/clear.
+    let raw = {};
+    let state = null;
+    try {
+      ({ raw, state } = readSessionStateStrict(domain));
+    } catch (error) {
+      if (!sessionStateMissing(error)) throw error;
+    }
+
+    let nextNucleus;
+    let stateProjection;
+    if (state === null) {
+      nextNucleus = buildSessionNucleus({
+        target_domain: priorNucleus.target_domain,
+        target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,
+        scope_policy: priorNucleus.scope_policy,
+        egress_identity: priorNucleus.egress_identity,
+        auth_context: priorNucleus.auth_context,
+        operator_constraint: operatorConstraint,
+        lifecycle_state: priorNucleus.lifecycle_state,
+        physical_scope: priorNucleus.physical_scope,
+        // Preserve the repo session's pinned repo_hash across nucleus rewrites; it is
+        // the O-D6 docker image-tag binding and dropping it makes bob_repo_docker_run
+        // crash (readRepoSession -> null repo_hash -> buildImageTag null.slice).
+        repo_hash: priorNucleus.repo_hash,
+      });
+      stateProjection = null;
+    } else {
+      // A state-backed update derives the canonical nucleus FROM the
+      // reconciled state (the same convention assertSessionEgressIdentity,
+      // initSession and migrateLegacySessionAuthority all use), so
+      // nucleus/state parity is proven by construction instead of
+      // independently rebuilding the nucleus from priorNucleus fields that
+      // may have drifted from a legacy state.json's own field defaults.
+      const nextState = {
+        ...state,
+        operator_note: operatorConstraint.operator_note == null ? null : operatorConstraint.operator_note,
+        handoff_provenance_required: operatorConstraint.handoff_provenance_required,
+      };
+      nextNucleus = sessionNucleusFromState(nextState, {
+        physical_scope: priorNucleus.physical_scope,
+        repo_hash: priorNucleus.repo_hash,
+      });
+      stateProjection = { rawDocument: raw, nextState };
+    }
+
+    const commitResult = commitSessionAuthority({
+      targetDomain: domain,
+      nextNucleus,
+      stateProjection,
+      event: {
+        target_domain: domain,
+        kind: "governance.operator_constraint.updated",
+        nucleus_hash: nextNucleus.nucleus_hash,
+        payload: {
+          prior_nucleus_hash: priorNucleus.nucleus_hash,
+          nucleus_hash: nextNucleus.nucleus_hash,
+          operator_constraint_hash: hashCanonicalJson(nextNucleus.operator_constraint),
+        },
+      },
+      expectedNucleusHash: priorNucleus.nucleus_hash,
+    });
+
+    return {
+      priorNucleus,
+      nextNucleus,
+      operatorConstraint,
+      eventId: commitResult.event_id,
+      nextState: stateProjection ? stateProjection.nextState : null,
+    };
   });
-  writeJsonDocument(sessionNucleusPath(domain), nextNucleus);
-  const updatedEvent = appendSessionEvent({
-    target_domain: domain,
-    kind: "governance.operator_constraint.updated",
-    nucleus_hash: nextNucleus.nucleus_hash,
-    payload: {
-      prior_nucleus_hash: priorNucleus.nucleus_hash,
-      nucleus_hash: nextNucleus.nucleus_hash,
-      operator_constraint_hash: hashCanonicalJson(nextNucleus.operator_constraint),
-    },
-  });
-  return {
-    priorNucleus,
-    nextNucleus,
-    operatorConstraint,
-    eventId: updatedEvent.event_id,
-  };
 }
 
 function setOperatorNote(args) {
@@ -477,16 +682,10 @@ function setOperatorNote(args) {
   const operatorNote = assertOperatorNote(args.operator_note, "operator_note");
 
   return withSessionLock(domain, () => {
-    const { raw, state } = readSessionStateStrict(domain);
-    const { nextNucleus, operatorConstraint, eventId } = applyOperatorConstraintUpdate(
+    const { nextNucleus, operatorConstraint, eventId, nextState } = applyOperatorConstraintUpdate(
       domain,
       (prior) => ({ ...prior, operator_note: operatorNote }),
     );
-    const nextState = {
-      ...state,
-      operator_note: operatorNote,
-    };
-    writeSessionStateDocument(domain, raw, nextState);
     return JSON.stringify({
       version: 1,
       updated: true,
@@ -494,7 +693,7 @@ function setOperatorNote(args) {
       nucleus_hash: nextNucleus.nucleus_hash,
       operator_constraint: operatorConstraint,
       event_id: eventId,
-      state: compactSessionState(nextState),
+      state: nextState === null ? null : compactSessionState(nextState),
     });
   });
 }
@@ -503,8 +702,7 @@ function clearOperatorNote(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
 
   return withSessionLock(domain, () => {
-    const { raw, state } = readSessionStateStrict(domain);
-    const { nextNucleus, operatorConstraint, eventId } = applyOperatorConstraintUpdate(
+    const { nextNucleus, operatorConstraint, eventId, nextState } = applyOperatorConstraintUpdate(
       domain,
       (prior) => {
         const next = { ...prior };
@@ -512,11 +710,6 @@ function clearOperatorNote(args) {
         return next;
       },
     );
-    const nextState = {
-      ...state,
-      operator_note: null,
-    };
-    writeSessionStateDocument(domain, raw, nextState);
     return JSON.stringify({
       version: 1,
       cleared: true,
@@ -524,7 +717,7 @@ function clearOperatorNote(args) {
       nucleus_hash: nextNucleus.nucleus_hash,
       operator_constraint: operatorConstraint,
       event_id: eventId,
-      state: compactSessionState(nextState),
+      state: nextState === null ? null : compactSessionState(nextState),
     });
   });
 }
@@ -579,8 +772,10 @@ function isSensitiveMaterialError(error) {
 //      make the milestone unforgeable: an evaluator able to call the pre-approved bob_auth_store can
 //      stash a credential-shaped header and reach (4)'s profile-backed "authenticated". That is
 //      acceptable because auth_status grants no capability (a forged/bogus token 401s on use — see
-//      SEMANTICS) and because every auth_status CHANGE emits a governance.auth_context.replaced
-//      audit event (in advanceSession), so a fabricated milestone is always reconstructable. A
+//      SEMANTICS) and because every auth_status CHANGE folds from_auth_status/to_auth_status/
+//      auth_status_changed into the single governance.lifecycle.advanced event committed in
+//      advanceSession (there is no separate governance.auth_context.replaced event), so a
+//      fabricated milestone is always reconstructable. A
 //      blank/whitespace value is treated as OMITTED (else it would normalize to "pending" in the
 //      nucleus while the raw "" leaked to the state.json mirror).
 //  (4) No explicit value: a usable stored profile means "authenticated".
@@ -683,11 +878,16 @@ function advanceSession(args) {
   }
 
   return withSessionLock(domain, () => {
-    const priorNucleus = readSessionNucleus(domain);
-    if (!priorNucleus || typeof priorNucleus !== "object") {
+    // A lifecycle advance derives its next nucleus from the prior one, so the
+    // prior read must be verified — never a silent fallback that could carry
+    // a tampered or stale lifecycle_state into the next transition.
+    let priorNucleus;
+    try {
+      priorNucleus = readVerifiedSessionNucleus(domain);
+    } catch (error) {
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,
-        `session nucleus missing for ${domain}; call bob_init_session first`,
+        `session nucleus missing or unverifiable for ${domain}; call bob_init_session first (${error.message || String(error)})`,
       );
     }
     const fromState = normalizeLifecycleState(priorNucleus.lifecycle_state, "lifecycle_state");
@@ -740,9 +940,8 @@ function advanceSession(args) {
     }
 
     // Derive the next auth context FIRST — deriveAdvanceAuthContext performs the only fallible work
-    // left (the hasUsableAuthProfile auth.json read). Computing it before the override audit append
-    // upholds "all fallible work BEFORE durable writes": a throw here can never orphan an
-    // already-recorded governance.lifecycle.override event with no corresponding state transition.
+    // left (the hasUsableAuthProfile auth.json read). Computing it before any durable write
+    // upholds "all fallible work BEFORE durable writes".
     const hadUsableProfile = hasUsableAuthProfile(domain);
     const nextAuthContext = deriveAdvanceAuthContext(
       priorNucleus.auth_context,
@@ -750,22 +949,6 @@ function advanceSession(args) {
       hadUsableProfile,
       override === "operator_force",
     );
-
-    if (override === "operator_force") {
-      appendSessionEvent({
-        target_domain: domain,
-        kind: "governance.lifecycle.override",
-        nucleus_hash: priorNucleus.nucleus_hash,
-        payload: {
-          from_state: fromState,
-          to_state: toState,
-          override: "operator_force",
-          override_reason: overrideReason,
-          blockers: evaluation.blockers,
-          prior_nucleus_hash: priorNucleus.nucleus_hash,
-        },
-      });
-    }
 
     const nextNucleus = buildSessionNucleus({
       target_domain: priorNucleus.target_domain,
@@ -782,93 +965,113 @@ function advanceSession(args) {
       repo_hash: priorNucleus.repo_hash,
     });
 
-    // Single-source-of-truth lifecycle write (Step 4). The two durable
-    // lifecycle stores (session-nucleus.json and state.json) must never
-    // disagree, even on a partial write. The historical ordering wrote the
-    // nucleus FIRST and unconditionally, then ran the fallible verification
-    // bootstrap; a throw there left the nucleus advanced while state.json
-    // stayed at the prior state — a permanent split-brain. The fix:
-    //
-    //   1. Run ALL fallible work (prepareVerificationEntry, nextState) BEFORE
-    //      any durable lifecycle-store write. prepareVerificationEntry throws
-    //      at verification.js:342 (the sensitive-material re-scan) BEFORE the
-    //      snapshot write at :343, so on a throw neither lifecycle store has
-    //      been mutated. (The snapshot/archive are idempotently recomputable
-    //      and are not lifecycle stores, so this still yields no-drift.)
-    //   2. Write state.json, then the nucleus LAST.
-    //   3. On ANY throw after the first durable write (state.json,
-    //      nucleus, or the post-nucleus refreshVerificationManifest), restore
-    //      BOTH files to their captured prior bytes — a symmetric rollback.
-    //
-    // The legacy `phase` field is refreshed via the back-compat projection so
-    // unmigrated readers see the lifecycle move. The VERIFY transition also
-    // triggers verification snapshot bootstrap so downstream evidence/grade
-    // gates have the v2 attempt context the legacy phase machine used to bind.
-    let verificationEntry = null;
-    const nucleusPath = sessionNucleusPath(domain);
-    const priorNucleusRaw = fs.existsSync(nucleusPath)
-      ? fs.readFileSync(nucleusPath, "utf8")
-      : null;
-    try {
-      const { raw, state } = readSessionStateStrict(domain);
+    // Compute the auth_status transition from the NORMALIZED nuclei (buildSessionNucleus already ran
+    // normalizeAuthContext) so the canonical lifecycle.advanced event can carry the transition
+    // ATOMICALLY with the lifecycle move (its single append is the durable record of this advance —
+    // the transition is always reconstructable from this event alone).
+    const priorAuthStatus = priorNucleus.auth_context && typeof priorNucleus.auth_context === "object"
+      ? priorNucleus.auth_context.auth_status
+      : undefined;
+    const nextAuthStatus = nextNucleus.auth_context && typeof nextNucleus.auth_context === "object"
+      ? nextNucleus.auth_context.auth_status
+      : undefined;
+    const authStatusChanged = nextAuthStatus !== priorAuthStatus;
 
-      // (1) Fallible work FIRST — before any durable lifecycle-store write.
-      if (toState === "VERIFY") {
-        try {
-          verificationEntry = require("../verification/verification.js").prepareVerificationEntry(domain, state);
-        } catch (verificationError) {
-          if (!isSensitiveMaterialError(verificationError)) throw verificationError;
-          // A persisted claim's evidence trips the sensitive-material scan and
-          // has no operator-approved secret_evidence_bypass. The claim was
-          // validated at write, so this is a recoverable fail-closed block, not
-          // an unbypassable INTERNAL_ERROR. operator_force proceeds past it by
-          // skipping the VERIFY snapshot bootstrap; otherwise surface a clean
-          // STATE_CONFLICT naming the offending field so the operator can
-          // re-record the finding with a secret_detection_bypass. Because this
-          // throws BEFORE the durable writes below, neither lifecycle store is
-          // mutated and the two stores still agree (no drift).
-          if (override === "operator_force") {
-            verificationEntry = null;
-          } else {
-            const message = verificationError && typeof verificationError.message === "string"
-              ? verificationError.message
-              : String(verificationError);
-            const offendingPath = (message.match(/^(\S+)\s+(?:appears to contain|is too large)/) || [])[1] || null;
-            throw new ToolError(
-              ERROR_CODES.STATE_CONFLICT,
-              `lifecycle transition blocked: a recorded claim's evidence contains secret-shaped material without an operator-approved secret_detection_bypass${offendingPath ? ` (${offendingPath})` : ""}`,
-              {
-                blocked_by: "claim_evidence_secret_blocked",
-                code: "claim_evidence_secret_blocked",
-                block_code: "claim_evidence_secret_blocked",
-                from: fromState,
-                to: toState,
-                offending_path: offendingPath,
-              },
-              {
-                remediation: `Re-record the offending finding with a secret_detection_bypass for the flagged field${offendingPath ? ` (${offendingPath})` : ""}, or rerun with override="operator_force" to advance without the VERIFY snapshot bootstrap.`,
-              },
-            );
-          }
+    // Single-authority CAS write (A7). The two durable lifecycle stores
+    // (session-nucleus.json and state.json) and the session-events.jsonl append
+    // are committed by ONE commitSessionAuthority call — there is no manual
+    // multi-file write with a hand-rolled restore any more. commitSessionAuthority
+    // itself snapshots state.json/session-nucleus.json/session-events.jsonl, CAS-
+    // publishes all three, and rolls all three back to their exact prior bytes on
+    // ANY publish failure (session-authority-unit-of-work.js).
+    //
+    //   1. Run ALL fallible work (buildVerificationEntry, nextState, the event
+    //      payload) BEFORE any durable write. buildVerificationEntry is pure (no
+    //      I/O) and throws (the sensitive-material re-scan) before anything is
+    //      committed, so a throw there leaves both lifecycle stores byte-unchanged.
+    //   2. commitVerificationEntry performs the ONE non-CAS durable side effect
+    //      this advance can make (the verification archive dir + snapshot write)
+    //      and returns an undo() receipt.
+    //   3. Everything from just after that write through the commitSessionAuthority
+    //      call is one undo-protected window: ANY throw in that span — including a
+    //      CAS mismatch inside commitSessionAuthority itself — invokes undo() before
+    //      rethrowing, so the archive + snapshot never survive a failed advance.
+    //   4. Manifest refresh and the pipeline-events mirror are strictly postcommit
+    //      and best-effort: they run only after commitSessionAuthority has already
+    //      succeeded, and can never fail the call or alter its result.
+    let raw = {};
+    let state = null;
+    let stateMissing = false;
+    try {
+      ({ raw, state } = readSessionStateStrict(domain));
+    } catch (error) {
+      if (!sessionStateMissing(error)) throw error;
+      stateMissing = true;
+    }
+
+    // (1) Fallible work FIRST — pure, no I/O beyond the sensitive-material scan
+    // (which throws before any write).
+    let verificationBuild = null;
+    if (!stateMissing && toState === "VERIFY") {
+      try {
+        verificationBuild = require("../verification/verification.js").buildVerificationEntry(domain, state);
+      } catch (verificationError) {
+        if (!isSensitiveMaterialError(verificationError)) throw verificationError;
+        // A persisted claim's evidence trips the sensitive-material scan and
+        // has no operator-approved secret_evidence_bypass. The claim was
+        // validated at write, so this is a recoverable fail-closed block, not
+        // an unbypassable INTERNAL_ERROR. operator_force proceeds past it by
+        // skipping the VERIFY snapshot bootstrap; otherwise surface a clean
+        // STATE_CONFLICT naming the offending field so the operator can
+        // re-record the finding with a secret_detection_bypass. Because this
+        // throws BEFORE any durable write, neither lifecycle store is mutated
+        // and the two stores still agree (no drift).
+        if (override === "operator_force") {
+          verificationBuild = null;
+        } else {
+          const message = verificationError && typeof verificationError.message === "string"
+            ? verificationError.message
+            : String(verificationError);
+          const offendingPath = (message.match(/^(\S+)\s+(?:appears to contain|is too large)/) || [])[1] || null;
+          throw new ToolError(
+            ERROR_CODES.STATE_CONFLICT,
+            `lifecycle transition blocked: a recorded claim's evidence contains secret-shaped material without an operator-approved secret_detection_bypass${offendingPath ? ` (${offendingPath})` : ""}`,
+            {
+              blocked_by: "claim_evidence_secret_blocked",
+              code: "claim_evidence_secret_blocked",
+              block_code: "claim_evidence_secret_blocked",
+              from: fromState,
+              to: toState,
+              offending_path: offendingPath,
+            },
+            {
+              remediation: `Re-record the offending finding with a secret_detection_bypass for the flagged field${offendingPath ? ` (${offendingPath})` : ""}, or rerun with override="operator_force" to advance without the VERIFY snapshot bootstrap.`,
+            },
+          );
         }
       }
-      // OPEN_FRONTIER is the one lifecycle state whose canonical legacy phase
-      // (EVALUATE) is ambiguous: it is both the active evaluate window AND the
-      // post-report evidence/re-mine window the operator re-enters from a
-      // post-evaluation state. The evidence completion gate
-      // (agent-run-completion.js) distinguishes them by the legacy phase —
-      // OPEN_FRONTIER + EXPLORE is the evidence window, OPEN_FRONTIER + EVALUATE
-      // is active evaluation. When we re-enter OPEN_FRONTIER from REPORT or
-      // GRADE (a backwards move only the post-report re-mine takes), stamp the
-      // legacy phase EXPLORE so that gate accepts the evidence run instead of
-      // rejecting it as active evaluation (evidence_phase_mismatch).
-      let derivedLegacyPhase = deriveLegacyPhaseFromLifecycleState(toState);
-      if (toState === "OPEN_FRONTIER" && (fromState === "REPORT" || fromState === "GRADE")) {
-        derivedLegacyPhase = "EXPLORE";
+    }
+
+    // phase is a migration-only projection: it is always the canonical
+    // pre-image of the state we are writing (deriveLegacyPhaseFromLifecycleState),
+    // never a history-dependent override. Gates and the evidence-completion
+    // check source their admission decision from the lifecycle event ledger
+    // (governance.lifecycle.advanced), not from this field.
+    const derivedLegacyPhase = stateMissing ? null : deriveLegacyPhaseFromLifecycleState(toState);
+
+    // (2)+(3) Commit the verification entry (if planned), then the CAS. From
+    // just after commitVerificationEntry through commitSessionAuthority is one
+    // undo-protected window.
+    let verificationCommit = null;
+    let commitResult;
+    try {
+      if (verificationBuild) {
+        verificationCommit = require("../verification/verification.js").commitVerificationEntry(domain, verificationBuild);
       }
-      const nextState = {
+
+      const nextState = stateMissing ? null : {
         ...state,
-        ...(verificationEntry ? verificationEntry.state_fields : {}),
+        ...(verificationCommit ? verificationCommit.state_fields : {}),
         lifecycle_state: toState,
         // Mirror the NORMALIZED nucleus auth_status into state.json so the two lifecycle stores
         // can never disagree — buildSessionNucleus -> normalizeAuthContext is the single source of
@@ -878,103 +1081,56 @@ function advanceSession(args) {
         ...(derivedLegacyPhase ? { phase: derivedLegacyPhase } : {}),
       };
 
-      // (2)+(3) Durable writes with symmetric rollback. Capture prior bytes of
-      // BOTH lifecycle stores, then write state.json, then the nucleus LAST. On
-      // any throw after the first durable write, restore both files. The
-      // restore is inlined here (not a nested closure) so it runs synchronously
-      // inside the session lock — see test/session-state-store.test.js lock
-      // containment guard.
-      let firstDurableWriteDone = false;
-      try {
-        writeSessionStateDocument(domain, raw, nextState);
-        firstDurableWriteDone = true;
-        writeJsonDocument(nucleusPath, nextNucleus);
-        if (verificationEntry && verificationEntry.schema_version === 2) {
-          require("../verification/verification.js").refreshVerificationManifest(domain, { throw_on_error: true });
-        }
-      } catch (writeError) {
-        if (firstDurableWriteDone) {
-          try {
-            writeSessionStateDocument(domain, raw, state);
-          } catch (_restoreStateError) {
-            // best-effort symmetric rollback
-          }
-          if (priorNucleusRaw !== null) {
-            try {
-              writeFileAtomic(nucleusPath, priorNucleusRaw);
-            } catch (_restoreNucleusError) {
-              // best-effort symmetric rollback
-            }
-          }
-        }
-        throw writeError;
-      }
-    } catch (error) {
-      if (!sessionStateMissing(error)) {
-        throw error;
-      }
-      // Session predates init-session-with-state-store; there is no state.json
-      // to keep in sync, so the nucleus is the sole lifecycle store. Advance it
-      // directly (no symmetric rollback is needed — there is nothing to drift
-      // against). Downstream readers fall back to the nucleus.
-      writeJsonDocument(nucleusPath, nextNucleus);
-    }
-
-    // Compute the auth_status transition from the NORMALIZED nuclei (buildSessionNucleus already ran
-    // normalizeAuthContext) BEFORE the advance event, so the canonical lifecycle.advanced event can
-    // carry the transition ATOMICALLY with the lifecycle move (its single append is the durable
-    // record of this advance — the transition is always reconstructable from this event alone).
-    const priorAuthStatus = priorNucleus.auth_context && typeof priorNucleus.auth_context === "object"
-      ? priorNucleus.auth_context.auth_status
-      : undefined;
-    const nextAuthStatus = nextNucleus.auth_context && typeof nextNucleus.auth_context === "object"
-      ? nextNucleus.auth_context.auth_status
-      : undefined;
-    const authStatusChanged = nextAuthStatus !== priorAuthStatus;
-
-    const advancedEvent = appendSessionEvent({
-      target_domain: domain,
-      kind: "governance.lifecycle.advanced",
-      nucleus_hash: nextNucleus.nucleus_hash,
-      payload: {
+      // The single canonical event: binds states/hashes, the auth delta,
+      // override/reason, the EXACT blockers array that was bypassed (empty when
+      // nothing was bypassed), and the VERIFY identity when a snapshot was
+      // bootstrapped. This is the durable, atomic record of the advance —
+      // governance.lifecycle.override and governance.auth_context.replaced are
+      // folded in rather than written as separate events.
+      const eventPayload = {
         from_state: fromState,
         to_state: toState,
         nucleus_hash: nextNucleus.nucleus_hash,
         prior_nucleus_hash: priorNucleus.nucleus_hash,
-        // Auth-status provenance rides on the CANONICAL advance event so it is captured atomically
-        // with the lifecycle move — the dedicated companion below is a best-effort index, not the
-        // source of truth. from/to are the NORMALIZED nucleus values (null when absent).
         from_auth_status: priorAuthStatus == null ? null : priorAuthStatus,
         to_auth_status: nextAuthStatus == null ? null : nextAuthStatus,
         auth_status_changed: authStatusChanged,
-      },
-    });
+        had_usable_profile: hadUsableProfile,
+        explicit_auth_status_supplied: typeof args.auth_status === "string" && args.auth_status.trim() !== "",
+        override: override === "operator_force" ? "operator_force" : null,
+        override_reason: overrideReason,
+        blockers: override === "operator_force" ? evaluation.blockers : [],
+      };
+      if (verificationCommit) {
+        eventPayload.verification_attempt_id = verificationCommit.state_fields.verification_attempt_id;
+        eventPayload.verification_snapshot_hash = verificationCommit.state_fields.verification_snapshot_hash;
+      }
 
-    // Emit a dedicated, INDEXABLE governance.auth_context.replaced event whenever auth_status changed,
-    // so the milestone's moves can be queried directly (operator authority vs profile-derived) without
-    // scanning every advance. BEST-EFFORT: the advance is already durably committed and its provenance
-    // is on the advanced event above, so a write failure HERE must not fail the tool and report an
-    // error for a state change that did happen (mirrors the observational pipeline-events mirror
-    // below). change-only keeps the log to real moves.
-    if (authStatusChanged) {
-      try {
-        appendSessionEvent({
+      commitResult = commitSessionAuthority({
+        targetDomain: domain,
+        nextNucleus,
+        stateProjection: nextState === null ? null : { rawDocument: raw, nextState },
+        event: {
           target_domain: domain,
-          kind: "governance.auth_context.replaced",
+          kind: "governance.lifecycle.advanced",
           nucleus_hash: nextNucleus.nucleus_hash,
-          payload: {
-            from_auth_status: priorAuthStatus == null ? null : priorAuthStatus,
-            to_auth_status: nextAuthStatus == null ? null : nextAuthStatus,
-            operator_forced: override === "operator_force",
-            had_usable_profile: hadUsableProfile,
-            explicit_auth_status_supplied:
-              typeof args.auth_status === "string" && args.auth_status.trim() !== "",
-          },
-        });
-      } catch (authEventError) {
-        // Observability companion only — the advance and its provenance (on the advanced event) are
-        // already durable, so a failure to append this index must not surface as a tool error.
-        void authEventError;
+          payload: eventPayload,
+        },
+        expectedNucleusHash: priorNucleus.nucleus_hash,
+      });
+    } catch (error) {
+      if (verificationCommit) verificationCommit.undo();
+      throw error;
+    }
+
+    // (4) Postcommit best-effort mirrors — the advance already committed
+    // durably above; nothing below may alter success or gate on failure (no
+    // prune/manifest/pipeline precommit).
+    if (verificationCommit && verificationCommit.schema_version === 2) {
+      try {
+        require("../verification/verification.js").refreshVerificationManifest(domain);
+      } catch (_manifestError) {
+        // Best-effort mirror only — the advance already committed durably above.
       }
     }
 
@@ -999,9 +1155,9 @@ function advanceSession(args) {
         eventFields.override = true;
         if (overrideReason != null) eventFields.override_reason = overrideReason;
       }
-      if (verificationEntry && verificationEntry.schema_version === 2) {
-        eventFields.verification_attempt_id = verificationEntry.state_fields.verification_attempt_id;
-        eventFields.verification_snapshot_hash = verificationEntry.state_fields.verification_snapshot_hash;
+      if (verificationCommit && verificationCommit.schema_version === 2) {
+        eventFields.verification_attempt_id = verificationCommit.state_fields.verification_attempt_id;
+        eventFields.verification_snapshot_hash = verificationCommit.state_fields.verification_snapshot_hash;
       }
       safeAppendPipelineEventDirect(domain, "lifecycle_advanced", eventFields, buildGovernanceContextFromNucleus(nextNucleus));
     } catch (error) {
@@ -1019,13 +1175,13 @@ function advanceSession(args) {
       nucleus_hash: nextNucleus.nucleus_hash,
       prior_nucleus_hash: priorNucleus.nucleus_hash,
       override: override === "operator_force" ? "operator_force" : null,
-      event_id: advancedEvent.event_id,
-      verification: verificationEntry
+      event_id: commitResult.event_id,
+      verification: verificationCommit
         ? {
-          schema_version: verificationEntry.schema_version,
-          attempt_id: verificationEntry.state_fields.verification_attempt_id,
-          snapshot_hash: verificationEntry.state_fields.verification_snapshot_hash,
-          archived: verificationEntry.archived != null,
+          schema_version: verificationCommit.schema_version,
+          attempt_id: verificationCommit.state_fields.verification_attempt_id,
+          snapshot_hash: verificationCommit.state_fields.verification_snapshot_hash,
+          archived: verificationCommit.archived != null,
         }
         : undefined,
     });
@@ -1134,7 +1290,7 @@ function clearTerminalBlock(args) {
     // wave-merge tool sentinel so it satisfies the surface-state predicate
     // without depending on the legacy payload markers.
     try {
-      appendFrontierEvent({
+      appendClosureRecordedEvent({
         target_domain: domain,
         kind: "closure.recorded",
         surface_id: surfaceId,

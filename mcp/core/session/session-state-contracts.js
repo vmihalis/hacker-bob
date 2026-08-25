@@ -3,6 +3,7 @@
 const {
   AUTH_STATUS_VALUES,
   CHECKPOINT_MODE_VALUES,
+  LIFECYCLE_STATE_VALUES: SESSION_STATE_LIFECYCLE_VALUES,
   SESSION_PUBLIC_STATE_FIELDS,
 } = require("./session-state-vocabulary.js");
 const {
@@ -20,21 +21,15 @@ const {
   normalizePhysicalScopeNucleusAxis,
 } = require("./physical-scope-axis-contract.js");
 
-// Local copy of the lifecycle enum. The canonical source is
-// governance-contracts.js, but that module depends on
-// blockInternalHostsPolicyFields exported below, so requiring it here would
-// create a top-level import cycle. Tests assert these two arrays stay in
-// sync (see test/session-state-store.test.js).
-const SESSION_STATE_LIFECYCLE_VALUES = Object.freeze([
-  "SETUP",
-  "OPEN_FRONTIER",
-  "CLAIM_FREEZE",
-  "VERIFY",
-  "GRADE",
-  "REPORT",
-]);
-
-// Cycle D.1 retired the legacy eight-phase FSM in favor of the six-state
+// SESSION_STATE_LIFECYCLE_VALUES is the shared LIFECYCLE_STATE_VALUES leaf
+// import above (aliased for readability at its call site below).
+// governance-contracts.js imports the same array from the same leaf rather
+// than declaring its own copy, so the two lifecycle-facing modules cannot
+// drift apart; requiring governance-contracts.js directly here would create
+// a top-level import cycle (it depends on blockInternalHostsPolicyFields
+// exported below), which is why both sides import from the leaf instead.
+//
+// The legacy eight-phase FSM was retired in favor of the six-state
 // lifecycle authority on session-nucleus.json. state.lifecycle_state is the
 // new canonical projection of nucleus.lifecycle_state into the session-state
 // document. state.phase persists as a derived back-compat read for callers

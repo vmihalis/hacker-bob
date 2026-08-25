@@ -144,6 +144,12 @@ const RELATIONAL_MATCH_OP_VALUES = Object.freeze([
   "contains",
 ]);
 
+const DESIGN_ADMISSION_STATUS_VALUES = Object.freeze(["required"]);
+const DESIGN_ADMISSION_SOURCE_VALUES = Object.freeze(["contract_compiler"]);
+const DESIGN_ADMISSION_PROOF_MODE_VALUES = Object.freeze(["executed_differential_v1"]);
+const DESIGN_ADMISSION_CLOSURE_REGIME_VALUES = Object.freeze(["deterministic_signed_rows"]);
+const DESIGN_ADMISSION_UNKNOWN_CLASS_VALUES = Object.freeze(["HOLD"]);
+
 // ─── Internal helpers ────────────────────────────────────────────────────
 
 function isShortText(value) {
@@ -454,6 +460,109 @@ function normalizeCrossStackVerification(raw) {
   return Object.freeze(out);
 }
 
+function assertSha256Digest(value, fieldName) {
+  const text = assertNonEmptyString(value, fieldName);
+  if (!/^[0-9a-f]{64}$/.test(text)) {
+    throw new Error(`${fieldName} must be a 64-hex sha256 digest`);
+  }
+  return text;
+}
+
+function assertLiteralBoolean(value, expected, fieldName) {
+  if (value !== expected) {
+    throw new Error(`${fieldName} must be ${expected}`);
+  }
+  return value;
+}
+
+function normalizeDesignAdmissionCvk(raw) {
+  if (!isPlainObject(raw)) {
+    throw new Error("design_admission.cvk must be an object");
+  }
+  return Object.freeze({
+    required: assertLiteralBoolean(raw.required, true, "design_admission.cvk.required"),
+    validity_class_id: assertNonEmptyString(
+      raw.validity_class_id,
+      "design_admission.cvk.validity_class_id",
+    ),
+    certificate_required: assertLiteralBoolean(
+      raw.certificate_required,
+      true,
+      "design_admission.cvk.certificate_required",
+    ),
+  });
+}
+
+function normalizeDesignAdmission(raw) {
+  if (raw == null) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new Error("design_admission must be an object when present");
+  }
+  const mandatoryControls = normalizeStringArray(
+    raw.mandatory_controls,
+    "design_admission.mandatory_controls",
+  );
+  if (mandatoryControls.length === 0) {
+    throw new Error("design_admission.mandatory_controls must be a non-empty array");
+  }
+  return Object.freeze({
+    version: assertNonEmptyString(raw.version, "design_admission.version"),
+    status: assertEnumValue(
+      raw.status,
+      DESIGN_ADMISSION_STATUS_VALUES,
+      "design_admission.status",
+    ),
+    hard_plane: assertLiteralBoolean(raw.hard_plane, true, "design_admission.hard_plane"),
+    source: assertEnumValue(
+      raw.source,
+      DESIGN_ADMISSION_SOURCE_VALUES,
+      "design_admission.source",
+    ),
+    class_id: assertNonEmptyString(raw.class_id, "design_admission.class_id"),
+    proof_mode: assertEnumValue(
+      raw.proof_mode,
+      DESIGN_ADMISSION_PROOF_MODE_VALUES,
+      "design_admission.proof_mode",
+    ),
+    closure_regime: assertEnumValue(
+      raw.closure_regime,
+      DESIGN_ADMISSION_CLOSURE_REGIME_VALUES,
+      "design_admission.closure_regime",
+    ),
+    unknown_class_disposition: assertEnumValue(
+      raw.unknown_class_disposition,
+      DESIGN_ADMISSION_UNKNOWN_CLASS_VALUES,
+      "design_admission.unknown_class_disposition",
+    ),
+    no_generic_web_fallback: assertLiteralBoolean(
+      raw.no_generic_web_fallback,
+      true,
+      "design_admission.no_generic_web_fallback",
+    ),
+    mandatory_controls: Object.freeze(mandatoryControls),
+    cvk: normalizeDesignAdmissionCvk(raw.cvk),
+    generated_hypothesis_inert: assertLiteralBoolean(
+      raw.generated_hypothesis_inert,
+      true,
+      "design_admission.generated_hypothesis_inert",
+    ),
+    generated_hypothesis_closure_authority: assertLiteralBoolean(
+      raw.generated_hypothesis_closure_authority,
+      false,
+      "design_admission.generated_hypothesis_closure_authority",
+    ),
+    schema_contract_hash: assertSha256Digest(
+      raw.schema_contract_hash,
+      "design_admission.schema_contract_hash",
+    ),
+    product_model_hash: assertSha256Digest(
+      raw.product_model_hash,
+      "design_admission.product_model_hash",
+    ),
+    binding_hash: assertSha256Digest(raw.binding_hash, "design_admission.binding_hash"),
+  });
+}
+
 function normalizeContract(input) {
   if (!isPlainObject(input)) {
     throw new Error("contract must be an object");
@@ -529,6 +638,10 @@ function normalizeContract(input) {
   if (physicalResourceBundle !== undefined) {
     hashable.physical_resource_bundle = physicalResourceBundle;
   }
+  const designAdmission = normalizeDesignAdmission(input.design_admission);
+  if (designAdmission !== undefined) {
+    hashable.design_admission = designAdmission;
+  }
   const contractHash = hashCanonicalJson(hashable);
 
   // cross_stack_verification is INTENTIONALLY excluded from `hashable` above so
@@ -550,6 +663,9 @@ function normalizeContract(input) {
   }
   if (physicalResourceBundle !== undefined) {
     out.physical_resource_bundle = physicalResourceBundle;
+  }
+  if (designAdmission !== undefined) {
+    out.design_admission = designAdmission;
   }
   return Object.freeze(out);
 }
@@ -831,6 +947,11 @@ module.exports = {
   JSONPATH_SELECTOR_RE,
   PRODUCTION_PATH_DESCRIPTION_MAX_CHARS,
   RELATIONAL_MATCH_OP_VALUES,
+  DESIGN_ADMISSION_CLOSURE_REGIME_VALUES,
+  DESIGN_ADMISSION_PROOF_MODE_VALUES,
+  DESIGN_ADMISSION_SOURCE_VALUES,
+  DESIGN_ADMISSION_STATUS_VALUES,
+  DESIGN_ADMISSION_UNKNOWN_CLASS_VALUES,
   SEVERITY_FLOOR_VALUES,
   WITNESS_KIND_VALUES,
   appendContract,
@@ -840,4 +961,5 @@ module.exports = {
   assertJsonPathSelector,
   collectContractArtifactRefs,
   normalizeContract,
+  normalizeDesignAdmission,
 };

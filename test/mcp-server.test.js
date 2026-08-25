@@ -546,6 +546,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_run_belief_residual",
   "bob_query_intervention_calculus",
   "bob_plan_belief_experiment",
+  "bob_compile_contract_binding",
   "bob_train_belief_model",
   "bob_read_belief_model_info",
   "bob_elicit_belief",
@@ -1212,6 +1213,14 @@ function seedSessionState(domain, overrides = {}) {
     auth_status: "pending",
     ...legacyEgressStateFields(),
     operator_note: null,
+    // The state normalizer defaults an ABSENT value to false (session-state-
+    // contracts.js) while the nucleus operator-constraint normalizer defaults it
+    // to true (governance-contracts.js), so a legacy seed that omits it makes the
+    // normalized state.json (false) and its nucleus (true) disagree and every
+    // advance fails canonicalizeStateProjection. Carry the normalized-legacy
+    // value explicitly so state and nucleus agree; tests needing the required
+    // path override this to true.
+    handoff_provenance_required: false,
     verification_schema_version: null,
     verification_attempt_id: null,
     verification_snapshot_hash: null,
@@ -1227,6 +1236,17 @@ function seedSessionState(domain, overrides = {}) {
   delete state.explored;
   delete state.terminally_blocked;
   delete state.lead_surface_ids;
+  // Post-D.1 production state.json always carries the canonical lifecycle_state
+  // (session-state-contracts.js buildInitialSessionState). Legacy fixtures set
+  // only `phase`; persist the phase-derived lifecycle_state so the seeded state
+  // and its nucleus agree. Commit-time sessionNucleusFromState reads
+  // state.lifecycle_state (absent -> SETUP) and does NOT consult `phase`, so
+  // without this the seed nucleus (phase-mapped, e.g. OPEN_FRONTIER) and the
+  // commit projection (SETUP) diverge and canonicalizeStateProjection rejects
+  // every advance with "stateProjection nucleus_hash does not match nextNucleus".
+  if (state.lifecycle_state == null) {
+    state.lifecycle_state = LEGACY_PHASE_TO_LIFECYCLE_STATE[state.phase] || "SETUP";
+  }
   // Mirror production wave-merge-settler: each terminally-blocked seed entry
   // also lands in state.blocked_prereq_history so summarizeBlockedPrereqs
   // (which now groups history by (kind, identifier_hint) restricted to the
@@ -1263,32 +1283,17 @@ function seedSessionState(domain, overrides = {}) {
   try {
     const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
     if (!fs.existsSync(nucleusPath)) {
-      const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
+      const { sessionNucleusFromState } = require("../mcp/core/governance/index.js");
       const { writeJsonDocument } = require("../mcp/core/io/storage.js");
-      const lifecycleState = state.lifecycle_state
-        || LEGACY_PHASE_TO_LIFECYCLE_STATE[state.phase]
-        || "SETUP";
-      const nucleus = buildSessionNucleus({
-        target_domain: domain,
-        target_url: state.target_url,
-        scope_policy: {
-          target_url: state.target_url,
-          checkpoint_mode: state.checkpoint_mode,
-          deep_mode: state.deep_mode,
-          block_internal_hosts: state.block_internal_hosts,
-          allow_internal_hosts: false,
-        },
-        egress_identity: {
-          egress_profile: state.egress_profile,
-          egress_region: state.egress_region,
-          proxy_configured: state.proxy_configured,
-          egress_profile_identity_hash: state.egress_profile_identity_hash,
-          egress_profile_identity_version: state.egress_profile_identity_version,
-        },
-        auth_context: { auth_status: state.auth_status || "pending" },
-        operator_constraint: {},
-        lifecycle_state: lifecycleState,
-      });
+      // Build the seed nucleus with the SAME projection production initSession
+      // uses (session-state.js sessionNucleusFromState), so the seeded nucleus
+      // is by construction the canonical projection of this exact state.json.
+      // A hand-rolled buildSessionNucleus drifts from it (egress_profile_identity_
+      // source shape, operator_constraint.handoff_provenance_required default,
+      // lifecycle_state), and every bob_advance_session then fails
+      // canonicalizeStateProjection's nucleus_hash parity check. The persisted
+      // state.lifecycle_state above keeps the projection off the SETUP default.
+      const nucleus = sessionNucleusFromState(state);
       writeJsonDocument(nucleusPath, nucleus);
     }
   } catch {}
@@ -1297,11 +1302,14 @@ function seedSessionState(domain, overrides = {}) {
   // currentLeadSurfaceIds) see the seeded state after D.3 removed the
   // state.json arrays.
   try {
-    const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+      const {
+        appendClosureRecordedEvent,
+        appendFrontierEvent,
+      } = require("../mcp/core/frontier/frontier-events.js");
     if (legacyClosures && legacyClosures.length > 0) {
       for (const surfaceId of legacyClosures) {
         if (typeof surfaceId !== "string" || !surfaceId) continue;
-        appendFrontierEvent({
+        appendClosureRecordedEvent({
           target_domain: domain,
           kind: "closure.recorded",
           surface_id: surfaceId,
@@ -1656,6 +1664,13 @@ function seedVerificationPipeline(domain, results) {
       try { fs.rmSync(paths.markdown, { force: true }); } catch {}
     }
     try { fs.rmSync(path.join(verifyDir, "verification-attempts"), { recursive: true, force: true }); } catch {}
+    // Drop the prior session nucleus before re-seeding: the re-seed rewrites
+    // state.json to a fresh CHAIN state (no operator_note, etc.), but
+    // seedSessionState only writes a nucleus when one is ABSENT. A surviving
+    // nucleus from the test's first seed would then disagree with the rewritten
+    // state (operator_constraint, lifecycle) and the pipeline's transitionPhase
+    // advance would fail canonicalizeStateProjection's parity check.
+    try { fs.rmSync(require("../mcp/core/io/paths.js").sessionNucleusPath(domain), { force: true }); } catch {}
     seedSessionState(domain, { phase: "CHAIN" });
     JSON.parse(transitionPhase({
       target_domain: domain,
@@ -2223,6 +2238,9 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
     ],
     "CB-B3_experiment_loop": [
       "bob_plan_belief_experiment",
+    ],
+    "CB-B8_contract_compiler": [
+      "bob_compile_contract_binding",
     ],
     "CB-B5_calibrated_factor_model": [
       "bob_train_belief_model",
@@ -5074,7 +5092,13 @@ test("missing session state errors surface on read and mutating state tools", ()
     const domain = "example.com";
 
     assert.throws(() => readSessionState({ target_domain: domain }), /Missing session state:/);
-    assert.throws(() => transitionPhase({ target_domain: domain, to_phase: "AUTH" }), /Missing session state:/);
+    // A6L: advanceSession now reads the VERIFIED nucleus first (fail closed,
+    // no silent fallback to state.json), so an uninitialized session surfaces
+    // as a missing/unverifiable nucleus rather than a missing state.json.
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "AUTH" }),
+      /session nucleus missing or unverifiable/,
+    );
     assert.throws(
       () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
       /Missing session state:/,
@@ -5129,12 +5153,19 @@ test("legacy state normalization is applied while unknown fields remain on disk 
       // F.2: state.json was hand-written without a frontier-events.jsonl, so
       // the materialized views never produced and frontier_view_hashes is null.
       frontier_view_hashes: null,
+      // A6L: this legacy state.json has no session-nucleus.json on disk, so
+      // the verified-nucleus probe reports false.
+      verified: false,
     });
 
-    // Cycle D.1 routes the legacy AUTH transition through bob_advance_session.
-    // The legacy session has no nucleus on disk; readSessionNucleus synthesizes
-    // one from state.json, the advance lands on lifecycle_state OPEN_FRONTIER,
-    // and the legacy phase projection in state.json is refreshed to "EVALUATE".
+    // Cycle D.1 routes the legacy AUTH transition through bob_advance_session,
+    // which (A6L) now requires a VERIFIED nucleus and fails closed rather than
+    // silently synthesizing one from state.json. Establish that verified
+    // nucleus first via the locked migration entry point — exactly the
+    // workflow A6L adds for a legacy session that predates nucleus tracking.
+    require("../mcp/core/session/session-authority-migration.js").migrateLegacySessionAuthority(domain);
+    // The advance then lands on lifecycle_state OPEN_FRONTIER, and the legacy
+    // phase projection in state.json is refreshed to "EVALUATE".
     // unknown-field preservation, target normalization, and the rewritten state
     // all continue to apply.
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
@@ -9065,7 +9096,12 @@ test("evaluator SubagentStop hook blocks evidence markers before REPORT or EXPLO
     }, { home: tempHome });
 
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /REPORT or EXPLORE/);
+    // The evidence-marker gate migrated from legacy phase vocabulary
+    // ("REPORT or EXPLORE") to the nucleus-bound lifecycle re-entry check
+    // (agent-run-completion.js): a marker is only eligible after a
+    // governance.lifecycle.advanced event binding the current nucleus and a
+    // REPORT/GRADE -> OPEN_FRONTIER re-entry. The block_code is unchanged.
+    assert.match(result.stderr, /REPORT\/GRADE -> OPEN_FRONTIER re-entry/);
 
     const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
@@ -13371,15 +13407,20 @@ test("verification v2 archive recovers attempt_id from snapshot when state has l
   });
 });
 
-test("verification v2 CHAIN -> VERIFY rejects when manifest refresh fails", () => {
+test("verification v2 CHAIN -> VERIFY survives a postcommit manifest-write failure", () => {
   withTempHome(() => {
     const domain = "manifest-fail.example.com";
     seedSessionState(domain, { phase: "CHAIN" });
     seedFinding(domain);
     const manifestPath = verificationManifestPath(domain);
-    // writeFileAtomic uses fs.renameSync to move a tempfile onto the target path.
-    // Intercept the rename when the destination is the manifest to simulate a
-    // manifest write failure without touching the snapshot or state writes.
+    // refreshVerificationManifest is strictly POSTCOMMIT best-effort: it runs
+    // only after commitSessionAuthority has durably committed the VERIFY advance
+    // and can never fail the call or roll it back (lifecycle-state-drift.test.js
+    // Test H covers the function-level mock; this exercises the lower-level
+    // writeFileAtomic->renameSync failure at the manifest path). writeFileAtomic
+    // uses fs.renameSync to move a tempfile onto the target; intercept the rename
+    // to the manifest to simulate the write failure without touching the snapshot
+    // or the CAS state/nucleus writes.
     const originalRenameSync = fs.renameSync;
     fs.renameSync = (from, to) => {
       if (to === manifestPath) {
@@ -13387,21 +13428,24 @@ test("verification v2 CHAIN -> VERIFY rejects when manifest refresh fails", () =
       }
       return originalRenameSync(from, to);
     };
+    let result = null;
+    let captured = null;
     try {
-      assert.throws(
-        () => transitionPhase({ target_domain: domain, to_phase: "VERIFY" }),
-        /simulated manifest write failure/,
-      );
+      result = JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
+    } catch (error) {
+      captured = error;
     } finally {
       fs.renameSync = originalRenameSync;
     }
-    // The transition should have refused to publish the new attempt as durable
-    // state once the manifest write fails. The CR-flagged race was that state
-    // would advance silently while the manifest was missing.
+    // The postcommit manifest failure must be swallowed: the advance is already
+    // durable, so it neither throws nor rolls back. State advances to VERIFY and
+    // the attempt is bound; only the best-effort manifest mirror is left stale.
+    assert.equal(captured, null, "a postcommit manifest failure must not fail the advance");
+    assert.equal(result && result.advanced, true);
     const stateOnDisk = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
-    assert.equal(stateOnDisk.phase, "CHAIN");
-    assert.equal(stateOnDisk.verification_attempt_id ?? null, null);
-    assert.equal(stateOnDisk.verification_snapshot_hash ?? null, null);
+    assert.equal(stateOnDisk.lifecycle_state, "VERIFY");
+    assert.notEqual(stateOnDisk.verification_attempt_id ?? null, null);
+    assert.notEqual(stateOnDisk.verification_snapshot_hash ?? null, null);
   });
 });
 

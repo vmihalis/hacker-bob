@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  appendClosureRecordedEvent,
   appendFrontierEvent,
 } = require("../mcp/core/frontier/frontier-events.js");
 const {
@@ -111,6 +112,75 @@ test("phase-gates / ranking still operate when attack_surface.json is corrupted 
     const routes = buildSurfaceRoutesDocument(domain);
     assert.equal(routes.routes.length, 1);
     assert.equal(routes.routes[0].surface_id, "surface:api");
+  });
+});
+
+test("surface-index materialization refuses forged proof claims but preserves plain exhaustion closure", () => {
+  withTempHome(() => {
+    const domain = "materialized-closure-proof.example.com";
+    const surfaceId = "surface:proof-gated";
+    ensureSessionDir(domain);
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-27T00:00:00.000Z",
+      surface_id: surfaceId,
+      payload: {
+        title: "Proof Gated Surface",
+        surface_type: "api",
+      },
+    });
+    appendClosureRecordedEvent({
+      target_domain: domain,
+      kind: "closure.recorded",
+      ts: "2026-05-27T00:01:00.000Z",
+      surface_id: surfaceId,
+      payload: {
+        surface_fully_explored: true,
+        proof_record: { proof_mode: "unknown_soft_class", result: "closed" },
+      },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+
+    let materialized = materializeFrontier(domain, { write: true });
+    let surface = materialized.surface_index.surfaces.find((entry) => entry.surface_id === surfaceId);
+    assert.equal(surface.state, "open");
+    assert.deepEqual(surface.closure_event_ids, []);
+
+    appendClosureRecordedEvent({
+      target_domain: domain,
+      kind: "closure.recorded",
+      ts: "2026-05-27T00:02:00.000Z",
+      surface_id: surfaceId,
+      payload: {
+        surface_fully_explored: true,
+        reason: "plain exhaustion",
+      },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+
+    materialized = materializeFrontier(domain, { write: true });
+    surface = materialized.surface_index.surfaces.find((entry) => entry.surface_id === surfaceId);
+    assert.equal(surface.state, "closed");
+    assert.equal(surface.closure_event_ids.length, 1);
+
+    appendClosureRecordedEvent({
+      target_domain: domain,
+      kind: "closure.recorded",
+      ts: "2026-05-27T00:03:00.000Z",
+      surface_id: surfaceId,
+      payload: {
+        surface_fully_explored: true,
+        reason: "later forged soft proof",
+        proof_record: { proof_mode: "soft_llm_verdict", result: "closed" },
+      },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+
+    materialized = materializeFrontier(domain, { write: true });
+    surface = materialized.surface_index.surfaces.find((entry) => entry.surface_id === surfaceId);
+    assert.equal(surface.state, "open");
+    assert.deepEqual(surface.closure_event_ids, []);
   });
 });
 

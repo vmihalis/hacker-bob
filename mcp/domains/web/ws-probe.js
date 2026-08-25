@@ -15,12 +15,17 @@ const {
 } = require("../../core/session/session-state-contracts.js");
 const {
   blockInternalHostsRequestPolicy,
+  composeBlockInternalHostsPolicy,
 } = require("../../core/session/session-state-store.js");
 const {
   assertBlockInternalHostsCompatibleWithEgress,
   resolveAndAssertSessionEgressIdentity,
   readStateSummary,
 } = require("../../core/session/session-state.js");
+const {
+  authorityContextTargetDomainMismatch,
+  getOrVerifySessionAuthorityContext,
+} = require("../../core/session/session-authority-context.js");
 const {
   safeUrlObject,
 } = require("../../core/url-surface.js");
@@ -514,9 +519,20 @@ async function wsProbe(args) {
     });
   }
 
-  const internalHostPolicy = blockInternalHostsRequestPolicy(targetDomain, args, {
-    allowMissingSession: true,
-  });
+  // One frozen per-call session-authority context, identical binding to
+  // http-scan.js's httpScan(): every downstream axis (block_internal_hosts floor,
+  // bound egress_identity) is read from this captured context rather than a second,
+  // independently-timed state.json/nucleus read. Missing/unverifiable session
+  // degrades to the pre-existing allowMissingSession fallback.
+  let authorityContext = null;
+  try {
+    authorityContext = getOrVerifySessionAuthorityContext(targetDomain);
+  } catch (_error) {
+    authorityContext = null;
+  }
+  const internalHostPolicy = authorityContext
+    ? composeBlockInternalHostsPolicy(authorityContext.block_internal_hosts_policy, args)
+    : blockInternalHostsRequestPolicy(targetDomain, args, { allowMissingSession: true });
   const blockInternalHosts = internalHostPolicy.block_internal_hosts === true;
   const internalHostContext = blockInternalHostsPolicyFields(internalHostPolicy);
   const parsedUrl = safeUrlObject(httpEquivUrl);
@@ -561,6 +577,25 @@ async function wsProbe(args) {
     });
   };
 
+  // Defensive parity check, identical rationale to httpScan()'s: structurally
+  // unreachable given getOrVerifySessionAuthorityContext's own domain-match cache
+  // rule, kept as an explicit assertion so no WS connection is ever attempted under a
+  // stale domain's policy/egress identity.
+  if (authorityContextTargetDomainMismatch(authorityContext, targetDomain)) {
+    const message = `session authority context target_domain mismatch: context is bound to ${authorityContext.target_domain}, request targets ${targetDomain}`;
+    audit({
+      status: null,
+      error: message,
+      scope_decision: "blocked",
+    });
+    return JSON.stringify({
+      error: message,
+      scope_decision: "blocked",
+      ...egressContext,
+      ...internalHostContext,
+    });
+  }
+
   let initialScopeDecision = null;
   try {
     initialScopeDecision = assertSafeRequestUrl(httpEquivUrl, targetDomain, { blockInternalHosts });
@@ -584,6 +619,7 @@ async function wsProbe(args) {
   try {
     const { profile, identity } = resolveAndAssertSessionEgressIdentity(targetDomain, requestedEgressProfile, {
       source: "bob_ws_probe",
+      authorityContext,
     });
     resolvedProfile = profile;
     egressContext = identity;

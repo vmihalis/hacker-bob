@@ -11,6 +11,9 @@ const {
 const {
   PHYSICAL_CAPABILITY_PACK_ADAPTERS,
 } = require("./capability-pack-runtime-ports.js");
+const {
+  CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+} = require("../validity/class-ids.js");
 
 // Capability pack manifest. Each pack is the single source of truth for:
 //   id              — string used in surface-routes.json and findings.jsonl
@@ -1108,6 +1111,66 @@ function normalizeBugClassKey(bugClass) {
     : "";
 }
 
+const CONTROL_VALIDITY_CLASS_BY_BUG_CLASS = Object.freeze({
+  access_control: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  auth_bypass: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  authorization_bypass: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  broken_access_control: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  broken_object_level_authorization: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  cwe_639: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  idor: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  missing_authorization: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  missing_authz: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  object_authorization: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  object_level_authorization: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  privilege_escalation: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  unauth_succeeds_where_auth_blocked: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+});
+
+// Closure fan-out is fail-closed for genuinely unknown autonomous classes, but
+// it still recognizes the legacy, registry-owned classes Bob already routes.
+// This is a routing registry, not closure authority: only a deterministic
+// proof-mode can certify a finding.
+const REGISTERED_CLOSURE_BUG_CLASS_KEYS = Object.freeze(Array.from(new Set([
+  ...Object.keys(BUG_CLASS_SURFACE_APPLICABILITY),
+  ...Object.keys(CONTROL_VALIDITY_CLASS_BY_BUG_CLASS),
+  "asan",
+  "ubsan",
+  "msan",
+  "raw_corpus",
+  "value_profile",
+  "cmplog",
+  "ssrf",
+  "ssti",
+  "replay",
+  "cross_chain",
+  "cross_chain_replay",
+  "identity_handoff",
+  "cross_stack_identity",
+  "value_flow",
+  "trust_boundary",
+  "state_consistency",
+  "oracle_manipulation",
+  "staleness",
+  "message_forgery",
+  "validate_vs_consume",
+  "cwe_120",
+  "memory_safety",
+  "length_field",
+  "bound_check_site",
+  "pull_request_target",
+  "github_token",
+])));
+
+function controlValidityClassForBugClass(bugClass) {
+  const key = normalizeBugClassKey(bugClass);
+  return CONTROL_VALIDITY_CLASS_BY_BUG_CLASS[key] || null;
+}
+
+function isBugClassRegisteredForClosure(bugClass) {
+  return REGISTERED_CLOSURE_BUG_CLASS_KEYS.includes(normalizeBugClassKey(bugClass));
+}
+
 // Broad surface class ("web" | "smart_contract" | "oss") for a surface's
 // metadata, mirroring packIdForSurfaceMetadata's honor-then-classify order.
 // Returns null (-> fail open) on any unknown/throwing classification.
@@ -1198,9 +1261,11 @@ module.exports = {
   capabilityPackForLegacyFinding,
   chainSpecificEvaluatorBundles,
   classifySurfaceCapability,
+  controlValidityClassForBugClass,
   deriveConfidenceAdjustment,
   dispatchableCapabilityPacks,
   isBugClassRelevantForSurface,
+  isBugClassRegisteredForClosure,
   isCapabilityPackDispatchable,
   isPhysicalSurfaceMetadata,
   isOssSurfaceMetadata,

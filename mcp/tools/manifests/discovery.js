@@ -1,6 +1,6 @@
 "use strict";
 
-module.exports = Object.freeze([
+const discoveryBeforePhysicalClaimTools = Object.freeze([
   require("../web/http-scan.js"),
   require("../web/bob-http-confirm.js"),
   require("../web/bob-http-cors-confirm.js"),
@@ -31,6 +31,29 @@ module.exports = Object.freeze([
   require("../repo/ingest-sarif.js"),
   require("../repo/read-static-analysis-index.js"),
   require("../record-candidate-claim.js"),
+]);
+
+const discoveryAfterPhysicalClaimTools = Object.freeze([
   require("../read-candidate-claims.js"),
   require("../list-candidate-claims.js"),
 ]);
+
+const discoveryTools = [
+  ...discoveryBeforePhysicalClaimTools,
+  ...discoveryAfterPhysicalClaimTools,
+];
+
+Object.defineProperty(discoveryTools, "discoveryBeforePhysicalClaimTools", {
+  value: discoveryBeforePhysicalClaimTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+Object.defineProperty(discoveryTools, "discoveryAfterPhysicalClaimTools", {
+  value: discoveryAfterPhysicalClaimTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+
+module.exports = Object.freeze(discoveryTools);

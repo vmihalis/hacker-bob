@@ -20,7 +20,6 @@ const {
 } = require("../../core/verification/verification-contracts.js");
 const {
   sessionDir,
-  sessionNucleusPath,
   physicalSessionBootstrapPath,
 } = require("../../core/io/paths.js");
 const {
@@ -28,22 +27,18 @@ const {
   withSessionLock,
 } = require("../../core/io/storage.js");
 const {
-  writeJsonDocument,
-} = require("../../core/io/storage.js");
-const {
   buildInitialSessionState,
   publicSessionState,
 } = require("../../core/session/session-state-contracts.js");
 const {
   readSessionStateStrict,
-  writeSessionStateDocument,
 } = require("../../core/session/session-state-store.js");
-const {
-  appendSessionEvent,
-} = require("../../core/session/session-events.js");
 const {
   safeAppendPipelineEventDirect,
 } = require("../../core/telemetry/pipeline-events.js");
+const {
+  commitSessionAuthority,
+} = require("../../core/session/session-authority-unit-of-work.js");
 const {
   ensureHandoffSigningKey,
   ensureHandoffKeypair,
@@ -319,25 +314,30 @@ function createPhysicalBootstrap(identity) {
   // later failure leaves authority fail-closed until an operator recovery path
   // can reconcile the exact replay reservation.
   writePhysicalSessionBootstrapJournal(identity.target_domain, pending);
-  writeJsonDocument(sessionNucleusPath(identity.target_domain), nucleus);
-  writeSessionStateDocument(identity.target_domain, {}, state);
+  commitSessionAuthority({
+    targetDomain: identity.target_domain,
+    nextNucleus: nucleus,
+    stateProjection: {
+      rawDocument: {},
+      nextState: state,
+    },
+    event: {
+      kind: "governance.session.initialized",
+      payload: {
+        bootstrap_kind: "physical_only",
+        nucleus_hash: nucleus.nucleus_hash,
+        scope_policy_hash: pending.scope_policy_hash,
+        egress_identity_hash: hashCanonicalJson(nucleus.egress_identity),
+        auth_context_hash: hashCanonicalJson(nucleus.auth_context),
+        operator_constraint_hash: hashCanonicalJson(nucleus.operator_constraint),
+        physical_scope_axis_digest: physicalScope.axis_digest,
+      },
+      source: { artifact: "physical-session-bootstrap.json", tool: "bob_init_physical_session" },
+    },
+    expectedNucleusHash: null,
+  });
   ensureHandoffSigningKey(identity.target_domain);
   ensureHandoffKeypair(identity.target_domain);
-  appendSessionEvent({
-    target_domain: identity.target_domain,
-    kind: "governance.session.initialized",
-    nucleus_hash: nucleus.nucleus_hash,
-    payload: {
-      bootstrap_kind: "physical_only",
-      nucleus_hash: nucleus.nucleus_hash,
-      scope_policy_hash: pending.scope_policy_hash,
-      egress_identity_hash: hashCanonicalJson(nucleus.egress_identity),
-      auth_context_hash: hashCanonicalJson(nucleus.auth_context),
-      operator_constraint_hash: hashCanonicalJson(nucleus.operator_constraint),
-      physical_scope_axis_digest: physicalScope.axis_digest,
-    },
-    source: { artifact: "physical-session-bootstrap.json", tool: "bob_init_physical_session" },
-  });
   safeAppendPipelineEventDirect(identity.target_domain, "session_started", {
     lifecycle_state: "SETUP",
     source: "bob_init_physical_session",

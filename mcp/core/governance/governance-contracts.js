@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   AUTH_STATUS_VALUES,
+  LIFECYCLE_STATE_VALUES,
 } = require("../session/session-state-vocabulary.js");
 const {
   assertBoolean,
@@ -37,14 +38,6 @@ const {
 } = require("../session/physical-scope-axis-contract.js");
 
 const GOVERNANCE_VERSION = 1;
-const LIFECYCLE_STATE_VALUES = Object.freeze([
-  "SETUP",
-  "OPEN_FRONTIER",
-  "CLAIM_FREEZE",
-  "VERIFY",
-  "GRADE",
-  "REPORT",
-]);
 
 function normalizeLifecycleState(value, fieldName = "lifecycle_state") {
   return assertEnumValue(value == null ? "SETUP" : value, LIFECYCLE_STATE_VALUES, fieldName);
@@ -327,7 +320,7 @@ function buildSessionNucleus(input) {
   return withDocumentHash(nucleus, "nucleus_hash");
 }
 
-function sessionNucleusFromState(state) {
+function sessionNucleusFromState(state, carriedAxes = {}) {
   if (state == null || typeof state !== "object" || Array.isArray(state)) {
     throw new Error("state must be an object");
   }
@@ -378,6 +371,8 @@ function sessionNucleusFromState(state) {
   }
   if (state.repo_hash != null) {
     args.repo_hash = state.repo_hash;
+  } else if (carriedAxes.repo_hash != null) {
+    args.repo_hash = carriedAxes.repo_hash;
   }
   if (Array.isArray(state.target_contracts) && state.target_contracts.length > 0) {
     args.target_contracts = state.target_contracts;
@@ -387,6 +382,8 @@ function sessionNucleusFromState(state) {
   }
   if (state.physical_scope != null) {
     args.physical_scope = state.physical_scope;
+  } else if (carriedAxes.physical_scope != null) {
+    args.physical_scope = carriedAxes.physical_scope;
   }
   return buildSessionNucleus(args);
 }

@@ -36,6 +36,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_aptos_fetch_resource: "smart_contract_contextual",
   bob_aptos_run: "smart_contract_contextual",
   bob_attach_contract: "initialized_session_mutation",
+  bob_compile_contract_binding: "initialized_session_mutation",
   bob_auth_store: "initialized_session_mutation",
   bob_auto_signup: "scoped_http_network",
   bob_browser_click: "initialized_session_mutation",

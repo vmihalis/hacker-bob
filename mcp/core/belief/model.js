@@ -25,6 +25,26 @@ const {
 } = require("./recalibration.js");
 
 const BELIEF_MODEL_VERSION = "belief-calibrated-factors.v1";
+const LEARNED_SEMANTIC_MEASUREMENT_VERSION = "learned-semantic-measurement.v1";
+const LEARNED_SEMANTIC_MEASUREMENT_KIND = "learned_semantic_measurement";
+const LEARNED_SEMANTIC_MEASUREMENT_PROOF_MODE = "learned_measurement_advisory_v1";
+const LEARNED_SEMANTIC_CLASS_VALUES = Object.freeze([
+  "harmful_uplift",
+  "system_policy_disclosure",
+  "unplanted_pii",
+  "nuanced_rendered_content",
+]);
+const LEARNED_MEASUREMENT_ADMITTED = "admitted_advisory_measurement";
+const LEARNED_MEASUREMENT_NEVER_CLOSES = "learned_measurement_never_closes";
+const LEARNED_MEASUREMENT_HOLD_UNKNOWN_CLASS = "unknown_class_hold";
+const LEARNED_MEASUREMENT_HOLD_SOFT_SOURCE = "soft_or_generated_source_hold";
+const LEARNED_MEASUREMENT_HOLD_UNSIGNED_CAPTURE = "unsigned_or_unverified_capture_hold";
+const LEARNED_MEASUREMENT_HOLD_UNPINNED_JUDGE = "judge_identity_unpinned_hold";
+const LEARNED_MEASUREMENT_HOLD_CALIBRATION = "calibration_not_admissible_hold";
+const LEARNED_MEASUREMENT_HOLD_EXPIRED = "judge_expired_hold";
+const LEARNED_MEASUREMENT_HOLD_SHIFT = "ood_or_drift_shift_hold";
+const LEARNED_MEASUREMENT_HOLD_ABSTAIN = "judge_abstained_hold";
+const LEARNED_MEASUREMENT_HOLD_INVALID_SCORE = "invalid_score_hold";
 const FEATURE_NAMES = Object.freeze([
   "bias",
   "causal_support_present",
@@ -117,6 +137,204 @@ function normalizeOptionalModelId(value) {
     throw new Error("model_id must be 1-80 chars of letters, digits, dot, underscore, colon, or hyphen");
   }
   return trimmed;
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeRequiredText(value, fieldName) {
+  if (!nonEmptyString(value)) throw new Error(`${fieldName} must be a non-empty string`);
+  return value.trim();
+}
+
+function normalizeOptionalText(value) {
+  return nonEmptyString(value) ? value.trim() : null;
+}
+
+function isHex64(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function normalizeHex64(value, fieldName) {
+  if (!isHex64(value)) throw new Error(`${fieldName} must be a 64-hex content digest`);
+  return value.toLowerCase();
+}
+
+function normalizeTimestamp(value, fieldName) {
+  const text = normalizeRequiredText(value, fieldName);
+  const ms = Date.parse(text);
+  if (!Number.isFinite(ms)) throw new Error(`${fieldName} must be an ISO timestamp`);
+  return new Date(ms).toISOString();
+}
+
+function timestampMsOrNull(value) {
+  if (!nonEmptyString(value)) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function learnedMeasurementHoldReason(admissionReasons) {
+  return admissionReasons.length > 0 ? admissionReasons[0] : LEARNED_MEASUREMENT_NEVER_CLOSES;
+}
+
+function buildLearnedSemanticMeasurement({
+  target_domain,
+  measurement_id,
+  class_id,
+  source_authority = "instrument",
+  captured_output = {},
+  judge = {},
+  calibration = {},
+  invocation = {},
+  result = {},
+} = {}) {
+  const targetDomain = assertSafeDomain(normalizeRequiredText(target_domain, "target_domain"));
+  const normalizedClass = normalizeOptionalText(class_id);
+  const observedAt = normalizeTimestamp(invocation.observed_at, "invocation.observed_at");
+  const validFromMs = timestampMsOrNull(calibration.valid_from);
+  const validUntilMs = timestampMsOrNull(calibration.valid_until);
+  const observedMs = Date.parse(observedAt);
+  const sourceAuthority = normalizeOptionalText(source_authority) || "instrument";
+  const score = Number(result.score);
+
+  const admissionReasons = [];
+  if (!LEARNED_SEMANTIC_CLASS_VALUES.includes(normalizedClass)) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_UNKNOWN_CLASS);
+  }
+  if (sourceAuthority !== "instrument") {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_SOFT_SOURCE);
+  }
+  if (captured_output.row_mac_verified !== true) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_UNSIGNED_CAPTURE);
+  }
+  if (
+    !nonEmptyString(judge.judge_id)
+    || !nonEmptyString(judge.version)
+    || !isHex64(judge.model_digest)
+    || !isHex64(judge.runtime_digest)
+    || !isHex64(judge.config_digest)
+  ) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_UNPINNED_JUDGE);
+  }
+  if (
+    !nonEmptyString(calibration.issuer)
+    || !isHex64(calibration.certificate_digest)
+    || !isHex64(calibration.labels_digest)
+    || calibration.independent_labels !== true
+    || calibration.ood_adversarial_passed !== true
+    || calibration.drift_check_passed !== true
+    || !Array.isArray(calibration.coverage_class_ids)
+    || !calibration.coverage_class_ids.includes(normalizedClass)
+  ) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_CALIBRATION);
+  }
+  if (
+    validFromMs === null
+    || validUntilMs === null
+    || observedMs < validFromMs
+    || observedMs >= validUntilMs
+  ) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_EXPIRED);
+  }
+  if (result.ood === true || result.shifted === true) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_SHIFT);
+  }
+  if (result.abstain === true) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_ABSTAIN);
+  }
+  if (!Number.isFinite(score) || score < 0 || score > 1) {
+    admissionReasons.push(LEARNED_MEASUREMENT_HOLD_INVALID_SCORE);
+  }
+
+  const rowBody = {
+    kind: LEARNED_SEMANTIC_MEASUREMENT_KIND,
+    measurement_version: LEARNED_SEMANTIC_MEASUREMENT_VERSION,
+    proof_mode: LEARNED_SEMANTIC_MEASUREMENT_PROOF_MODE,
+    measurement_id: normalizeOptionalText(measurement_id)
+      || `LM-${hashCanonicalJson({
+        targetDomain,
+        normalizedClass,
+        captured_output_hash: captured_output.content_hash,
+        judge_id: judge.judge_id,
+        observedAt,
+      }).slice(0, 24)}`,
+    target_domain: targetDomain,
+    class_id: normalizedClass || "unknown",
+    captured_output_ref: {
+      artifact_ref: normalizeRequiredText(captured_output.artifact_ref, "captured_output.artifact_ref"),
+      content_hash: normalizeHex64(captured_output.content_hash, "captured_output.content_hash"),
+      row_mac_verified: captured_output.row_mac_verified === true,
+    },
+    judge: {
+      judge_id: normalizeOptionalText(judge.judge_id),
+      version: normalizeOptionalText(judge.version),
+      model_digest: isHex64(judge.model_digest) ? judge.model_digest.toLowerCase() : null,
+      runtime_digest: isHex64(judge.runtime_digest) ? judge.runtime_digest.toLowerCase() : null,
+      config_digest: isHex64(judge.config_digest) ? judge.config_digest.toLowerCase() : null,
+    },
+    calibration: {
+      issuer: normalizeOptionalText(calibration.issuer),
+      certificate_digest: isHex64(calibration.certificate_digest) ? calibration.certificate_digest.toLowerCase() : null,
+      labels_digest: isHex64(calibration.labels_digest) ? calibration.labels_digest.toLowerCase() : null,
+      independent_labels: calibration.independent_labels === true,
+      coverage_class_ids: Array.isArray(calibration.coverage_class_ids)
+        ? calibration.coverage_class_ids.filter((item) => LEARNED_SEMANTIC_CLASS_VALUES.includes(item)).sort()
+        : [],
+      valid_from: normalizeOptionalText(calibration.valid_from),
+      valid_until: normalizeOptionalText(calibration.valid_until),
+      ood_adversarial_passed: calibration.ood_adversarial_passed === true,
+      drift_check_passed: calibration.drift_check_passed === true,
+    },
+    invocation: {
+      observed_at: observedAt,
+      context_digest: isHex64(invocation.context_digest) ? invocation.context_digest.toLowerCase() : null,
+    },
+    result: {
+      score: Number.isFinite(score) ? Number(score.toFixed(6)) : null,
+      abstain: result.abstain === true,
+      ood: result.ood === true,
+      shifted: result.shifted === true,
+      label: normalizeOptionalText(result.label),
+    },
+    admission: {
+      admissible: admissionReasons.length === 0,
+      reason: admissionReasons.length === 0 ? LEARNED_MEASUREMENT_ADMITTED : admissionReasons[0],
+      hold_reasons: admissionReasons,
+    },
+    closure_decision: {
+      close: false,
+      disposition: "HOLD",
+      reason: learnedMeasurementHoldReason(admissionReasons),
+      independent_registered_proof_required: true,
+    },
+    advisory: true,
+    claim_authority: false,
+    verification_authority: false,
+    grade_authority: false,
+    dispatch_authority: false,
+    closure_authority: false,
+    generated_hypothesis_authority: false,
+  };
+  const signatureContext = {
+    measurement_version: rowBody.measurement_version,
+    proof_mode: rowBody.proof_mode,
+    target_domain: rowBody.target_domain,
+    class_id: rowBody.class_id,
+    captured_output_hash: rowBody.captured_output_ref.content_hash,
+    captured_output_row_mac_verified: rowBody.captured_output_ref.row_mac_verified,
+    judge_model_digest: rowBody.judge.model_digest,
+    judge_runtime_digest: rowBody.judge.runtime_digest,
+    judge_config_digest: rowBody.judge.config_digest,
+    calibration_certificate_digest: rowBody.calibration.certificate_digest,
+    calibration_labels_digest: rowBody.calibration.labels_digest,
+    observed_at: rowBody.invocation.observed_at,
+  };
+  return Object.freeze({
+    ...rowBody,
+    signature_context_hash: hashCanonicalJson(signatureContext),
+    measurement_hash: hashCanonicalJson(rowBody),
+  });
 }
 
 function examplesForDomain(domain) {
@@ -323,9 +541,26 @@ function readBeliefModelInfo({ target_domain } = {}) {
 module.exports = {
   BELIEF_MODEL_VERSION,
   FEATURE_NAMES,
+  LEARNED_MEASUREMENT_ADMITTED,
+  LEARNED_MEASUREMENT_HOLD_ABSTAIN,
+  LEARNED_MEASUREMENT_HOLD_CALIBRATION,
+  LEARNED_MEASUREMENT_HOLD_EXPIRED,
+  LEARNED_MEASUREMENT_HOLD_INVALID_SCORE,
+  LEARNED_MEASUREMENT_HOLD_SHIFT,
+  LEARNED_MEASUREMENT_HOLD_SOFT_SOURCE,
+  LEARNED_MEASUREMENT_HOLD_UNKNOWN_CLASS,
+  LEARNED_MEASUREMENT_HOLD_UNPINNED_JUDGE,
+  LEARNED_MEASUREMENT_HOLD_UNSIGNED_CAPTURE,
+  LEARNED_MEASUREMENT_NEVER_CLOSES,
+  LEARNED_SEMANTIC_CLASS_VALUES,
+  LEARNED_SEMANTIC_MEASUREMENT_KIND,
+  LEARNED_SEMANTIC_MEASUREMENT_PROOF_MODE,
+  LEARNED_SEMANTIC_MEASUREMENT_VERSION,
+  buildLearnedSemanticMeasurement,
   readBeliefModelInfo,
   trainBeliefModel,
   _internals: {
+    buildLearnedSemanticMeasurement,
     examplesForDomain,
     featureVector,
     handScore,

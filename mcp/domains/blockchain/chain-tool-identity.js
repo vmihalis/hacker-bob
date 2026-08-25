@@ -1,42 +1,43 @@
 "use strict";
 
-const { readSessionStateStrict } = require("../../core/session/session-state-store.js");
+const {
+  getOrVerifySessionAuthorityContext,
+  nucleusFileExists,
+} = require("../../core/session/session-authority-context.js");
 
-// Thin, pure-read accessor for a future pre-handler chain-authority gate.
-// Loads the strict session state (fail-closed on missing/malformed) and
-// surfaces the canonical chain-identity context. No mutation, no disk writes.
+// Verified-nucleus-first accessor for the pre-handler chain-authority gate
+// (session-authority.js's authorizeChainScope). No mutation, no fallback to
+// raw state.json shape.
 //
-// target_contracts and chain_authority_hash are read state-first, raw-second:
-// normalizeSessionStateDocument is an allowlist that currently drops these
-// unknown fields, so reading raw keeps them visible while the state-first
-// check stays correct if the normalizer later adopts them.
+// A state-only legacy session (no session-nucleus.json yet) returns an empty
+// contracts context -- the gate's "!target_contracts.length -> return null"
+// branch then falls through to authorizeSessionBound's exact legacy carveout
+// instead of independently granting from raw state.
+//
+// A present nucleus is resolved through getOrVerifySessionAuthorityContext
+// (descriptor-pinned, tamper-evident, verified-nucleus-first) with NO
+// fallback: an unverifiable (missing, tampered, symlinked, corrupt) nucleus
+// propagates as a throw, which the caller must hard-fail on, never swallow
+// into a silent grant. This is the ONLY call path onto the nucleus-derived
+// chain tuple set -- deriveChainTuplesFromNucleus itself is invoked exactly
+// once, inside session-authority-context.js's buildSessionAuthorityContext,
+// so the context's chain_tuples field (deep-frozen there) is reused verbatim
+// here rather than re-derived a second time.
 function sessionChainContext(targetDomain) {
-  const { raw, state } = readSessionStateStrict(targetDomain);
-
-  const target_domain = state.target;
-
-  let target_contracts;
-  if (Array.isArray(state.target_contracts)) {
-    target_contracts = state.target_contracts.slice();
-  } else if (raw && Array.isArray(raw.target_contracts)) {
-    target_contracts = raw.target_contracts.slice();
-  } else {
-    target_contracts = [];
+  if (!nucleusFileExists(targetDomain)) {
+    return Object.freeze({
+      target_domain: targetDomain,
+      target_contracts: [],
+      chain_authority_hash: null,
+    });
   }
 
-  let chain_authority_hash;
-  if (typeof state.chain_authority_hash === "string") {
-    chain_authority_hash = state.chain_authority_hash;
-  } else if (raw && typeof raw.chain_authority_hash === "string") {
-    chain_authority_hash = raw.chain_authority_hash;
-  } else {
-    chain_authority_hash = null;
-  }
+  const context = getOrVerifySessionAuthorityContext(targetDomain);
 
   return Object.freeze({
-    target_domain,
-    target_contracts,
-    chain_authority_hash,
+    target_domain: context.target_domain,
+    target_contracts: context.chain_tuples,
+    chain_authority_hash: context.chain_authority_hash,
   });
 }
 

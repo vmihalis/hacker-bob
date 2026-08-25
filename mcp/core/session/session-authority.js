@@ -6,6 +6,7 @@ const {
   ToolError,
 } = require("../io/envelope.js");
 const {
+  sessionNucleusPath,
   statePath,
 } = require("../io/paths.js");
 const {
@@ -47,6 +48,11 @@ const {
 const {
   sessionNucleusFromState,
 } = require("../governance/index.js");
+const {
+  LEGACY_MIGRATION_ONLY_TOOL,
+  LEGACY_PROJECTION_READ_TOOLS,
+  deriveAxesFromNucleus,
+} = require("./session-authority-context.js");
 
 const AUTHORITY_VERSION = 1;
 const AUTHORITY_MODE_ENV = "BOB_SESSION_AUTHORITY_MODE";
@@ -73,6 +79,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_aptos_fetch_resource: "smart_contract_contextual",
   bob_aptos_run: "smart_contract_contextual",
   bob_attach_contract: "initialized_session_mutation",
+  bob_compile_contract_binding: "initialized_session_mutation",
   bob_auth_store: "initialized_session_mutation",
   bob_auto_signup: "scoped_http_network",
   bob_browser_click: "initialized_session_mutation",
@@ -703,6 +710,48 @@ function assertLegacyFailClosedFields(raw, rule, args, authorityTargetDomain) {
   }
 }
 
+// Resolves the verified-nucleus half of authority for a non-physical axis
+// (physical has its own dedicated journal-backed check above). Returns
+// { nucleus: null, legacy: true } when session-nucleus.json does not exist
+// yet (a state-only legacy session predating nucleus binding) -- the caller
+// applies the exact carveout for that case. When the nucleus file exists it
+// MUST verify (tamper-evident: single-link, non-symlink, self-consistent
+// hash) or the call hard-fails with no fallback to the raw state read. Axis
+// identity is then read EXCLUSIVELY off this verified nucleus -- the raw
+// state read above is never consulted for axis purposes, so a raw-state
+// field can no longer forge or widen an axis regardless of what it says.
+function resolveModernAuthorityNucleus(authorityTargetDomain, rule, args) {
+  try {
+    fs.lstatSync(sessionNucleusPath(authorityTargetDomain));
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return { nucleus: null, legacy: true };
+    }
+    throw blockedDecision(rule, args, {
+      errorCode: "nucleus_unverifiable",
+      envelopeCode: ERROR_CODES.STATE_CONFLICT,
+      message: `Session nucleus could not be inspected for ${authorityTargetDomain}`,
+      authorityTargetDomain,
+      sessionPresent: true,
+      match: false,
+    });
+  }
+  let verifiedNucleus;
+  try {
+    verifiedNucleus = readVerifiedSessionNucleus(authorityTargetDomain);
+  } catch (error) {
+    throw blockedDecision(rule, args, {
+      errorCode: "nucleus_unverifiable",
+      envelopeCode: ERROR_CODES.STATE_CONFLICT,
+      message: `Session nucleus is present but unverifiable for ${authorityTargetDomain}: ${error.message || String(error)}`,
+      authorityTargetDomain,
+      sessionPresent: true,
+      match: false,
+    });
+  }
+  return { nucleus: verifiedNucleus, legacy: false };
+}
+
 function readRawAuthorityState(authorityTargetDomain, rule, args) {
   const filePath = statePath(authorityTargetDomain);
   if (!fs.existsSync(filePath)) {
@@ -966,7 +1015,17 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
     });
   }
 
-  return raw;
+  // Physical authority already verified its nucleus (+ journal parity) above
+  // -- that is its documented recovery-exemption path and the only one. Every
+  // other axis (url/repo/contracts) resolves its verified nucleus here: an
+  // unverifiable (tampered/symlinked/corrupt) present nucleus always hard-
+  // fails, and an absent nucleus is the exact state-only legacy case the
+  // caller carves out for a fixed, non-per-tool allowlist.
+  const { nucleus, legacy } = isPhysicalAuthority
+    ? { nucleus: physicalNucleus, legacy: false }
+    : resolveModernAuthorityNucleus(authorityTargetDomain, rule, args);
+
+  return { raw, nucleus, legacy };
 }
 
 function normalizeRepoBootstrapTarget(rule, args) {
@@ -1173,24 +1232,59 @@ function authorizeBootstrap(rule, args) {
 
 function authorizeSessionBound(tool, rule, args) {
   const authorityTargetDomain = normalizeArgumentTarget(rule, args);
-  let raw;
+  let nucleus;
+  let legacy;
   try {
-    raw = readRawAuthorityState(authorityTargetDomain, rule, args);
+    ({ nucleus, legacy } = readRawAuthorityState(authorityTargetDomain, rule, args));
   } catch (error) {
     const shadow = shadowDecision(error, tool, rule);
     if (shadow) return shadow;
     throw error;
   }
-  const physicalOnly = raw && raw.physical_scope != null
-    && raw.target_url == null
-    && raw.target_repo == null
-    && (!Array.isArray(raw.target_contracts) || raw.target_contracts.length === 0);
-  const currentAxes = [
-    raw && raw.target_url != null ? "url" : null,
-    raw && raw.target_repo != null ? "repo" : null,
-    raw && Array.isArray(raw.target_contracts) && raw.target_contracts.length > 0 ? "contracts" : null,
-    raw && raw.physical_scope != null ? "physical" : null,
-  ].filter(Boolean);
+
+  if (legacy) {
+    // State-only legacy session: no session-nucleus.json exists yet. The
+    // carveout is EXACT and fixed -- not per-tool special-casing -- because
+    // every session-bound tool funnels through this one function: only the
+    // two A6L projection reads and the migration-only advance are admitted,
+    // with no axes/effect context attached to any of them.
+    const toolName = tool && tool.name;
+    if (LEGACY_PROJECTION_READ_TOOLS.includes(toolName)) {
+      return allowedDecision(rule, args, {
+        authorityTargetDomain,
+        source: "legacy_state_projection",
+        sessionPresent: true,
+        match: true,
+      });
+    }
+    if (toolName === LEGACY_MIGRATION_ONLY_TOOL) {
+      return allowedDecision(rule, args, {
+        authorityTargetDomain,
+        source: "legacy_migration_only",
+        sessionPresent: true,
+        match: true,
+      });
+    }
+    throw blockedDecision(rule, args, {
+      errorCode: "legacy_session_axis_carveout",
+      envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+      message: `${toolName} requires a verified session nucleus; ${authorityTargetDomain} is a state-only legacy session with no nucleus binding. Call bob_advance_session or reinitialize to migrate.`,
+      authorityTargetDomain,
+      sessionPresent: true,
+      match: false,
+    });
+  }
+
+  const scopePolicy = nucleus && nucleus.scope_policy;
+  const physicalOnly = nucleus && nucleus.physical_scope != null
+    && (!scopePolicy || scopePolicy.target_url == null)
+    && (!scopePolicy || scopePolicy.target_repo == null)
+    && (!scopePolicy || !Array.isArray(scopePolicy.target_contracts) || scopePolicy.target_contracts.length === 0);
+  // Axes are derived EXCLUSIVELY from the verified nucleus (never raw
+  // state.json shape, never target_domain slug pattern-matching) -- a custom
+  // operator-supplied repo/contracts slug still resolves correctly because it
+  // is nucleus content, not the slug string, that drives this list.
+  const currentAxes = deriveAxesFromNucleus(nucleus);
   const requiredAxes = tool && Array.isArray(tool.required_session_axes)
     ? tool.required_session_axes
     : [];
@@ -1288,7 +1382,9 @@ const CHAIN_SCOPE_TUPLE_BY_TOOL = Object.freeze({
 // different address) requires provenance, and provenance detection is not wired,
 // so the gate passes provenanced:false and a same-chain different-address read
 // is blocked and surfaces as a reported scope gap. The gate reads the bound set
-// only through sessionChainContext and tests membership only through
+// only through sessionChainContext (verified-nucleus-first: a state-only
+// legacy session resolves to an empty set here rather than an independent
+// grant from raw state.json) and tests membership only through
 // isChainTupleInAuthority — no parallel normalization, no state writes.
 //
 // KNOWN LIMITATION — scoped verified source-fetch is DEPTH-1 by design (an
@@ -1317,13 +1413,25 @@ function authorizeChainScope(tool, rule, args) {
   // authority and must fall through to the existing class dispatch.
   if (!targetDomainPresent(args)) return null;
 
+  // sessionChainContext is verified-nucleus-first (chain-tool-identity.js): a
+  // state-only legacy session (no nucleus yet) returns an empty contracts
+  // context here, so ANY throw below means a present nucleus failed
+  // verification (missing/tampered/symlinked/corrupt). That must hard-fail,
+  // never fall back to raw state or silently re-route to the class dispatch
+  // -- the same no-fallback posture resolveModernAuthorityNucleus enforces
+  // for the url/repo/contracts axes.
   let ctx;
   try {
     ctx = sessionChainContext(args.target_domain);
-  } catch {
-    // A missing/malformed session is not this gate's failure to own: fall
-    // through and let the existing class dispatch produce the canonical error.
-    return null;
+  } catch (error) {
+    throw blockedDecision(rule, args, {
+      errorCode: "nucleus_unverifiable",
+      envelopeCode: ERROR_CODES.STATE_CONFLICT,
+      message: `Session nucleus is present but unverifiable for ${args.target_domain}: ${error.message || String(error)}`,
+      authorityTargetDomain: args.target_domain,
+      sessionPresent: true,
+      match: false,
+    });
   }
 
   if (!Array.isArray(ctx.target_contracts) || ctx.target_contracts.length === 0) {

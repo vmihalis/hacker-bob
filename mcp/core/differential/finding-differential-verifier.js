@@ -1,6 +1,8 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
+const path = require("path");
 
 // Web-standalone finding-differential verifier — the execution-graded, differential
 // gate that makes a standalone non-oracle finding (auth-bypass-not-via-IDOR, manual
@@ -33,6 +35,7 @@ const fs = require("fs");
 
 const {
   findingDifferentialVerifiedJsonlPath,
+  offensiveRunsDir,
   assertSafeDomain,
 } = require("../io/paths.js");
 const {
@@ -42,6 +45,9 @@ const {
 const {
   hashCanonicalJson,
 } = require("../verification/verification-contracts.js");
+const {
+  readVerifiedSessionNucleus,
+} = require("../governance/index.js");
 const {
   readOffensiveRunRecords,
 } = require("../claims/claims.js");
@@ -82,6 +88,25 @@ const CONTROL_BLOCKED_OUTCOMES = Object.freeze(new Set(["blocked_by_defense"]));
 // ORACLE_KIND_VALUES[0] / offensive-capture-writer OFFENSIVE_ROW_ORACLE_KINDS). The OOB
 // attribution gate below keys on it so it caps ONLY OOB positives, never a non-OOB differential.
 const OOB_ORACLE_KIND = "out_of_band_interaction";
+const SECOND_ORDER_REREAD_ORACLE_KIND = "second_order_reread";
+const SECOND_ORDER_REREAD_TOOL_ID = "bob_secondorder_reread";
+const OBSERVED_INVARIANT_CANARY_PROOF_MODE = "observed_invariant_canary_v1";
+const CANARY_EXTRACTOR_ID = "secondorder_reread_json_exact_leaf_v1";
+
+const OBSERVED_INVARIANT_CANARY_DESIGN = Object.freeze({
+  version: 1,
+  proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  extractor: CANARY_EXTRACTOR_ID,
+  source_ledger: SUPPORTED_LEDGER_OFFENSIVE_RUNS,
+  source_tool_id: SECOND_ORDER_REREAD_TOOL_ID,
+  source_oracle_kind: SECOND_ORDER_REREAD_ORACLE_KIND,
+  positive_outcome: POSITIVE_OUTCOME,
+  control_outcome: "blocked_by_defense",
+  closure_predicate: "positive exact parsed leaf contains Bob-minted canary and decoy is silent; separate reachable control proves its unreturned decoy is silent",
+  llm_verdict_allowed: false,
+});
+const OBSERVED_INVARIANT_CANARY_DESIGN_HASH = hashCanonicalJson(OBSERVED_INVARIANT_CANARY_DESIGN);
+const RUN_ID_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 
 // Hash the parts of an offensive row that constitute its executed identity, so two
 // rows that are byte-identical in their proof material (same target/command/outcome/
@@ -103,6 +128,205 @@ function offensiveRowHash(row) {
     demonstrated_severity: row.demonstrated_severity,
     surface_id: row.surface_id,
   });
+}
+
+function sha256Buffer(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function sha256Text(text) {
+  return crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
+}
+
+function readCaptureJson(domain, row, streamName) {
+  if (!RUN_ID_SEGMENT_RE.test(row.run_id || "")) {
+    throw new Error(`${streamName} capture has unsafe run_id`);
+  }
+  const field = `${streamName}_hash`;
+  if (typeof row[field] !== "string" || !/^[0-9a-f]{64}$/i.test(row[field])) {
+    throw new Error(`${streamName} capture hash is absent from signed row`);
+  }
+  const captureDir = offensiveRunsDir(domain);
+  const capturePath = path.join(captureDir, `${row.run_id}.${streamName}`);
+  let fd = null;
+  let bytes;
+  try {
+    const realDir = fs.realpathSync(captureDir);
+    const realPath = fs.realpathSync(capturePath);
+    if (path.dirname(realPath) !== realDir) {
+      throw new Error(`${streamName} capture escapes offensive-runs directory`);
+    }
+    fd = fs.openSync(realPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.nlink !== 1) {
+      throw new Error(`${streamName} capture must be a single-link regular file`);
+    }
+    bytes = fs.readFileSync(fd);
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+  const actualHash = sha256Buffer(bytes);
+  if (actualHash !== row[field].toLowerCase()) {
+    throw new Error(`${streamName} capture hash does not match signed row`);
+  }
+  try {
+    const parsed = JSON.parse(bytes.toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`${streamName} capture is not a JSON object`);
+    }
+    return parsed;
+  } catch (error) {
+    throw new Error(`${streamName} capture is not parseable canonical JSON: ${error.message || String(error)}`);
+  }
+}
+
+function requireTrue(value, reason) {
+  if (value !== true) throw new Error(reason);
+}
+
+function requireString(value, reason) {
+  if (typeof value !== "string" || !value) throw new Error(reason);
+  return value;
+}
+
+function requireSecondOrderCanaryProof({ targetDomain, findingId, surfaceId, positiveRow, controlRow, sessionNucleus }) {
+  if (positiveRow.tool_id !== SECOND_ORDER_REREAD_TOOL_ID || controlRow.tool_id !== SECOND_ORDER_REREAD_TOOL_ID) {
+    throw new Error("observed_invariant_canary_v1 requires both rows to come from bob_secondorder_reread");
+  }
+  if (positiveRow.oracle_kind !== SECOND_ORDER_REREAD_ORACLE_KIND || controlRow.oracle_kind !== SECOND_ORDER_REREAD_ORACLE_KIND) {
+    throw new Error("observed_invariant_canary_v1 requires both rows to carry oracle_kind second_order_reread");
+  }
+  for (const row of [positiveRow, controlRow]) {
+    if (row.target_domain !== targetDomain) throw new Error("second-order row target_domain does not match verifier domain");
+    if (row.surface_id !== surfaceId) throw new Error("second-order row surface_id does not match proof surface");
+    requireTrue(row.canary_minted_server_side, "second-order row must assert Bob-minted canary");
+    requireTrue(row.decoy_minted_server_side, "second-order row must assert Bob-minted decoy");
+    requireTrue(row.observation_endpoint_distinct_from_injection, "second-order row must bind distinct injection/observation endpoints");
+    requireTrue(row.reread_read_only, "second-order row must be a read-only re-read");
+    requireTrue(row.reread_channel_bob_controlled, "second-order row must be captured by Bob's re-read channel");
+  }
+  requireTrue(positiveRow.canary_present_exact_leaf, "positive row must assert exact parsed canary leaf");
+  requireTrue(positiveRow.decoy_absent, "positive row must assert decoy absence");
+  requireTrue(controlRow.decoy_absent_against_reachable_endpoint, "control row must assert decoy absence against a reachable endpoint");
+  requireTrue(controlRow.decoy_silent, "control row must assert decoy silence");
+
+  const positiveStdout = readCaptureJson(targetDomain, positiveRow, "stdout");
+  const positiveStderr = readCaptureJson(targetDomain, positiveRow, "stderr");
+  const controlStdout = readCaptureJson(targetDomain, controlRow, "stdout");
+  const controlStderr = readCaptureJson(targetDomain, controlRow, "stderr");
+
+  const canary = requireString(positiveStdout.canary, "positive capture must carry the Bob-minted canary");
+  const positiveDecoy = requireString(positiveStdout.decoy, "positive capture must carry the Bob-minted decoy");
+  const controlDecoy = requireString(controlStdout.decoy, "control capture must carry the Bob-minted decoy");
+  if (canary === positiveDecoy || canary === controlDecoy) {
+    throw new Error("canary must be distinct from decoy controls");
+  }
+  if (positiveStdout.bound_surface_id !== surfaceId || controlStdout.bound_surface_id !== surfaceId) {
+    throw new Error("capture surface does not match verifier surface");
+  }
+  if (positiveStdout.bound_observation_endpoint !== positiveRow.target
+      || controlStdout.bound_observation_endpoint !== controlRow.target) {
+    throw new Error("capture observation endpoint does not match signed row target");
+  }
+  if (positiveStdout.bound_injection_endpoint !== controlStdout.bound_injection_endpoint
+      || positiveStdout.bound_observation_endpoint !== controlStdout.bound_observation_endpoint) {
+    throw new Error("positive/control canary proof controls must share the same bound trajectory endpoints");
+  }
+  if (positiveStderr.canary_match !== "exact_leaf") {
+    throw new Error("positive stderr must record exact_leaf canary extraction");
+  }
+  if (positiveStderr.decoy_silent !== true || positiveStderr.reread_channel_bob_controlled !== true) {
+    throw new Error("positive stderr must record decoy silence over Bob-controlled channel");
+  }
+  if (controlStderr.decoy_match !== "none" || controlStderr.reread_channel_bob_controlled !== true) {
+    throw new Error("control stderr must record no decoy match over Bob-controlled channel");
+  }
+  const leafDepth = Number.isInteger(positiveStdout.canary_leaf_depth)
+    ? positiveStdout.canary_leaf_depth
+    : positiveStderr.canary_leaf_depth;
+  if (!Number.isInteger(leafDepth) || leafDepth < 0) {
+    throw new Error("positive capture must carry canary_leaf_depth");
+  }
+
+  const sessionNucleusRecord = sessionNucleus && typeof sessionNucleus === "object"
+    ? {
+      target_domain: sessionNucleus.target_domain || targetDomain,
+      nucleus_hash: sessionNucleus.nucleus_hash || null,
+      lifecycle_state: sessionNucleus.lifecycle_state || null,
+    }
+    : {
+      target_domain: targetDomain,
+      nucleus_hash: null,
+      lifecycle_state: null,
+    };
+  if (sessionNucleusRecord.target_domain !== targetDomain) {
+    throw new Error("session nucleus target_domain does not match canary proof domain");
+  }
+  if (typeof sessionNucleusRecord.nucleus_hash !== "string" || !sessionNucleusRecord.nucleus_hash) {
+    throw new Error("observed_invariant_canary_v1 requires a verified session nucleus hash");
+  }
+
+  const proof = {
+    version: 1,
+    proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+    design_hash: OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+    finding_id: findingId,
+    surface: {
+      surface_id: surfaceId,
+      observation_target: positiveRow.target,
+    },
+    session_nucleus: sessionNucleusRecord,
+    parsed_leaf: {
+      extractor: CANARY_EXTRACTOR_ID,
+      match: "exact_leaf",
+      canary_sha256: sha256Text(canary),
+      leaf_depth: leafDepth,
+      positive_stdout_hash: positiveRow.stdout_hash,
+      positive_stderr_hash: positiveRow.stderr_hash,
+    },
+    control_refs: [
+      {
+        role: "positive_canary_reread",
+        ledger: SUPPORTED_LEDGER_OFFENSIVE_RUNS,
+        row_id: positiveRow.run_id,
+        row_hash: offensiveRowHash(positiveRow),
+        stdout_hash: positiveRow.stdout_hash,
+        stderr_hash: positiveRow.stderr_hash,
+      },
+      {
+        role: "decoy_silent_control",
+        ledger: SUPPORTED_LEDGER_OFFENSIVE_RUNS,
+        row_id: controlRow.run_id,
+        row_hash: offensiveRowHash(controlRow),
+        stdout_hash: controlRow.stdout_hash,
+        stderr_hash: controlRow.stderr_hash,
+        decoy_sha256: sha256Text(controlDecoy),
+      },
+    ],
+  };
+  proof.proof_hash = hashCanonicalJson(proof);
+  return proof;
+}
+
+function canaryProofIsRequired({ requestedProofMode, positiveRow, controlRow, storedProofRecord = null }) {
+  if (requestedProofMode === OBSERVED_INVARIANT_CANARY_PROOF_MODE) return true;
+  if (storedProofRecord && storedProofRecord.proof_mode === OBSERVED_INVARIANT_CANARY_PROOF_MODE) return true;
+  return positiveRow.tool_id === SECOND_ORDER_REREAD_TOOL_ID
+    || controlRow.tool_id === SECOND_ORDER_REREAD_TOOL_ID
+    || positiveRow.oracle_kind === SECOND_ORDER_REREAD_ORACLE_KIND
+    || controlRow.oracle_kind === SECOND_ORDER_REREAD_ORACLE_KIND;
+}
+
+function assertKnownProofMode(value) {
+  if (value == null) return null;
+  if (value === OBSERVED_INVARIANT_CANARY_PROOF_MODE) return value;
+  throw new Error(`unknown proof_mode ${value}; refusing to fall back to generic web differential`);
+}
+
+function resolveSessionNucleusForCanary(targetDomain) {
+  return readVerifiedSessionNucleus(targetDomain);
 }
 
 // Resolve an EXECUTED row from a {ledger,row_id} ref. Only offensive-runs is supported
@@ -275,6 +499,7 @@ function verifyFindingDifferential(input) {
     throw new TypeError("input must be { target_domain, finding_id, surface_id, positive_run_ref, control_run_ref }");
   }
   const targetDomain = assertSafeDomain(input.target_domain);
+  const requestedProofMode = assertKnownProofMode(input.proof_mode);
   const findingId = typeof input.finding_id === "string" ? input.finding_id : null;
   if (!findingId) throw new Error("finding_id is required");
   const surfaceId = typeof input.surface_id === "string" ? input.surface_id.trim() : "";
@@ -302,18 +527,37 @@ function verifyFindingDifferential(input) {
     const { result, reason, positiveHash, controlHash } = adjudicateFindingDifferential({
       surfaceId, positiveRow, controlRow,
     });
+    let effectiveResult = result;
+    let effectiveReason = reason;
+    let proofRecord = null;
+    if (result === RESULT_VERIFIED_PASS && canaryProofIsRequired({ requestedProofMode, positiveRow, controlRow })) {
+      try {
+        proofRecord = requireSecondOrderCanaryProof({
+          targetDomain,
+          findingId,
+          surfaceId,
+          positiveRow,
+          controlRow,
+          sessionNucleus: resolveSessionNucleusForCanary(targetDomain),
+        });
+      } catch (error) {
+        effectiveResult = RESULT_INCONCLUSIVE;
+        effectiveReason = `observed_invariant_canary_v1_not_proven: ${error.message || String(error)}`;
+      }
+    }
 
     return mintFindingDifferentialRecord({
       targetDomain,
       findingId,
       surfaceId,
-      result,
-      reason,
+      result: effectiveResult,
+      reason: effectiveReason,
       positiveRunId: positiveRow.run_id,
       positiveRowHash: positiveHash || offensiveRowHash(positiveRow),
       controlRunId: controlRow.run_id,
       controlRowHash: controlHash || offensiveRowHash(controlRow),
       source: SUPPORTED_LEDGER_OFFENSIVE_RUNS,
+      proofRecord,
     });
   });
 }
@@ -351,7 +595,7 @@ function readRecords(domain) {
 // be called under withSessionLock (verifyFindingDifferential holds it).
 function mintFindingDifferentialRecord({
   targetDomain, findingId, surfaceId, result, reason,
-  positiveRunId, positiveRowHash, controlRunId, controlRowHash, source,
+  positiveRunId, positiveRowHash, controlRunId, controlRowHash, source, proofRecord = null,
 }) {
   const body = {
     version: FINDING_DIFFERENTIAL_VERIFIED_VERSION,
@@ -367,6 +611,7 @@ function mintFindingDifferentialRecord({
     control_run_id: controlRunId,
     control_row_hash: controlRowHash,
   };
+  if (proofRecord != null) body.proof_record = proofRecord;
   const record = { ...body, results_hash: hashCanonicalJson(body) };
   appendJsonlLine(findingDifferentialVerifiedJsonlPath(targetDomain), record, {
     maxRecords: FINDING_DIFFERENTIAL_VERIFIED_MAX_RECORDS,
@@ -381,6 +626,7 @@ function mintFindingDifferentialRecord({
     positive_row_hash: positiveRowHash,
     control_run_id: controlRunId,
     control_row_hash: controlRowHash,
+    ...(proofRecord != null ? { proof_record: proofRecord } : {}),
     results_hash: record.results_hash,
   };
 }
@@ -444,6 +690,28 @@ function reverifyFindingDifferentialRecord(domain, record) {
       positiveRow,
       controlRow,
     });
+    let proofRecord = null;
+    if (result === RESULT_VERIFIED_PASS && canaryProofIsRequired({
+      requestedProofMode: null,
+      positiveRow,
+      controlRow,
+      storedProofRecord: record.proof_record,
+    })) {
+      if (!record.proof_record || record.proof_record.proof_mode !== OBSERVED_INVARIANT_CANARY_PROOF_MODE) {
+        return { ok: false, surface_id: null, demonstrated_severity: null, container_isolated: false };
+      }
+      proofRecord = requireSecondOrderCanaryProof({
+        targetDomain,
+        findingId: record.finding_id,
+        surfaceId: boundSurface,
+        positiveRow,
+        controlRow,
+        sessionNucleus: resolveSessionNucleusForCanary(targetDomain),
+      });
+      if (hashCanonicalJson(record.proof_record) !== hashCanonicalJson(proofRecord)) {
+        return { ok: false, surface_id: null, demonstrated_severity: null, container_isolated: false };
+      }
+    }
     return {
       ok: result === RESULT_VERIFIED_PASS,
       surface_id: boundSurface || null,
@@ -456,6 +724,7 @@ function reverifyFindingDifferentialRecord(domain, record) {
       // belt-and-suspenders: an SC finding-differential-backed reportable whose backing
       // run was not containerized must not be trusted on an isolated box.
       container_isolated: positiveRow.container_isolated === true,
+      ...(proofRecord != null ? { proof_record: proofRecord } : {}),
     };
   } catch {
     // Missing / duplicate / foreign-MAC / dry-run / timed-out row, or an absent key →
@@ -498,6 +767,7 @@ function readFindingDifferentialVerifiedSummary(domain) {
       // containerized as un-isolated. False on every existing offensive row (the field
       // is not minted there yet) — the correct fail-closed posture.
       container_isolated: rederived.container_isolated === true,
+      ...(rederived.proof_record ? { proof_record: rederived.proof_record } : {}),
     };
   }
   return {
@@ -518,6 +788,8 @@ module.exports = {
   RESULT_VERIFIED_PASS,
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
   offensiveRowHash,
   adjudicateFindingDifferential,
   verifyFindingDifferential,

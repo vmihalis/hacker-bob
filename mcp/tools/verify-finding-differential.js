@@ -1,6 +1,10 @@
 "use strict";
 
-const { verifyFindingDifferential } = require("../core/differential/index.js");
+const {
+  OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  verifyFindingDifferential,
+} = require("../core/differential/index.js");
 
 // bob_verify_finding_differential — the web-standalone sibling of
 // bob_verify_repro_reproduction / bob_verify_invariant_differential. It does NOT
@@ -17,6 +21,7 @@ async function verifyFindingDifferentialToolHandler(args) {
     surface_id: args.surface_id,
     positive_run_ref: args.positive_run_ref,
     control_run_ref: args.control_run_ref,
+    proof_mode: args.proof_mode,
   });
 }
 
@@ -68,6 +73,12 @@ module.exports = Object.freeze({
         ...RUN_REF_SCHEMA,
         description: "The executed CONTROL row: the SAME surface's authorized/safe-variant offensive-runs row that must be blocked (the flip).",
       },
+      proof_mode: {
+        type: "string",
+        enum: [OBSERVED_INVARIANT_CANARY_PROOF_MODE],
+        description:
+          "Optional proof-form selector. Required/implicit for bob_secondorder_reread rows: Bob re-derives an observed-invariant canary proof from MAC-signed rows and hashed capture bytes; unknown modes fail closed.",
+      },
     },
     required: ["target_domain", "finding_id", "surface_id", "positive_run_ref", "control_run_ref"],
   },
@@ -85,4 +96,6 @@ module.exports = Object.freeze({
   scope_required: true,
   sensitive_output: true,
   session_artifacts_written: ["finding-differential-verified.jsonl"],
+  proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  design_hash: OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
 });

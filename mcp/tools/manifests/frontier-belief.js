@@ -13,6 +13,7 @@ module.exports = Object.freeze([
   require("../run-belief-residual.js"),
   require("../query-intervention-calculus.js"),
   require("../plan-belief-experiment.js"),
+  require("../compile-contract-binding.js"),
   require("../train-belief-model.js"),
   require("../read-belief-model-info.js"),
   require("../elicit-belief.js"),

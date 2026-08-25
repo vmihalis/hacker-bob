@@ -366,7 +366,8 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // scripts/lib/package-policy.js). The ceiling is a single source of truth
     // (CANONICAL_PACKAGE_MAX_BYTES), shared with scripts/release-check.js so the two cannot
     // drift; it is calibrated to core's full offensive + sandbox-isolation surface, a larger
-    // lean tarball than the public line, plus the provider-neutral physical contract runtime.
+    // lean tarball than the public line, plus the provider-neutral physical contract runtime,
+    // authority transaction/storage substrate, and belief/validity/instrument-plane runtime.
     assert.ok(
       pack.size < CANONICAL_PACKAGE_MAX_BYTES,
       `npm pack size ${pack.size} exceeds ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`,

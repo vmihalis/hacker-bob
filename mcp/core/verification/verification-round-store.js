@@ -61,8 +61,9 @@ const {
   resolveRowVerifierSafely,
 } = require("../ledger-integrity/index.js");
 const {
-  sessionNucleusFromState,
-} = require("../governance/index.js");
+  getOrVerifySessionAuthorityContext,
+  nucleusFileExists,
+} = require("../session/session-authority-context.js");
 const {
   readSessionStateStrict,
 } = require("../session/session-state-store.js");
@@ -177,23 +178,40 @@ const REASON_ARRAY_FIELDS = Object.freeze([
 // returns an empty Map (no clamp), matching today's pass-through.
 function reclampSeveritiesAgainstFreeze(domain, results) {
   const out = new Map();
-  let nucleus;
+  // Severity SCOPE is sourced ONLY from the current/fresh verified authority
+  // context (reused from an active dispatch scope, or freshly verified for a
+  // direct/offline caller) -- never from raw session-state shape. Session
+  // state is still read below, but only for verification_attempt_id /
+  // verification_snapshot_hash: pure attempt metadata that can never raise
+  // or otherwise influence the severity ceiling.
+  //
+  // A session-nucleus.json that EXISTS but is unverifiable (tampered,
+  // symlinked, corrupt, parity-broken) hard-fails -- never a silent fallback
+  // to raw state. A session-nucleus.json that is simply ABSENT (a state-only
+  // session that predates nucleus binding, or a caller that bypassed the
+  // session-authority gate/dispatch entirely) is not this pure read helper's
+  // authority decision to make -- the gate (session-authority.js) is what
+  // admits/blocks a legacy session's tool calls; this degrades to no-clamp,
+  // matching the pre-A8 pass-through for an unreadable session.
+  if (!nucleusFileExists(domain)) return out;
+
+  let context;
   let sessionState;
   try {
+    context = getOrVerifySessionAuthorityContext(domain);
     sessionState = readSessionStateStrict(domain).state;
-    nucleus = sessionNucleusFromState(sessionState);
   } catch (error) {
     if (fs.existsSync(statePath(domain))) {
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,
-        `severity-rise guard could not read session state: ${error.message || String(error)}`,
+        `severity-rise guard could not read a verified session authority context: ${error.message || String(error)}`,
       );
     }
     return out;
   }
-  if (!nucleus || nucleus.scope_policy == null) return out;
-  const isWebScope = nucleus.scope_policy.target_url != null;
-  const isRepoScope = nucleus.scope_policy.target_repo != null;
+  if (!context) return out;
+  const isWebScope = context.url != null;
+  const isRepoScope = context.repo != null;
   if (!isWebScope && !isRepoScope) return out;
 
   let freeze;

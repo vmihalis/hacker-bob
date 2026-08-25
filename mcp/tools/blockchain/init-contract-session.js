@@ -5,10 +5,8 @@
 // contracts ({chain_family, chain_id, address}), it derives a deterministic
 // on-chain target_domain slug and persists the contracts axis
 // (target_contracts[] + chain_authority_hash) into state.json instead of
-// target_url. No nucleus/scope_policy is written — normalizeScopePolicy only
-// recognises the url/repo axes, so the governance nucleus for contracts is a
-// later node; a later node is bounded to the state.json + frontier seeding the
-// contract-target.js header documents.
+// target_url. The contracts-only SessionNucleus, state projection, and canonical
+// initialization event are published together before any derived side effect.
 //
 // Reuse, not re-implementation: chain-family membership + per-contract surface
 // seeding flow through the single Y-D21 funnel (bindAndSeedContracts ->
@@ -30,7 +28,16 @@ const { sessionDir, statePath } = require("../../core/io/paths.js");
 const { isSessionDirEffectivelyEmpty, withSessionLock } = require("../../core/io/storage.js");
 const { resolveEgressProfile } = require("../../core/egress-profiles.js");
 const { buildInitialSessionState, publicSessionState } = require("../../core/session/session-state-contracts.js");
-const { writeSessionStateDocument } = require("../../core/session/session-state-store.js");
+const {
+  readVerifiedSessionNucleus,
+  sessionNucleusFromState,
+} = require("../../core/governance/index.js");
+const {
+  commitSessionAuthority,
+} = require("../../core/session/session-authority-unit-of-work.js");
+const {
+  hashCanonicalJson,
+} = require("../../core/verification/verification-contracts.js");
 const { appendFrontierEvent } = require("../../core/frontier/frontier-events.js");
 const { scheduleMaterialization } = require("../../core/frontier/frontier-materialize-debounce.js");
 const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("../../core/ledger-integrity/index.js");
@@ -94,7 +101,37 @@ function handler(args = {}) {
       targetContracts,
       chainAuthorityHash: authorityHash,
     });
-    writeSessionStateDocument(domain, {}, state);
+    const nucleus = sessionNucleusFromState(state);
+    commitSessionAuthority({
+      targetDomain: domain,
+      nextNucleus: nucleus,
+      stateProjection: {
+        rawDocument: {},
+        nextState: state,
+      },
+      event: {
+        target_domain: domain,
+        kind: "governance.session.initialized",
+        nucleus_hash: nucleus.nucleus_hash,
+        payload: {
+          nucleus_hash: nucleus.nucleus_hash,
+          scope_policy_hash: hashCanonicalJson(nucleus.scope_policy),
+          egress_identity_hash: hashCanonicalJson(nucleus.egress_identity),
+          auth_context_hash: hashCanonicalJson(nucleus.auth_context),
+          operator_constraint_hash: hashCanonicalJson(nucleus.operator_constraint),
+          chain_authority_hash: authorityHash,
+        },
+        source: { artifact: "state.json", tool: "bob_init_contract_session" },
+      },
+      expectedNucleusHash: null,
+    });
+    const verifiedNucleus = readVerifiedSessionNucleus(domain);
+    if (verifiedNucleus.nucleus_hash !== nucleus.nucleus_hash) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        "Committed contract session nucleus does not match its state projection",
+      );
+    }
     // Provision handoff keys at creation so every later path finds them
     // (idempotent; same posture as init-session.js / init-repo-session.js).
     ensureHandoffSigningKey(domain);
@@ -166,9 +203,9 @@ const toolDescriptor = {
   name: "bob_init_contract_session",
   description:
     "Initialize a new session bound to a set of in-scope smart contracts (the contracts axis). "
-    + "target_domain is derived from the on-chain identity; the session writes target_contracts + "
-    + "chain_authority_hash into state.json instead of target_url and seeds one smart_contract surface "
-    + "per bound contract through the Y-D21 chain-family funnel.",
+    + "target_domain is derived from the on-chain identity; the session atomically publishes a contracts-only "
+    + "SessionNucleus, its state.json projection, and one initialization event before it seeds one smart_contract "
+    + "surface per bound contract through the Y-D21 chain-family funnel.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -228,7 +265,19 @@ const toolDescriptor = {
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["state.json", "queue-policy.json"],
+  session_artifacts_written: [
+    "state.json",
+    "session-nucleus.json",
+    "session-events.jsonl",
+    ".handoff-signing-key.json",
+    ".handoff-signing-key-ed25519.json",
+    "handoff-signing-pubkey.json",
+    "queue-policy.json",
+    "frontier-events.jsonl",
+    "surface-index.json",
+    "task-queue.json",
+    "task-graph.json",
+  ],
 };
 
 // Expose the shared derivation funnel to the pre-dispatch bootstrap gate WITHOUT

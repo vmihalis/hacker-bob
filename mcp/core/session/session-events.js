@@ -39,6 +39,8 @@ const SESSION_EVENT_KINDS = Object.freeze([
   "governance.lifecycle.advanced",
   "governance.lifecycle.override",
   "governance.operator_constraint.updated",
+  "governance.egress_identity.bound",
+  "governance.session_authority.migrated",
 ]);
 
 function generatedSessionEventId(fields) {
@@ -76,6 +78,23 @@ function normalizeSessionEvent(input, { targetDomain = null, now = new Date() } 
     ...base,
   };
   normalizeId(event.event_id, "event_id");
+
+  // now === null is the read-path discriminator (readSessionEvents passes it
+  // explicitly). A stored event must carry its own event_hash and that hash
+  // must match its canonical content; minting/repairing a hash on read would
+  // let an absent or tampered event_hash pass through silently. The author
+  // path (appendSessionEvent) keeps minting the hash via withDocumentHash.
+  if (now === null) {
+    const storedHash = typeof input.event_hash === "string" ? input.event_hash : null;
+    if (!storedHash) {
+      throw new Error("session event is missing event_hash");
+    }
+    const expectedHash = hashDocumentExcluding(event, ["event_hash"]);
+    if (storedHash !== expectedHash) {
+      throw new Error("session event event_hash does not match its canonical content");
+    }
+    return { ...event, event_hash: storedHash };
+  }
   return withDocumentHash(event, "event_hash");
 }
 

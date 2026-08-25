@@ -107,23 +107,1060 @@ function siblingTempPath(filePath) {
   );
 }
 
-function writeFileExclusiveAtomic(filePath, content, { mode } = {}) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = siblingTempPath(filePath);
-  const writeOptions = { flag: "wx" };
-  if (mode != null) writeOptions.mode = mode;
+function fileIdentityCandidate(filePath, stats, { owned = false } = {}) {
+  return {
+    path: filePath,
+    dev: stats.dev,
+    ino: stats.ino,
+    nlink: stats.nlink,
+    size: stats.size,
+    type: stats.isSymbolicLink()
+      ? "symlink"
+      : stats.isFile()
+        ? "file"
+        : stats.isDirectory()
+          ? "directory"
+          : "other",
+    owned,
+  };
+}
+
+function sameDevIno(candidate, stats) {
+  return Boolean(candidate)
+    && stats
+    && candidate.dev === stats.dev
+    && candidate.ino === stats.ino;
+}
+
+function lstatCandidateIfPresent(filePath, { owned = false } = {}) {
+  const stats = lstatIfPresent(filePath);
+  return stats ? fileIdentityCandidate(filePath, stats, { owned }) : null;
+}
+
+function exactRegularCandidate(filePath, expectedIdentity) {
+  const stats = lstatIfPresent(filePath);
+  if (
+    !stats
+    || !stats.isFile()
+    || stats.isSymbolicLink()
+    || !sameDevIno(expectedIdentity, stats)
+  ) return null;
+  return fileIdentityCandidate(filePath, stats, { owned: true });
+}
+
+function cleanupExactTemp(tempPath, tempCandidate) {
+  const current = exactRegularCandidate(tempPath, tempCandidate);
+  if (!current) return { removed: false, candidate: null };
+  fs.unlinkSync(tempPath);
+  return { removed: true, candidate: current };
+}
+
+function makeExclusiveReceipt({
+  status,
+  phase,
+  path: finalPath,
+  tempPath,
+  error = null,
+  tempCandidate = null,
+  finalCandidate = null,
+  unresolvedTemp = null,
+  probeError = null,
+  closeError = null,
+  cleanupError = null,
+}) {
+  const receipt = {
+    status,
+    phase,
+    path: finalPath,
+    tempPath,
+    tempCandidate,
+    finalCandidate,
+  };
+  if (error) receipt.error = error;
+  if (unresolvedTemp) receipt.unresolvedTemp = unresolvedTemp;
+  if (probeError) receipt.probeError = probeError;
+  if (closeError) receipt.closeError = closeError;
+  if (cleanupError) receipt.cleanupError = cleanupError;
+  return receipt;
+}
+
+function closeDescriptorOnce(descriptor) {
+  fs.closeSync(descriptor);
+}
+
+function attachBestEffortErrorDiagnostic(error, key, value) {
+  if (!error || typeof error !== "object") return error;
   try {
-    fs.writeFileSync(tempPath, content, writeOptions);
-    try {
-      fs.linkSync(tempPath, filePath);
-      return true;
-    } catch (error) {
-      if (error && error.code === "EEXIST") return false;
-      throw error;
-    }
-  } finally {
-    try { fs.unlinkSync(tempPath); } catch {}
+    Object.defineProperty(error, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  } catch {}
+  return error;
+}
+
+function attachExclusiveReceiptDiagnostics(error, receipt) {
+  if (!error || typeof error !== "object") return error;
+  const diagnosticReceipt = {
+    status: receipt.status,
+    phase: receipt.phase,
+    path: receipt.path,
+    tempPath: receipt.tempPath,
+    tempCandidate: receipt.tempCandidate,
+    finalCandidate: receipt.finalCandidate,
+    unresolvedTemp: receipt.unresolvedTemp,
+  };
+  if (receipt.probeError) {
+    attachBestEffortErrorDiagnostic(error, "probeError", receipt.probeError);
+    diagnosticReceipt.probeError = receipt.probeError;
   }
+  if (receipt.closeError) {
+    attachBestEffortErrorDiagnostic(error, "closeError", receipt.closeError);
+    diagnosticReceipt.closeError = receipt.closeError;
+  }
+  if (receipt.cleanupError) {
+    attachBestEffortErrorDiagnostic(error, "cleanupError", receipt.cleanupError);
+    diagnosticReceipt.cleanupError = receipt.cleanupError;
+  }
+  attachBestEffortErrorDiagnostic(error, "exclusiveReceipt", diagnosticReceipt);
+  return error;
+}
+
+function writeFileExclusiveAtomicReceipt(filePath, content, { mode } = {}) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  } catch (error) {
+    return makeExclusiveReceipt({
+      status: "failed",
+      phase: "mkdir",
+      path: filePath,
+      tempPath: null,
+      error,
+    });
+  }
+
+  const tempPath = siblingTempPath(filePath);
+  let descriptor = null;
+  let tempCandidate = null;
+
+  const failWithCleanup = (phase, error, finalCandidate = null, unresolvedTemp = null) => {
+    let closeError = null;
+    let cleanupError = null;
+    if (descriptor != null) {
+      const closeTarget = descriptor;
+      descriptor = null;
+      try {
+        closeDescriptorOnce(closeTarget);
+      } catch (closeFailure) {
+        closeError = closeFailure;
+      }
+    }
+    if (tempCandidate) {
+      try {
+        cleanupExactTemp(tempPath, tempCandidate);
+      } catch (cleanupFailure) {
+        cleanupError = cleanupFailure;
+      }
+    }
+    return makeExclusiveReceipt({
+      status: "failed",
+      phase,
+      path: filePath,
+      tempPath,
+      error,
+      tempCandidate,
+      finalCandidate,
+      unresolvedTemp,
+      closeError,
+      cleanupError,
+    });
+  };
+
+  try {
+    const flags = fs.constants.O_CREAT
+      | fs.constants.O_EXCL
+      | fs.constants.O_WRONLY
+      | (fs.constants.O_NOFOLLOW || 0);
+    descriptor = fs.openSync(tempPath, flags, mode == null ? 0o666 : mode);
+  } catch (error) {
+    if (error && error.code === "EEXIST") {
+      return makeExclusiveReceipt({
+        status: "failed",
+        phase: "temp_open",
+        path: filePath,
+        tempPath,
+        error,
+        unresolvedTemp: { path: tempPath, reason: "temp_exists" },
+      });
+    }
+    return makeExclusiveReceipt({
+      status: "failed",
+      phase: "temp_open",
+      path: filePath,
+      tempPath,
+      error,
+      unresolvedTemp: { path: tempPath, reason: "temp_open_failed" },
+    });
+  }
+
+  let openedStats = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      openedStats = fs.fstatSync(descriptor);
+      break;
+    } catch (error) {
+      if (attempt === 1) {
+        return failWithCleanup(
+          "temp_identity",
+          error,
+          null,
+          { path: tempPath, reason: "identity_unresolved" },
+        );
+      }
+    }
+  }
+
+  if (!openedStats.isFile()) {
+    return failWithCleanup(
+      "temp_identity",
+      new Error("exclusive temp path must be a regular file"),
+    );
+  }
+  tempCandidate = fileIdentityCandidate(tempPath, openedStats, { owned: true });
+
+  try {
+    fs.writeFileSync(descriptor, content);
+  } catch (error) {
+    return failWithCleanup("write", error);
+  }
+
+  const closeTarget = descriptor;
+  descriptor = null;
+  try {
+    closeDescriptorOnce(closeTarget);
+  } catch (error) {
+    return failWithCleanup("close", error);
+  }
+
+  try {
+    const currentTemp = exactRegularCandidate(tempPath, tempCandidate);
+    if (!currentTemp) {
+      return failWithCleanup(
+        "prelink_identity",
+        new Error("exclusive temp identity changed before link"),
+      );
+    }
+    tempCandidate = currentTemp;
+  } catch (error) {
+    return failWithCleanup("prelink_identity", error);
+  }
+
+  try {
+    fs.linkSync(tempPath, filePath);
+  } catch (error) {
+    let finalCandidate = null;
+    let probeError = null;
+    let cleanupError = null;
+    const recordProbeError = (probeFailure) => {
+      if (probeError === null) probeError = probeFailure;
+    };
+
+    if (error && error.code === "EEXIST") {
+      try {
+        finalCandidate = lstatCandidateIfPresent(filePath, { owned: false });
+      } catch (probeFailure) {
+        recordProbeError(probeFailure);
+      }
+    } else {
+      try {
+        finalCandidate = exactRegularCandidate(filePath, tempCandidate);
+      } catch (probeFailure) {
+        recordProbeError(probeFailure);
+      }
+    }
+
+    try {
+      cleanupExactTemp(tempPath, tempCandidate);
+      if (finalCandidate && finalCandidate.owned === true) {
+        try {
+          const finalAfterCleanup = exactRegularCandidate(filePath, tempCandidate);
+          if (finalAfterCleanup) finalCandidate = finalAfterCleanup;
+        } catch (probeFailure) {
+          recordProbeError(probeFailure);
+        }
+      }
+    } catch (cleanupFailure) {
+      cleanupError = cleanupFailure;
+    }
+    if (error && error.code === "EEXIST") {
+      return makeExclusiveReceipt({
+        status: "exists",
+        phase: "link",
+        path: filePath,
+        tempPath,
+        error,
+        tempCandidate,
+        finalCandidate,
+        probeError,
+        cleanupError,
+      });
+    }
+    return makeExclusiveReceipt({
+      status: "failed",
+      phase: "link",
+      path: filePath,
+      tempPath,
+      error,
+      tempCandidate,
+      finalCandidate,
+      probeError,
+      cleanupError,
+    });
+  }
+
+  let finalCandidate = null;
+  try {
+    finalCandidate = exactRegularCandidate(filePath, tempCandidate);
+  } catch (error) {
+    return failWithCleanup("postlink_proof", error);
+  }
+  if (!finalCandidate) {
+    return failWithCleanup(
+      "postlink_proof",
+      new Error("exclusive final identity does not match temp identity"),
+    );
+  }
+  if (finalCandidate.nlink !== 2) {
+    return failWithCleanup(
+      "postlink_proof",
+      new Error("exclusive final link count proof failed"),
+      finalCandidate,
+    );
+  }
+
+  let cleanupError = null;
+  try {
+    const cleanup = cleanupExactTemp(tempPath, tempCandidate);
+    if (!cleanup.removed) {
+      cleanupError = new Error("exclusive temp cleanup did not remove the staged file");
+    }
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (cleanupError) {
+    return makeExclusiveReceipt({
+      status: "failed",
+      phase: "temp_cleanup",
+      path: filePath,
+      tempPath,
+      error: cleanupError,
+      tempCandidate,
+      finalCandidate,
+      cleanupError,
+    });
+  }
+
+  try {
+    const finalAfterCleanup = exactRegularCandidate(filePath, tempCandidate);
+    if (!finalAfterCleanup || finalAfterCleanup.nlink !== 1) {
+      return makeExclusiveReceipt({
+        status: "failed",
+        phase: "final_proof",
+        path: filePath,
+        tempPath,
+        error: new Error("exclusive final cleanup proof failed"),
+        tempCandidate,
+        finalCandidate,
+      });
+    }
+    finalCandidate = finalAfterCleanup;
+  } catch (error) {
+    return makeExclusiveReceipt({
+      status: "failed",
+      phase: "final_proof",
+      path: filePath,
+      tempPath,
+      error,
+      tempCandidate,
+      finalCandidate,
+    });
+  }
+
+  return makeExclusiveReceipt({
+    status: "created",
+    phase: "complete",
+    path: filePath,
+    tempPath,
+    tempCandidate,
+    finalCandidate,
+  });
+}
+
+function writeFileExclusiveAtomic(filePath, content, { mode } = {}) {
+  const receipt = writeFileExclusiveAtomicReceipt(filePath, content, { mode });
+  if (receipt.status === "created") return true;
+  if (receipt.status === "exists") return false;
+  const error = receipt.error || new Error(`exclusive file publish failed during ${receipt.phase}`);
+  throw attachExclusiveReceiptDiagnostics(error, receipt);
+}
+
+function makeCasReceipt({
+  status,
+  phase,
+  path: finalPath,
+  expected,
+  stagePath = null,
+  quarantinePath = null,
+  error = null,
+  stageReceipt = null,
+  stagedCandidate = null,
+  displacedCandidate = null,
+  producedCandidate = null,
+  producedEntryOwned = false,
+  displaced = false,
+  probeError = null,
+  cleanupError = null,
+}) {
+  const receipt = {
+    status,
+    phase,
+    path: finalPath,
+    expected,
+    stagePath,
+    quarantinePath,
+    stageReceipt,
+    stagedCandidate,
+    displacedCandidate,
+    producedCandidate,
+    producedEntryOwned,
+    displaced,
+  };
+  if (error) receipt.error = error;
+  if (probeError) receipt.probeError = probeError;
+  if (cleanupError) receipt.cleanupError = cleanupError;
+  return receipt;
+}
+
+function normalizeCasExpected(expected) {
+  if (expected == null || typeof expected !== "object" || Array.isArray(expected)) {
+    throw new Error("expected must describe an absent or existing file");
+  }
+  if (expected.exists === false) return { exists: false, bytes: null };
+  if (expected.exists !== true
+      || !Buffer.isBuffer(expected.bytes)
+      || !Number.isInteger(expected.dev)
+      || !Number.isInteger(expected.ino)) {
+    throw new Error("existing expected file requires Buffer bytes and dev/ino identity");
+  }
+  return {
+    exists: true,
+    bytes: Buffer.from(expected.bytes),
+    dev: expected.dev,
+    ino: expected.ino,
+  };
+}
+
+function inspectRegularCandidate(filePath, identity, { nlink = null, bytes = null } = {}) {
+  let descriptor = null;
+  let primaryError = null;
+  let closeError = null;
+  let candidate = null;
+  let content = null;
+  try {
+    const pathStats = fs.lstatSync(filePath);
+    if (pathStats.isSymbolicLink()
+        || !pathStats.isFile()
+        || !sameDevIno(identity, pathStats)
+        || (nlink != null && pathStats.nlink !== nlink)) {
+      throw new Error(`${path.basename(filePath)} identity proof failed`);
+    }
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const descriptorStats = fs.fstatSync(descriptor);
+    if (!descriptorStats.isFile()
+        || !sameDevIno(pathStats, descriptorStats)
+        || descriptorStats.nlink !== pathStats.nlink
+        || descriptorStats.size !== pathStats.size) {
+      throw new Error(`${path.basename(filePath)} changed before identity read`);
+    }
+    content = Buffer.alloc(descriptorStats.size);
+    let offset = 0;
+    while (offset < content.length) {
+      const count = fs.readSync(descriptor, content, offset, content.length - offset, offset);
+      if (count === 0) throw new Error(`${path.basename(filePath)} changed during identity read`);
+      offset += count;
+    }
+    const afterStats = fs.fstatSync(descriptor);
+    if (!afterStats.isFile()
+        || !sameDevIno(descriptorStats, afterStats)
+        || afterStats.nlink !== descriptorStats.nlink
+        || afterStats.size !== descriptorStats.size) {
+      throw new Error(`${path.basename(filePath)} changed during identity read`);
+    }
+    const finalStats = fs.lstatSync(filePath);
+    if (finalStats.isSymbolicLink()
+        || !finalStats.isFile()
+        || !sameDevIno(afterStats, finalStats)
+        || finalStats.nlink !== afterStats.nlink) {
+      throw new Error(`${path.basename(filePath)} changed after identity read`);
+    }
+    if (bytes !== null && Buffer.compare(content, bytes) !== 0) {
+      throw new Error(`${path.basename(filePath)} bytes do not match the CAS preimage`);
+    }
+    candidate = fileIdentityCandidate(filePath, finalStats, { owned: true });
+  } catch (error) {
+    primaryError = error;
+  }
+  if (descriptor != null) {
+    try {
+      closeDescriptorOnce(descriptor);
+    } catch (error) {
+      closeError = error;
+      if (primaryError === null) primaryError = error;
+    }
+  }
+  return {
+    ok: primaryError === null,
+    error: primaryError,
+    closeError,
+    candidate,
+    bytes: content,
+  };
+}
+
+function cleanupOwnedEntry(candidate) {
+  if (!candidate || candidate.owned !== true || !candidate.path) {
+    return { removed: false, absent: false, error: null };
+  }
+  try {
+    const stats = fs.lstatSync(candidate.path);
+    if (!sameDevIno(candidate, stats)
+        || fileIdentityCandidate(candidate.path, stats).type !== candidate.type) {
+      return {
+        removed: false,
+        absent: false,
+        error: new Error(`${path.basename(candidate.path)} ownership changed before cleanup`),
+      };
+    }
+    if (stats.isDirectory()) {
+      return {
+        removed: false,
+        absent: false,
+        error: new Error(`${path.basename(candidate.path)} owned cleanup refuses a directory`),
+      };
+    }
+    fs.unlinkSync(candidate.path);
+    return { removed: true, absent: false, error: null };
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return { removed: false, absent: true, error: null };
+    }
+    try {
+      const current = fs.lstatSync(candidate.path);
+      if (!sameDevIno(candidate, current)) {
+        return {
+          removed: false,
+          absent: false,
+          error: new Error(`${path.basename(candidate.path)} ownership changed during cleanup`),
+        };
+      }
+    } catch (probeError) {
+      if (probeError && probeError.code === "ENOENT") {
+        return { removed: true, absent: true, error };
+      }
+    }
+    return { removed: false, absent: false, error };
+  }
+}
+
+function linkedDirectoryEntryCandidate(
+  sourcePath,
+  destinationPath,
+  expectedSource,
+  { nlink, bytes },
+) {
+  const sourceProof = inspectRegularCandidate(
+    sourcePath,
+    expectedSource,
+    { nlink, bytes },
+  );
+  if (!sourceProof.ok) return { candidate: null, error: sourceProof.error };
+
+  const destinationProof = inspectRegularCandidate(
+    destinationPath,
+    expectedSource,
+    { nlink, bytes },
+  );
+  if (!destinationProof.ok) return { candidate: null, error: destinationProof.error };
+  if (!sameDevIno(sourceProof.candidate, destinationProof.candidate)) {
+    return {
+      candidate: null,
+      error: new Error(`${path.basename(destinationPath)} no longer aliases its proven link source`),
+    };
+  }
+  return { candidate: destinationProof.candidate, error: null };
+}
+
+function cleanupStageReceipt(receipt) {
+  if (!receipt) return null;
+  let firstError = null;
+  const candidates = [];
+  if (receipt.finalCandidate && receipt.finalCandidate.owned === true) {
+    candidates.push(receipt.finalCandidate);
+  } else if (receipt.tempCandidate
+      && receipt.tempCandidate.owned === true
+      && receipt.path
+      && receipt.status !== "exists"
+      && ["link", "postlink_proof"].includes(receipt.phase)) {
+    candidates.push({ ...receipt.tempCandidate, path: receipt.path, owned: true });
+  }
+  if (receipt.tempCandidate && receipt.tempCandidate.owned === true) {
+    candidates.push({ ...receipt.tempCandidate, path: receipt.tempPath, owned: true });
+  }
+  for (const candidate of candidates) {
+    const cleanup = cleanupOwnedEntry(candidate);
+    if (cleanup.error && firstError === null) firstError = cleanup.error;
+  }
+  return firstError;
+}
+
+function restoreCasPreimage(receipt) {
+  if (!receipt.expected.exists || receipt.displaced !== true) return null;
+  let current = null;
+  try {
+    current = lstatIfPresent(receipt.path);
+  } catch (error) {
+    return error;
+  }
+  if (current) {
+    const expectedProof = inspectRegularCandidate(
+      receipt.path,
+      receipt.expected,
+      { nlink: 1, bytes: receipt.expected.bytes },
+    );
+    if (expectedProof.ok) return null;
+    return new Error(`${path.basename(receipt.path)} replacement preserved during CAS rollback`);
+  }
+
+  if (receipt.displacedCandidate) {
+    const proof = inspectRegularCandidate(
+      receipt.quarantinePath,
+      receipt.displacedCandidate,
+      { nlink: 1, bytes: receipt.expected.bytes },
+    );
+    if (proof.ok) {
+      try {
+        fs.linkSync(receipt.quarantinePath, receipt.path);
+        const restored = inspectRegularCandidate(
+          receipt.path,
+          receipt.displacedCandidate,
+          { nlink: 2, bytes: receipt.expected.bytes },
+        );
+        if (!restored.ok) return restored.error;
+        const cleanup = cleanupOwnedEntry(receipt.displacedCandidate);
+        if (cleanup.error) return cleanup.error;
+        const finalProof = inspectRegularCandidate(
+          receipt.path,
+          receipt.displacedCandidate,
+          { nlink: 1, bytes: receipt.expected.bytes },
+        );
+        return finalProof.ok ? null : finalProof.error;
+      } catch (error) {
+        return error;
+      }
+    }
+  }
+
+  const restoreReceipt = writeFileExclusiveAtomicReceipt(receipt.path, receipt.expected.bytes);
+  if (restoreReceipt.status === "created") return null;
+  const cleanupError = cleanupStageReceipt(restoreReceipt);
+  return cleanupError
+    || restoreReceipt.error
+    || new Error(`${path.basename(receipt.path)} could not be restored after CAS failure`);
+}
+
+function rollbackFileCasAtomicReceipt(receipt) {
+  if (!receipt || typeof receipt !== "object") return new Error("CAS receipt is required");
+  if (receipt.rollbackComplete === true) return null;
+  let firstError = cleanupStageReceipt(receipt.stageReceipt);
+
+  if (receipt.stagedCandidate) {
+    const cleanup = cleanupOwnedEntry(receipt.stagedCandidate);
+    if (cleanup.error && firstError === null) firstError = cleanup.error;
+  }
+
+  if (receipt.producedCandidate && receipt.producedCandidate.owned === true) {
+    let current = null;
+    try {
+      current = fs.lstatSync(receipt.path);
+    } catch (error) {
+      if (!error || error.code !== "ENOENT") {
+        if (firstError === null) firstError = error;
+      }
+    }
+    if (current && sameDevIno(receipt.producedCandidate, current)) {
+      if (current.isDirectory()
+          || (!receipt.producedEntryOwned
+            && (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1))) {
+        if (firstError === null) {
+          firstError = new Error(`${path.basename(receipt.path)} produced inode is not single-link during rollback`);
+        }
+      } else {
+        const cleanup = cleanupOwnedEntry({
+          ...receipt.producedCandidate,
+          path: receipt.path,
+          nlink: current.nlink,
+          type: receipt.producedEntryOwned ? receipt.producedCandidate.type : "file",
+          owned: true,
+        });
+        if (cleanup.error && firstError === null) firstError = cleanup.error;
+      }
+    } else if (current && firstError === null) {
+      const expectedProof = receipt.expected.exists
+        ? inspectRegularCandidate(
+          receipt.path,
+          receipt.expected,
+          { nlink: 1, bytes: receipt.expected.bytes },
+        )
+        : { ok: false };
+      if (!expectedProof.ok) {
+        firstError = new Error(`${path.basename(receipt.path)} replacement preserved during CAS rollback`);
+      }
+    }
+  }
+
+  const restoreError = restoreCasPreimage(receipt);
+  if (restoreError && firstError === null) firstError = restoreError;
+
+  if (receipt.displacedCandidate) {
+    const cleanup = cleanupOwnedEntry(receipt.displacedCandidate);
+    if (cleanup.error && firstError === null) firstError = cleanup.error;
+  }
+  if (firstError === null) receipt.rollbackComplete = true;
+  return firstError;
+}
+
+function finishCasFailure(receipt) {
+  const rollbackError = rollbackFileCasAtomicReceipt(receipt);
+  if (rollbackError) receipt.cleanupError = rollbackError;
+  return receipt;
+}
+
+function writeFileCasAtomicReceipt(filePath, content, expected, { mode } = {}) {
+  let normalizedExpected;
+  try {
+    normalizedExpected = normalizeCasExpected(expected);
+  } catch (error) {
+    return makeCasReceipt({
+      status: "failed",
+      phase: "precondition",
+      path: filePath,
+      expected,
+      error,
+    });
+  }
+  let contentBytes;
+  try {
+    if (Buffer.isBuffer(content)) contentBytes = Buffer.from(content);
+    else if (typeof content === "string") contentBytes = Buffer.from(content, "utf8");
+    else if (ArrayBuffer.isView(content)) {
+      contentBytes = Buffer.from(content.buffer, content.byteOffset, content.byteLength);
+    } else {
+      throw new Error("CAS content must be a string, Buffer, or typed-array view");
+    }
+  } catch (error) {
+    return makeCasReceipt({
+      status: "failed",
+      phase: "precondition",
+      path: filePath,
+      expected: normalizedExpected,
+      error,
+    });
+  }
+
+  if (!normalizedExpected.exists) {
+    const exclusiveReceipt = writeFileExclusiveAtomicReceipt(filePath, contentBytes, { mode });
+    const receipt = makeCasReceipt({
+      status: exclusiveReceipt.status === "created" ? "created" : exclusiveReceipt.status,
+      phase: exclusiveReceipt.phase,
+      path: filePath,
+      expected: normalizedExpected,
+      stagePath: exclusiveReceipt.tempPath,
+      error: exclusiveReceipt.error || null,
+      stageReceipt: exclusiveReceipt.status === "created" ? null : exclusiveReceipt,
+      stagedCandidate: exclusiveReceipt.tempCandidate,
+      producedCandidate: exclusiveReceipt.finalCandidate
+        && exclusiveReceipt.finalCandidate.owned === true
+        ? exclusiveReceipt.finalCandidate
+        : null,
+    });
+    return exclusiveReceipt.status === "created" ? receipt : finishCasFailure(receipt);
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  } catch (error) {
+    return makeCasReceipt({
+      status: "failed",
+      phase: "mkdir",
+      path: filePath,
+      expected: normalizedExpected,
+      error,
+    });
+  }
+
+  const stagePath = siblingTempPath(filePath);
+  const quarantinePath = siblingTempPath(filePath);
+  const stageReceipt = writeFileExclusiveAtomicReceipt(stagePath, contentBytes, { mode });
+  let receipt = makeCasReceipt({
+    status: "failed",
+    phase: "stage",
+    path: filePath,
+    expected: normalizedExpected,
+    stagePath,
+    quarantinePath,
+    error: stageReceipt.error || null,
+    stageReceipt,
+    stagedCandidate: stageReceipt.finalCandidate,
+  });
+  if (stageReceipt.status !== "created") return finishCasFailure(receipt);
+  receipt.stagedCandidate = stageReceipt.finalCandidate;
+
+  let quarantineWasAbsent = false;
+  try {
+    quarantineWasAbsent = fs.lstatSync(quarantinePath) == null;
+  } catch (error) {
+    if (error && error.code === "ENOENT") quarantineWasAbsent = true;
+    else {
+      receipt.phase = "quarantine_preflight";
+      receipt.error = error;
+      return finishCasFailure(receipt);
+    }
+  }
+  if (!quarantineWasAbsent) {
+    receipt.phase = "quarantine_preflight";
+    receipt.error = new Error("CAS quarantine path already exists");
+    return finishCasFailure(receipt);
+  }
+
+  try {
+    fs.linkSync(filePath, quarantinePath);
+  } catch (error) {
+    receipt.phase = "quarantine_link";
+    receipt.error = error;
+    if (!error || error.code !== "EEXIST") {
+      let proof = null;
+      let firstProbeError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        proof = inspectRegularCandidate(
+          quarantinePath,
+          normalizedExpected,
+          { nlink: 2, bytes: normalizedExpected.bytes },
+        );
+        if (proof.ok) break;
+        if (firstProbeError === null) firstProbeError = proof.error;
+      }
+      if (proof.ok) {
+        receipt.displacedCandidate = proof.candidate;
+        receipt.probeError = firstProbeError;
+      }
+      else {
+        receipt.displacedCandidate = {
+          path: quarantinePath,
+          dev: normalizedExpected.dev,
+          ino: normalizedExpected.ino,
+          nlink: 2,
+          size: normalizedExpected.bytes.length,
+          type: "file",
+          owned: true,
+        };
+        if (!proof.error || proof.error.code !== "ENOENT") receipt.probeError = proof.error;
+      }
+    }
+    receipt.status = error && ["ENOENT", "EEXIST"].includes(error.code) ? "conflict" : "failed";
+    return finishCasFailure(receipt);
+  }
+
+  receipt.displacedCandidate = {
+    path: quarantinePath,
+    dev: normalizedExpected.dev,
+    ino: normalizedExpected.ino,
+    nlink: 2,
+    size: normalizedExpected.bytes.length,
+    type: "file",
+    owned: true,
+  };
+  let quarantineLinkProof = null;
+  let quarantineLinkProbeError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    quarantineLinkProof = linkedDirectoryEntryCandidate(
+      filePath,
+      quarantinePath,
+      normalizedExpected,
+      { nlink: 2, bytes: normalizedExpected.bytes },
+    );
+    if (quarantineLinkProof.candidate) break;
+    if (quarantineLinkProbeError === null) quarantineLinkProbeError = quarantineLinkProof.error;
+  }
+  if (quarantineLinkProof.candidate) {
+    receipt.displacedCandidate = quarantineLinkProof.candidate;
+  }
+  if (quarantineLinkProbeError) receipt.probeError = quarantineLinkProbeError;
+  const beforeProof = inspectRegularCandidate(
+    filePath,
+    normalizedExpected,
+    { nlink: 2, bytes: normalizedExpected.bytes },
+  );
+  const quarantineProof = inspectRegularCandidate(
+    quarantinePath,
+    normalizedExpected,
+    { nlink: 2, bytes: normalizedExpected.bytes },
+  );
+  if (!beforeProof.ok
+      || !quarantineProof.ok
+      || !sameDevIno(beforeProof.candidate, quarantineProof.candidate)
+      || !sameDevIno(normalizedExpected, quarantineProof.candidate)) {
+    receipt.status = "conflict";
+    receipt.phase = "preimage_proof";
+    receipt.error = beforeProof.error || quarantineProof.error || new Error("CAS preimage identity changed");
+    return finishCasFailure(receipt);
+  }
+  receipt.displacedCandidate = quarantineProof.candidate;
+
+  try {
+    const finalBeforeUnlink = fs.lstatSync(filePath);
+    if (!finalBeforeUnlink.isFile()
+        || finalBeforeUnlink.isSymbolicLink()
+        || finalBeforeUnlink.nlink !== 2
+        || !sameDevIno(normalizedExpected, finalBeforeUnlink)) {
+      throw new Error("CAS preimage changed before displacement");
+    }
+    fs.unlinkSync(filePath);
+    receipt.displaced = true;
+  } catch (error) {
+    let current = null;
+    let probeError = null;
+    try { current = lstatIfPresent(filePath); } catch (failure) { probeError = failure; }
+    if (!current) receipt.displaced = true;
+    receipt.status = "failed";
+    receipt.phase = "displace";
+    receipt.error = error;
+    receipt.probeError = probeError;
+    return finishCasFailure(receipt);
+  }
+
+  const displacedProof = inspectRegularCandidate(
+    quarantinePath,
+    receipt.displacedCandidate,
+    { nlink: 1, bytes: normalizedExpected.bytes },
+  );
+  if (!displacedProof.ok) {
+    receipt.phase = "displaced_proof";
+    receipt.error = displacedProof.error;
+    return finishCasFailure(receipt);
+  }
+  receipt.displacedCandidate = displacedProof.candidate;
+
+  try {
+    fs.linkSync(stagePath, filePath);
+  } catch (error) {
+    receipt.status = error && error.code === "EEXIST" ? "conflict" : "failed";
+    receipt.phase = "publish_link";
+    receipt.error = error;
+    if (!error || error.code !== "EEXIST") {
+      let proof = null;
+      let firstProbeError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        proof = inspectRegularCandidate(
+          filePath,
+          receipt.stagedCandidate,
+          { nlink: 2, bytes: contentBytes },
+        );
+        if (proof.ok) break;
+        if (firstProbeError === null) firstProbeError = proof.error;
+      }
+      if (proof.ok) {
+        receipt.producedCandidate = proof.candidate;
+        receipt.probeError = firstProbeError;
+      }
+      else {
+        receipt.producedCandidate = {
+          ...receipt.stagedCandidate,
+          path: filePath,
+          owned: true,
+        };
+        receipt.probeError = proof.error;
+      }
+    }
+    return finishCasFailure(receipt);
+  }
+
+  receipt.producedCandidate = {
+    ...receipt.stagedCandidate,
+    path: filePath,
+    owned: true,
+  };
+  receipt.producedEntryOwned = true;
+  let publishedLinkProof = null;
+  let publishedLinkProbeError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    publishedLinkProof = linkedDirectoryEntryCandidate(
+      stagePath,
+      filePath,
+      receipt.stagedCandidate,
+      { nlink: 2, bytes: contentBytes },
+    );
+    if (publishedLinkProof.candidate) break;
+    if (publishedLinkProbeError === null) publishedLinkProbeError = publishedLinkProof.error;
+  }
+  if (publishedLinkProof.candidate) receipt.producedCandidate = publishedLinkProof.candidate;
+  if (publishedLinkProbeError) receipt.probeError = publishedLinkProbeError;
+  const producedProof = inspectRegularCandidate(
+    filePath,
+    receipt.stagedCandidate,
+    { nlink: 2, bytes: contentBytes },
+  );
+  if (!producedProof.ok) {
+    receipt.phase = "produced_proof";
+    receipt.error = producedProof.error;
+    return finishCasFailure(receipt);
+  }
+  receipt.producedCandidate = producedProof.candidate;
+  receipt.producedEntryOwned = false;
+
+  const stageCleanup = cleanupOwnedEntry(receipt.stagedCandidate);
+  if (stageCleanup.error) {
+    receipt.phase = "stage_cleanup";
+    receipt.error = stageCleanup.error;
+    receipt.cleanupError = stageCleanup.error;
+    return finishCasFailure(receipt);
+  }
+  const finalProof = inspectRegularCandidate(
+    filePath,
+    receipt.producedCandidate,
+    { nlink: 1, bytes: contentBytes },
+  );
+  if (!finalProof.ok) {
+    receipt.phase = "final_proof";
+    receipt.error = finalProof.error;
+    return finishCasFailure(receipt);
+  }
+  receipt.producedCandidate = finalProof.candidate;
+
+  const quarantineCleanup = cleanupOwnedEntry(receipt.displacedCandidate);
+  if (quarantineCleanup.error) {
+    receipt.phase = "quarantine_cleanup";
+    receipt.error = quarantineCleanup.error;
+    receipt.cleanupError = quarantineCleanup.error;
+    return finishCasFailure(receipt);
+  }
+
+  receipt.status = "replaced";
+  receipt.phase = "complete";
+  receipt.stageReceipt = null;
+  receipt.producedEntryOwned = false;
+  return receipt;
 }
 
 function normalizeMaxJsonlRecords(maxRecords) {
@@ -656,6 +1693,7 @@ module.exports = {
   appendJsonlLine,
   appendJsonlLines,
   appendMarkdownMirror,
+  attachBestEffortErrorDiagnostic,
   ensureParentDir,
   isSessionDirEffectivelyEmpty,
   ensureSafeSessionDirectory,
@@ -671,7 +1709,10 @@ module.exports = {
   tryAcquireSessionLock,
   withSessionLock,
   writeFileAtomic,
+  rollbackFileCasAtomicReceipt,
+  writeFileCasAtomicReceipt,
   writeFileExclusiveAtomic,
+  writeFileExclusiveAtomicReceipt,
   writeJsonDocument,
   writeMarkdownMirror,
 };

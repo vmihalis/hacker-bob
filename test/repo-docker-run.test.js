@@ -1700,7 +1700,7 @@ test("repoDockerRun throws when target_domain is not a repo session", async () =
   await withTempHome(async () => {
     await assert.rejects(
       () => repoDockerRun({ target_domain: "repo-missing-12345678", command: ["echo"] }),
-      /is not a repo session|Missing session state/,
+      /is not a repo session|Missing session state|has no verified session nucleus/,
     );
   });
 });

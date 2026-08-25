@@ -36,5 +36,6 @@ defineLazyExports(() => require("./governance-context.js"), [
 
 defineLazyExports(() => require("./governance-store.js"), [
   "readSessionNucleus",
+  "readSessionNucleusProjection",
   "readVerifiedSessionNucleus",
 ]);

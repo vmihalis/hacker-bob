@@ -17,6 +17,9 @@ const {
   acquireEngineSingletonLock,
   releaseEngineSingletonLock,
 } = require("./core/io/engine-lock.js");
+const {
+  sessionsRoot,
+} = require("./core/io/paths.js");
 
 // fx-gate-bypass defense 1: refuse to serve at all if another `node
 // mcp/server.js` instance already holds the whole-engine singleton lock for
@@ -31,9 +34,13 @@ const {
 function startServer() {
   const acquired = acquireEngineSingletonLock();
   if (!acquired) {
+    // Y-D24 — name the ACTUAL boot-frozen session root, not a hardcoded
+    // default: under a custom BOB_SESSIONS_ROOT the default literal would be
+    // false and point an operator at the wrong directory while debugging a
+    // refused engine start.
     process.stderr.write(
       "hacker-bob MCP server: refusing to start -- another engine instance already "
-      + "holds the singleton lock for this session root (~/hacker-bob-sessions/).\n",
+      + `holds the singleton lock for this session root (${sessionsRoot()}).\n`,
     );
     process.exit(1);
     return;

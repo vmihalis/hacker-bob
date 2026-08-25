@@ -13,8 +13,9 @@ module.exports = Object.freeze({
   description:
     "Advance the persisted SessionNucleus to a new lifecycle_state. " +
     "Enforces the allowedTransitions table from lifecycle-gates.js. " +
-    "Pass override: \"operator_force\" with a non-empty override_reason to bypass blockers; the override is " +
-    "recorded as a governance.lifecycle.override event in session-events.jsonl.",
+    "Pass override: \"operator_force\" with a non-empty override_reason to bypass blockers; the override " +
+    "is folded (as override/override_reason/blockers fields) into the single governance.lifecycle.advanced " +
+    "event recorded in session-events.jsonl.",
   inputSchema: {
     type: "object",
     properties: {
@@ -32,8 +33,9 @@ module.exports = Object.freeze({
           "Optional governance auth-context update applied during this advance. When " +
           "omitted, auth_status is derived: 'authenticated' if a usable auth profile is " +
           "stored, else the prior value carries forward. An explicit value wins (e.g. " +
-          "--no-auth advances with 'unauthenticated'). Any CHANGE to auth_status is recorded " +
-          "in session-events.jsonl as a governance.auth_context.replaced event.",
+          "--no-auth advances with 'unauthenticated'). Any CHANGE to auth_status is folded " +
+          "(as from_auth_status/to_auth_status/auth_status_changed fields) into the single " +
+          "governance.lifecycle.advanced event recorded in session-events.jsonl.",
       },
       override: {
         type: "string",
@@ -41,8 +43,8 @@ module.exports = Object.freeze({
         description:
           "Operator opt-out used to advance despite structured blockers. " +
           "Requires a non-empty override_reason. " +
-          "Each override is recorded in session-events.jsonl as a " +
-          "governance.lifecycle.override event with the blocker list.",
+          "Each override is folded into the single governance.lifecycle.advanced event " +
+          "recorded in session-events.jsonl, along with the blocker list.",
       },
       override_reason: {
         type: "string",

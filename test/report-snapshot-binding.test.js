@@ -180,6 +180,33 @@ function seedSessionState(domain, overrides = {}) {
     ...overrides,
   };
   writeFileAtomic(statePath(domain), `${JSON.stringify(state, null, 2)}\n`);
+  const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
+  if (!fs.existsSync(nucleusPath)) {
+    const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
+    const { writeJsonDocument } = require("../mcp/core/io/storage.js");
+    const nucleus = buildSessionNucleus({
+      target_domain: domain,
+      target_url: state.target_url,
+      scope_policy: {
+        target_url: state.target_url,
+        checkpoint_mode: state.checkpoint_mode,
+        deep_mode: state.deep_mode,
+        block_internal_hosts: state.block_internal_hosts,
+        allow_internal_hosts: false,
+      },
+      egress_identity: {
+        egress_profile: state.egress_profile,
+        egress_region: state.egress_region,
+        proxy_configured: state.proxy_configured,
+        egress_profile_identity_hash: state.egress_profile_identity_hash,
+        egress_profile_identity_version: state.egress_profile_identity_version,
+      },
+      auth_context: { auth_status: state.auth_status || "pending" },
+      operator_constraint: {},
+      lifecycle_state: state.lifecycle_state || "SETUP",
+    });
+    writeJsonDocument(nucleusPath, nucleus);
+  }
   return state;
 }
 

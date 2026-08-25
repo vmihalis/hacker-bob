@@ -42,8 +42,9 @@ module.exports = Object.freeze({
         type: "string",
         enum: [...DIRECT_FRONTIER_EVENT_KINDS],
         description:
-          "Directly appendable frontier event kind. TaskGraph node transitions are deliberately " +
-          "excluded and may be emitted only by Bob's state-machine writers.",
+          "Directly appendable frontier event kind. TaskGraph node transitions and surface " +
+          "closure records are deliberately excluded and may be emitted only by Bob's " +
+          "state-machine or closure/merge writers.",
       },
       ts: {
         type: "string",

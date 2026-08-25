@@ -14,7 +14,7 @@ const {
   readSessionArtifactSummary,
 } = require("../telemetry/pipeline-analytics.js");
 const {
-  readSessionNucleus,
+  readSessionNucleusProjection,
 } = require("../governance/index.js");
 const {
   deriveLegacyPhaseFromLifecycleState,
@@ -217,16 +217,9 @@ function readSessionSummary(args) {
   const artifacts = readSessionArtifactSummary(domain);
   const blockers = deriveBlockers(state, artifacts);
   const reportPath = reportMarkdownPath(domain);
-  let nucleusHash = null;
-  let lifecycleState = null;
-  try {
-    const nucleus = readSessionNucleus(domain);
-    nucleusHash = nucleus && typeof nucleus.nucleus_hash === "string" ? nucleus.nucleus_hash : null;
-    lifecycleState = nucleus && typeof nucleus.lifecycle_state === "string" ? nucleus.lifecycle_state : null;
-  } catch (_error) {
-    nucleusHash = null;
-    lifecycleState = null;
-  }
+  const { nucleus, verified } = readSessionNucleusProjection(domain);
+  const nucleusHash = nucleus && typeof nucleus.nucleus_hash === "string" ? nucleus.nucleus_hash : null;
+  const lifecycleState = nucleus && typeof nucleus.lifecycle_state === "string" ? nucleus.lifecycle_state : null;
 
   // Step 4: state.json is a pure projection of nucleus.lifecycle_state. Derive
   // the legacy `phase` from the nucleus (the single source of truth) so a
@@ -243,6 +236,7 @@ function readSessionSummary(args) {
       phase,
       nucleus_hash: nucleusHash,
       lifecycle_state: lifecycleState,
+      verified,
       auth_status: state.auth_status,
       checkpoint_mode: state.checkpoint_mode,
       block_internal_hosts: state.block_internal_hosts,

@@ -56,14 +56,16 @@ const FRONTIER_EVENT_KINDS = Object.freeze([
   "node.transitioned",
 ]);
 
-// `node.transitioned` is part of the durable frontier vocabulary, but it is
-// not a generic append capability.  The TaskGraph state machine has a single
-// writer (`appendNodeTransition`) that validates the live node head while the
-// session lock is held.  Keeping a separate public/direct set prevents the
-// model-facing append tool from minting state transitions with an arbitrary
-// payload while preserving the full vocabulary for readers and predicates.
+// `node.transitioned` and `closure.recorded` are part of the durable frontier
+// vocabulary, but they are not generic append capabilities. The TaskGraph state
+// machine has a single writer (`appendNodeTransition`) that validates the live
+// node head while the session lock is held, and surface closure has sanctioned
+// materializer/merge writers. Keeping a separate public/direct set prevents the
+// model-facing append tool from minting state or closure transitions with an
+// arbitrary payload while preserving the full vocabulary for readers and
+// predicates.
 const DIRECT_FRONTIER_EVENT_KINDS = Object.freeze(
-  FRONTIER_EVENT_KINDS.filter((kind) => kind !== "node.transitioned"),
+  FRONTIER_EVENT_KINDS.filter((kind) => !["node.transitioned", "closure.recorded"].includes(kind)),
 );
 
 // Producer observation subtypes. These are observation_kind VALUES that ride
@@ -194,6 +196,24 @@ function appendFrontierEvent(input, options = {}) {
       { kind: event.kind },
     );
   }
+  if (event.kind === "closure.recorded") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "closure.recorded is surface closure authority and cannot be appended generically; use the sanctioned surface closure/merge writer",
+      { kind: event.kind },
+    );
+  }
+  return appendNormalizedFrontierEvent(event, options);
+}
+
+// Internal closure append funnel. Legitimate surface exhaustion and
+// coverage-completion signals arrive through materializer/merge-owned code
+// paths, not through bob_append_frontier_event.
+function appendClosureRecordedEvent(input, options = {}) {
+  const event = normalizeFrontierEvent(input, options);
+  if (event.kind !== "closure.recorded") {
+    throw new Error("appendClosureRecordedEvent accepts only closure.recorded");
+  }
   return appendNormalizedFrontierEvent(event, options);
 }
 
@@ -305,6 +325,7 @@ module.exports = {
   DIRECT_FRONTIER_EVENT_KINDS,
   PRODUCER_OBSERVATION_SUBTYPES,
   aggregateFrictionByPack,
+  appendClosureRecordedEvent,
   appendFrontierEvent,
   appendTaskGraphTransitionEvent,
   capabilityFrictionPayloads,

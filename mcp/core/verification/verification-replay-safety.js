@@ -37,6 +37,9 @@ const {
   requireFreshVerificationState,
 } = require("./verification-snapshot-contracts.js");
 const {
+  objectStateLeaseKey,
+} = require("../leases/index.js");
+const {
   safeAppendPipelineEventDirect,
 } = require("../telemetry/pipeline-events.js");
 const {
@@ -88,6 +91,11 @@ function replaySafetyForTool(toolName) {
 // findings independent. It can never widen attempt_pack→none, so the
 // no-ungoverned-concurrent-live-request guarantee is preserved per finding.
 const REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN = "finding";
+const REPLAY_CONTEXT_OBJECT_STATE_LEASE_SCOPE_OPT_IN = "object_state";
+const REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN_VALUES = Object.freeze([
+  REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN,
+  REPLAY_CONTEXT_OBJECT_STATE_LEASE_SCOPE_OPT_IN,
+]);
 
 function normalizeReplayContext(ctx) {
   if (!isPlainObject(ctx)) return null;
@@ -99,14 +107,20 @@ function normalizeReplayContext(ctx) {
     let leaseScopeOptIn = null;
     if (ctx.lease_scope != null) {
       const requested = typeof ctx.lease_scope === "string" ? ctx.lease_scope.trim() : "";
-      if (requested !== REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN) {
+      if (!REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN_VALUES.includes(requested)) {
         throw new ToolError(
           ERROR_CODES.INVALID_ARGUMENTS,
-          `replay_context.lease_scope opt-in supports only "${REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN}"`,
+          `replay_context.lease_scope opt-in supports only ${REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN_VALUES.map((value) => `"${value}"`).join(" or ")}`,
         );
       }
       leaseScopeOptIn = requested;
     }
+    const objectState = leaseScopeOptIn === REPLAY_CONTEXT_OBJECT_STATE_LEASE_SCOPE_OPT_IN
+      ? {
+        surface_id: assertNonEmptyString(ctx.surface_id, "replay_context.surface_id"),
+        object_state_key: assertNonEmptyString(ctx.object_state_key, "replay_context.object_state_key"),
+      }
+      : null;
     return {
       active: true,
       purpose,
@@ -115,6 +129,8 @@ function normalizeReplayContext(ctx) {
       round: ctx.round == null ? null : assertEnumValue(ctx.round, VERIFICATION_ROUND_VALUES, "replay_context.round"),
       finding_id: ctx.finding_id == null ? null : parseFindingId(ctx.finding_id, "replay_context.finding_id"),
       lease_scope_opt_in: leaseScopeOptIn,
+      surface_id: objectState ? objectState.surface_id : null,
+      object_state_key: objectState ? objectState.object_state_key : null,
     };
   } catch (error) {
     if (error instanceof ToolError) throw error;
@@ -135,6 +151,14 @@ function resolveEffectiveLeaseScope(packLeaseScope, context) {
   ) {
     return "finding";
   }
+  if (
+    context.lease_scope_opt_in === REPLAY_CONTEXT_OBJECT_STATE_LEASE_SCOPE_OPT_IN
+    && context.surface_id
+    && context.object_state_key
+    && packLeaseScope === "attempt_pack"
+  ) {
+    return "object_state";
+  }
   return packLeaseScope;
 }
 
@@ -148,6 +172,16 @@ function replayLeaseKey({ targetDomain, capabilityPack, context, leaseScope }) {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "replay_context.finding_id is required for finding-scoped replay leases");
     }
     return `${targetDomain}:${context.verification_attempt_id}:${context.finding_id}`;
+  }
+  if (leaseScope === "object_state") {
+    if (!context.surface_id || !context.object_state_key) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "replay_context.surface_id and replay_context.object_state_key are required for object-state replay leases");
+    }
+    return objectStateLeaseKey({
+      targetDomain,
+      surfaceId: context.surface_id,
+      objectStateKey: context.object_state_key,
+    });
   }
   throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `Unsupported replay lease_scope: ${leaseScope}`);
 }
@@ -465,6 +499,8 @@ function replayExecutionPolicy(targetDomain) {
 module.exports = {
   DEFAULT_REPLAY_SAFETY,
   REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN,
+  REPLAY_CONTEXT_OBJECT_STATE_LEASE_SCOPE_OPT_IN,
+  REPLAY_CONTEXT_LEASE_SCOPE_OPT_IN_VALUES,
   VERIFICATION_REPLAY_LEASE_TTL_MS,
   listActiveReplayLeases,
   normalizeReplayContext,

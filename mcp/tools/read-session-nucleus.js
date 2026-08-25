@@ -6,15 +6,16 @@ const {
   assertNonEmptyString,
 } = require("../core/io/validation.js");
 const {
-  readSessionNucleus,
+  readSessionNucleusProjection,
 } = require("../core/governance/index.js");
 
 function handler(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  const nucleus = readSessionNucleus(domain);
+  const { nucleus, verified } = readSessionNucleusProjection(domain);
   return JSON.stringify({
     version: 1,
     nucleus,
+    verified,
   });
 }
 

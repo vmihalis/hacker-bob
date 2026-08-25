@@ -449,6 +449,35 @@ test("the finding-scope lease opt-in narrows attempt_pack and disjoint findings 
   assert.equal(keyF1, keyF1b);
 });
 
+test("the object-state lease opt-in narrows attempt_pack by surface and state key", () => {
+  const ctxCouponA = normalizeReplayContext({
+    purpose: "verification_replay",
+    verification_attempt_id: "attempt-1",
+    verification_snapshot_hash: "h",
+    lease_scope: "object_state",
+    surface_id: "POST /api/coupons/redeem",
+    object_state_key: "coupon:A",
+  });
+  const ctxCouponB = normalizeReplayContext({
+    purpose: "verification_replay",
+    verification_attempt_id: "attempt-1",
+    verification_snapshot_hash: "h",
+    lease_scope: "object_state",
+    surface_id: "POST /api/coupons/redeem",
+    object_state_key: "coupon:B",
+  });
+
+  assert.equal(resolveEffectiveLeaseScope("attempt_pack", ctxCouponA), "object_state");
+
+  const keyA = replayLeaseKey({ targetDomain: "d", capabilityPack: "web", leaseScope: "object_state", context: ctxCouponA });
+  const keyB = replayLeaseKey({ targetDomain: "d", capabilityPack: "web", leaseScope: "object_state", context: ctxCouponB });
+  assert.notEqual(keyA, keyB);
+  assert.equal(
+    keyA,
+    replayLeaseKey({ targetDomain: "d", capabilityPack: "web", leaseScope: "object_state", context: ctxCouponA }),
+  );
+});
+
 test("without the opt-in the lease scope is the unchanged pack default (no default flip)", () => {
   const ctx = normalizeReplayContext({
     purpose: "verification_replay",
@@ -478,7 +507,20 @@ test("an unsupported lease_scope opt-in value is rejected", () => {
       finding_id: "F-1",
       lease_scope: "attempt_pack",
     }),
-    /lease_scope opt-in supports only "finding"/,
+    /lease_scope opt-in supports only "finding" or "object_state"/,
+  );
+});
+
+test("the object-state lease opt-in requires a surface and object-state key", () => {
+  assert.throws(
+    () => normalizeReplayContext({
+      purpose: "verification_replay",
+      verification_attempt_id: "attempt-1",
+      verification_snapshot_hash: "h",
+      lease_scope: "object_state",
+      surface_id: "POST /api/coupons/redeem",
+    }),
+    /replay_context\.object_state_key/,
   );
 });
 

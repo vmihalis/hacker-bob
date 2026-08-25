@@ -60,6 +60,9 @@ const {
   readVerifiedPhysicalSessionBootstrapJournal,
 } = require("../mcp/domains/physical/physical-session-journal.js");
 const {
+  readSessionEvents,
+} = require("../mcp/core/session/session-events.js");
+const {
   authorizeToolCall,
 } = require("../mcp/core/session/session-authority.js");
 const {
@@ -1309,9 +1312,19 @@ test("physical-only session front door is effect-free, durable, idempotent, and 
       assert.equal(nucleus.physical_scope.axis_digest, state.physical_scope.axis_digest);
       assert.equal(journal.status, "complete");
       assert.equal(journal.nucleus_hash, nucleus.nucleus_hash);
+      assert.equal(journal.state_hash, hashCanonicalJson(state));
       assert.match(journal.bootstrap_binding_digest, /^[a-f0-9]{64}$/);
       assert.match(journal.signed_import_digest, /^[a-f0-9]{64}$/);
       assert.match(journal.replay_reservation_receipt_digest, /^[a-f0-9]{64}$/);
+      const initializedEvents = readSessionEvents(domain)
+        .filter((event) => event.kind === "governance.session.initialized");
+      assert.equal(initializedEvents.length, 1);
+      assert.equal(initializedEvents[0].nucleus_hash, nucleus.nucleus_hash);
+      assert.equal(initializedEvents[0].payload.nucleus_hash, nucleus.nucleus_hash);
+      assert.equal(
+        initializedEvents[0].payload.physical_scope_axis_digest,
+        state.physical_scope.axis_digest,
+      );
       const serializedArtifacts = JSON.stringify({ state, nucleus, journal });
       assert.doesNotMatch(serializedArtifacts, /authorization-record:engagement-1/);
       assert.doesNotMatch(serializedArtifacts, /auth-proof:operator-import-1/);

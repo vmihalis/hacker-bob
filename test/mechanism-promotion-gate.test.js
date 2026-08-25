@@ -12,12 +12,17 @@ const {
   STAY_INSUFFICIENT_DISTINCT,
   STAY_NO_REFUTED_FORGERY,
   STAY_NO_HUMAN_CONTROL,
+  STAY_LEARNED_MEASUREMENT_ADVISORY_ONLY,
+  HOLD_LEARNED_MEASUREMENT_ADVISORY_ONLY,
+  HOLD_LEARNED_MEASUREMENT_NOT_ADMISSIBLE,
   isTier3Candidate,
+  isLearnedMeasurementCandidate,
   executedFlipKey,
   countDistinctExecutedFlips,
   hasRefutedForgeryOnRecord,
   hasHumanConfirmedControl,
   evaluatePromotion,
+  evaluateLearnedMeasurementClosure,
 } = require("../mcp/core/mechanism-promotion-gate.js");
 
 // A tier-3 advisory candidate, the only kind that is a promotion subject. Shaped
@@ -67,6 +72,21 @@ function humanControl() {
     operator: "eric@commons.email",
     attestation: "negative control discriminates; confounder set reviewed",
   };
+}
+
+function learnedMeasurementRow(overrides) {
+  return Object.assign(
+    {
+      kind: "learned_semantic_measurement",
+      proof_mode: "learned_measurement_advisory_v1",
+      advisory: true,
+      claim_authority: false,
+      closure_authority: false,
+      admission: { admissible: true, reason: "admitted_advisory_measurement", hold_reasons: [] },
+      result: { score: 0.99, label: "harmful", abstain: false, ood: false, shifted: false },
+    },
+    overrides,
+  );
 }
 
 function fullEvidence(overrides) {
@@ -239,6 +259,55 @@ test("empty evidence keeps the candidate at tier-3", () => {
   assert.equal(verdict.promote, false);
   assert.equal(verdict.target_tier, SOURCE_TIER);
   assert.equal(verdict.reason, STAY_INSUFFICIENT_DISTINCT);
+});
+
+test("tier-2 learned judge candidates are advisory-only and cannot promote", () => {
+  const candidate = tier3Candidate({
+    kind: "learned_semantic_measurement",
+    proof_mode: "learned_measurement_advisory_v1",
+    oracle_tier: "tier2_learned_judge",
+  });
+  assert.equal(isLearnedMeasurementCandidate(candidate), true);
+
+  const verdict = evaluatePromotion(candidate, fullEvidence());
+  assert.equal(verdict.promote, false);
+  assert.equal(verdict.reason, STAY_LEARNED_MEASUREMENT_ADVISORY_ONLY);
+  assert.equal(verdict.target_tier, SOURCE_TIER);
+  assert.equal(verdict.conditions.distinct_executed_flips, true);
+  assert.equal(verdict.conditions.refuted_forgery, true);
+  assert.equal(verdict.conditions.human_control, true);
+});
+
+test("learned measurements never close; forged soft unknown rows hold", () => {
+  const positive = evaluateLearnedMeasurementClosure({
+    learned_measurements: [learnedMeasurementRow()],
+  });
+  assert.equal(positive.close, false);
+  assert.equal(positive.disposition, "HOLD");
+  assert.equal(positive.reason, HOLD_LEARNED_MEASUREMENT_ADVISORY_ONLY);
+  assert.equal(positive.independent_registered_proof_required, true);
+
+  const forged = evaluateLearnedMeasurementClosure({
+    learned_measurements: [
+      learnedMeasurementRow({
+        class_id: "unknown_class",
+        source_authority: "generated_hypothesis",
+        closure_authority: false,
+        admission: {
+          admissible: false,
+          reason: "unknown_class_hold",
+          hold_reasons: [
+            "unknown_class_hold",
+            "soft_or_generated_source_hold",
+            "unsigned_or_unverified_capture_hold",
+          ],
+        },
+      }),
+    ],
+  });
+  assert.equal(forged.close, false);
+  assert.equal(forged.disposition, "HOLD");
+  assert.equal(forged.reason, HOLD_LEARNED_MEASUREMENT_NOT_ADMISSIBLE);
 });
 
 test("the verdict is frozen and never mutates inputs", () => {

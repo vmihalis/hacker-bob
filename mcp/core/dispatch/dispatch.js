@@ -25,6 +25,38 @@ const {
 const {
   runWithReplaySafety,
 } = require("../verification/verification-replay-safety.js");
+const {
+  runWithSessionAuthorityContext,
+  verifySessionAuthorityContext,
+} = require("../session/session-authority-context.js");
+
+// Authority decisions tagged with either of these sources are the exact
+// state-only legacy carveout (session-authority.js's authorizeSessionBound):
+// no verified nucleus exists yet, so no authority context is built for them
+// -- the call runs with a null (context-free) ALS store.
+const LEGACY_NO_CONTEXT_AUTHORITY_SOURCES = new Set([
+  "legacy_state_projection",
+  "legacy_migration_only",
+]);
+
+// Resolves the ALS-scoped authority context for this dispatched call from
+// the (already-passed) authority decision, without exposing the decision's
+// own scalar fields to callers. A non-session-bound call (bootstrap, global,
+// cross-session, shadow-missing-session) yields no context. The pre-handler
+// authority gate already verified the session moments ago; a fresh verify
+// failing here (e.g. a TOCTOU deletion between gate and dispatch) must not
+// silently grant an axis, so it degrades to a null (context-free) scope
+// rather than falling back to an unverified read.
+function resolveDispatchSessionAuthorityContext(authority) {
+  if (!authority || authority.authority_session_present !== true) return null;
+  if (!authority.authority_target_domain) return null;
+  if (LEGACY_NO_CONTEXT_AUTHORITY_SOURCES.has(authority.authority_source)) return null;
+  try {
+    return verifySessionAuthorityContext(authority.authority_target_domain);
+  } catch {
+    return null;
+  }
+}
 
 function shadowSafeErrorMessage(error, authority) {
   const message = error && error.message ? error.message : String(error);
@@ -102,7 +134,11 @@ async function executeTool(name, args) {
   }
 
   try {
-    const data = parseHandlerResult(await runWithReplaySafety(tool, safeArgs, () => tool.handler(safeArgs)));
+    const sessionAuthorityContext = resolveDispatchSessionAuthorityContext(authority);
+    const data = parseHandlerResult(await runWithSessionAuthorityContext(
+      sessionAuthorityContext,
+      () => runWithReplaySafety(tool, safeArgs, () => tool.handler(safeArgs)),
+    ));
     const dataErrorCode = classifyDataError(data);
     if (dataErrorCode) {
       return finish(errorEnvelope(name, dataErrorCode, data.error, data));

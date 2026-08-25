@@ -1454,7 +1454,7 @@ test("prepareRepoEnv throws when target_domain is not a repo session", async () 
       caught = error;
     }
     assert.ok(caught, "expected error for non-repo session");
-    assert.match(caught.message, /is not a repo session|Missing session state/);
+    assert.match(caught.message, /is not a repo session|Missing session state|has no verified session nucleus/);
   });
 });
 

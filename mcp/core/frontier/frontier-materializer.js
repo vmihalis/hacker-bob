@@ -31,6 +31,10 @@ const {
 } = require("../io/queue-policy.js");
 const {
   compareObservationEvents,
+  currentClosureProofIndex,
+  isSurfaceClosureCandidateEvent,
+  isSurfaceClosureEvent,
+  isSurfaceUnblockEvent,
   normalizeObservationEvent,
 } = require("./frontier-projections.js");
 const {
@@ -350,6 +354,7 @@ function applyTransitionFields(transition, payload) {
 
 function materializeFrontierDocument(domain, { write = false, now = new Date(), queuePolicy = {} } = {}) {
   const events = readFrontierEvents(domain);
+  const closureProofSurfaceIds = currentClosureProofIndex(domain);
   const policy = normalizeQueuePolicy(queuePolicy);
   const surfacesById = new Map();
   const tasksByKey = new Map();
@@ -439,12 +444,23 @@ function materializeFrontierDocument(domain, { write = false, now = new Date(), 
       }
     }
 
-    if (event.kind === "closure.recorded") {
+    if (isSurfaceClosureEvent(event, closureProofSurfaceIds)) {
       markTask(tasksByKey, event, "closed", "closure_event_ids");
       if (event.surface_id) {
         const surface = ensureSurface(surfacesById, domain, event.surface_id, event.ts);
         addUnique(surface.closure_event_ids, event.event_id);
         surface.state = "closed";
+      }
+    } else if (isSurfaceClosureCandidateEvent(event)) {
+      if (event.surface_id) {
+        const surface = ensureSurface(surfacesById, domain, event.surface_id, event.ts);
+        surface.state = "open";
+        surface.closure_event_ids = [];
+      }
+    } else if (isSurfaceUnblockEvent(event)) {
+      if (event.surface_id) {
+        const surface = ensureSurface(surfacesById, domain, event.surface_id, event.ts);
+        if (surface.state === "blocked") surface.state = "open";
       }
     }
   }

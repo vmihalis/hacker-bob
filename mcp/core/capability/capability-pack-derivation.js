@@ -37,9 +37,11 @@ const {
   dispatchableCapabilityPacks,
   getCapabilityPack,
   classifySurfaceCapability,
+  controlValidityClassForBugClass,
   isCapabilityPackDispatchable,
   isPhysicalSurfaceMetadata,
   isBugClassRelevantForSurface,
+  isBugClassRegisteredForClosure,
 } = require("./capability-packs.js");
 const {
   collectContractArtifactRefs,
@@ -730,6 +732,24 @@ function fanoutPlanningKey(bugClass, authProfile) {
   return JSON.stringify([bugClass, authProfile || ""]);
 }
 
+function closureHoldChild({ parentSurfaceId, bugClass, authProfile }) {
+  const holdReason = `unknown control-validity class: ${bugClass}`;
+  return Object.freeze({
+    cell_key: JSON.stringify([parentSurfaceId, "", "", bugClass, authProfile || ""]),
+    planning_key: fanoutPlanningKey(bugClass, authProfile),
+    surface_id: parentSurfaceId,
+    bug_class: bugClass,
+    auth_profile: authProfile || "",
+    disposition: "hold",
+    routable: false,
+    hold_reason: holdReason,
+    capability_pack_ids: Object.freeze([]),
+    allowed_tools_for_node: Object.freeze([]),
+    technique_pack_ids: Object.freeze([]),
+    rationale: `${holdReason}; closure routing is held for adjudication on ${parentSurfaceId}`,
+  });
+}
+
 // Belief-ordering overlay for the fan-out children. Default-off and
 // permute-never-filter: given the eligible (bug_class x auth_role) cells in
 // deterministic baseline order, return a STABLE permutation ranked by their
@@ -918,6 +938,18 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
   const leaf = remainingDepth <= 0 || maxChildren <= 0 || bugClasses.length === 0;
   if (!leaf) {
     for (const bugClass of bugClasses) {
+      const controlValidityClass = controlValidityClassForBugClass(bugClass);
+      if (!isBugClassRegisteredForClosure(bugClass)) {
+        for (const authProfile of authAxis) {
+          const planningKey = fanoutPlanningKey(bugClass, authProfile);
+          if (coveredKeys.has(planningKey)) {
+            coveredPruned += 1;
+            continue;
+          }
+          eligible.push(closureHoldChild({ parentSurfaceId, bugClass, authProfile }));
+        }
+        continue;
+      }
       // Reachability/type gate: drop a bug_class that cannot structurally occur
       // on this surface's class (e.g. reentrancy on web). Fail-open, so only
       // the impossible is pruned — the floor stays reachable, not a blind cross-
@@ -948,6 +980,7 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
             surface_id: parentSurfaceId,
             bug_class: bugClass,
             auth_profile: authProfile || "",
+            ...(controlValidityClass ? { control_validity_class: controlValidityClass } : {}),
             capability_pack_ids: childCapabilityPackIds,
             allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
             technique_pack_ids: Object.freeze(techniquePackIds.slice()),
@@ -980,6 +1013,7 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
             surface_id: parentSurfaceId,
             bug_class: bugClass,
             auth_profile: authProfile || "",
+            ...(controlValidityClass ? { control_validity_class: controlValidityClass } : {}),
             mechanism_template_id: typeof template.id === "string" ? template.id : null,
             mechanism_tier: Number.isInteger(template.tier) ? template.tier : 3,
             capability_pack_ids: childCapabilityPackIds,

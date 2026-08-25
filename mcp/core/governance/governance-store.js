@@ -154,7 +154,33 @@ function readVerifiedSessionNucleus(domain) {
   return normalized;
 }
 
+// The ONLY place the legacy, unverified nucleus projection is assembled for
+// general consumption. bob_read_session_nucleus and bob_read_session_summary
+// are the tagged consumers of this wrapper's fallback branch (always
+// surfaced as verified:false); an additional consumer may call this wrapper
+// directly only if it surfaces the returned verified flag adjacent to any
+// nucleus-derived field it exposes, and is not grant-adjacent. There is no
+// fixed caller count. bob_read_session_state does NOT call this wrapper — it
+// is an independent, verified-only check via sessionNucleusIsVerified /
+// readVerifiedSessionNucleus (strict, no fallback), and fails closed instead
+// of reaching this wrapper. The fallback never trusts an unverified on-disk
+// session-nucleus.json blob — it derives fresh from state.json through the
+// same canonical parser readVerifiedSessionNucleus itself falls back to
+// elsewhere, so a tampered/stale nucleus file cannot leak into the
+// projection.
+function readSessionNucleusProjection(domain) {
+  try {
+    return { nucleus: readVerifiedSessionNucleus(domain), verified: true };
+  } catch {
+    return {
+      nucleus: sessionNucleusFromState(readSessionStateStrict(domain).state),
+      verified: false,
+    };
+  }
+}
+
 module.exports = {
   readSessionNucleus,
+  readSessionNucleusProjection,
   readVerifiedSessionNucleus,
 };

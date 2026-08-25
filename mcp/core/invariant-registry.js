@@ -460,6 +460,49 @@ const REGISTRY = Object.freeze({
       Object.freeze({ file: "mcp/tools/materialize-producer-floor.js", symbol: "PRD-6" }),
     ]),
   }),
+
+  // ── Boot-frozen truthful startup surface (D1) ───────────────────────────
+  "Y-D24": Object.freeze({
+    kind: "invariant",
+    class: "startup_truthfulness",
+    title:
+      "The engine's startup banner and singleton-lock refusal message name the "
+      + "ACTUAL boot-frozen sessionsRoot(), never a hardcoded '~/hacker-bob-sessions/' "
+      + "literal, so the printed root stays truthful under a custom BOB_SESSIONS_ROOT.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/server.js", symbol: "Y-D24" }), // tag anchor
+      Object.freeze({ file: "mcp/core/io/transport.js", symbol: "Y-D24" }), // tag anchor
+    ]),
+  }),
+  "Y-D25": Object.freeze({
+    kind: "invariant",
+    class: "startup_truthfulness",
+    title:
+      "The MCP `initialize` response's serverInfo.version is read once at module "
+      + "load from fixed Bob-owned package metadata (package.json in a source "
+      + "checkout or the installer-owned .hacker-bob/VERSION stamp in an installed "
+      + "workspace), never a hardcoded literal, env var, or caller-supplied value, "
+      + "so it cannot silently diverge from the shipped package version.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/core/io/transport.js", symbol: "Y-D25" }), // tag anchor
+      Object.freeze({ file: "mcp/core/io/transport.js", symbol: "SERVER_VERSION" }),
+    ]),
+  }),
+  "Y-D26": Object.freeze({
+    kind: "invariant",
+    class: "autonomy_invariant_schema_registry",
+    title:
+      "Universal autonomy invariant schemas are human-authored, content-hashed, "
+      + "and mandatory-control-bound; an unknown class, changed schema digest, "
+      + "changed mandatory-control digest, or generated/soft hypothesis resolves "
+      + "to HOLD rather than a generic web fallback or closure input.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/core/mechanism/invariant-template-corpus.js", symbol: "Y-D26" }), // tag anchor
+      Object.freeze({ file: "mcp/core/mechanism/invariant-template-corpus.js", symbol: "UNIVERSAL_INVARIANT_SCHEMAS" }),
+      Object.freeze({ file: "mcp/core/mechanism/invariant-template-corpus.js", symbol: "verifyInvariantSchemaSignatureContext" }),
+      Object.freeze({ file: "mcp/core/mechanism-template-registry.js", symbol: "resolveVerifierTemplateForInvariantClass" }),
+    ]),
+  }),
 });
 
 // Backlog: tags that EXIST in the tree but do not yet have a written registry

@@ -13,7 +13,9 @@ const {
   readSessionArtifactSummary,
   readPipelineAnalytics,
 } = require("../mcp/core/telemetry/pipeline-analytics.js");
-const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const {
+  appendClosureRecordedEvent,
+} = require("../mcp/core/frontier/frontier-events.js");
 const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
@@ -49,7 +51,7 @@ function seedCoverage(domain, { surfaces, blockedPrereqHistory = [] }) {
   fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({ surfaces }, null, 2)}\n`, "utf8");
   // surface-explored is closed via the frontier ledger; the other non-low
   // surface stays OPEN so closed_pct < 100 and the coverage gate evaluates.
-  appendFrontierEvent({
+  appendClosureRecordedEvent({
     target_domain: domain,
     kind: "closure.recorded",
     surface_id: "surface-explored",

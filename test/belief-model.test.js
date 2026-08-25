@@ -15,6 +15,12 @@ const {
 } = require("../mcp/core/io/paths.js");
 const {
   _internals,
+  LEARNED_MEASUREMENT_ADMITTED,
+  LEARNED_MEASUREMENT_HOLD_SOFT_SOURCE,
+  LEARNED_MEASUREMENT_HOLD_UNKNOWN_CLASS,
+  LEARNED_MEASUREMENT_HOLD_UNSIGNED_CAPTURE,
+  LEARNED_MEASUREMENT_NEVER_CLOSES,
+  buildLearnedSemanticMeasurement,
   readBeliefModelInfo,
   trainBeliefModel,
 } = require("../mcp/core/belief/model.js");
@@ -36,6 +42,53 @@ function withTempHome(fn) {
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function hex(ch) {
+  return ch.repeat(64);
+}
+
+function learnedMeasurementInput(overrides = {}) {
+  return {
+    target_domain: "learned-measurement.example.com",
+    class_id: "harmful_uplift",
+    source_authority: "instrument",
+    captured_output: {
+      artifact_ref: "captures/output-1.json",
+      content_hash: hex("a"),
+      row_mac_verified: true,
+    },
+    judge: {
+      judge_id: "t2-harm-judge",
+      version: "2026-08-23.1",
+      model_digest: hex("b"),
+      runtime_digest: hex("c"),
+      config_digest: hex("d"),
+    },
+    calibration: {
+      issuer: "independent-labeling-board",
+      certificate_digest: hex("e"),
+      labels_digest: hex("f"),
+      independent_labels: true,
+      coverage_class_ids: ["harmful_uplift"],
+      valid_from: "2026-08-01T00:00:00.000Z",
+      valid_until: "2026-09-01T00:00:00.000Z",
+      ood_adversarial_passed: true,
+      drift_check_passed: true,
+    },
+    invocation: {
+      observed_at: "2026-08-23T00:00:00.000Z",
+      context_digest: hex("1"),
+    },
+    result: {
+      score: 0.97,
+      label: "harmful",
+      abstain: false,
+      ood: false,
+      shifted: false,
+    },
+    ...overrides,
+  };
 }
 
 function seedLabeledDomain({ domain, findingId, label, causalSupport }) {
@@ -171,4 +224,68 @@ test("belief model labels prefer per-finding grade scores and model ids are boun
     () => _internals.normalizeOptionalModelId("Authorization: Bearer secret"),
     /model_id must be 1-80 chars/,
   );
+});
+
+test("learned semantic judge emits only a digest-bound advisory measurement row", () => {
+  const row = buildLearnedSemanticMeasurement(learnedMeasurementInput());
+
+  assert.equal(row.kind, "learned_semantic_measurement");
+  assert.equal(row.measurement_version, "learned-semantic-measurement.v1");
+  assert.equal(row.proof_mode, "learned_measurement_advisory_v1");
+  assert.equal(row.admission.admissible, true);
+  assert.equal(row.admission.reason, LEARNED_MEASUREMENT_ADMITTED);
+  assert.equal(row.closure_decision.close, false);
+  assert.equal(row.closure_decision.disposition, "HOLD");
+  assert.equal(row.closure_decision.reason, LEARNED_MEASUREMENT_NEVER_CLOSES);
+  assert.equal(row.closure_decision.independent_registered_proof_required, true);
+  assert.equal(row.advisory, true);
+  assert.equal(row.claim_authority, false);
+  assert.equal(row.verification_authority, false);
+  assert.equal(row.grade_authority, false);
+  assert.equal(row.dispatch_authority, false);
+  assert.equal(row.closure_authority, false);
+  assert.match(row.signature_context_hash, /^[0-9a-f]{64}$/);
+  assert.match(row.measurement_hash, /^[0-9a-f]{64}$/);
+  assert.equal(Object.prototype.hasOwnProperty.call(row.captured_output_ref, "text"), false);
+});
+
+test("forged soft unknown learned measurement fails closed to HOLD", () => {
+  const row = buildLearnedSemanticMeasurement(learnedMeasurementInput({
+    class_id: "novel_autonomous_class",
+    source_authority: "generated_hypothesis",
+    captured_output: {
+      artifact_ref: "captures/forged-output.json",
+      content_hash: hex("2"),
+      row_mac_verified: false,
+      text: "raw target output must not enter the row",
+    },
+    calibration: {
+      issuer: "independent-labeling-board",
+      certificate_digest: hex("3"),
+      labels_digest: hex("4"),
+      independent_labels: true,
+      coverage_class_ids: ["harmful_uplift"],
+      valid_from: "2026-08-01T00:00:00.000Z",
+      valid_until: "2026-09-01T00:00:00.000Z",
+      ood_adversarial_passed: true,
+      drift_check_passed: true,
+    },
+    result: {
+      score: 0.99,
+      label: "harmful",
+      abstain: false,
+      ood: false,
+      shifted: false,
+    },
+  }));
+
+  assert.equal(row.admission.admissible, false);
+  assert.equal(row.admission.reason, LEARNED_MEASUREMENT_HOLD_UNKNOWN_CLASS);
+  assert.ok(row.admission.hold_reasons.includes(LEARNED_MEASUREMENT_HOLD_UNKNOWN_CLASS));
+  assert.ok(row.admission.hold_reasons.includes(LEARNED_MEASUREMENT_HOLD_SOFT_SOURCE));
+  assert.ok(row.admission.hold_reasons.includes(LEARNED_MEASUREMENT_HOLD_UNSIGNED_CAPTURE));
+  assert.equal(row.closure_decision.close, false);
+  assert.equal(row.closure_decision.disposition, "HOLD");
+  assert.equal(row.closure_authority, false);
+  assert.equal(JSON.stringify(row).includes("raw target output"), false);
 });

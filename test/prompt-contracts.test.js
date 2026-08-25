@@ -1141,11 +1141,10 @@ test("orchestrator skill allowed-tools equal the orchestrator + auth permission 
 });
 
 test("/bob-evaluate command loads the runner playbook directly and shares its registry tool bundle", () => {
-  // The runner skill is disable-model-invocation:true, so current Claude Code
-  // refuses Skill-tool invocation of it — a delegator command (allowed-tools:
-  // [Skill]) is dead on arrival. The command must instead carry the orchestrator
-  // bundle and read+execute the playbook. This binds the command to the same
-  // registry source as the skill so the two can never drift.
+  // The runner skill permits Skill-tool invocation by the model, but this command
+  // still carries the orchestrator bundle and read+executes the playbook directly.
+  // This binds the command to the same registry source as the skill so the two
+  // can never drift.
   const cmd = readFile(".claude/commands/bob-evaluate.md");
   const cmdTools = parseYamlListFrontmatter(cmd, "allowed-tools", "bob-evaluate.md");
   assert.ok(!cmdTools.includes("Skill"), "bob-evaluate command must not delegate via the Skill tool");
@@ -1166,7 +1165,7 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // block (one line per tool in the orchestrator role bundle). It is registry-
   // driven: bundle and PRODUCER_PACKS changes move it. Set the cap to the exact
   // post-regen trimmed line count.
-  assert.ok(lines <= 456, `bob-evaluate-runner skill is ${lines} lines (cap 456)`);
+  assert.ok(lines <= 457, `bob-evaluate-runner skill is ${lines} lines (cap 457)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,

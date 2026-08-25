@@ -17,6 +17,17 @@ const {
   readSessionStateStrict,
   writeSessionStateDocument,
 } = require("../mcp/core/session/session-state-store.js");
+const {
+  normalizeSessionStateDocument,
+} = require("../mcp/core/session/session-state-contracts.js");
+const {
+  initSession,
+} = require("../mcp/core/session/session-state.js");
+const {
+  getOrVerifySessionAuthorityContext,
+} = require("../mcp/core/session/session-authority-context.js");
+const sessionStateVocabulary = require("../mcp/core/session/session-state-vocabulary.js");
+const governanceIndex = require("../mcp/core/governance/index.js");
 
 const ROOT = path.resolve(__dirname, "..");
 
@@ -1488,28 +1499,20 @@ test("session-state store write callers keep explicit lock boundaries", () => {
     /after import/,
   );
   const directStoreWriterLockChecks = [
-    // Cycle O.1: repo-target.initRepoSession is the bootstrap path for
-    // OSS-axis sessions and writes state.json under its own withSessionLock,
-    // mirroring the contract for session-state.initSession.
-    { relativePath: "mcp/domains/repo/repo-target.js", functionName: "initRepoSession", callCount: 1 },
-    { relativePath: "mcp/core/session/session-state.js", functionName: "advanceSession", callCount: 2 },
-    { relativePath: "mcp/core/session/session-state.js", functionName: "assertSessionEgressIdentity", callCount: 1 },
-    { relativePath: "mcp/core/session/session-state.js", functionName: "clearOperatorNote", callCount: 1 },
     { relativePath: "mcp/core/session/session-state.js", functionName: "clearTerminalBlock", callCount: 1 },
-    { relativePath: "mcp/core/session/session-state.js", functionName: "initSession", callCount: 1 },
-    { relativePath: "mcp/core/session/session-state.js", functionName: "setOperatorNote", callCount: 1 },
-    // bob_init_contract_session is the bootstrap path for the
-    // smart-contract axis and writes state.json under its own withSessionLock,
-    // mirroring session-state.initSession / repo-target.initRepoSession.
-    { relativePath: "mcp/tools/blockchain/init-contract-session.js", functionName: "handler", callCount: 1 },
-    // PH-IP1 physical-only bootstrap writes state.json only from the synchronous
-    // create path while its derived target-domain session lock is held.
-    { relativePath: "mcp/tools/physical/init-physical-session.js", functionName: "createPhysicalBootstrap", callCount: 1 },
-    // O-P6 MIXED program: the OPTIONAL contracts companion on bob_init_session /
-    // bob_init_repo_session binds target_contracts + chain_authority_hash into
-    // the primary-axis session's state.json under its own withSessionLock.
-    { relativePath: "mcp/tools/init-session.js", functionName: "bindContractCompanion", callCount: 1 },
-    { relativePath: "mcp/tools/repo/init-repo-session.js", functionName: "bindContractCompanion", callCount: 1 },
+    // A7M: assertSessionEgressIdentity, setOperatorNote and clearOperatorNote no
+    // longer call writeSessionStateDocument directly -- they (setOperatorNote/
+    // clearOperatorNote via the shared applyOperatorConstraintUpdate) route
+    // through commitSessionAuthority instead, proven below alongside advanceSession.
+    // O-P6 MIXED program note: the OPTIONAL contracts companion on bob_init_session /
+    // bob_init_repo_session binds target_contracts + chain_authority_hash into the
+    // primary-axis session's state.json through initSession's own commitSessionAuthority
+    // create-CAS call (buildInitialSessionState already embeds the companion fields into
+    // the initial state passed to that call). The RESUME path's seedVerifiedContractCompanion
+    // (mcp/domains/blockchain/contract-target.js) reads state under its own withSessionLock
+    // to verify the binding but never writes state.json -- there is no "bindContractCompanion"
+    // writeSessionStateDocument caller in mcp/tools/init-session.js or
+    // mcp/tools/repo/init-repo-session.js; those two rows were stale.
     { relativePath: "mcp/core/waves/wave-merge-settler.js", functionName: "applyWaveMerge", callCount: 1 },
   ];
   const storeWriterSummaries = runtimeCallSummaries("writeSessionStateDocument");
@@ -1521,6 +1524,39 @@ test("session-state store write callers keep explicit lock boundaries", () => {
   for (const { relativePath, functionName } of directStoreWriterLockChecks) {
     assertCallsInsideSessionLock(readSource(relativePath), functionName, "writeSessionStateDocument");
   }
+
+  // A7: advanceSession no longer writes state.json/session-nucleus.json directly.
+  // commitSessionAuthority owns the raw projection write through its own CAS-safe
+  // writeFileCasAtomicReceipt primitive (NOT the plain-atomic writeSessionStateDocument
+  // -- a CAS transaction must never fall back to a non-CAS write, or it would lose the
+  // compare-and-swap guarantee on state.json). advanceSession's locked write contract is
+  // instead: it calls commitSessionAuthority exactly once, inside its own
+  // withSessionLock(domain) callback -- proven directly here rather than via the
+  // writeSessionStateDocument inventory above, since commitSessionAuthority's first
+  // argument is an options object, not a bare domain expression.
+  assertCallsInsideSessionLock(
+    readSource("mcp/core/session/session-state.js"),
+    "advanceSession",
+    "commitSessionAuthority",
+    { requireMatchingDomain: false },
+  );
+
+  // A7M: egress binding and the shared operator-constraint writer (backing
+  // setOperatorNote/clearOperatorNote) each collapse to a single
+  // commitSessionAuthority call inside their own withSessionLock callback,
+  // the same CAS/rollback contract advanceSession already proves above.
+  assertCallsInsideSessionLock(
+    readSource("mcp/core/session/session-state.js"),
+    "assertSessionEgressIdentity",
+    "commitSessionAuthority",
+    { requireMatchingDomain: false },
+  );
+  assertCallsInsideSessionLock(
+    readSource("mcp/core/session/session-state.js"),
+    "applyOperatorConstraintUpdate",
+    "commitSessionAuthority",
+    { requireMatchingDomain: false },
+  );
 
   const waveSchedulerSource = readSource("mcp/core/waves/wave-scheduler.js");
   const waveAssignmentStoreSource = readSource("mcp/core/waves/wave-assignment-store.js");
@@ -1877,3 +1913,81 @@ test("session-state-store internal-host policy preserves session precedence and 
     );
   });
 });
+
+test("governance-contracts and session-state-contracts resolve LIFECYCLE_STATE_VALUES from the same session-state-vocabulary leaf (no re-duplication)", () => {
+  // governance/index.js re-exports governance-contracts.js's LIFECYCLE_STATE_VALUES,
+  // which must be the SAME array object session-state-vocabulary.js exports —
+  // proving governance-contracts.js imports rather than redeclares it.
+  assert.strictEqual(governanceIndex.LIFECYCLE_STATE_VALUES, sessionStateVocabulary.LIFECYCLE_STATE_VALUES);
+
+  // session-state-contracts.js has no exported enum to compare by reference, so
+  // prove behavioral equivalence against the same leaf array instead: every
+  // value the leaf accepts must normalize as lifecycle_state, and no other
+  // value may. A reintroduced local copy with a different membership would
+  // fail one side of this loop.
+  const domain = "lifecycle-values-identity.example.com";
+  for (const value of sessionStateVocabulary.LIFECYCLE_STATE_VALUES) {
+    const normalized = normalizeSessionStateDocument(
+      { target_url: `https://${domain}`, lifecycle_state: value },
+      domain,
+    );
+    assert.equal(normalized.lifecycle_state, value);
+  }
+  assert.throws(
+    () => normalizeSessionStateDocument(
+      { target_url: `https://${domain}`, lifecycle_state: "NOT_A_LIFECYCLE_STATE" },
+      domain,
+    ),
+    /lifecycle_state/,
+  );
+
+  // Source-level guard: session-state-contracts.js must import the leaf array
+  // (aliased or not) rather than declaring its own frozen six-state literal.
+  const contractsSource = readSource(path.join("mcp", "core", "session", "session-state-contracts.js"));
+  assert.match(
+    contractsSource,
+    /require\(["']\.\/session-state-vocabulary\.js["']\)/,
+    "session-state-contracts.js must require session-state-vocabulary.js",
+  );
+  assert.doesNotMatch(
+    contractsSource,
+    /Object\.freeze\(\[\s*["']SETUP["']/,
+    "session-state-contracts.js must not redeclare the frozen lifecycle enum literal",
+  );
+});
+
+// A8E parity: the frozen session-authority context's block_internal_hosts_policy
+// field (session-authority-context.js, sourced from the verified nucleus's
+// scope_policy) must never silently diverge from the legacy direct
+// blockInternalHostsRequestPolicy read (session-state-store.js, sourced from
+// state.json) for the SAME, untampered session -- both derive from the same
+// initial policy, just through two different documents (nucleus vs. state.json
+// projection) that stay in sync for a freshly-initialized, unmutated session.
+test("frozen authority context block_internal_hosts_policy matches the legacy state.json-sourced read for an untampered session", () => withTempHome(() => {
+  const domain = "a8e-parity-normal.example.com";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+  const context = getOrVerifySessionAuthorityContext(domain);
+  const legacy = blockInternalHostsRequestPolicy(domain, {}, { allowMissingSession: false });
+
+  assert.deepEqual(context.block_internal_hosts_policy, {
+    checkpoint_mode: legacy.checkpoint_mode,
+    block_internal_hosts: legacy.block_internal_hosts,
+    block_internal_hosts_source: legacy.block_internal_hosts_source,
+  });
+}));
+
+test("frozen authority context block_internal_hosts_policy matches the legacy state.json-sourced read for a paranoid-checkpoint session", () => withTempHome(() => {
+  const domain = "a8e-parity-paranoid.example.com";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}`, checkpoint_mode: "paranoid" }));
+
+  const context = getOrVerifySessionAuthorityContext(domain);
+  const legacy = blockInternalHostsRequestPolicy(domain, {}, { allowMissingSession: false });
+
+  assert.equal(legacy.block_internal_hosts, true, "paranoid checkpoint mode must default block_internal_hosts to true");
+  assert.deepEqual(context.block_internal_hosts_policy, {
+    checkpoint_mode: legacy.checkpoint_mode,
+    block_internal_hosts: legacy.block_internal_hosts,
+    block_internal_hosts_source: legacy.block_internal_hosts_source,
+  });
+}));

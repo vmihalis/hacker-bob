@@ -32,6 +32,7 @@ const {
   TOOL_TELEMETRY_MAX_RECORDS,
 } = require("../mcp/core/telemetry/tool-telemetry.js");
 const {
+  appendClosureRecordedEvent,
   appendFrontierEvent,
 } = require("../mcp/core/frontier/frontier-events.js");
 const {
@@ -262,7 +263,7 @@ test("session artifact analytics preserves artifact summary shape and value sema
       pending_wave: 1,
     }, null, 2)}\n`, "utf8");
     // Seed the surface-state projection via append-only frontier events.
-    appendFrontierEvent({
+    appendClosureRecordedEvent({
       target_domain: domain,
       kind: "closure.recorded",
       surface_id: "surface-a",

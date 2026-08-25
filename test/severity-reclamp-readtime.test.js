@@ -25,6 +25,9 @@ const {
   reclampSeveritiesAgainstFreeze,
 } = require("../mcp/core/verification/verification-round-store.js");
 const {
+  ToolError,
+} = require("../mcp/core/io/envelope.js");
+const {
   finalSeverityByFinding,
 } = require("../mcp/core/frontier/reachability-ceiling.js");
 const {
@@ -49,6 +52,8 @@ const {
   offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
+  sessionNucleusPath,
+  statePath: sessionStatePath,
   verificationRoundPaths,
 } = require("../mcp/core/io/paths.js");
 
@@ -242,4 +247,46 @@ test("a legitimately MAC-armed proven rise KEEPS its higher severity at read", (
   // the medium baseline by the same read-time helper.
   const unproven = reclampSeveritiesAgainstFreeze(domain, [{ finding_id: "F-1", severity: "high" }]);
   assert.equal(unproven.get("F-1").severity, "medium", "an unproven above-baseline rise is lowered at read");
+}));
+
+// A8: the severity-rise guard's scope (web vs repo) is sourced ONLY from the
+// current/fresh verified authority context, never a raw state.json field --
+// and a present-but-unverifiable nucleus hard-fails rather than silently
+// returning an un-clamped empty Map (which would be an inflation bypass).
+
+test("the severity-rise guard hard-fails when the nucleus is present but tampered, never silently un-clamping", () => withTempHome(() => {
+  const domain = "reclamp-tampered-nucleus.example.com";
+  initWebSession(domain);
+  freezeFindingAt(domain, "medium");
+  writeFinalRound(domain, "medium");
+
+  const nucleus = JSON.parse(fs.readFileSync(sessionNucleusPath(domain), "utf8"));
+  nucleus.lifecycle_state = "GRADE"; // mutate without recomputing nucleus_hash
+  fs.writeFileSync(sessionNucleusPath(domain), `${JSON.stringify(nucleus, null, 2)}\n`);
+
+  assert.throws(
+    () => reclampSeveritiesAgainstFreeze(domain, [{ finding_id: "F-1", severity: "critical" }]),
+    (error) => error instanceof ToolError && /verified session authority context/.test(error.message),
+    "a tampered nucleus must hard-fail, not fall back to an un-clamped empty Map",
+  );
+}));
+
+test("the severity-rise guard's repo-scope path is driven by the verified context, not a raw state.json field shortcut", () => withTempHome(() => {
+  const { initRepoSession } = require("../mcp/domains/repo/repo-target.js");
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "bob-reclamp-repo-fixture-"));
+  const created = initRepoSession({ repo_path: repoPath });
+  const domain = created.target_domain;
+  freezeFindingAt(domain, "medium");
+  writeFinalRound(domain, "medium");
+
+  // Tamper an axis-IRRELEVANT raw state.json field (bypassing commitSessionAuthority
+  // entirely, session-nucleus.json untouched) to prove the guard's repo-scope branch
+  // is driven by context.repo (sourced from the verified nucleus), not a raw-state
+  // read that would need to special-case this field.
+  const stateDoc = JSON.parse(fs.readFileSync(sessionStatePath(domain), "utf8"));
+  stateDoc.operator_note = "unrelated raw-state tamper";
+  fs.writeFileSync(sessionStatePath(domain), `${JSON.stringify(stateDoc, null, 2)}\n`);
+
+  const decisions = reclampSeveritiesAgainstFreeze(domain, [{ finding_id: "F-1", severity: "critical" }]);
+  assert.equal(decisions.get("F-1").severity, "medium", "the repo-scope clamp applies exactly as for a web session");
 }));

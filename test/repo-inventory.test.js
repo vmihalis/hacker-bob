@@ -378,7 +378,7 @@ test("buildRepoInventory throws structured error when not bound to a repo sessio
   withTempHome(() => {
     assert.throws(
       () => buildRepoInventory({ target_domain: "repo-not-a-real-12345678" }),
-      /is not a repo session|Missing session state/,
+      /is not a repo session|Missing session state|has no verified session nucleus/,
     );
   });
 });

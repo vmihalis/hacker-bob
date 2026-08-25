@@ -37,6 +37,15 @@ const {
 const {
   evaluateObjectAuthDifferential,
 } = require("./belief/differential-tester.js");
+const {
+  CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+  buildControlValidityCertificate,
+} = require("./validity/index.js");
+const {
+  INVARIANT_SCHEMA_BINDING_HOLD,
+  buildInvariantSchemaSignatureContext,
+  verifyInvariantSchemaSignatureContext,
+} = require("./mechanism/invariant-template-corpus.js");
 
 // Shared URL helpers. The dispatcher and the OBJECT_AUTH plan geometry both
 // resolve leaf-supplied request paths onto the scoped base_url; they import these
@@ -218,6 +227,7 @@ const OBJECT_AUTH_MECHANISM_TEMPLATE = Object.freeze({
   edge_type: "guard",
   mechanism_id: "CWE-639",
   id: "object_authorization",
+  validity_class_id: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
 
   // Owns a leaf only when it carries the live re-execution inputs the object-auth
   // battery needs: a primary request object and a control_plan array.
@@ -255,6 +265,13 @@ const OBJECT_AUTH_MECHANISM_TEMPLATE = Object.freeze({
       controls: probe.controls,
     });
   },
+
+  control_validity_certificate(input) {
+    return buildControlValidityCertificate({
+      ...input,
+      class_id: CONTROL_VALIDITY_CLASS_OBJECT_AUTH,
+    });
+  },
 });
 
 // edge_type -> executable template. Open-vocab: any non-empty string can register;
@@ -287,12 +304,45 @@ function lookupVerifierTemplate(edgeType) {
   return TEMPLATES_BY_EDGE_TYPE.get(edgeType) || null;
 }
 
+function holdInvariantVerifierResolution(reason, binding) {
+  return Object.freeze({
+    disposition: INVARIANT_SCHEMA_BINDING_HOLD,
+    reason,
+    template: null,
+    binding,
+  });
+}
+
+function resolveVerifierTemplateForInvariantClass(input) {
+  const binding = verifyInvariantSchemaSignatureContext(input);
+  if (binding.disposition === INVARIANT_SCHEMA_BINDING_HOLD) {
+    return holdInvariantVerifierResolution(binding.reason, binding);
+  }
+  const edgeType = input && typeof input.edge_type === "string" ? input.edge_type : null;
+  const template = lookupVerifierTemplate(edgeType);
+  if (!template) {
+    return holdInvariantVerifierResolution(
+      `invariant schema class '${binding.class_id}' has no registered verifier template for edge_type '${edgeType}'`,
+      binding,
+    );
+  }
+  return Object.freeze({
+    disposition: "verifier_template_bound",
+    reason: "invariant schema and verifier template are both registry-bound",
+    template,
+    binding,
+  });
+}
+
 registerVerifierTemplate(OBJECT_AUTH_MECHANISM_TEMPLATE.edge_type, OBJECT_AUTH_MECHANISM_TEMPLATE);
 
 module.exports = {
   OBJECT_AUTH_MECHANISM_TEMPLATE,
   registerVerifierTemplate,
   lookupVerifierTemplate,
+  buildInvariantSchemaSignatureContext,
+  verifyInvariantSchemaSignatureContext,
+  resolveVerifierTemplateForInvariantClass,
   joinUrl,
   resolveRequest,
 };

@@ -28,9 +28,13 @@ const {
   statePath,
 } = require("../../core/io/paths.js");
 const {
-  buildSessionNucleus,
   normalizeTargetRepo,
+  readVerifiedSessionNucleus,
+  sessionNucleusFromState,
 } = require("../../core/governance/index.js");
+const {
+  getOrVerifySessionAuthorityContext,
+} = require("../../core/session/session-authority-context.js");
 const {
   resolveEgressProfile,
 } = require("../../core/egress-profiles.js");
@@ -56,16 +60,12 @@ const {
 } = require("../../core/io/storage.js");
 const {
   readSessionStateStrict,
-  writeSessionStateDocument,
 } = require("../../core/session/session-state-store.js");
+const {
+  commitSessionAuthority,
+} = require("../../core/session/session-authority-unit-of-work.js");
 const { ensureHandoffSigningKey } = require("../../core/ledger-integrity/index.js");
 const { hasAcquiredHarness } = require("../../core/harness-store.js");
-const {
-  readSessionNucleus,
-} = require("../../core/governance/index.js");
-const {
-  appendSessionEvent,
-} = require("../../core/session/session-events.js");
 const {
   hashCanonicalJson,
 } = require("../../core/verification/verification-contracts.js");
@@ -88,6 +88,15 @@ const {
 const {
   classifyRepoReachability,
 } = require("../../core/frontier/reachability.js");
+const {
+  bindRepoHostIdentity,
+  openContainedFile,
+  pinOverrideIdentity,
+  readContainedFile,
+  resolveContainedPath,
+  revalidateRepoHostIdentity,
+  statContainedPath,
+} = require("./repo-host-boundary.js");
 const {
   NATIVE_SOURCE_EXTENSIONS,
 } = require("../../core/native-extensions.js");
@@ -462,6 +471,7 @@ function initRepoSession({
   commit = null,
   deep_mode: deepMode = false,
   egress_profile: requestedEgressProfile = null,
+  contract_companion: contractCompanion = null,
 } = {}) {
   let targetRepo;
   try {
@@ -506,10 +516,8 @@ function initRepoSession({
     const filePath = statePath(domain);
 
     if (fs.existsSync(filePath)) {
-      let existing;
       let state;
       try {
-        existing = readRepoSession(domain);
         state = readSessionStateStrict(domain).state;
       } catch (error) {
         throw new ToolError(
@@ -517,7 +525,7 @@ function initRepoSession({
           `Session resume failed: ${error.message || String(error)}`,
         );
       }
-      const existingRoot = existing.target_repo && existing.target_repo.root_path;
+      const existingRoot = state.target_repo && state.target_repo.root_path;
       if (existingRoot !== targetRepo.root_path) {
         throw new ToolError(
           ERROR_CODES.STATE_CONFLICT,
@@ -527,6 +535,76 @@ function initRepoSession({
             requested_root_path: targetRepo.root_path,
           },
         );
+      }
+
+      // Pre-nucleus repo sessions retain their historical same-repo, pure-mode
+      // resume. This is deliberately a read-only compatibility result: it does
+      // not synthesize or publish authority, provision keys, or seed companion
+      // effects. A mixed resume always requires an existing verified nucleus.
+      let hasNucleusEntry = false;
+      try {
+        fs.lstatSync(sessionNucleusPath(domain));
+        hasNucleusEntry = true;
+      } catch (error) {
+        if (!error || error.code !== "ENOENT") {
+          throw new ToolError(
+            ERROR_CODES.STATE_CONFLICT,
+            `Session resume failed: session-nucleus.json could not be inspected`,
+          );
+        }
+      }
+      if (!hasNucleusEntry) {
+        if (contractCompanion) {
+          throw new ToolError(
+            ERROR_CODES.STATE_CONFLICT,
+            `Mixed repo resume requires an existing verified session nucleus: ${filePath}`,
+          );
+        }
+        return {
+          created: false,
+          session_dir: dir,
+          target_domain: domain,
+          target_repo: state.target_repo,
+          repo_hash: state.repo_hash || repoHash,
+          nucleus_hash: null,
+          lifecycle_state: state.lifecycle_state,
+          deep_mode: state.deep_mode,
+          egress_profile: state.egress_profile,
+        };
+      }
+
+      let existing;
+      let verified;
+      try {
+        existing = readRepoSession(domain);
+        verified = readVerifiedSessionNucleus(domain);
+      } catch (error) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Session resume failed: ${error.message || String(error)}`,
+        );
+      }
+      const projected = sessionNucleusFromState(state);
+      if (projected.nucleus_hash !== verified.nucleus_hash) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Session state and verified nucleus disagree: ${filePath}`,
+        );
+      }
+      if (contractCompanion) {
+        const existingContracts = Array.isArray(state.target_contracts)
+          ? [...state.target_contracts].sort()
+          : [];
+        const requestedContracts = [...contractCompanion.target_contracts].sort();
+        if (existingContracts.length !== requestedContracts.length
+            || existingContracts.some((value, index) => value !== requestedContracts[index])
+            || state.chain_authority_hash !== contractCompanion.chain_authority_hash
+            || verified.scope_policy.chain_authority_hash !== contractCompanion.chain_authority_hash) {
+          throw new ToolError(
+            ERROR_CODES.STATE_CONFLICT,
+            `Session already initialized for a different contracts authority: ${filePath}`,
+          );
+        }
       }
       // Resuming an existing session also provisions the key if absent, so a
       // session created before init provisioned it gains one on resume
@@ -555,25 +633,17 @@ function initRepoSession({
       legacyDefault: false,
     });
 
-    const sessionNucleus = buildSessionNucleus({
-      target_domain: domain,
-      target_repo: targetRepo,
-      repo_hash: repoHash,
-      scope_policy: {
-        target_domain: domain,
-        target_repo: targetRepo,
-        ...internalHostPolicy,
-      },
-      egress_identity: egressFields,
-      auth_context: {
-        auth_status: "pending",
-      },
-      operator_constraint: {
-        handoff_provenance_required: true,
-      },
+    const state = buildInitialSessionState(domain, null, {
+      deepMode: normalizedDeepMode,
+      egressProfile,
+      blockInternalHostsPolicy: internalHostPolicy,
+      targetRepo,
+      repoHash,
+      targetContracts: contractCompanion ? contractCompanion.target_contracts : [],
+      chainAuthorityHash: contractCompanion ? contractCompanion.chain_authority_hash : null,
     });
-    writeJsonDocument(sessionNucleusPath(domain), sessionNucleus);
-    appendSessionEvent({
+    const sessionNucleus = sessionNucleusFromState(state);
+    const initializedEvent = {
       target_domain: domain,
       kind: "governance.session.initialized",
       nucleus_hash: sessionNucleus.nucleus_hash,
@@ -584,17 +654,21 @@ function initRepoSession({
         auth_context_hash: hashCanonicalJson(sessionNucleus.auth_context),
         operator_constraint_hash: hashCanonicalJson(sessionNucleus.operator_constraint),
         repo_hash: sessionNucleus.repo_hash,
+        ...(contractCompanion
+          ? { chain_authority_hash: contractCompanion.chain_authority_hash }
+          : {}),
       },
+    };
+    commitSessionAuthority({
+      targetDomain: domain,
+      nextNucleus: sessionNucleus,
+      stateProjection: {
+        rawDocument: {},
+        nextState: state,
+      },
+      event: initializedEvent,
+      expectedNucleusHash: null,
     });
-
-    const state = buildInitialSessionState(domain, null, {
-      deepMode: normalizedDeepMode,
-      egressProfile,
-      blockInternalHostsPolicy: sessionNucleus.scope_policy,
-      targetRepo,
-      repoHash,
-    });
-    writeSessionStateDocument(domain, {}, state);
     // Provision the handoff signing key at session creation so every later path
     // finds it (idempotent; wave assignment still ensures it lazily as a safety
     // net).
@@ -626,8 +700,22 @@ function initRepoSession({
 
 function readRepoSession(targetDomain) {
   const domain = assertNonEmptyString(targetDomain, "target_domain");
-  const nucleus = readSessionNucleus(domain);
-  if (!nucleus || nucleus.scope_policy == null || nucleus.scope_policy.target_repo == null) {
+  // repo_hash/target_repo gate bob_repo_docker_run (a grant-adjacent
+  // decision), so this read must be verified and fail closed — never a
+  // silent fallback to an unverifiable session-nucleus.json. When this runs
+  // inside a dispatched tool call, it reuses that call's already-verified
+  // AsyncLocalStorage-scoped context instead of re-reading; a direct/offline
+  // caller (tests, CLI) gets a fresh verified read.
+  let context;
+  try {
+    context = getOrVerifySessionAuthorityContext(domain);
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `target_domain ${domain} has no verified session nucleus: ${error.message || String(error)}`,
+    );
+  }
+  if (!context || !context.repo) {
     throw new ToolError(
       ERROR_CODES.STATE_CONFLICT,
       `target_domain ${domain} is not a repo session`,
@@ -638,15 +726,13 @@ function readRepoSession(targetDomain) {
   // git session, line ~548) so a nucleus that lost the top-level field across a
   // rewrite still resolves the SAME hash the image was tagged with, rather than
   // crashing bob_repo_docker_run on a null slice.
-  const boundCommit = nucleus.scope_policy.target_repo
-    ? nucleus.scope_policy.target_repo.commit
-    : null;
+  const boundCommit = context.repo.commit || null;
   return {
-    target_domain: nucleus.target_domain,
-    target_repo: nucleus.scope_policy.target_repo,
-    repo_hash: nucleus.repo_hash || boundCommit || null,
-    nucleus_hash: nucleus.nucleus_hash,
-    lifecycle_state: nucleus.lifecycle_state,
+    target_domain: context.target_domain,
+    target_repo: context.repo,
+    repo_hash: context.repo_hash || boundCommit || null,
+    nucleus_hash: context.nucleus_hash,
+    lifecycle_state: context.lifecycle_state,
   };
 }
 
@@ -883,12 +969,13 @@ function matchesGitignore(patterns, relativePath, isDirectory) {
   return ignored;
 }
 
-function loadGitignore(rootPath) {
-  const candidate = path.join(rootPath, ".gitignore");
-  if (!fs.existsSync(candidate)) return [];
+// REPO-HOST-1: routed through the pinned identity's openContainedFile so a
+// .gitignore swapped to a symlink pointing outside the repo root (or to a
+// hardlinked host file) is rejected instead of silently followed.
+function loadGitignore(identity) {
   try {
-    const raw = fs.readFileSync(candidate, "utf8");
-    return compileGitignorePatterns(raw);
+    const { buffer } = readContainedFile(identity, ".gitignore");
+    return compileGitignorePatterns(buffer.toString("utf8"));
   } catch {
     return [];
   }
@@ -908,52 +995,63 @@ class RepoTooLargeError extends Error {
   }
 }
 
-function walkRepo(rootPath, gitignorePatterns) {
+// REPO-HOST-3 (window-minimized, not closed -- see repo-host-boundary.js's
+// header comment): the queue carries relPaths, never raw absolute paths, and
+// every DEQUEUE re-validates the directory against the pinned identity via
+// resolveContainedPath immediately before fs.readdirSync -- rejecting a swap
+// that happened before dequeue (the common case). A symlinked child is
+// resolved and validated the same way at ENQUEUE time, and the REAL
+// resolved relPath is what gets queued (never the raw symlink path), so a
+// later dequeue re-validates the actual resolved target, not the link.
+// This shrinks but cannot eliminate the window: Node's readdirSync/statSync
+// are path-based, so a swap landing between this dequeue-time check and the
+// readdirSync call that immediately follows it is still possible. Bounded
+// impact: an outside subtree's FILENAMES could leak into the file list --
+// never byte content (every content read is independently fd-validated via
+// openContainedFile/readContainedFile) and never a write or spawn.
+function walkRepo(identity, gitignorePatterns) {
   const files = [];
-  const rootReal = fs.realpathSync(rootPath);
   const visited = new Set();
-  const queue = [{ absPath: rootPath, relPath: "" }];
+  const queue = [""];
   while (queue.length > 0) {
     if (files.length > REPO_WALK_MAX_FILES) {
       throw new RepoTooLargeError(REPO_WALK_MAX_FILES);
     }
-    const { absPath, relPath } = queue.shift();
-    let stat;
+    const relPath = queue.shift();
+    let resolved;
     try {
-      stat = fs.statSync(absPath);
+      resolved = resolveContainedPath(identity, relPath);
     } catch {
       continue;
     }
-    if (!stat.isDirectory()) continue;
-    const key = statKey(stat);
+    if (!resolved.isDirectory) continue;
+    const key = `${resolved.dev}:${resolved.ino}`;
     if (visited.has(key)) continue;
     visited.add(key);
     let entries;
     try {
-      entries = fs.readdirSync(absPath, { withFileTypes: true });
+      entries = fs.readdirSync(resolved.realpath, { withFileTypes: true });
     } catch {
       continue;
     }
     for (const entry of entries) {
-      const childAbs = path.join(absPath, entry.name);
       const childRel = relPath ? `${relPath}/${entry.name}` : entry.name;
       let isDir = entry.isDirectory();
       let isFile = entry.isFile();
       if (entry.isSymbolicLink()) {
+        let childResolved;
         try {
-          const childReal = fs.realpathSync(childAbs);
-          if (!pathWithinRoot(rootReal, childReal)) continue;
-          const linkStat = fs.statSync(childAbs);
-          isDir = linkStat.isDirectory();
-          isFile = linkStat.isFile();
+          childResolved = resolveContainedPath(identity, childRel);
         } catch {
           continue;
         }
+        isDir = childResolved.isDirectory;
+        isFile = childResolved.isFile;
       }
       if (isDir) {
         if (DEFAULT_EXCLUDED_DIRS.has(entry.name)) continue;
         if (matchesGitignore(gitignorePatterns, childRel, true)) continue;
-        queue.push({ absPath: childAbs, relPath: childRel });
+        queue.push(childRel);
       } else if (isFile) {
         if (matchesGitignore(gitignorePatterns, childRel, false)) continue;
         if (files.length >= REPO_WALK_MAX_FILES) {
@@ -966,53 +1064,37 @@ function walkRepo(rootPath, gitignorePatterns) {
   return files.sort();
 }
 
-function pathWithinRoot(rootReal, candidateReal) {
-  const relative = path.relative(rootReal, candidateReal);
-  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function safeReadProbe(rootPath, relPath, maxBytes = REPO_WALK_PROBE_MAX_BYTES) {
+// REPO-HOST-1: TOCTOU-closed via openContainedFile (O_NOFOLLOW + fd-fstat
+// dev/ino match against the pinned identity). A swapped leaf is rejected,
+// never read.
+function safeReadProbe(identity, relPath, maxBytes = REPO_WALK_PROBE_MAX_BYTES) {
   try {
-    const rootReal = fs.realpathSync(rootPath);
-    const absPath = path.resolve(rootReal, relPath);
-    const realPath = fs.realpathSync(absPath);
-    if (!pathWithinRoot(rootReal, realPath)) return null;
-    const fd = fs.openSync(realPath, "r");
-    try {
-      const buf = Buffer.alloc(maxBytes);
-      const bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
-      const slice = buf.subarray(0, bytesRead);
-      if (slice.includes(0)) return null;
-      return slice.toString("utf8");
-    } finally {
-      fs.closeSync(fd);
-    }
+    const { buffer } = readContainedFile(identity, relPath, { maxBytes });
+    if (buffer.includes(0)) return null;
+    return buffer.toString("utf8");
   } catch {
     return null;
   }
 }
 
-function safeFileStatWithinRoot(rootPath, relPath) {
+// REPO-HOST-1: TOCTOU-closed via openContainedFile; see safeReadProbe.
+function safeFileStatWithinRoot(identity, relPath) {
   try {
-    const rootReal = fs.realpathSync(rootPath);
-    const absPath = path.resolve(rootReal, relPath);
-    const realPath = fs.realpathSync(absPath);
-    if (!pathWithinRoot(rootReal, realPath)) return null;
-    const stat = fs.statSync(realPath);
+    const stat = statContainedPath(identity, relPath);
     return stat.isFile() ? stat : null;
   } catch {
     return null;
   }
 }
 
-function detectNfsXdrShape(rootPath, files) {
+function detectNfsXdrShape(identity, files) {
   // Scan a bounded number of native-build files for NFS/XDR signals. The
   // probe stays under 64KiB per file so a pathological CMakeLists does not
   // dominate the inventory time budget.
   for (const file of files) {
     const base = path.basename(file);
     if (!NATIVE_BUILD_NAMES.has(base)) continue;
-    const probe = safeReadProbe(rootPath, file);
+    const probe = safeReadProbe(identity, file);
     if (!probe) continue;
     for (const re of NFS_XDR_SIGNALS) {
       if (re.test(probe)) return true;
@@ -1051,13 +1133,13 @@ function hasNativeLibFuzzerDefinition(text) {
   return NATIVE_LIBFUZZER_DEFINITION_RE.test(stripNativeFuzzProbeNoise(text));
 }
 
-function detectNativeFuzzShape(rootPath, files) {
+function detectNativeFuzzShape(identity, files) {
   let probes = 0;
   const probeFile = (file) => {
     if (!isNativeFuzzCompileSource(file)) return false;
     if (probes >= NATIVE_FUZZ_PROBE_LIMIT) return false;
     probes += 1;
-    const probe = safeReadProbe(rootPath, file);
+    const probe = safeReadProbe(identity, file);
     return Boolean(probe && hasNativeLibFuzzerDefinition(probe));
   };
   for (const file of files) {
@@ -1088,11 +1170,11 @@ function uniqueStrings(values, limit = null) {
   return out;
 }
 
-function detectResidualLinesFromFiles(repoRoot, files) {
+function detectResidualLinesFromFiles(identity, files) {
   const targets = [];
   for (const file of files) {
     if (!RESIDUAL_SOURCE_FILE_RE.test(file)) continue;
-    const text = safeReadProbe(repoRoot, file);
+    const text = safeReadProbe(identity, file);
     if (!text) continue;
     const lines = text.split(/\r?\n/);
     let captured = 0;
@@ -1111,10 +1193,10 @@ function detectResidualLinesFromFiles(repoRoot, files) {
   return targets;
 }
 
-function detectResidualHuntTargets(repoRoot, files, modules) {
+function detectResidualHuntTargets(identity, files, modules) {
   const nativeModules = modules.filter((mod) => mod && (mod.nativeSource || mod.nativeBuild));
   if (nativeModules.length === 0) return [];
-  return uniqueStrings(detectResidualLinesFromFiles(repoRoot, files), RESIDUAL_TARGET_LIMIT);
+  return uniqueStrings(detectResidualLinesFromFiles(identity, files), RESIDUAL_TARGET_LIMIT);
 }
 
 function detectEcosystemForManifest(base) {
@@ -1240,7 +1322,7 @@ function emitSurfaceObserved({
   emittedCount.value += 1;
 }
 
-function buildInventoryProjection(domain, repoRoot, files) {
+function buildInventoryProjection(domain, identity, files) {
   const modules = [];
   const dependencies = [];
   const entryPoints = [];
@@ -1290,7 +1372,7 @@ function buildInventoryProjection(domain, repoRoot, files) {
     if (info.entry) entryPoints.push(rel);
     if (info.config) configs.push(rel);
     if (info.seedCorpus) {
-      const stat = safeFileStatWithinRoot(repoRoot, rel);
+      const stat = safeFileStatWithinRoot(identity, rel);
       if (stat) {
         const relPath = info.seedCorpus.dir;
         let entry = seedCorpusEntries.get(relPath);
@@ -1313,13 +1395,13 @@ function buildInventoryProjection(domain, repoRoot, files) {
     }
   }
 
-  const nfsShape = detectNfsXdrShape(repoRoot, files);
+  const nfsShape = detectNfsXdrShape(identity, files);
   // A repo with no in-tree harness still gets the native-fuzz lane when a harness has
   // been imported for the session via bob_import_harness (harnesses commonly live in
   // OSS-Fuzz, not the project repo). The recipe stages the imported harness into the
   // build at run time.
-  const nativeFuzzShape = detectNativeFuzzShape(repoRoot, files) || hasAcquiredHarness(domain);
-  const residualHuntTargets = detectResidualHuntTargets(repoRoot, files, modules);
+  const nativeFuzzShape = detectNativeFuzzShape(identity, files) || hasAcquiredHarness(domain);
+  const residualHuntTargets = detectResidualHuntTargets(identity, files, modules);
   const seedCorpus = buildSeedCorpusSummary(seedCorpusEntries);
   const seedCorpusCount = seedCorpusEntries.size;
   const seedCorpusHash = hashCanonicalJson({ seed_corpus: seedCorpus });
@@ -1345,6 +1427,7 @@ function buildInventoryProjection(domain, repoRoot, files) {
 function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOverride } = {}) {
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
+  const sessionIdentity = bindRepoHostIdentity(domain);
   const requestedRoot = repoPathOverride
     ? assertNonEmptyString(repoPathOverride, "repo_path")
     : repoSession.target_repo.root_path;
@@ -1352,17 +1435,24 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `repo_path is not a directory: ${requestedRoot}`);
   }
   const canonicalRoot = fs.realpathSync(requestedRoot);
-  const canonicalSessionRoot = fs.realpathSync(repoSession.target_repo.root_path);
-  const relativeToSessionRoot = path.relative(canonicalSessionRoot, canonicalRoot);
+  const relativeToSessionRoot = path.relative(sessionIdentity.realpath, canonicalRoot);
   if (relativeToSessionRoot.startsWith("..") || path.isAbsolute(relativeToSessionRoot)) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "repo_path must stay within the initialized repo session root", {
       repo_error_code: "repo_path_mismatch",
     });
   }
-  const root = canonicalRoot;
   const subdirPrefix = relativeToSessionRoot
     ? relativeToSessionRoot.split(path.sep).join("/")
     : "";
+  // REPO-HOST-4: an override subtree gets its OWN pinned, independently
+  // revalidated identity rather than inheriting only the session-top
+  // identity's revalidation. Without this, a symlink swap of the override
+  // subtree between the containment check above and the walk that follows
+  // redirects the entire walk to an arbitrary external directory.
+  const identity = repoPathOverride
+    ? pinOverrideIdentity(sessionIdentity, subdirPrefix)
+    : sessionIdentity;
+  const root = identity.realpath;
   const rootRel = (rel) => {
     const normalized = String(rel || "").split(path.sep).join("/");
     if (!normalized) return normalized;
@@ -1391,10 +1481,10 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
     };
   };
 
-  const gitignorePatterns = loadGitignore(root);
+  const gitignorePatterns = loadGitignore(identity);
   let files;
   try {
-    files = walkRepo(root, gitignorePatterns);
+    files = walkRepo(identity, gitignorePatterns);
   } catch (error) {
     if (error && error.code === "repo_too_large") {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message, {
@@ -1404,7 +1494,7 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
     }
     throw error;
   }
-  const projection = buildInventoryProjection(domain, root, files);
+  const projection = buildInventoryProjection(domain, identity, files);
   const reachability = classifyRepoReachability({
     repoRoot: root,
     files,
@@ -1426,6 +1516,9 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
   };
 
   return withSessionLock(domain, () => {
+    // REPO-HOST-2: revalidate immediately before the write block persists
+    // frontier events + repo-inventory.json derived from this walk.
+    revalidateRepoHostIdentity(identity);
     const generatedAt = new Date().toISOString();
     const emittedCount = { value: 0 };
 
@@ -1686,11 +1779,13 @@ function normalizeRepoCheckReplayContext(value) {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-// Validate a relative file_path against the session's bound repo root. The
-// returned absolute path is guaranteed to be inside the repo root (escape via
-// `..` segments or absolute paths is rejected) so the probe can't read
-// arbitrary files on the operator's machine (e.g. `/etc/shadow`).
-function resolveRepoFilePath(repoRoot, filePath) {
+// Lexical-only validation of an agent-supplied file_path: absolute paths and
+// any `..` segment are rejected before touching the filesystem, preserving
+// the existing repoCheck error contract (file_path_must_be_relative /
+// file_path_escapes_repo_root). The REAL containment/symlink/hardlink check
+// happens later via resolveContainedPath/openContainedFile against the
+// pinned identity (REPO-HOST-1) -- this function only normalizes the shape.
+function assertRelativeRepoCheckPath(filePath) {
   const raw = assertNonEmptyString(filePath, "file_path");
   if (path.isAbsolute(raw)) {
     throw new ToolError(
@@ -1699,20 +1794,16 @@ function resolveRepoFilePath(repoRoot, filePath) {
       { repo_error_code: "file_path_must_be_relative" },
     );
   }
-  const joined = path.join(repoRoot, raw);
-  const resolved = path.resolve(joined);
-  // Re-resolve the repo root too so symlinks at the root don't shift the
-  // containment check.
-  const rootResolved = path.resolve(repoRoot);
-  const rel = path.relative(rootResolved, resolved);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+  const normalized = raw.split(path.sep).join("/");
+  const rawSegments = normalized.split("/").filter((segment) => segment.length > 0);
+  if (rawSegments.some((segment) => segment === "..")) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       "file_path escapes the bound repo root",
       { repo_error_code: "file_path_escapes_repo_root" },
     );
   }
-  return resolved;
+  return rawSegments.filter((segment) => segment !== ".").join("/");
 }
 
 // Compile a regex pattern with optional flags after the trailing `/`. The
@@ -1832,8 +1923,7 @@ function repoCheck({
   replay_context: replayContextRaw = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
-  const repoSession = readRepoSession(domain);
-  const repoRoot = repoSession.target_repo.root_path;
+  const identity = bindRepoHostIdentity(domain);
 
   // Resolve check_type. When unspecified, infer from the optional pattern/regex
   // arguments: `regex` → regex_match, `pattern` → file_contains, else
@@ -1880,64 +1970,72 @@ function repoCheck({
     compiledRegex = compileRepoCheckRegex(regexPattern);
   }
 
-  const absPath = resolveRepoFilePath(repoRoot, filePath);
+  const relPath = assertRelativeRepoCheckPath(filePath);
 
-  let stat;
+  // REPO-HOST-1: per-component lstat containment walk against the pinned
+  // identity. A missing path resolves to the same not_found row the
+  // legacy fs.statSync(ENOENT) path produced; a symlink/hardlink swap that
+  // would previously have been silently followed by fs.statSync/readFileSync
+  // is now rejected (repo_host_traversal_rejected / repo_host_hardlink_rejected).
+  let resolved;
   try {
-    stat = fs.statSync(absPath);
+    resolved = resolveContainedPath(identity, relPath);
   } catch (error) {
-    if (error && error.code === "ENOENT") {
-      // file_exists is the canonical "answer is no" path; record the row
-      // and return cleanly. file_contains / regex_match on a missing file
-      // also returns matched:false but with `not_found:true` so the
-      // operator can distinguish "file present, no match" from "file
-      // never existed".
-      const row = {
-        version: REPO_CHECK_VERSION,
-        check_id: `chk_${sha8(`${domain}|${filePath}|${normalizedType}|${Date.now()}`)}_${Date.now()}`,
-        check_type: normalizedType,
-        target_domain: domain,
-        file_path: filePath,
-        pattern: literalPattern,
-        regex: regexPattern,
-        matched: false,
-        matched_lines: [],
-        file_hash: null,
-        not_found: true,
-        ts: new Date().toISOString(),
-      };
-      if (normalizedReplayContext) row.replay_context = normalizedReplayContext;
-      row.summary = buildRepoCheckSummary({
-        check_id: row.check_id,
-        file_path: filePath,
-        file_hash: null,
-        matched_lines: [],
-      });
-      validateNoSensitiveMaterial(row, "repo_checks");
-      withSessionLock(domain, () => {
-        appendJsonlLine(repoChecksJsonlPath(domain), row);
-      });
-      return {
-        created: true,
-        check_id: row.check_id,
-        check_type: normalizedType,
-        target_domain: domain,
-        file_path: filePath,
-        matched: false,
-        not_found: true,
-        matched_lines: [],
-        file_hash: null,
-        summary: row.summary,
-      };
+    const repoErrorCode = error && error.details && error.details.repo_error_code;
+    if (repoErrorCode !== "repo_host_path_missing") {
+      if (repoErrorCode) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `file_path stat failed: ${error.message || error}`,
+          { repo_error_code: "file_stat_failed" },
+        );
+      }
+      throw error;
     }
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `file_path stat failed: ${error.message || error}`,
-      { repo_error_code: "file_stat_failed" },
-    );
+    // file_exists is the canonical "answer is no" path; record the row and
+    // return cleanly. file_contains / regex_match on a missing file also
+    // returns matched:false but with `not_found:true` so the operator can
+    // distinguish "file present, no match" from "file never existed".
+    const row = {
+      version: REPO_CHECK_VERSION,
+      check_id: `chk_${sha8(`${domain}|${filePath}|${normalizedType}|${Date.now()}`)}_${Date.now()}`,
+      check_type: normalizedType,
+      target_domain: domain,
+      file_path: filePath,
+      pattern: literalPattern,
+      regex: regexPattern,
+      matched: false,
+      matched_lines: [],
+      file_hash: null,
+      not_found: true,
+      ts: new Date().toISOString(),
+    };
+    if (normalizedReplayContext) row.replay_context = normalizedReplayContext;
+    row.summary = buildRepoCheckSummary({
+      check_id: row.check_id,
+      file_path: filePath,
+      file_hash: null,
+      matched_lines: [],
+    });
+    validateNoSensitiveMaterial(row, "repo_checks");
+    withSessionLock(domain, () => {
+      appendJsonlLine(repoChecksJsonlPath(domain), row);
+    });
+    return {
+      created: true,
+      check_id: row.check_id,
+      check_type: normalizedType,
+      target_domain: domain,
+      file_path: filePath,
+      matched: false,
+      not_found: true,
+      matched_lines: [],
+      file_hash: null,
+      summary: row.summary,
+    };
   }
 
-  if (!stat.isFile()) {
+  if (!resolved.isFile) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       "file_path is not a regular file",
@@ -1945,19 +2043,22 @@ function repoCheck({
     );
   }
 
-  if (stat.size > REPO_CHECK_MAX_FILE_BYTES) {
+  if (resolved.size > REPO_CHECK_MAX_FILE_BYTES) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      `file_path exceeds ${REPO_CHECK_MAX_FILE_BYTES} byte cap (size=${stat.size})`,
+      `file_path exceeds ${REPO_CHECK_MAX_FILE_BYTES} byte cap (size=${resolved.size})`,
       {
         repo_error_code: "file_too_large",
         limit_bytes: REPO_CHECK_MAX_FILE_BYTES,
-        size_bytes: stat.size,
+        size_bytes: resolved.size,
       },
     );
   }
 
-  const buffer = fs.readFileSync(absPath);
+  // REPO-HOST-1: re-resolve + open O_NOFOLLOW + fd-fstat-match immediately
+  // before the actual byte read, closing the window between the size-cap
+  // check above and this read.
+  const { buffer, stat } = readContainedFile(identity, relPath);
   const fileHash = hashBuffer(buffer);
   const isBinary = probeIsBinary(buffer);
 

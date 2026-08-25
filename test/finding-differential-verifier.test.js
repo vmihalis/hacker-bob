@@ -14,6 +14,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
   verifyFindingDifferential,
   readFindingDifferentialVerifiedSummary,
   offensiveRowHash,
@@ -55,6 +56,18 @@ function hex(char) {
 }
 
 const SURFACE = "surface:billing-profile";
+const SECOND_ORDER_FLAGS = Object.freeze([
+  "oracle_kind",
+  "canary_minted_server_side",
+  "canary_present_exact_leaf",
+  "decoy_minted_server_side",
+  "decoy_absent",
+  "decoy_absent_against_reachable_endpoint",
+  "decoy_silent",
+  "observation_endpoint_distinct_from_injection",
+  "reread_read_only",
+  "reread_channel_bob_controlled",
+]);
 
 // Build + sign a single offensive-runs row. The runner hardcodes exploited_safely for a
 // real positive; a blocked control row is constructed directly here (its safe-variant
@@ -79,6 +92,9 @@ function buildSignedRow(domain, over = {}) {
     demonstrated_severity: over.demonstrated_severity || "medium",
     surface_id: over.surface_id === undefined ? SURFACE : over.surface_id,
   };
+  for (const key of SECOND_ORDER_FLAGS) {
+    if (over[key] !== undefined) row[key] = over[key];
+  }
   signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
   return row;
 }
@@ -270,6 +286,66 @@ test("an unsupported ledger ref (auth_differential, deferred) is REFUSED", () =>
     }),
     /ledger must be one of/,
   );
+}));
+
+test("unknown proof_mode is REFUSED before generic web fallback", () => withTempHome(() => {
+  const domain = "fd-unknown-proof.example.com";
+  seedFlippingPair(domain);
+  assert.throws(
+    () => verifyFindingDifferential({
+      target_domain: domain, finding_id: "F-2", surface_id: SURFACE,
+      positive_run_ref: REF_POS, control_run_ref: REF_CTL,
+      proof_mode: "soft_llm_verdict",
+    }),
+    /unknown proof_mode soft_llm_verdict; refusing to fall back to generic web differential/,
+  );
+  assert.equal(readFindingDifferentialVerifiedSummary(domain).total_runs, 0);
+}));
+
+test("second-order rows without signed capture proof mint inconclusive, not verified_pass", () => withTempHome(() => {
+  const domain = "fd-soft-canary.example.com";
+  appendRow(domain, buildSignedRow(domain, {
+    run_id: "fd-positive-1",
+    tool_id: "bob_secondorder_reread",
+    oracle_kind: "second_order_reread",
+    offensive_outcome: "exploited_safely",
+    command_hash: hex("1"),
+    canary_minted_server_side: true,
+    canary_present_exact_leaf: true,
+    decoy_minted_server_side: true,
+    decoy_absent: true,
+    observation_endpoint_distinct_from_injection: true,
+    reread_read_only: true,
+    reread_channel_bob_controlled: true,
+  }));
+  appendRow(domain, buildSignedRow(domain, {
+    run_id: "fd-control-1",
+    tool_id: "bob_secondorder_reread",
+    oracle_kind: "second_order_reread",
+    offensive_outcome: "blocked_by_defense",
+    command_hash: hex("2"),
+    canary_minted_server_side: true,
+    decoy_minted_server_side: true,
+    decoy_absent_against_reachable_endpoint: true,
+    decoy_silent: true,
+    observation_endpoint_distinct_from_injection: true,
+    reread_read_only: true,
+    reread_channel_bob_controlled: true,
+  }));
+  const out = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-SOFT",
+    surface_id: SURFACE,
+    positive_run_ref: REF_POS,
+    control_run_ref: REF_CTL,
+    proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  });
+  assert.equal(out.result, "inconclusive");
+  assert.match(out.reason, /observed_invariant_canary_v1_not_proven/);
+  assert.equal(out.proof_record, undefined);
+  const summary = readFindingDifferentialVerifiedSummary(domain);
+  assert.equal(summary.verified_pass_count, 0);
+  assert.equal(summary.verified_by_finding["F-SOFT"], undefined);
 }));
 
 test("ledger record shape + results_hash determinism, and the reader summary", () => withTempHome(() => {

@@ -38,10 +38,14 @@ const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 //      replicated into all four role surfaces it governs -- .claude/agents/
 //      report-writer.md, prompts/roles/reporter.md, and the codex and kimi
 //      bob-evaluate SKILL.md bundles -- at 17,911 B each.
-// Post-exclusion the lean tarball measures 3,795,479 B, so 3.85 MB leaves ~54 KB
-// (1.4%) of headroom: the same margin as the prior increment, and still tight
-// enough to fire on a re-added asset or a vendored dependency.
-const CANONICAL_PACKAGE_MAX_BYTES = 3_850_000;
+// Post-exclusion the lean tarball measured 3,795,479 B, so 3.85 MB left ~54 KB
+// (1.4%) of headroom. The authority-unit-of-work, exclusive storage receipts,
+// repo-host boundary, belief contract compiler, validity/lease kernel, and web
+// instrument plane are all shipped runtime rather than authoring artifacts. With
+// those surfaces present the measured lean tarball is 3,920,688 B. A deliberate
+// 4.00 MB ceiling retains ~79 KB (2.0%) of headroom while still catching a
+// re-added asset or vendored dependency.
+const CANONICAL_PACKAGE_MAX_BYTES = 4_000_000;
 
 // Explicit deny-by-default manifest for the JavaScript files installed at the
 // top level of mcp/. It is shared by install, doctor, and package tests so the

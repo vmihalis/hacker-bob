@@ -20,6 +20,12 @@ const {
   coverageJsonlPath,
 } = require("../io/paths.js");
 const {
+  hashCanonicalJson,
+} = require("../verification/verification-contracts.js");
+const {
+  isBugClassRegisteredForClosure,
+} = require("../capability/capability-packs.js");
+const {
   appendJsonlLines,
   readFileUtf8,
   withSessionLock,
@@ -34,11 +40,31 @@ const {
   safeGovernanceContextForDomain,
 } = require("../governance/index.js");
 const {
-  appendFrontierEvent,
+  appendClosureRecordedEvent,
 } = require("./frontier-events.js");
 const {
   scheduleMaterialization,
 } = require("./frontier-materialize-debounce.js");
+
+const CLASS_LATTICE_COVERAGE_STATUS_VALUES = Object.freeze([
+  "tested",
+  "not_tested",
+  "blocked",
+  "held",
+  "non_reportable",
+  "proof_closed",
+]);
+
+const COVERAGE_FRONTIER_ROW_LIMIT = 64;
+
+const STRUCTURAL_CLASS_BUDGET_FLOORS = Object.freeze({
+  confidentiality: Object.freeze({ min_cells: 1, reserved: true }),
+  race: Object.freeze({ min_cells: 1, reserved: true }),
+  lifecycle: Object.freeze({ min_cells: 1, reserved: true }),
+  availability: Object.freeze({ min_cells: 1, reserved: true }),
+  entropy: Object.freeze({ min_cells: 1, reserved: true }),
+  semantic_oracle: Object.freeze({ min_cells: 1, reserved: true }),
+});
 
 function normalizeCoverageRecord(record, { expectedDomain = null, lineNumber = null } = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
@@ -148,6 +174,164 @@ function coverageRecordKey(record) {
     record.bug_class,
     record.auth_profile || "",
   ]);
+}
+
+function coveragePlanningKey(bugClass, authProfile) {
+  return JSON.stringify([String(bugClass || "").toLowerCase(), authProfile || ""]);
+}
+
+function structuralClassForBugClass(bugClass) {
+  const key = String(bugClass || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (/(race|toctou|concurr|stale|replay|rollback|version)/.test(key)) return "race";
+  if (/(lifecycle|state|workflow|ordering|sequence|transition|move|carryover)/.test(key)) return "lifecycle";
+  if (/(dos|availability|exhaust|resource|rate|timeout|crash)/.test(key)) return "availability";
+  if (/(entropy|token|nonce|random|rng|secret|session|predict)/.test(key)) return "entropy";
+  if (/(canary|semantic|ai|llm|search|render|secondorder|second_order)/.test(key)) return "semantic_oracle";
+  return "confidentiality";
+}
+
+function latestCoverageRowsByPlanningKey(records, surfaceId) {
+  const latest = new Map();
+  const safeRecords = Array.isArray(records) ? records : [];
+  for (const record of safeRecords) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    if (surfaceId != null && record.surface_id !== surfaceId) continue;
+    if (typeof record.bug_class !== "string") continue;
+    const status = typeof record.status === "string" ? record.status : "";
+    if (!COVERAGE_STATUS_VALUES.includes(status)) continue;
+    const key = coveragePlanningKey(record.bug_class, record.auth_profile || "");
+    latest.set(key, {
+      bug_class: record.bug_class.toLowerCase(),
+      auth_profile: record.auth_profile || "",
+      status,
+      evidence_summary: typeof record.evidence_summary === "string" ? record.evidence_summary : null,
+      next_step: typeof record.next_step === "string" ? record.next_step : null,
+      ts: typeof record.ts === "string" ? record.ts : null,
+      wave: record.wave == null ? null : record.wave,
+      agent: record.agent == null ? null : record.agent,
+    });
+  }
+  return latest;
+}
+
+function statusForCoverageProductCell(cell, latestByPlanningKey) {
+  const bugClass = String(cell.bug_class || "").toLowerCase();
+  if (cell.disposition === "hold" || !isBugClassRegisteredForClosure(bugClass)) {
+    return {
+      status: "held",
+      reason: cell.hold_reason || `unknown control-validity class: ${bugClass}`,
+      source: null,
+    };
+  }
+
+  const planningKey = typeof cell.planning_key === "string"
+    ? cell.planning_key
+    : coveragePlanningKey(bugClass, cell.auth_profile || "");
+  const latest = latestByPlanningKey.get(planningKey);
+  if (!latest) {
+    return { status: "not_tested", reason: "no coverage row recorded", source: null };
+  }
+  if (latest.status === "blocked") {
+    return { status: "blocked", reason: latest.evidence_summary || "coverage blocked", source: latest };
+  }
+  if (latest.status === "tested") {
+    return { status: "tested", reason: latest.evidence_summary || "coverage tested", source: latest };
+  }
+  return {
+    status: "not_tested",
+    reason: latest.next_step || latest.evidence_summary || `coverage still ${latest.status}`,
+    source: latest,
+  };
+}
+
+function summarizeCounts(rows, key) {
+  const counts = {};
+  for (const row of rows) {
+    const value = row && row[key];
+    if (typeof value !== "string" || value.length === 0) continue;
+    counts[value] = (counts[value] || 0) + 1;
+  }
+  return counts;
+}
+
+function buildClassLatticeCoverageProduct({
+  target_domain,
+  surface_id,
+  expected_cells,
+  coverage_records,
+  row_limit = COVERAGE_FRONTIER_ROW_LIMIT,
+} = {}) {
+  const domain = assertNonEmptyString(target_domain, "target_domain");
+  const surfaceId = assertNonEmptyString(surface_id, "surface_id");
+  const cells = Array.isArray(expected_cells) ? expected_cells : [];
+  const limit = Number.isInteger(row_limit) && row_limit > 0
+    ? Math.min(row_limit, COVERAGE_FRONTIER_ROW_LIMIT)
+    : COVERAGE_FRONTIER_ROW_LIMIT;
+  const latestByPlanningKey = latestCoverageRowsByPlanningKey(coverage_records, surfaceId);
+  const rows = [];
+  for (const cell of cells) {
+    if (!cell || typeof cell !== "object" || Array.isArray(cell)) continue;
+    if (typeof cell.bug_class !== "string" || cell.bug_class.length === 0) continue;
+    const bugClass = cell.bug_class.toLowerCase();
+    const authProfile = typeof cell.auth_profile === "string" ? cell.auth_profile : "";
+    const structuralClass = structuralClassForBugClass(bugClass);
+    const status = statusForCoverageProductCell({ ...cell, bug_class: bugClass, auth_profile: authProfile }, latestByPlanningKey);
+    rows.push({
+      row_kind: "class_lattice_coverage",
+      surface_id: surfaceId,
+      class_id: bugClass,
+      binding_id: authProfile || "anonymous",
+      auth_profile: authProfile,
+      planning_key: typeof cell.planning_key === "string" ? cell.planning_key : coveragePlanningKey(bugClass, authProfile),
+      structural_class: structuralClass,
+      budget_floor: STRUCTURAL_CLASS_BUDGET_FLOORS[structuralClass] || null,
+      status: status.status,
+      reason: status.reason,
+      source_record: status.source,
+    });
+  }
+
+  rows.sort((a, b) => {
+    const statusDelta = CLASS_LATTICE_COVERAGE_STATUS_VALUES.indexOf(a.status)
+      - CLASS_LATTICE_COVERAGE_STATUS_VALUES.indexOf(b.status);
+    if (statusDelta !== 0) return statusDelta;
+    const structuralDelta = a.structural_class.localeCompare(b.structural_class);
+    if (structuralDelta !== 0) return structuralDelta;
+    return a.planning_key.localeCompare(b.planning_key);
+  });
+
+  const shownRows = rows.slice(0, limit);
+  const coverageGaps = rows.filter((row) => (
+    row.status === "not_tested"
+    || row.status === "blocked"
+    || row.status === "held"
+    || row.status === "non_reportable"
+  ));
+  const product = {
+    version: 1,
+    target_domain: domain,
+    surface_id: surfaceId,
+    statuses: CLASS_LATTICE_COVERAGE_STATUS_VALUES,
+    structural_class_budget_floors: STRUCTURAL_CLASS_BUDGET_FLOORS,
+    total_rows: rows.length,
+    shown_rows: shownRows.length,
+    omitted_rows: Math.max(0, rows.length - shownRows.length),
+    counts_by_status: summarizeCounts(rows, "status"),
+    counts_by_structural_class: summarizeCounts(rows, "structural_class"),
+    gap_count: coverageGaps.length,
+    rows: shownRows,
+    coverage_gaps: coverageGaps.slice(0, limit).map((row) => ({
+      class_id: row.class_id,
+      binding_id: row.binding_id,
+      structural_class: row.structural_class,
+      status: row.status,
+      reason: row.reason,
+    })),
+  };
+  return {
+    ...product,
+    coverage_product_hash: hashCanonicalJson(product),
+  };
 }
 
 function latestCoverageRecordsByKey(records) {
@@ -296,7 +480,7 @@ function logCoverage(args) {
     // closure.recorded event capturing the batch; F.3 will fold these into
     // currentClosures(domain).
     try {
-      appendFrontierEvent({
+      appendClosureRecordedEvent({
         target_domain: domain,
         kind: "closure.recorded",
         surface_id: surfaceId,
@@ -362,11 +546,15 @@ function logCellCoverage({ target_domain, surface_id, bug_class, auth_profile, s
 }
 
 module.exports = {
+  CLASS_LATTICE_COVERAGE_STATUS_VALUES,
+  STRUCTURAL_CLASS_BUDGET_FLOORS,
   buildCoverageSummaryForSurface,
+  buildClassLatticeCoverageProduct,
   computeCoverageRequeueSurfaceIds,
   logCellCoverage,
   coverageRecordKey,
   coverageSummaryItem,
+  structuralClassForBugClass,
   isUnfinishedCoverageStatus,
   latestCoverageRecordsByKey,
   logCoverage,

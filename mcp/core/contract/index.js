@@ -20,6 +20,11 @@ defineLazyExports(loadContracts, [
   "APPEND_CONTRACT_LEGAL_FROM_STATES",
   "ARTIFACT_REF_PREFIX_VALUES",
   "ARTIFACT_REF_RE",
+  "DESIGN_ADMISSION_CLOSURE_REGIME_VALUES",
+  "DESIGN_ADMISSION_PROOF_MODE_VALUES",
+  "DESIGN_ADMISSION_SOURCE_VALUES",
+  "DESIGN_ADMISSION_STATUS_VALUES",
+  "DESIGN_ADMISSION_UNKNOWN_CLASS_VALUES",
   "INVARIANT_STATEMENT_MAX_CHARS",
   "JSONPATH_SELECTOR_RE",
   "PRODUCTION_PATH_DESCRIPTION_MAX_CHARS",
@@ -33,6 +38,7 @@ defineLazyExports(loadContracts, [
   "assertJsonPathSelector",
   "collectContractArtifactRefs",
   "normalizeContract",
+  "normalizeDesignAdmission",
 ]);
 
 defineLazyExports(loadContractVerifier, [

@@ -4,7 +4,7 @@ This inventory is the post-N1, pre-DIP structural-debt baseline for the physical
 
 ## Census
 
-- The walk holds **587 `.js` files** — **528 core, 59 plane** — and **2923 `require()` call sites**.
+- The walk holds **598 `.js` files** — **539 core, 59 plane** — and **2989 `require()` call sites**.
 - **21** of those edges run core -> plane, from **8 distinct core files**.
 - **0** call sites have a computed specifier.
 - **16** edges leave the walk root; **7** of them run from core into a plane-named package.
@@ -39,20 +39,20 @@ One citation cannot use the symbol-anchored grammar: `mcp/core/session/session-a
 | 14 | `mcp/core/finding-contracts.js:658` -> `../domains/physical/physical-finding-record-adapter.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 15 | `mcp/core/frontier/frontier-readiness.js:288` -> `../../domains/physical/physical-campaign-coordinator.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 16 | `mcp/core/frontier/surface-graph.js:30` -> `../../domains/physical/physical-surface-transition.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 17 | `mcp/core/session/lifecycle-gates.js:604` -> `../../domains/physical/physical-campaign-coordinator.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 18 | `mcp/core/session/session-authority.js:43` -> `../../domains/physical/physical-session-journal.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 21 | `mcp/tools/index.js:52` -> `./physical/credential-acquire.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 22 | `mcp/tools/index.js:54` -> `./physical/credential-emulate.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 23 | `mcp/tools/index.js:53` -> `./physical/credential-recover.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 24 | `mcp/tools/index.js:55` -> `./physical/credential-write.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 25 | `mcp/tools/index.js:16` -> `./physical/init-physical-session.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 26 | `mcp/tools/index.js:51` -> `./physical/physical-observe.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 27 | `mcp/tools/index.js:56` -> `./physical/protocol-transceive.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 28 | `mcp/tools/index.js:17` -> `./physical/query-instrument-capabilities.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 29 | `mcp/tools/index.js:10` -> `./physical/record-physical-candidate-claim.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 30 | `mcp/tools/index.js:57` -> `./physical/rf-trace.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 31 | `mcp/tools/index.js:50` -> `./physical/verify-physical-candidate-claim.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 32 | `mcp/tools/index.js:49` -> `./physical/verify-physical-verdict.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 17 | `mcp/core/session/lifecycle-gates.js:605` -> `../../domains/physical/physical-campaign-coordinator.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 18 | `mcp/core/session/session-authority.js:44` -> `../../domains/physical/physical-session-journal.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 21 | `mcp/tools/index.js:71` -> `./physical/credential-acquire.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 22 | `mcp/tools/index.js:73` -> `./physical/credential-emulate.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 23 | `mcp/tools/index.js:72` -> `./physical/credential-recover.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 24 | `mcp/tools/index.js:74` -> `./physical/credential-write.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 25 | `mcp/tools/index.js:29` -> `./physical/init-physical-session.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 26 | `mcp/tools/index.js:70` -> `./physical/physical-observe.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 27 | `mcp/tools/index.js:75` -> `./physical/protocol-transceive.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 28 | `mcp/tools/index.js:30` -> `./physical/query-instrument-capabilities.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 29 | `mcp/tools/index.js:24` -> `./physical/record-physical-candidate-claim.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 30 | `mcp/tools/index.js:76` -> `./physical/rf-trace.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 31 | `mcp/tools/index.js:69` -> `./physical/verify-physical-candidate-claim.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 32 | `mcp/tools/index.js:68` -> `./physical/verify-physical-verdict.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 33 | `mcp/core/waves/graph-scheduler.js:53` -> `../../../packages/bob-instrument-broker/lib/resource-reservations.js` | Cross-package resource-reservation seam outside the in-root plane partition. |
 | 34 | `mcp/tools/prepare-node.js:96` -> `../../packages/bob-instrument-broker/lib/resource-reservations.js` | Cross-package resource-reservation seam outside the in-root plane partition. |
 | 35 | `mcp/tools/physical/protocol-transceive.js:3` -> `./physical-technique-tool.js` | Plane-to-plane composition edge, recorded to keep the inventory census complete. |

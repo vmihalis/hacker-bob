@@ -4,12 +4,18 @@ const {
   canonicalizeCwe,
   isKnownCwe,
 } = require("../scoring/cwe-catalog.js");
+const {
+  hashCanonicalJson,
+} = require("../verification/verification-contracts.js");
 
 // The tier a hardcoded corpus template carries: tier-2, confirmed, validated,
 // trusted for reuse. The trust-gradient's tier-2 exemplar is object-auth. A
 // registered candidate from the live registry is tier-3 advisory and stays
 // distinguishable; promotion (mechanism-promotion-gate.js) is the only path to 2.
 const CORPUS_TEMPLATE_TIER = 2;
+const UNIVERSAL_SCHEMA_REGISTRY_VERSION = "universal-invariant-schema-registry.v1";
+const INVARIANT_SCHEMA_BINDING_BOUND = "schema_bound";
+const INVARIANT_SCHEMA_BINDING_HOLD = "hold";
 
 const TEMPLATES = Object.freeze([
   Object.freeze({
@@ -200,6 +206,199 @@ const MECHANISM_TEMPLATES = Object.freeze([
   OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
 ]);
 
+// Y-D26 Autonomy universal invariant-schema registry. These are human-authored,
+// universal SaaS schemas: the product model may nominate bindings, but the
+// mandatory controls and schema digest below are the hard-plane contract.
+const UNIVERSAL_INVARIANT_SCHEMAS = Object.freeze([
+  defineUniversalInvariantSchema({
+    id: "schema.render_vs_load_acl.v1",
+    class_id: "render_vs_load_acl",
+    name: "Render/load ACL divergence",
+    description: "Rendered or indexed content must not disclose an object whose direct load path is denied to the same effective principal.",
+    proof_mode: "observed_invariant",
+    closure_regime: "deterministic",
+    parameter_slots: ["principal", "object", "render_surface", "direct_load_surface"],
+    required_entities: ["principal", "object", "render_surface", "direct_load_surface", "policy_gate"],
+    mandatory_controls: [
+      { id: "direct_load_deny_same_principal", kind: "negative", requirement: "same principal is denied on the direct object load path" },
+      { id: "authorized_owner_positive", kind: "positive", requirement: "authorized owner can load the object on the direct path" },
+      { id: "render_extractor_deterministic", kind: "extractor", requirement: "registered deterministic extractor derives object material from signed render bytes" },
+      { id: "same_object_identity", kind: "shape", requirement: "rendered material and denied load bind to the same canonical object identity" },
+    ],
+    evidence_predicate: { kind: "observed_invariant", predicate: "denied_object_material_in_render" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.effective_principal_scope.v1",
+    class_id: "effective_principal_scope",
+    name: "Effective principal differs from client-supplied scope",
+    description: "A server-side authorization decision must derive scope from the authenticated principal, not from a client-chosen tenant, org, space, or account selector.",
+    proof_mode: "single_delta",
+    closure_regime: "deterministic",
+    parameter_slots: ["principal", "client_scope", "server_scope", "operation"],
+    required_entities: ["principal", "credential", "scope_selector", "policy_gate", "operation"],
+    mandatory_controls: [
+      { id: "same_credential_scope_swap", kind: "minimal_pair", requirement: "treatment and control differ only in the client-supplied scope selector" },
+      { id: "owned_scope_positive", kind: "positive", requirement: "same credential succeeds for an operation inside its owned scope" },
+      { id: "foreign_scope_denied_existing", kind: "negative", requirement: "foreign existing scope denies for unauthorized_existing, not malformed or nonexistent" },
+      { id: "server_scope_witness", kind: "identity", requirement: "signed evidence binds the authenticated principal's server-side scope" },
+    ],
+    evidence_predicate: { kind: "differential_effect", required_cwe: "CWE-639" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.transitive_over_fetch.v1",
+    class_id: "transitive_over_fetch",
+    name: "Transitive dependent over-fetch",
+    description: "Fetching an allowed parent must not include dependent child objects outside the effective principal's authorization boundary.",
+    proof_mode: "observed_invariant",
+    closure_regime: "deterministic",
+    parameter_slots: ["principal", "parent_object", "child_object", "collection_surface"],
+    required_entities: ["principal", "parent_object", "child_object", "relationship", "policy_gate"],
+    mandatory_controls: [
+      { id: "child_direct_deny", kind: "negative", requirement: "same principal is denied when directly loading the child object" },
+      { id: "parent_allowed_positive", kind: "positive", requirement: "same principal legitimately loads the parent object" },
+      { id: "child_owner_positive", kind: "positive", requirement: "child owner can load the child object directly" },
+      { id: "child_identity_extractor", kind: "extractor", requirement: "registered deterministic extractor binds leaked child fields to the child identity" },
+    ],
+    evidence_predicate: { kind: "observed_invariant", predicate: "unauthorized_child_material_in_parent_fetch" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.acl_invariant_under_move.v1",
+    class_id: "acl_invariant_under_move",
+    name: "ACL invariant under move",
+    description: "Moving, copying, importing, or reparenting an object must not preserve stale access in a destination where the effective principal is unauthorized.",
+    proof_mode: "trajectory",
+    closure_regime: "deterministic",
+    parameter_slots: ["actor", "object", "source_container", "destination_container", "move_operation"],
+    required_entities: ["actor", "object", "source_container", "destination_container", "acl"],
+    mandatory_controls: [
+      { id: "pre_move_source_positive", kind: "positive", requirement: "actor is authorized in the source state before the move" },
+      { id: "destination_deny_existing", kind: "negative", requirement: "actor is denied against an existing destination-scoped object they do not own" },
+      { id: "post_move_direct_load_check", kind: "post_state", requirement: "direct load after move is captured under signed post-state evidence" },
+      { id: "reset_or_washout_witness", kind: "episode", requirement: "episode declares reset or washout strength for the move trajectory" },
+    ],
+    evidence_predicate: { kind: "trajectory", predicate: "stale_acl_carry_after_move" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.privilege_write_self_grant.v1",
+    class_id: "privilege_write_self_grant",
+    name: "Privilege write self-grant",
+    description: "A principal must not grant itself or a controlled principal privileges that it did not already hold.",
+    proof_mode: "trajectory",
+    closure_regime: "deterministic",
+    parameter_slots: ["actor", "subject_principal", "privilege", "grant_surface"],
+    required_entities: ["actor", "subject_principal", "privilege", "policy_gate", "audit_log"],
+    mandatory_controls: [
+      { id: "pre_grant_denied_privileged_effect", kind: "negative", requirement: "subject cannot perform the privileged effect before the grant attempt" },
+      { id: "grant_write_minimal_pair", kind: "minimal_pair", requirement: "treatment differs only by the grant write operation" },
+      { id: "legitimate_admin_positive", kind: "positive", requirement: "authorized admin can perform the same grant path" },
+      { id: "post_grant_privileged_effect", kind: "post_state", requirement: "signed post-state capture shows the privileged effect after the self-grant" },
+    ],
+    evidence_predicate: { kind: "trajectory", predicate: "unauthorized_self_grant_enables_effect" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.toctou_version_replay.v1",
+    class_id: "toctou_version_replay",
+    name: "TOCTOU or version replay",
+    description: "A check/use split, stale version, or replayed operation must not apply an effect after the authorizing state has changed.",
+    proof_mode: "trajectory",
+    closure_regime: "deterministic",
+    parameter_slots: ["actor", "object", "check_operation", "mutating_operation", "version_token"],
+    required_entities: ["actor", "object", "version_token", "state_transition", "policy_gate"],
+    mandatory_controls: [
+      { id: "fresh_version_positive", kind: "positive", requirement: "fresh authorized version succeeds on the same operation" },
+      { id: "stale_version_denied", kind: "negative", requirement: "stale or revoked version is denied for stale/unauthorized_existing" },
+      { id: "claim_aware_lease", kind: "episode", requirement: "episode declares intended concurrency and excludes sibling contamination" },
+      { id: "post_state_invariant", kind: "post_state", requirement: "registered post-state predicate derives whether the forbidden effect landed" },
+    ],
+    evidence_predicate: { kind: "trajectory", predicate: "stale_state_effect_after_revocation" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.cache_key_confusion.v1",
+    class_id: "cache_key_confusion",
+    name: "Cache-key confusion",
+    description: "A cache key must include the authorization, tenant, variant, and object identity dimensions needed to prevent cross-principal response reuse.",
+    proof_mode: "trajectory",
+    closure_regime: "deterministic",
+    parameter_slots: ["producer_principal", "consumer_principal", "object", "cache_surface"],
+    required_entities: ["principal", "object", "cache", "variant_key", "policy_gate"],
+    mandatory_controls: [
+      { id: "producer_populates_cache", kind: "trajectory_step", requirement: "authorized producer populates the cache for the object" },
+      { id: "consumer_direct_deny", kind: "negative", requirement: "consumer is denied on direct uncached load of the same object" },
+      { id: "cache_bust_negative", kind: "negative", requirement: "cache-busted consumer request removes the effect or names a hold" },
+      { id: "variant_key_identity", kind: "shape", requirement: "signed request/response evidence binds tenant, principal, object, and variant dimensions" },
+    ],
+    evidence_predicate: { kind: "trajectory", predicate: "unauthorized_cached_response_reuse" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.tenancy_formation.v1",
+    class_id: "tenancy_formation",
+    name: "Tenancy formation boundary",
+    description: "Signup, invite, import, trial, billing, and workspace creation flows must form distinct tenancy roots before cross-tenant claims close.",
+    proof_mode: "trajectory",
+    closure_regime: "deterministic",
+    parameter_slots: ["tenant_a", "tenant_b", "formation_operation", "root_axis"],
+    required_entities: ["tenant_root", "principal", "billing_or_org_axis", "formation_operation"],
+    mandatory_controls: [
+      { id: "distinct_root_witness", kind: "identity", requirement: "signed witness names the relevant distinct tenancy-root axes" },
+      { id: "same_root_narrowing_control", kind: "negative", requirement: "same-root principal separation is distinguished from cross-root separation" },
+      { id: "root_owner_positive", kind: "positive", requirement: "root owner succeeds on a root-local operation" },
+      { id: "cross_root_denied_existing", kind: "negative", requirement: "other root denies for unauthorized_existing, not nonexistent" },
+    ],
+    evidence_predicate: { kind: "trajectory", predicate: "cross_root_boundary_violation" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.redaction_audit_persistence.v1",
+    class_id: "redaction_audit_persistence",
+    name: "Redaction and audit persistence",
+    description: "Deleting, redacting, exporting, or changing access must not leave sensitive material readable through audit, search, notification, export, or history channels.",
+    proof_mode: "trajectory",
+    closure_regime: "deterministic",
+    parameter_slots: ["actor", "object", "redaction_operation", "secondary_channel"],
+    required_entities: ["actor", "object", "secondary_channel", "retention_policy", "policy_gate"],
+    mandatory_controls: [
+      { id: "pre_redaction_material_positive", kind: "positive", requirement: "material is present before the redaction/deletion trajectory" },
+      { id: "post_redaction_direct_absence", kind: "post_state", requirement: "direct channel no longer serves the material after redaction" },
+      { id: "secondary_channel_extractor", kind: "extractor", requirement: "registered deterministic extractor checks signed secondary-channel bytes" },
+      { id: "retention_policy_scope", kind: "identity", requirement: "retention or audit exception is declared and bound, or closure holds" },
+    ],
+    evidence_predicate: { kind: "trajectory", predicate: "redacted_material_persists_in_secondary_channel" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.token_entropy_and_binding.v1",
+    class_id: "token_entropy_and_binding",
+    name: "Token entropy and binding",
+    description: "Security tokens, reset links, magic links, invites, and session handles must have sufficient entropy and bind to the intended principal, tenant, audience, and expiry.",
+    proof_mode: "observed_invariant",
+    closure_regime: "deterministic",
+    parameter_slots: ["token", "principal", "tenant", "audience", "expiry"],
+    required_entities: ["token", "principal", "tenant", "audience", "expiry"],
+    mandatory_controls: [
+      { id: "signed_token_sample_set", kind: "sample", requirement: "token samples are captured by the harness, not executor-authored" },
+      { id: "registered_entropy_predicate", kind: "extractor", requirement: "registered deterministic entropy/binding predicate recomputes over signed bytes" },
+      { id: "wrong_audience_negative", kind: "negative", requirement: "token use with wrong audience, tenant, or principal is denied" },
+      { id: "expiry_negative", kind: "negative", requirement: "expired or revoked token is denied for stale/unauthorized_existing" },
+    ],
+    evidence_predicate: { kind: "observed_invariant", predicate: "token_entropy_or_binding_violation" },
+  }),
+  defineUniversalInvariantSchema({
+    id: "schema.availability_quota_isolation.v1",
+    class_id: "availability_quota_isolation",
+    name: "Availability and quota isolation",
+    description: "One tenant or unauthenticated actor must not exhaust, lock, or degrade another tenant's finite resources outside the declared quota policy.",
+    proof_mode: "statistical",
+    closure_regime: "statistical",
+    parameter_slots: ["actor", "victim_tenant", "resource", "quota_policy"],
+    required_entities: ["actor", "tenant", "resource", "quota_policy", "meter"],
+    mandatory_controls: [
+      { id: "quota_policy_bound", kind: "identity", requirement: "signed policy or plan names the allowed quota and isolation boundary" },
+      { id: "victim_baseline_positive", kind: "positive", requirement: "victim can consume the resource before the treatment" },
+      { id: "neutral_load_control", kind: "negative", requirement: "neutral load does not degrade the victim under the registered statistic" },
+      { id: "registered_statistical_procedure", kind: "statistical", requirement: "anytime-valid registered procedure recomputes over signed samples and budget allocation" },
+    ],
+    evidence_predicate: { kind: "statistical", predicate: "cross_tenant_availability_degradation" },
+  }),
+]);
+
 const TEMPLATES_BY_CLASS = (() => {
   const map = new Map();
   for (const template of TEMPLATES) {
@@ -213,6 +412,246 @@ const SUPPORTED_CLASSES = Object.freeze(Array.from(TEMPLATES_BY_CLASS.keys()).so
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function uniqueSortedStrings(values) {
+  return Object.freeze(Array.from(new Set(values)).sort());
+}
+
+function deepFreezeJson(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreezeJson(item);
+    return Object.freeze(value);
+  }
+  if (isPlainObject(value)) {
+    for (const item of Object.values(value)) deepFreezeJson(item);
+    return Object.freeze(value);
+  }
+  return value;
+}
+
+function normalizeStringList(value, fieldName, warnings) {
+  if (!Array.isArray(value) || value.some((item) => !isNonEmptyString(item))) {
+    warnings.push(`${fieldName} must be a string array`);
+    return null;
+  }
+  return uniqueSortedStrings(value.map((item) => item.trim()));
+}
+
+function normalizeMandatoryControl(record, index, warnings) {
+  if (!isPlainObject(record)) {
+    warnings.push(`mandatory_controls[${index}] must be an object`);
+    return null;
+  }
+  const id = isNonEmptyString(record.id) ? record.id.trim() : null;
+  const kind = isNonEmptyString(record.kind) ? record.kind.trim() : null;
+  const requirement = isNonEmptyString(record.requirement) ? record.requirement.trim() : null;
+  if (!id) warnings.push(`mandatory_controls[${index}].id is required`);
+  if (!kind) warnings.push(`mandatory_controls[${index}].kind is required`);
+  if (!requirement) warnings.push(`mandatory_controls[${index}].requirement is required`);
+  if (!id || !kind || !requirement) return null;
+  return {
+    id,
+    kind,
+    requirement,
+    failure_disposition: "hold",
+  };
+}
+
+function invariantSchemaDigestPreimage(schema) {
+  return {
+    registry_version: UNIVERSAL_SCHEMA_REGISTRY_VERSION,
+    id: schema.id,
+    class_id: schema.class_id,
+    name: schema.name,
+    description: schema.description,
+    proof_mode: schema.proof_mode,
+    closure_regime: schema.closure_regime,
+    parameter_slots: schema.parameter_slots,
+    required_entities: schema.required_entities,
+    mandatory_controls: schema.mandatory_controls,
+    evidence_predicate: schema.evidence_predicate,
+  };
+}
+
+function mandatoryControlsDigest(schema) {
+  return hashCanonicalJson({
+    registry_version: UNIVERSAL_SCHEMA_REGISTRY_VERSION,
+    schema_id: schema.id,
+    class_id: schema.class_id,
+    mandatory_controls: schema.mandatory_controls,
+  });
+}
+
+function defineUniversalInvariantSchema(record) {
+  const warnings = [];
+  if (!isPlainObject(record)) {
+    throw new TypeError("universal invariant schema must be an object");
+  }
+  const id = isNonEmptyString(record.id) ? record.id.trim() : null;
+  const classId = isNonEmptyString(record.class_id) ? record.class_id.trim() : null;
+  const name = isNonEmptyString(record.name) ? record.name.trim() : id;
+  const description = typeof record.description === "string" ? record.description.trim() : "";
+  const proofMode = isNonEmptyString(record.proof_mode) ? record.proof_mode.trim() : null;
+  const closureRegime = isNonEmptyString(record.closure_regime) ? record.closure_regime.trim() : null;
+  if (!id) warnings.push("id is required");
+  if (!classId) warnings.push("class_id is required");
+  if (!proofMode) warnings.push("proof_mode is required");
+  if (!closureRegime) warnings.push("closure_regime is required");
+  const parameterSlots = normalizeStringList(record.parameter_slots, "parameter_slots", warnings);
+  const requiredEntities = normalizeStringList(record.required_entities, "required_entities", warnings);
+  const mandatoryControls = Array.isArray(record.mandatory_controls)
+    ? record.mandatory_controls
+      .map((control, index) => normalizeMandatoryControl(control, index, warnings))
+      .filter(Boolean)
+      .sort((a, b) => a.id.localeCompare(b.id))
+    : null;
+  if (!mandatoryControls || mandatoryControls.length === 0) {
+    warnings.push("mandatory_controls must be a non-empty object array");
+  }
+  const duplicateControlIds = mandatoryControls
+    ? mandatoryControls.map((control) => control.id).filter((idValue, index, list) => list.indexOf(idValue) !== index)
+    : [];
+  if (duplicateControlIds.length > 0) warnings.push(`duplicate mandatory control id(s): ${uniqueSortedStrings(duplicateControlIds).join(", ")}`);
+  const evidencePredicate = isPlainObject(record.evidence_predicate)
+    ? deepFreezeJson({ ...record.evidence_predicate })
+    : null;
+  if (!evidencePredicate) warnings.push("evidence_predicate must be an object");
+  if (warnings.length > 0) {
+    throw new Error(`invalid universal invariant schema ${id || "<missing-id>"}: ${warnings.join("; ")}`);
+  }
+  const body = {
+    id,
+    class_id: classId,
+    name,
+    description,
+    proof_mode: proofMode,
+    closure_regime: closureRegime,
+    parameter_slots: parameterSlots,
+    required_entities: requiredEntities,
+    mandatory_controls: deepFreezeJson(mandatoryControls),
+    evidence_predicate: evidencePredicate,
+  };
+  const schemaDigest = hashCanonicalJson(invariantSchemaDigestPreimage(body));
+  return deepFreezeJson({
+    ...body,
+    schema_digest: schemaDigest,
+    mandatory_controls_digest: mandatoryControlsDigest(body),
+    mandatory_control_ids: uniqueSortedStrings(mandatoryControls.map((control) => control.id)),
+  });
+}
+
+const UNIVERSAL_INVARIANT_SCHEMAS_BY_ID = (() => {
+  const map = new Map();
+  for (const schema of UNIVERSAL_INVARIANT_SCHEMAS) map.set(schema.id, schema);
+  return map;
+})();
+
+const UNIVERSAL_INVARIANT_SCHEMAS_BY_CLASS = (() => {
+  const map = new Map();
+  for (const schema of UNIVERSAL_INVARIANT_SCHEMAS) map.set(schema.class_id, schema);
+  return map;
+})();
+
+const UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST = hashCanonicalJson({
+  registry_version: UNIVERSAL_SCHEMA_REGISTRY_VERSION,
+  schemas: UNIVERSAL_INVARIANT_SCHEMAS.map((schema) => ({
+    id: schema.id,
+    class_id: schema.class_id,
+    schema_digest: schema.schema_digest,
+    mandatory_controls_digest: schema.mandatory_controls_digest,
+  })).sort((a, b) => a.id.localeCompare(b.id)),
+});
+
+function getUniversalInvariantSchema(idOrClass) {
+  if (!isNonEmptyString(idOrClass)) return null;
+  const key = idOrClass.trim();
+  return UNIVERSAL_INVARIANT_SCHEMAS_BY_ID.get(key) || UNIVERSAL_INVARIANT_SCHEMAS_BY_CLASS.get(key) || null;
+}
+
+function invariantSchemaHold(reason, input = {}) {
+  return Object.freeze({
+    disposition: INVARIANT_SCHEMA_BINDING_HOLD,
+    closes: false,
+    reason,
+    class_id: isNonEmptyString(input.class_id) ? input.class_id.trim() : null,
+    schema_id: isNonEmptyString(input.schema_id) ? input.schema_id.trim() : null,
+  });
+}
+
+function schemaBindingSoftReason(input) {
+  if (!isPlainObject(input)) return "schema binding input must be an object";
+  if (input.soft === true || input.advisory === true || input.generated_hypothesis === true) {
+    return "generated hypothesis is inert and cannot bind an invariant schema";
+  }
+  const source = isNonEmptyString(input.source_plane) ? input.source_plane.trim() : input.source;
+  if (["belief", "posterior", "llm", "model", "generated", "hypothesis"].includes(source)) {
+    return `soft source ${source} cannot bind an invariant schema`;
+  }
+  return null;
+}
+
+function buildInvariantSchemaSignatureContext(idOrClass) {
+  const schema = getUniversalInvariantSchema(idOrClass);
+  if (!schema) return null;
+  return Object.freeze({
+    registry_version: UNIVERSAL_SCHEMA_REGISTRY_VERSION,
+    registry_digest: UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST,
+    class_id: schema.class_id,
+    schema_id: schema.id,
+    schema_digest: schema.schema_digest,
+    mandatory_controls_digest: schema.mandatory_controls_digest,
+    mandatory_control_ids: schema.mandatory_control_ids.slice(),
+    proof_mode: schema.proof_mode,
+    closure_regime: schema.closure_regime,
+  });
+}
+
+function verifyInvariantSchemaSignatureContext(input) {
+  const soft = schemaBindingSoftReason(input);
+  if (soft) return invariantSchemaHold(soft, input);
+  const schema = getUniversalInvariantSchema(input.schema_id || input.class_id || input.vulnerability_class);
+  if (!schema) {
+    return invariantSchemaHold("unknown invariant schema class", input);
+  }
+  if (isNonEmptyString(input.class_id) && input.class_id.trim() !== schema.class_id) {
+    return invariantSchemaHold("schema class_id mismatch", input);
+  }
+  if (isNonEmptyString(input.schema_id) && input.schema_id.trim() !== schema.id) {
+    return invariantSchemaHold("schema_id mismatch", input);
+  }
+  if (input.registry_digest !== UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST) {
+    return invariantSchemaHold("registry digest missing or changed", input);
+  }
+  if (input.schema_digest !== schema.schema_digest) {
+    return invariantSchemaHold("schema digest missing or changed", input);
+  }
+  if (input.mandatory_controls_digest !== schema.mandatory_controls_digest) {
+    return invariantSchemaHold("mandatory controls digest missing or changed", input);
+  }
+  const claimedControlIds = Array.isArray(input.mandatory_control_ids)
+    ? uniqueSortedStrings(input.mandatory_control_ids.filter(isNonEmptyString).map((value) => value.trim()))
+    : null;
+  if (!claimedControlIds || claimedControlIds.join("\n") !== schema.mandatory_control_ids.join("\n")) {
+    return invariantSchemaHold("mandatory control set missing or changed", input);
+  }
+  return Object.freeze({
+    disposition: INVARIANT_SCHEMA_BINDING_BOUND,
+    closes: false,
+    reason: "invariant schema signature context is digest-bound",
+    class_id: schema.class_id,
+    schema_id: schema.id,
+    schema_digest: schema.schema_digest,
+    mandatory_controls_digest: schema.mandatory_controls_digest,
+    registry_digest: UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST,
+    mandatory_control_ids: schema.mandatory_control_ids.slice(),
+    proof_mode: schema.proof_mode,
+    closure_regime: schema.closure_regime,
+  });
 }
 
 function stringArray(value, fieldName, warnings) {
@@ -578,9 +1017,17 @@ module.exports = {
   TEMPLATES,
   SUPPORTED_CLASSES,
   CORPUS_TEMPLATE_TIER,
+  UNIVERSAL_SCHEMA_REGISTRY_VERSION,
+  UNIVERSAL_INVARIANT_SCHEMAS,
+  UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST,
+  INVARIANT_SCHEMA_BINDING_BOUND,
+  INVARIANT_SCHEMA_BINDING_HOLD,
   CROSS_STACK_CONSUME_TEMPLATE_ID,
   SLOT_VALUE_GRAMMAR,
   validateSlotValues,
+  getUniversalInvariantSchema,
+  buildInvariantSchemaSignatureContext,
+  verifyInvariantSchemaSignatureContext,
   getTemplatesForClass,
   getMechanismTemplate,
   getMechanismTemplatesForDomain,

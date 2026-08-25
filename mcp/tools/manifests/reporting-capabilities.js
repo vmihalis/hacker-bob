@@ -1,6 +1,6 @@
 "use strict";
 
-module.exports = Object.freeze([
+const reportingBeforeBlockchainInvariantTools = Object.freeze([
   require("../compose-report.js"),
   require("../amend-report.js"),
   require("../write-chain-rollup.js"),
@@ -18,7 +18,30 @@ module.exports = Object.freeze([
   require("../ingest-audit-report.js"),
   require("../query-audit-reports.js"),
   require("../register-mechanism-template.js"),
+]);
+
+const surfaceAnalysisTools = Object.freeze([
   require("../web/extract-routes.js"),
   require("../repo/build-symbol-surface-index.js"),
   require("../repo/summarize-diff-impact.js"),
 ]);
+
+const reportingTools = [
+  ...reportingBeforeBlockchainInvariantTools,
+  ...surfaceAnalysisTools,
+];
+
+Object.defineProperty(reportingTools, "reportingBeforeBlockchainInvariantTools", {
+  value: reportingBeforeBlockchainInvariantTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+Object.defineProperty(reportingTools, "surfaceAnalysisTools", {
+  value: surfaceAnalysisTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+
+module.exports = Object.freeze(reportingTools);

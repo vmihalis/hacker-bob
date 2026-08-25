@@ -582,16 +582,23 @@ test("the clamp is recorded in the persisted round document", () => withTempHome
   assert.deepEqual(document.severity_clamps, [{ finding_id: "F-1", from: "critical", to: "low" }]);
 }));
 
-test("scope is derived from validated state, so a drifted nucleus file cannot disable the guard", () => withTempHome(() => {
+test("A8: scope is derived from the verified nucleus, so a drifted/tampered nucleus file hard-fails the guard instead of silently falling back to raw state", () => withTempHome(() => {
   const domain = "severity-rise-nucleus-drift.example";
   initWebSession(domain);
   appendFrozenFindingClaim(domain, { findingId: "F-1", severity: "low" });
   freezeClaims(domain);
-  // Tamper the (non-write-guarded) nucleus file to look non-web. The guard reads
-  // scope from the validated state, so the web clamp still fires.
+  // Tamper the (non-write-guarded) nucleus file to look non-web AND malformed
+  // (no target_domain/nucleus_hash/egress_identity/etc). Pre-A8, the guard read
+  // scope from raw state.json and this tamper was invisible to it. Post-A8, scope
+  // is sourced EXCLUSIVELY from a verified nucleus read: a present-but-unverifiable
+  // nucleus is exactly the tamper signal the guard now hard-fails on, rather than
+  // silently trusting whatever raw state.json says.
   fs.writeFileSync(sessionNucleusPath(domain), `${JSON.stringify({ scope_policy: { target_repo: "x/y" } })}\n`, "utf8");
 
-  assert.equal(writeV1Round(domain, verificationResult("F-1", { severity: "critical" })), "low");
+  assert.throws(
+    () => writeV1Round(domain, verificationResult("F-1", { severity: "critical" })),
+    (error) => error.code === "STATE_CONFLICT" && /verified session authority context/.test(error.message),
+  );
 }));
 
 test("an exploit row that demonstrates a lower severity does not unlock a higher rise", () => withTempHome(() => {

@@ -20,12 +20,17 @@ const {
 } = require("./session/session-state-contracts.js");
 const {
   blockInternalHostsRequestPolicy,
+  composeBlockInternalHostsPolicy,
 } = require("./session/session-state-store.js");
 const {
   assertBlockInternalHostsCompatibleWithEgress,
   resolveAndAssertSessionEgressIdentity,
   readStateSummary,
 } = require("./session/session-state.js");
+const {
+  authorityContextTargetDomainMismatch,
+  getOrVerifySessionAuthorityContext,
+} = require("./session/session-authority-context.js");
 const {
   isFirstPartyHost,
   safeUrlObject,
@@ -143,9 +148,24 @@ async function httpScan(args) {
       scope_decision: "blocked",
     });
   }
-  const internalHostPolicy = blockInternalHostsRequestPolicy(targetDomain, args, {
-    allowMissingSession: true,
-  });
+  // One frozen per-call session-authority context (dispatch.js already scopes the
+  // dispatched call around a matching context; a direct/offline call fresh-verifies
+  // here). Every downstream axis this handler needs -- the block_internal_hosts
+  // floor and the bound egress_identity -- is read from THIS captured context, never
+  // re-derived from a second, independently-timed state.json/nucleus read. A missing
+  // or unverifiable session (not yet bootstrapped, or a legacy nucleus-less session)
+  // degrades to the pre-existing allowMissingSession fallback below rather than
+  // blocking -- this binds call sites to the context when one verifiably exists, it
+  // does not newly require a session that didn't require one before.
+  let authorityContext = null;
+  try {
+    authorityContext = getOrVerifySessionAuthorityContext(targetDomain);
+  } catch (_error) {
+    authorityContext = null;
+  }
+  const internalHostPolicy = authorityContext
+    ? composeBlockInternalHostsPolicy(authorityContext.block_internal_hosts_policy, args)
+    : blockInternalHostsRequestPolicy(targetDomain, args, { allowMissingSession: true });
   const blockInternalHosts = internalHostPolicy.block_internal_hosts === true;
   const internalHostContext = blockInternalHostsPolicyFields(internalHostPolicy);
   const parsedUrl = safeUrlObject(url);
@@ -229,6 +249,28 @@ async function httpScan(args) {
   const emit = (payload, pretty = false) =>
     JSON.stringify(payload, null, pretty ? 2 : undefined);
 
+  // Defensive parity check: getOrVerifySessionAuthorityContext can only ever return a
+  // context whose target_domain already matches what it was requested for (see
+  // authorityContextTargetDomainMismatch's doc comment), so this can never actually
+  // fire in the dispatched/direct paths above -- it exists so a future change to that
+  // resolver's caching cannot silently reroute a request under a stale domain's
+  // policy/egress identity without the call being blocked outright. No safeFetch call
+  // is made and only an audit-only blocked record is written.
+  if (authorityContextTargetDomainMismatch(authorityContext, targetDomain)) {
+    const message = `session authority context target_domain mismatch: context is bound to ${authorityContext.target_domain}, request targets ${targetDomain}`;
+    audit({
+      status: null,
+      error: message,
+      scope_decision: "blocked",
+    });
+    return emit({
+      error: message,
+      scope_decision: "blocked",
+      ...egressContext,
+      ...internalHostContext,
+    });
+  }
+
   let initialScopeDecision = null;
   try {
     initialScopeDecision = assertSafeRequestUrl(url, targetDomain, { blockInternalHosts });
@@ -251,6 +293,7 @@ async function httpScan(args) {
   try {
     const { profile, identity } = resolveAndAssertSessionEgressIdentity(targetDomain, requestedEgressProfile, {
       source: "bob_http_scan",
+      authorityContext,
     });
     egressContext = identity;
     assertBlockInternalHostsCompatibleWithEgress(internalHostPolicy, profile);

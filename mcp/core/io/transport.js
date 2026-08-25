@@ -1,6 +1,17 @@
+const { sessionsRoot } = require("./paths.js");
+const { bobVersion } = require("./runtime-resources.js");
+
 const DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_HEADER_BYTES = 64 * 1024;
 const HEADER_DELIMITER = Buffer.from("\r\n\r\n");
+
+// Y-D25 — the `initialize` response's serverInfo.version must always match the
+// shipped package, never a hardcoded literal, env var, or caller-supplied
+// value. Read ONCE at module load from Bob's fixed package metadata: source
+// checkouts resolve package.json, while installed workspaces resolve the
+// installer-owned .hacker-bob/VERSION stamp. Passing an empty env keeps
+// BOB_VERSION and project-root overrides out of this authority path.
+const SERVER_VERSION = bobVersion(Object.create(null));
 
 // fx-gate-bypass defense 2 — caller-auth token shape. Mirrors
 // agentcore-entrypoint.py's own hex-shape check for grade_verdict_hash
@@ -80,7 +91,7 @@ function createMcpMessageHandler({
           result: {
             protocolVersion: rpc.params?.protocolVersion || "2025-11-25",
             capabilities: { tools: {} },
-            serverInfo: { name: "hacker-bob", version: "1.0.0" },
+            serverInfo: { name: "hacker-bob", version: SERVER_VERSION },
           },
         });
         break;
@@ -318,9 +329,10 @@ function createStdioServer({
 
   function start() {
     stdin.on("data", handleChunk);
-    // Surface the canonical session root in the startup banner. Sessions
-    // resolve only from `~/hacker-bob-sessions/`.
-    stderr.write("hacker-bob MCP server running (stdio); sessions: ~/hacker-bob-sessions/\n");
+    // Y-D24 — surface the ACTUAL boot-frozen session root in the startup
+    // banner, not a hardcoded default: under a custom BOB_SESSIONS_ROOT the
+    // default literal would be false.
+    stderr.write(`hacker-bob MCP server running (stdio); sessions: ${sessionsRoot()}\n`);
   }
 
   return {

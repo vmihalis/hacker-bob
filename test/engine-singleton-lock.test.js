@@ -40,9 +40,9 @@ function withTempHome(fn) {
 // process exits on its own almost right away -- with no relation to the
 // singleton lock at all -- which would make this test pass or fail for the
 // wrong reason. We open the pipe and deliberately never end() it.
-function spawnEngine(home, { timeoutMs = 5000 } = {}) {
+function spawnEngine(home, { timeoutMs = 5000, env = {} } = {}) {
   const child = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -125,6 +125,52 @@ test("a second `node mcp/server.js` against an already-locked session root refus
       );
     } finally {
       await killAndWait(first.child);
+    }
+  });
+});
+
+test("a second engine refused under a custom BOB_SESSIONS_ROOT reports the actual configured root, not the hardcoded default", async () => {
+  await withTempHome(async (home) => {
+    const customRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-custom-sessions-root-"));
+    fs.chmodSync(customRoot, 0o700);
+    try {
+      const customEnv = { env: { BOB_SESSIONS_ROOT: customRoot } };
+      const first = spawnEngine(home, customEnv);
+      const firstOutcome = await first.outcome;
+      assert.ok(firstOutcome.ready, `first engine instance must reach the ready banner: ${firstOutcome.stderr}`);
+      assert.ok(
+        firstOutcome.stderr.includes(customRoot),
+        `ready banner must name the custom session root; got: ${firstOutcome.stderr}`,
+      );
+      assert.equal(
+        firstOutcome.stderr.includes("~/hacker-bob-sessions/"),
+        false,
+        `ready banner must not fall back to the hardcoded default; got: ${firstOutcome.stderr}`,
+      );
+
+      try {
+        const second = spawnEngine(home, customEnv);
+        const secondOutcome = await second.outcome;
+        assert.equal(secondOutcome.exited, true, "second engine instance must exit (not hang serving)");
+        assert.notEqual(secondOutcome.code, 0, "second engine instance must exit non-zero");
+        assert.ok(
+          REFUSAL_BANNER.test(secondOutcome.stderr),
+          `second engine instance must print a refusal message on stderr; got: ${secondOutcome.stderr}`,
+        );
+        assert.ok(
+          secondOutcome.stderr.includes(customRoot),
+          `refusal message must name the actual boot-frozen session root, not a hardcoded default; got: ${secondOutcome.stderr}`,
+        );
+        assert.equal(
+          secondOutcome.stderr.includes("~/hacker-bob-sessions/"),
+          false,
+          `refusal message must not fall back to the hardcoded default; got: ${secondOutcome.stderr}`,
+        );
+      } finally {
+        await killAndWait(first.child);
+      }
+    } finally {
+      fs.rmSync(customRoot, { recursive: true, force: true });
     }
   });
 });

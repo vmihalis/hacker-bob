@@ -321,7 +321,12 @@ function archiveCurrentV2Attempt(domain, { attemptId, snapshotHash }) {
   }
 }
 
-function prepareVerificationEntry(domain, state, { now = new Date() } = {}) {
+// Pure build: computes the next VERIFY attempt's identity and in-memory
+// snapshot (including the sensitive-material re-scan, which must throw HERE,
+// before commitVerificationEntry performs any write) with zero I/O side
+// effects. commitVerificationEntry(built) performs the actual archive +
+// snapshot write and returns an undo() that reverses exactly that write.
+function buildVerificationEntry(domain, state, { now = new Date() } = {}) {
   if ((state && state.verification_schema_version === VERIFICATION_SCHEMA_V1) || hasV1VerificationArtifacts(domain)) {
     return {
       schema_version: VERIFICATION_SCHEMA_V1,
@@ -332,35 +337,17 @@ function prepareVerificationEntry(domain, state, { now = new Date() } = {}) {
         verification_entered_at: null,
       },
       snapshot: null,
-      archived: null,
+      archive_plan: null,
     };
   }
 
   const previousAttemptId = state && state.verification_schema_version === VERIFICATION_SCHEMA_V2
     ? state.verification_attempt_id
     : null;
-  const archived = archiveCurrentV2Attempt(domain, {
-    attemptId: previousAttemptId,
-    snapshotHash: state ? state.verification_snapshot_hash : null,
-  });
 
   const enteredAt = now.toISOString();
   const attemptId = verificationAttemptId(now);
   const snapshot = buildVerificationSnapshot(domain, { attemptId, createdAt: enteredAt, now });
-  writeFileAtomic(verificationSnapshotPath(domain), `${JSON.stringify(snapshot, null, 2)}\n`);
-  safeAppendPipelineEvent(domain, "verification_snapshot_created", {
-    phase: "VERIFY",
-    status: "created",
-    source: "bob_advance_session",
-    verification_attempt_id: attemptId,
-    verification_snapshot_hash: snapshot.snapshot_hash,
-    claim_freeze_id: snapshot.claim_freeze_id,
-    counts: {
-      claims: Array.isArray(snapshot.claim_ids) ? snapshot.claim_ids.length : 0,
-      // LEGACY: removed in Plane D
-      findings: Array.isArray(snapshot.finding_ids) ? snapshot.finding_ids.length : 0,
-    },
-  }, governanceContextForDomain(domain));
 
   return {
     schema_version: VERIFICATION_SCHEMA_V2,
@@ -371,7 +358,94 @@ function prepareVerificationEntry(domain, state, { now = new Date() } = {}) {
       verification_entered_at: enteredAt,
     },
     snapshot,
+    archive_plan: {
+      previous_attempt_id: previousAttemptId,
+      previous_snapshot_hash: state ? state.verification_snapshot_hash : null,
+    },
+  };
+}
+
+// Performs the write half of a built verification entry: archives the prior
+// attempt's files (if any) and writes the new verification-input-snapshot.json.
+// Returns an undo() that removes the archive dir it created (if any) and
+// restores verification-snapshot.json to its exact pre-write bytes (or
+// removes it, if it did not exist before) — the paired receipt a caller must
+// invoke on any failure between this write and the eventual lifecycle commit.
+function commitVerificationEntry(domain, built) {
+  if (!built || built.schema_version === VERIFICATION_SCHEMA_V1) {
+    return { ...built, archived: null, undo: () => {} };
+  }
+
+  const snapshotPath = verificationSnapshotPath(domain);
+  const priorSnapshotBytes = fs.existsSync(snapshotPath) ? fs.readFileSync(snapshotPath) : null;
+
+  const archived = archiveCurrentV2Attempt(domain, {
+    attemptId: built.archive_plan.previous_attempt_id,
+    snapshotHash: built.archive_plan.previous_snapshot_hash,
+  });
+  const archiveDir = archived
+    ? path.join(verificationAttemptsDir(domain), `attempt-${sanitizeAttemptId(archived.attempt_id)}`)
+    : null;
+
+  let snapshotWritten = false;
+  try {
+    writeFileAtomic(snapshotPath, `${JSON.stringify(built.snapshot, null, 2)}\n`);
+    snapshotWritten = true;
+    safeAppendPipelineEvent(domain, "verification_snapshot_created", {
+      phase: "VERIFY",
+      status: "created",
+      source: "bob_advance_session",
+      verification_attempt_id: built.state_fields.verification_attempt_id,
+      verification_snapshot_hash: built.snapshot.snapshot_hash,
+      claim_freeze_id: built.snapshot.claim_freeze_id,
+      counts: {
+        claims: Array.isArray(built.snapshot.claim_ids) ? built.snapshot.claim_ids.length : 0,
+        // LEGACY: removed in Plane D
+        findings: Array.isArray(built.snapshot.finding_ids) ? built.snapshot.finding_ids.length : 0,
+      },
+    }, governanceContextForDomain(domain));
+  } catch (error) {
+    // The snapshot write itself failed: undo the archive so a partial commit
+    // never leaves an orphaned archive dir with no corresponding new snapshot.
+    if (archiveDir) { try { fs.rmSync(archiveDir, { recursive: true, force: true }); } catch {} }
+    throw error;
+  }
+
+  const undo = () => {
+    if (archiveDir) {
+      try { fs.rmSync(archiveDir, { recursive: true, force: true }); } catch {}
+    }
+    if (snapshotWritten) {
+      try {
+        if (priorSnapshotBytes !== null) {
+          writeFileAtomic(snapshotPath, priorSnapshotBytes);
+        } else {
+          fs.rmSync(snapshotPath, { force: true });
+        }
+      } catch {}
+    }
+  };
+
+  return {
+    schema_version: built.schema_version,
+    state_fields: built.state_fields,
+    snapshot: built.snapshot,
     archived,
+    undo,
+  };
+}
+
+// Back-compat convenience wrapper preserved for callers/tests outside this
+// node's scope that still build-and-commit a verification entry in one call
+// (identical write behavior to the pre-split function).
+function prepareVerificationEntry(domain, state, opts = {}) {
+  const built = buildVerificationEntry(domain, state, opts);
+  const committed = commitVerificationEntry(domain, built);
+  return {
+    schema_version: committed.schema_version,
+    state_fields: committed.state_fields,
+    snapshot: committed.snapshot,
+    archived: committed.archived,
   };
 }
 
@@ -1369,6 +1443,8 @@ module.exports = {
   assertExactFindingCoverage,
   assertFreshVerificationSnapshot,
   buildVerificationAdjudication,
+  buildVerificationEntry,
+  commitVerificationEntry,
   currentV2RoundInput,
   decorateVerificationRoundRead,
   evidenceBindingForFinal,
