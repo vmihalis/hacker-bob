@@ -67,12 +67,11 @@ inputs:
 
   bob-install-token:
     description: >
-      GitHub App installation token (preferred) or fine-grained PAT with
-      read:packages and contents:read scopes. Used to authenticate npm
-      against npm.pkg.github.com for @bobnetsec/* packages. Store as the
-      org-level secret BOB_INSTALL_TOKEN and pass it from the caller workflow
-      via secrets.BOB_INSTALL_TOKEN when authenticated package or source
-      checkout access is needed. Optional for public/cached installs.
+      Classic PAT with read:packages, or the workflow GITHUB_TOKEN when that
+      token has package access. Used to authenticate npm against
+      npm.pkg.github.com for @bobnetsec/* packages. Keep private source
+      checkout credentials separate unless the classic PAT also has repo
+      scope. Optional for public/cached installs.
     required: false
     default: ''
 

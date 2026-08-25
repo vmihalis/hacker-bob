@@ -254,7 +254,7 @@ plus a Check Run result on every PR.
    |---|---|---|
    | `ANTHROPIC_OAUTH_TOKEN` | Secret | Recommended Anthropic OAuth token from `claude setup-token` for the headless Claude reviewer. |
    | `ANTHROPIC_API_KEY` | Secret | Anthropic API key fallback for the headless Claude reviewer. Required only when `ANTHROPIC_OAUTH_TOKEN` is not set. |
-   | `BOB_INSTALL_TOKEN` | Secret | GitHub App token or fine-grained personal access token (PAT) with `read:packages` and `contents:read` scopes. Used to install `@bobnetsec/*` packages. |
+   | `BOB_INSTALL_TOKEN` | Secret | Classic personal access token with `read:packages` for installing `@bobnetsec/*` packages. Add classic `repo` scope only if this same secret must check out a private source repository; otherwise keep checkout credentials separate. |
    | `BOB_VERSION` | Variable | Bob release tag to cache, e.g. `v1.2.3`. Shared across repos in the org so they reuse the same warm workspace cache. |
 
 2. **Add the caller workflow** to each repository you want reviewed. Create
@@ -362,7 +362,7 @@ If your Claude Code workflow uses `--dangerously-skip-permissions`, use it only 
 
 ### Data and security model
 
-Bob stores local run state, telemetry, and evidence under a session root that all reads and writes resolve to. The pre-v2.0 `~/bounty-agent-sessions/` root is no longer auto-resolved or auto-copied; remove a leftover legacy root with `hacker-bob install --purge-legacy-session-root` (dry-run by default, `--yes` to delete). Treat these directories as sensitive. They can contain target names, request metadata, notes, credentials metadata, and report evidence from authorized testing.
+Bob stores local run state, telemetry, and evidence under a session root that all reads and writes resolve to. The pre-v2.0 `~/bounty-agent-sessions/` root is no longer auto-resolved or auto-copied; inspect a leftover legacy root with `hacker-bob install /path/to/your/project --purge-legacy-session-root` (dry-run by default, `--yes` to delete). Treat these directories as sensitive. They can contain target names, request metadata, notes, credentials metadata, and report evidence from authorized testing.
 
 ### Session roots and concurrent engines
 

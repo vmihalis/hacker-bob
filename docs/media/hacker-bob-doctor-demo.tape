@@ -29,7 +29,7 @@ Set Theme { "name": "Hacker Bob", "black": "#050508", "red": "#FF5C57", "green":
 Hide
 Type `export BOB_DEMO_SOURCE="$PWD"`
 Enter
-Type `export BOB_DEMO_ROOT="/private/tmp/hacker-bob-vhs-doctor-demo"`
+Type `export BOB_DEMO_ROOT="${TMPDIR:-/tmp}/hacker-bob-vhs-doctor-demo"`
 Enter
 Type `rm -rf "$BOB_DEMO_ROOT" && mkdir -p "$BOB_DEMO_ROOT/project" "$BOB_DEMO_ROOT/home"`
 Enter
@@ -50,7 +50,7 @@ Show
 Type `hacker-bob doctor ./project --adapter claude --json | jq '{ready:.ok,host:.adapters[0],passed:(.checks|map(select(.status=="ok"))|length)}'`
 Sleep 500ms
 Enter
-Wait+Screen /"passed":/
+Wait+Screen /"ready": true/
 Sleep 4s
 
 Hide

@@ -1,8 +1,10 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
+const { projectRoot } = require("./runtime-resources.js");
 const {
   ENGINE_LOCK_NAME,
   SESSION_LOCK_NAME,
@@ -229,7 +231,12 @@ function telemetryToolInvocationsJsonlPath(env = process.env) {
 }
 
 function agentRunStopSeenDir(env = process.env) {
-  return path.join(telemetryDir(env), TELEMETRY_AGENT_RUN_STOP_SEEN_DIR_NAME);
+  const configuredRoot = typeof env.BOB_SESSIONS_ROOT === "string" && env.BOB_SESSIONS_ROOT.trim()
+    ? env.BOB_SESSIONS_ROOT.trim()
+    : projectRoot(env);
+  const scopePath = path.resolve(configuredRoot);
+  const scopeKey = crypto.createHash("sha256").update(scopePath).digest("hex").slice(0, 16);
+  return path.join(telemetryDir(env), TELEMETRY_AGENT_RUN_STOP_SEEN_DIR_NAME, scopeKey);
 }
 
 

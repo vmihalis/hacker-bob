@@ -54,4 +54,4 @@ vhs docs/media/hacker-bob-doctor-demo.tape
 vhs docs/media/hacker-bob-receipts-demo.tape
 ```
 
-The install and doctor tapes use disposable workspaces under `/private/tmp`, exercise only the current checkout's local install and doctor commands, and remove their workspaces afterward. The receipt tape reads only the checked-in receipt source. None of the tapes run recon, signup flows, evaluations, or target scans.
+The install and doctor tapes use disposable workspaces under the system temporary directory, exercise only the current checkout's local install and doctor commands, and remove their workspaces afterward. The receipt tape reads only the checked-in receipt source. None of the tapes run recon, signup flows, evaluations, or target scans.

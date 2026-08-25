@@ -73,9 +73,10 @@ on:
       BOB_INSTALL_TOKEN:
         required: false
         description: >
-          GitHub App installation token or fine-grained PAT with read:packages
-          and contents:read scopes. Used to install @bobnetsec/* packages.
-          Store as an org-level secret named BOB_INSTALL_TOKEN.
+          Classic PAT with read:packages, used to install @bobnetsec/*
+          packages. Add classic repo scope only when the same token must check
+          out a private workflow source; otherwise use a separate checkout
+          credential. Store as an org-level secret named BOB_INSTALL_TOKEN.
 
 jobs:
   bob-diff-review:

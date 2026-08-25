@@ -1,8 +1,5 @@
 "use strict";
 
-const fs = require("fs");
-const crypto = require("crypto");
-const path = require("path");
 const {
   assertNonEmptyString,
   parseAgentId,
@@ -16,12 +13,9 @@ const {
 } = require("./assignments.js");
 const {
   attackSurfacePath,
-  agentRunStopSeenDir,
 } = require("../io/paths.js");
-const {
-  readJsonFile,
-  writeFileAtomic,
-} = require("../io/storage.js");
+const { readJsonFile } = require("../io/storage.js");
+const { recordPhantomBlockRowOnce } = require("../telemetry/phantom-stop-dedupe.js");
 const {
   readResults: readAuthDifferentialResults,
 } = require("../auth-differential-runner.js");
@@ -1149,64 +1143,6 @@ function isPhantomNullCoordBlockRow(input) {
     && input.target_domain == null && input.wave == null && input.agent == null;
 }
 
-function phantomTranscriptKey(input) {
-  const transcriptPath = input && typeof input.transcript_path === "string"
-    ? input.transcript_path.trim()
-    : "";
-  if (!transcriptPath) return null;
-  return crypto.createHash("sha256").update(transcriptPath).digest("hex").slice(0, 16);
-}
-
-function bumpPhantomTranscriptSuppressed(markerFile) {
-  try {
-    let suppressed = 0;
-    try {
-      const state = readJsonFile(markerFile);
-      if (state && Number.isInteger(state.suppressed) && state.suppressed >= 0) {
-        suppressed = state.suppressed;
-      }
-    } catch (error) {
-      void error;
-    }
-    writeFileAtomic(markerFile, JSON.stringify({ version: 1, suppressed: suppressed + 1 }));
-  } catch (error) {
-    void error;
-  }
-}
-
-function phantomMarkerFile(key, env) {
-  try {
-    return path.join(agentRunStopSeenDir(env), key);
-  } catch (error) {
-    void error;
-    return null;
-  }
-}
-
-function writeFirstPhantomMarker(markerFile) {
-  try {
-    writeFileAtomic(markerFile, JSON.stringify({ version: 1, suppressed: 0 }));
-  } catch (error) {
-    void error;
-  }
-}
-
-function recordPhantomBlockRowOnce(input, recordRow, env) {
-  const effectiveEnv = env || process.env;
-  if (!telemetryEnabled(effectiveEnv)) return recordRow();
-  const key = phantomTranscriptKey(input);
-  if (!key) return recordRow();
-  const markerFile = phantomMarkerFile(key, effectiveEnv);
-  if (!markerFile) return recordRow();
-  if (fs.existsSync(markerFile)) {
-    bumpPhantomTranscriptSuppressed(markerFile);
-    return undefined;
-  }
-  if (recordRow() !== true) return undefined;
-  writeFirstPhantomMarker(markerFile);
-  return undefined;
-}
-
 function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // Evidence-mode input is already a fully-formed telemetry record (the hook
   // builds it directly because evidence runs have no wave/agent and skip the
@@ -1237,7 +1173,8 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
     return recorded != null;
   };
   if (isPhantomNullCoordBlockRow(input)) {
-    recordPhantomBlockRowOnce(input, recordRow);
+    if (!telemetryEnabled(process.env)) recordRow();
+    else recordPhantomBlockRowOnce(input, recordRow, process.env);
     return input;
   }
   recordRow();

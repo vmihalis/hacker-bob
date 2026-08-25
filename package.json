@@ -186,8 +186,5 @@
   },
   "optionalDependencies": {
     "patchright": "^1.60.2"
-  },
-  "overrides": {
-    "undici": "6.28.0"
   }
 }
