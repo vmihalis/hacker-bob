@@ -90,6 +90,11 @@ Parameters:
     Type: String
     Default: t4g.large
     AllowedValues: [t4g.small, t4g.large, t4g.xlarge, m7g.large]
+  RunnerSubnet:
+    Type: String
+    Default: b
+    AllowedValues: [a, b]
+    Description: Public subnet for the runner instance; override when the selected AZ lacks capacity.
   KeyPairName:
     Type: String
     Default: ""
@@ -97,6 +102,7 @@ Parameters:
 
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+  UseRunnerSubnetA: !Equals [!Ref RunnerSubnet, a]
 
 Resources:
   Vpc:
@@ -298,7 +304,7 @@ Resources:
       ImageId: !Ref RunnerAmiId
       IamInstanceProfile: !Ref RunnerInstanceProfile
       KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
-      SubnetId: !Ref PublicSubnetA
+      SubnetId: !If [UseRunnerSubnetA, !Ref PublicSubnetA, !Ref PublicSubnetB]
       SecurityGroupIds: [!Ref InstanceSecurityGroup]
       MetadataOptions:
         HttpTokens: required

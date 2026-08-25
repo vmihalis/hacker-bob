@@ -80,6 +80,8 @@ aws s3 cp /tmp/dispatch.tar.gz s3://<bucket>/runner-host/dispatch.tar.gz
 #    are required.
 #    The sizing below is a cost-conscious staging profile: keep one active run
 #    and two queued runs on the 2 GiB t4g.small host.
+#    RunnerSubnet defaults to the second configured AZ; set it to a only when
+#    that AZ has the required instance capacity.
 aws cloudformation validate-template \
   --template-body file://infra/runner-host/template.yaml
 aws cloudformation create-stack \
@@ -101,6 +103,7 @@ aws cloudformation create-stack \
     ParameterKey=DispatchHostedZoneId,ParameterValue=<zone-id> \
     ParameterKey=RunnerAmiId,ParameterValue=$RUNNER_AMI_ID \
     ParameterKey=InstanceType,ParameterValue=t4g.small \
+    ParameterKey=RunnerSubnet,ParameterValue=b \
     ParameterKey=MaxConcurrentRuns,ParameterValue=1 \
     ParameterKey=MaxQueuedRuns,ParameterValue=2 \
     ParameterKey=MaxQueueAgeMs,ParameterValue=900000 \
