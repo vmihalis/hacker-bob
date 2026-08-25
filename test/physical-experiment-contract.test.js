@@ -2792,12 +2792,15 @@ test("Mechanism-A experiment runtime detects local rollback but stays non-produc
       effectRegistry: EFFECT_REGISTRY,
       evidenceRegistry: EVIDENCE_REGISTRY,
     };
-    const signingOptions = () => ({
-      signedAt: new Date().toISOString(),
-      appendIssuer: physicalAppendIssuerAt(new Date().toISOString()),
-      signers: signerFixture.signers,
-      sign: signerFixture.sign,
-    });
+    const signingOptions = () => {
+      const signedAt = new Date().toISOString();
+      return {
+        signedAt,
+        appendIssuer: physicalAppendIssuerAt(signedAt),
+        signers: signerFixture.signers,
+        sign: signerFixture.sign,
+      };
+    };
 
     const first = createMechanismAPhysicalExperimentLedger(productionInput);
     assert.equal(assertMechanismAPhysicalExperimentLedger(first), first);
