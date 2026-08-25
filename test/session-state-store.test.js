@@ -7,16 +7,27 @@ const path = require("path");
 const {
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   withSessionLock,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   blockInternalHostsRequestPolicy,
   readSessionStateStrict,
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
+const {
+  normalizeSessionStateDocument,
+} = require("../mcp/core/session/session-state-contracts.js");
+const {
+  initSession,
+} = require("../mcp/core/session/session-state.js");
+const {
+  getOrVerifySessionAuthorityContext,
+} = require("../mcp/core/session/session-authority-context.js");
+const sessionStateVocabulary = require("../mcp/core/session/session-state-vocabulary.js");
+const governanceIndex = require("../mcp/core/governance/index.js");
 
 const ROOT = path.resolve(__dirname, "..");
 
@@ -722,7 +733,7 @@ function assertOnlyCheckedStoreWriterReferences(relativePath, source) {
   const importCode = sourceWithoutComments(source);
   const semanticCode = sourceWithoutCommentsAndStrings(source);
   const code = semanticCode.split("");
-  if (relativePath === "mcp/lib/session-state-store.js") {
+  if (relativePath === "mcp/core/session/session-state-store.js") {
     const declarationMatch = semanticCode.match(/\bfunction\s+writeSessionStateDocument\s*\(/);
     assert.ok(declarationMatch, "session-state-store.js must keep the canonical writeSessionStateDocument declaration");
     const declarationIndex = declarationMatch.index + declarationMatch[0].indexOf(writerName);
@@ -957,8 +968,8 @@ function assertSurfaceArtifactRollbackRestoreIsLocked(wavesSource) {
     "restoreFileSnapshot must keep the snapshot.path write explicit",
   );
   assert.deepEqual(runtimeCallSummaries("restoreFileSnapshot"), [
-    "mcp/lib/waves/wave-scheduler.js:startNextWave",
-    "mcp/lib/waves/wave-scheduler.js:startNextWave",
+    "mcp/core/waves/wave-scheduler.js:startNextWave",
+    "mcp/core/waves/wave-scheduler.js:startNextWave",
   ]);
   assertCallsInsideSessionLock(wavesSource, "startNextWave", "restoreFileSnapshot", { requireMatchingDomain: false });
 }
@@ -1131,21 +1142,21 @@ function writeState(domain, overrides = {}) {
 }
 
 test("session-state contract and store keep forbidden import boundaries", () => {
-  const contractSource = readSource("mcp/lib/session-state-contracts.js");
+  const contractSource = readSource("mcp/core/session/session-state-contracts.js");
   // Cycle D.3 added lazy require("./frontier-projections.js") inside
   // compactSessionState and terminallyBlockedSurfaceIds so the deleted
   // state.json projection fields (explored / terminally_blocked /
   // lead_surface_ids) can be re-derived from frontier events without a
   // top-level circular import.
   assert.deepEqual(requireSpecs(contractSource).sort(), [
-    "./constants.js",
-    "./frontier-projections.js",
-    "./frontier-projections.js",
-    "./physical-scope-axis.js",
-    "./sensitive-material.js",
-    "./validation.js",
+    "./physical-scope-axis-contract.js",
+    "../frontier/frontier-projections.js",
+    "../frontier/frontier-projections.js",
+    "../io/validation.js",
+    "../redaction/index.js",
+    "./session-state-vocabulary.js",
   ].sort());
-  assertNoForbiddenRequire("mcp/lib/session-state-contracts.js", [
+  assertNoForbiddenRequire("mcp/core/session/session-state-contracts.js", [
     "fs",
     "./paths.js",
     "./storage.js",
@@ -1158,15 +1169,15 @@ test("session-state contract and store keep forbidden import boundaries", () => 
     "./envelope.js",
   ]);
 
-  const storeSource = readSource("mcp/lib/session-state-store.js");
+  const storeSource = readSource("mcp/core/session/session-state-store.js");
   assert.deepEqual(requireSpecs(storeSource).sort(), [
-    "fs",
-    "./paths.js",
+    "../io/paths.js",
+    "../io/storage.js",
+    "../io/validation.js",
     "./session-state-contracts.js",
-    "./storage.js",
-    "./validation.js",
+    "fs",
   ].sort());
-  assertNoForbiddenRequire("mcp/lib/session-state-store.js", [
+  assertNoForbiddenRequire("mcp/core/session/session-state-store.js", [
     "./session-state.js",
     "./pipeline-events.js",
     "./verification.js",
@@ -1176,18 +1187,18 @@ test("session-state contract and store keep forbidden import boundaries", () => 
 });
 
 test("session-state store stays lock-free and parent barrel omits moved store helpers", () => {
-  const storeSource = readSource("mcp/lib/session-state-store.js");
+  const storeSource = readSource("mcp/core/session/session-state-store.js");
   const storeCode = sourceWithoutComments(storeSource);
   assert.doesNotMatch(storeCode, /\bwithSessionLock\s*\(/);
   assert.doesNotMatch(storeCode, /\bacquireSessionLock\s*\(/);
   assert.doesNotMatch(storeCode, /\bsessionLockPath\s*\(/);
 
-  const parentSource = readSource("mcp/lib/session-state.js");
+  const parentSource = readSource("mcp/core/session/session-state.js");
   const parentExportInfo = moduleExportsObjectInfo(parentSource, "session-state.js");
   const exportBlock = parentExportInfo.block;
   const movedHelpers = [...new Set([
     ...moduleExportedIdentifiers(storeSource, "session-state-store.js"),
-    ...moduleExportedIdentifiers(readSource("mcp/lib/session-state-contracts.js"), "session-state-contracts.js"),
+    ...moduleExportedIdentifiers(readSource("mcp/core/session/session-state-contracts.js"), "session-state-contracts.js"),
   ])].sort();
   for (const helper of movedHelpers) {
     assert.doesNotMatch(exportBlock, new RegExp(`\\b${helper}\\b`), `${helper} must not be exported from session-state.js`);
@@ -1229,13 +1240,13 @@ test("session-state store stays lock-free and parent barrel omits moved store he
 test("session-state contraction cycle-return roots stay cycle-free", () => {
   const graph = runtimeRequireGraph();
   const closureRoots = [
-    "mcp/lib/session-state-contracts.js",
-    "mcp/lib/session-state-store.js",
-    "mcp/lib/http-records.js",
-    "mcp/lib/lead-intake.js",
-    "mcp/lib/lead-scoring.js",
-    "mcp/lib/lead-promotion.js",
-    "mcp/lib/surface-leads.js",
+    "mcp/core/session/session-state-contracts.js",
+    "mcp/core/session/session-state-store.js",
+    "mcp/core/io/http-records.js",
+    "mcp/core/frontier/lead-intake.js",
+    "mcp/core/frontier/lead-scoring.js",
+    "mcp/core/frontier/lead-promotion.js",
+    "mcp/core/frontier/surface-leads.js",
   ];
   for (const file of reachableRuntimeFiles(graph, closureRoots)) {
     assertNoDynamicRequire(readSource(file), file);
@@ -1253,8 +1264,8 @@ test("state-writing surface lead helper is not exported unlocked", () => {
   // surface-index.json (materialized from frontier events) is the
   // authoritative surface source. The structural invariants are anchored to
   // the new files; surface-leads.js is now an aggregator shim.
-  const promotionSource = readSource("mcp/lib/lead-promotion.js");
-  const intakeSource = readSource("mcp/lib/lead-intake.js");
+  const promotionSource = readSource("mcp/core/frontier/lead-promotion.js");
+  const intakeSource = readSource("mcp/core/frontier/lead-intake.js");
   const promotionExports = moduleExportsObjectBlock(promotionSource, "lead-promotion.js");
   const waveWrapperBody = functionBody(promotionSource, "promoteSurfaceLeadsForWave");
   const semanticWaveWrapperBody = sourceWithoutCommentsAndStrings(waveWrapperBody);
@@ -1284,8 +1295,8 @@ test("state-writing surface lead helper is not exported unlocked", () => {
   );
   assert.doesNotMatch(semanticWaveWrapperBody, /\bupdate_state:\s*true\b/);
 
-  const waveSchedulerSource = readSource("mcp/lib/waves/wave-scheduler.js");
-  const waveAssignmentStoreSource = readSource("mcp/lib/waves/wave-assignment-store.js");
+  const waveSchedulerSource = readSource("mcp/core/waves/wave-scheduler.js");
+  const waveAssignmentStoreSource = readSource("mcp/core/waves/wave-assignment-store.js");
   for (const source of [waveSchedulerSource, waveAssignmentStoreSource]) {
     assert.doesNotMatch(source, /\bpromoteSurfaceLeadsInternal\b/);
     assert.doesNotMatch(source, /\brecordSurfaceLeadsInternal\b/);
@@ -1294,8 +1305,8 @@ test("state-writing surface lead helper is not exported unlocked", () => {
   assert.match(waveAssignmentStoreSource, /\brecordSurfaceLeadsForWaveHandoff\b/);
   assertCallsInsideSessionLock(waveAssignmentStoreSource, "writeWaveHandoff", "recordSurfaceLeadsForWaveHandoff");
   assert.deepEqual(runtimeCallSummaries("writeSurfaceLeadsDocument"), [
-    "mcp/lib/lead-promotion.js:promoteSurfaceLeadsInternal",
-    "mcp/lib/lead-promotion.js:recordSurfaceLeadsInternal",
+    "mcp/core/frontier/lead-promotion.js:promoteSurfaceLeadsInternal",
+    "mcp/core/frontier/lead-promotion.js:recordSurfaceLeadsInternal",
   ].sort());
   // writeSurfaceLeadsDocument lives in lead-intake (doc I/O) and is consumed
   // cross-module by lead-promotion's record/promote internals. The legacy
@@ -1325,7 +1336,7 @@ test("state-writing surface lead helper is not exported unlocked", () => {
   // D.3 deleted the legacy attack_surface.json writer; the only runtime
   // surface-artifact write is surface-leads.json from lead-intake.
   assert.deepEqual(runtimeSurfaceArtifactPathWrites.sort(), [
-    "mcp/lib/lead-intake.js:writeSurfaceLeadsDocument:writeFileAtomic:surfaceLeadsPath",
+    "mcp/core/frontier/lead-intake.js:writeSurfaceLeadsDocument:writeFileAtomic:surfaceLeadsPath",
   ]);
   assertSurfaceArtifactRollbackRestoreIsLocked(waveSchedulerSource);
   assert.deepEqual(surfaceArtifactWriteSummaries("fixture.js", `
@@ -1447,14 +1458,14 @@ test("session-state store write callers keep explicit lock boundaries", () => {
   );
   assert.throws(
     () => assertSourceDoesNotAliasStoreWriter(
-      "mcp/lib/session-state-store.js",
+      "mcp/core/session/session-state-store.js",
       "function writeSessionStateDocument(domain, raw, state) { return { domain, raw, state }; } module.exports.writeState = writeSessionStateDocument;",
     ),
     /assign/,
   );
   assert.throws(
     () => assertSourceDoesNotAliasStoreWriter(
-      "mcp/lib/session-state-store.js",
+      "mcp/core/session/session-state-store.js",
       'function writeSessionStateDocument(domain, raw, state) { return { domain, raw, state }; } module.exports = { writeSessionStateDocument, ...Object.fromEntries([["writeState", writeSessionStateDocument]]) };',
     ),
     /only reference/,
@@ -1488,29 +1499,21 @@ test("session-state store write callers keep explicit lock boundaries", () => {
     /after import/,
   );
   const directStoreWriterLockChecks = [
-    // Cycle O.1: repo-target.initRepoSession is the bootstrap path for
-    // OSS-axis sessions and writes state.json under its own withSessionLock,
-    // mirroring the contract for session-state.initSession.
-    { relativePath: "mcp/lib/repo-target.js", functionName: "initRepoSession", callCount: 1 },
-    { relativePath: "mcp/lib/session-state.js", functionName: "advanceSession", callCount: 2 },
-    { relativePath: "mcp/lib/session-state.js", functionName: "assertSessionEgressIdentity", callCount: 1 },
-    { relativePath: "mcp/lib/session-state.js", functionName: "clearOperatorNote", callCount: 1 },
-    { relativePath: "mcp/lib/session-state.js", functionName: "clearTerminalBlock", callCount: 1 },
-    { relativePath: "mcp/lib/session-state.js", functionName: "initSession", callCount: 1 },
-    { relativePath: "mcp/lib/session-state.js", functionName: "setOperatorNote", callCount: 1 },
-    // bob_init_contract_session is the bootstrap path for the
-    // smart-contract axis and writes state.json under its own withSessionLock,
-    // mirroring session-state.initSession / repo-target.initRepoSession.
-    { relativePath: "mcp/lib/tools/init-contract-session.js", functionName: "handler", callCount: 1 },
-    // PH-IP1 physical-only bootstrap writes state.json only from the synchronous
-    // create path while its derived target-domain session lock is held.
-    { relativePath: "mcp/lib/tools/init-physical-session.js", functionName: "createPhysicalBootstrap", callCount: 1 },
-    // O-P6 MIXED program: the OPTIONAL contracts companion on bob_init_session /
-    // bob_init_repo_session binds target_contracts + chain_authority_hash into
-    // the primary-axis session's state.json under its own withSessionLock.
-    { relativePath: "mcp/lib/tools/init-session.js", functionName: "bindContractCompanion", callCount: 1 },
-    { relativePath: "mcp/lib/tools/init-repo-session.js", functionName: "bindContractCompanion", callCount: 1 },
-    { relativePath: "mcp/lib/waves/wave-merge-settler.js", functionName: "applyWaveMerge", callCount: 1 },
+    { relativePath: "mcp/core/session/session-state.js", functionName: "clearTerminalBlock", callCount: 1 },
+    // A7M: assertSessionEgressIdentity, setOperatorNote and clearOperatorNote no
+    // longer call writeSessionStateDocument directly -- they (setOperatorNote/
+    // clearOperatorNote via the shared applyOperatorConstraintUpdate) route
+    // through commitSessionAuthority instead, proven below alongside advanceSession.
+    // O-P6 MIXED program note: the OPTIONAL contracts companion on bob_init_session /
+    // bob_init_repo_session binds target_contracts + chain_authority_hash into the
+    // primary-axis session's state.json through initSession's own commitSessionAuthority
+    // create-CAS call (buildInitialSessionState already embeds the companion fields into
+    // the initial state passed to that call). The RESUME path's seedVerifiedContractCompanion
+    // (mcp/domains/blockchain/contract-target.js) reads state under its own withSessionLock
+    // to verify the binding but never writes state.json -- there is no "bindContractCompanion"
+    // writeSessionStateDocument caller in mcp/tools/init-session.js or
+    // mcp/tools/repo/init-repo-session.js; those two rows were stale.
+    { relativePath: "mcp/core/waves/wave-merge-settler.js", functionName: "applyWaveMerge", callCount: 1 },
   ];
   const storeWriterSummaries = runtimeCallSummaries("writeSessionStateDocument");
   assert.deepEqual(
@@ -1522,16 +1525,49 @@ test("session-state store write callers keep explicit lock boundaries", () => {
     assertCallsInsideSessionLock(readSource(relativePath), functionName, "writeSessionStateDocument");
   }
 
-  const waveSchedulerSource = readSource("mcp/lib/waves/wave-scheduler.js");
-  const waveAssignmentStoreSource = readSource("mcp/lib/waves/wave-assignment-store.js");
-  const promotionSource = readSource("mcp/lib/lead-promotion.js");
+  // A7: advanceSession no longer writes state.json/session-nucleus.json directly.
+  // commitSessionAuthority owns the raw projection write through its own CAS-safe
+  // writeFileCasAtomicReceipt primitive (NOT the plain-atomic writeSessionStateDocument
+  // -- a CAS transaction must never fall back to a non-CAS write, or it would lose the
+  // compare-and-swap guarantee on state.json). advanceSession's locked write contract is
+  // instead: it calls commitSessionAuthority exactly once, inside its own
+  // withSessionLock(domain) callback -- proven directly here rather than via the
+  // writeSessionStateDocument inventory above, since commitSessionAuthority's first
+  // argument is an options object, not a bare domain expression.
+  assertCallsInsideSessionLock(
+    readSource("mcp/core/session/session-state.js"),
+    "advanceSession",
+    "commitSessionAuthority",
+    { requireMatchingDomain: false },
+  );
+
+  // A7M: egress binding and the shared operator-constraint writer (backing
+  // setOperatorNote/clearOperatorNote) each collapse to a single
+  // commitSessionAuthority call inside their own withSessionLock callback,
+  // the same CAS/rollback contract advanceSession already proves above.
+  assertCallsInsideSessionLock(
+    readSource("mcp/core/session/session-state.js"),
+    "assertSessionEgressIdentity",
+    "commitSessionAuthority",
+    { requireMatchingDomain: false },
+  );
+  assertCallsInsideSessionLock(
+    readSource("mcp/core/session/session-state.js"),
+    "applyOperatorConstraintUpdate",
+    "commitSessionAuthority",
+    { requireMatchingDomain: false },
+  );
+
+  const waveSchedulerSource = readSource("mcp/core/waves/wave-scheduler.js");
+  const waveAssignmentStoreSource = readSource("mcp/core/waves/wave-assignment-store.js");
+  const promotionSource = readSource("mcp/core/frontier/lead-promotion.js");
   // Cycle D.3 removed state.lead_surface_ids from the session-state
   // contract; lead-promotion no longer writes state.json, so it is no
   // longer a delegated store writer. The startWaveLocked path remains the
   // sole locked delegated writer in the wave plane.
   const delegatedStoreWriterChecks = [
     {
-      relativePath: "mcp/lib/waves/wave-scheduler.js",
+      relativePath: "mcp/core/waves/wave-scheduler.js",
       helperName: "startWaveLocked",
       source: waveSchedulerSource,
       lockedCallers: ["startWave", "startNextWave"],
@@ -1550,16 +1586,16 @@ test("session-state store write callers keep explicit lock boundaries", () => {
   assert.deepEqual(storeWriterSummaries, expectedStoreWriterSummaries);
 
   assert.deepEqual(runtimeCallSummaries("promoteSurfaceLeadsInternal"), [
-    "mcp/lib/lead-promotion.js:promoteSurfaceLeads",
-    "mcp/lib/lead-promotion.js:promoteSurfaceLeadsForWave",
+    "mcp/core/frontier/lead-promotion.js:promoteSurfaceLeads",
+    "mcp/core/frontier/lead-promotion.js:promoteSurfaceLeadsForWave",
   ].sort());
   assert.deepEqual(runtimeCallSummaries("recordSurfaceLeadsInternal"), [
-    "mcp/lib/lead-promotion.js:recordStaticAnalysisLeads",
-    "mcp/lib/lead-promotion.js:recordSurfaceLeads",
-    "mcp/lib/lead-promotion.js:recordSurfaceLeadsForWaveHandoff",
+    "mcp/core/frontier/lead-promotion.js:recordStaticAnalysisLeads",
+    "mcp/core/frontier/lead-promotion.js:recordSurfaceLeads",
+    "mcp/core/frontier/lead-promotion.js:recordSurfaceLeadsForWaveHandoff",
   ].sort());
   assert.deepEqual(runtimeCallSummaries("recordSurfaceLeadsForWaveHandoff"), [
-    "mcp/lib/waves/wave-assignment-store.js:writeWaveHandoff",
+    "mcp/core/waves/wave-assignment-store.js:writeWaveHandoff",
   ]);
   assertCallsInsideSessionLock(promotionSource, "recordSurfaceLeads", "recordSurfaceLeadsInternal");
   assertCallsInsideSessionLock(promotionSource, "recordStaticAnalysisLeads", "recordSurfaceLeadsInternal");
@@ -1877,3 +1913,81 @@ test("session-state-store internal-host policy preserves session precedence and 
     );
   });
 });
+
+test("governance-contracts and session-state-contracts resolve LIFECYCLE_STATE_VALUES from the same session-state-vocabulary leaf (no re-duplication)", () => {
+  // governance/index.js re-exports governance-contracts.js's LIFECYCLE_STATE_VALUES,
+  // which must be the SAME array object session-state-vocabulary.js exports —
+  // proving governance-contracts.js imports rather than redeclares it.
+  assert.strictEqual(governanceIndex.LIFECYCLE_STATE_VALUES, sessionStateVocabulary.LIFECYCLE_STATE_VALUES);
+
+  // session-state-contracts.js has no exported enum to compare by reference, so
+  // prove behavioral equivalence against the same leaf array instead: every
+  // value the leaf accepts must normalize as lifecycle_state, and no other
+  // value may. A reintroduced local copy with a different membership would
+  // fail one side of this loop.
+  const domain = "lifecycle-values-identity.example.com";
+  for (const value of sessionStateVocabulary.LIFECYCLE_STATE_VALUES) {
+    const normalized = normalizeSessionStateDocument(
+      { target_url: `https://${domain}`, lifecycle_state: value },
+      domain,
+    );
+    assert.equal(normalized.lifecycle_state, value);
+  }
+  assert.throws(
+    () => normalizeSessionStateDocument(
+      { target_url: `https://${domain}`, lifecycle_state: "NOT_A_LIFECYCLE_STATE" },
+      domain,
+    ),
+    /lifecycle_state/,
+  );
+
+  // Source-level guard: session-state-contracts.js must import the leaf array
+  // (aliased or not) rather than declaring its own frozen six-state literal.
+  const contractsSource = readSource(path.join("mcp", "core", "session", "session-state-contracts.js"));
+  assert.match(
+    contractsSource,
+    /require\(["']\.\/session-state-vocabulary\.js["']\)/,
+    "session-state-contracts.js must require session-state-vocabulary.js",
+  );
+  assert.doesNotMatch(
+    contractsSource,
+    /Object\.freeze\(\[\s*["']SETUP["']/,
+    "session-state-contracts.js must not redeclare the frozen lifecycle enum literal",
+  );
+});
+
+// A8E parity: the frozen session-authority context's block_internal_hosts_policy
+// field (session-authority-context.js, sourced from the verified nucleus's
+// scope_policy) must never silently diverge from the legacy direct
+// blockInternalHostsRequestPolicy read (session-state-store.js, sourced from
+// state.json) for the SAME, untampered session -- both derive from the same
+// initial policy, just through two different documents (nucleus vs. state.json
+// projection) that stay in sync for a freshly-initialized, unmutated session.
+test("frozen authority context block_internal_hosts_policy matches the legacy state.json-sourced read for an untampered session", () => withTempHome(() => {
+  const domain = "a8e-parity-normal.example.com";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+  const context = getOrVerifySessionAuthorityContext(domain);
+  const legacy = blockInternalHostsRequestPolicy(domain, {}, { allowMissingSession: false });
+
+  assert.deepEqual(context.block_internal_hosts_policy, {
+    checkpoint_mode: legacy.checkpoint_mode,
+    block_internal_hosts: legacy.block_internal_hosts,
+    block_internal_hosts_source: legacy.block_internal_hosts_source,
+  });
+}));
+
+test("frozen authority context block_internal_hosts_policy matches the legacy state.json-sourced read for a paranoid-checkpoint session", () => withTempHome(() => {
+  const domain = "a8e-parity-paranoid.example.com";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}`, checkpoint_mode: "paranoid" }));
+
+  const context = getOrVerifySessionAuthorityContext(domain);
+  const legacy = blockInternalHostsRequestPolicy(domain, {}, { allowMissingSession: false });
+
+  assert.equal(legacy.block_internal_hosts, true, "paranoid checkpoint mode must default block_internal_hosts to true");
+  assert.deepEqual(context.block_internal_hosts_policy, {
+    checkpoint_mode: legacy.checkpoint_mode,
+    block_internal_hosts: legacy.block_internal_hosts,
+    block_internal_hosts_source: legacy.block_internal_hosts_source,
+  });
+}));

@@ -40,7 +40,7 @@ const {
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const FIXED_NOW = "2026-07-18T09:00:00.100Z";
 
@@ -56,8 +56,18 @@ function nonce() {
   return crypto.randomBytes(18).toString("base64url");
 }
 
+// Anchored to the repository, not to process.cwd(). A Unix socket path is
+// capped (IPC_MAX_SOCKET_PATH_BYTES = 100) and the caller's working directory
+// decided how much of that budget was already spent, so the same code passed
+// or failed on where it was invoked from: `npm test --prefix <pkg>` runs the
+// script from the repo root under one bundled npm and from the package
+// directory under another, and the deeper cwd pushed every socket path past
+// the cap. Keep it out of os.tmpdir() too — that is a symlink on macOS and
+// the location check requires a path equal to its own realpath.
+const REPOSITORY_ROOT = path.resolve(__dirname, "..", "..", "..");
+
 function secureTempRoot(mode = 0o700) {
-  const root = fs.mkdtempSync(path.join(process.cwd(), ".bob-ipc-test-"));
+  const root = fs.mkdtempSync(path.join(REPOSITORY_ROOT, ".bob-ipc-test-"));
   fs.chmodSync(root, mode);
   return root;
 }
@@ -970,7 +980,19 @@ test("unsettled replay custody remains one-shot and globally bounded after socke
   assert.ok(replayCalls <= 32, `unsettled replay callbacks exceeded the cap: ${replayCalls}`);
   const callsAtCap = replayCalls;
   await assert.rejects(f.client(f.request(), 80));
-  assert.equal(replayCalls, callsAtCap, "timed-out replay callbacks cannot admit unbounded work");
+  // The property is the global cap, not that 48 concurrent attempts happened
+  // to saturate it. On a slower host only 31 of the 48 land before the socket
+  // timeout, so the extra request takes the one free slot and reaches 32 —
+  // still within the cap, but the old equality read that as unbounded work.
+  // Assert the cap directly, and keep the one-shot check where it is
+  // meaningful: once saturated, nothing further may be admitted.
+  assert.ok(
+    replayCalls <= 32,
+    `timed-out replay callbacks cannot admit unbounded work: ${replayCalls}`,
+  );
+  if (callsAtCap === 32) {
+    assert.equal(replayCalls, callsAtCap, "a saturated replay cap admits no further work");
+  }
   assert.equal(f.handlerCalls(), 0);
 });
 
@@ -1005,7 +1027,15 @@ test("unsettled handlers remain globally bounded after their abort deadlines", a
   assert.ok(handlerCalls <= 32, `unsettled handlers exceeded the cap: ${handlerCalls}`);
   const callsAtCap = handlerCalls;
   await assert.rejects(f.client(f.request(), 80));
-  assert.equal(handlerCalls, callsAtCap, "abandoned handlers cannot admit unbounded work");
+  // Same shape as the replay cap above: bound the total, and only require
+  // strict one-shot behaviour once the cap was actually reached.
+  assert.ok(
+    handlerCalls <= 32,
+    `abandoned handlers cannot admit unbounded work: ${handlerCalls}`,
+  );
+  if (callsAtCap === 32) {
+    assert.equal(handlerCalls, callsAtCap, "a saturated handler cap admits no further work");
+  }
 });
 
 test("peer credential, authenticated key, and principal drift fail before dispatch", async (t) => {

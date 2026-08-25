@@ -7,33 +7,33 @@ const test = require("node:test");
 const {
   buildNormalizedOperationRegistry,
   defineProviderDescriptor,
-} = require("../mcp/lib/instrument-provider-contract.js");
+} = require("../mcp/domains/physical/instrument-provider-contract.js");
 const {
   buildPhysicalFinding,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   assertPhysicalProviderAuthoringBindings,
   assertPhysicalProviderAuthoringManifest,
   createPhysicalProviderAuthoringManifest,
   normalizePhysicalProviderAuthoringManifest,
-} = require("../mcp/lib/physical-provider-authoring.js");
+} = require("../mcp/domains/physical/physical-provider-authoring.js");
 const {
   normalizePhysicalResourceBundle,
-} = require("../mcp/lib/physical-resource-contract.js");
+} = require("../mcp/core/physical-resource-contracts.js");
 const {
   MAX_RESOURCE_INVENTORY_VALIDITY_MS,
   planPhysicalResourceBundle,
-} = require("../mcp/lib/physical-resource-scheduler.js");
+} = require("../mcp/domains/physical/physical-resource-scheduler.js");
 const {
   MAX_UNCERTAINTY_MS,
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   createOrthogonalMultiInstrumentProviderFixture,
 } = require("../packages/bob-instrument-deterministic/lib/orthogonal-fixture.js");

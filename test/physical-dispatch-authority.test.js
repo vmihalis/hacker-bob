@@ -13,7 +13,7 @@ const {
   createActivePhysicalExecutionGrantVerifier,
   normalizeMcpPhysicalExecutionRequest,
   projectVerifiedActivePhysicalExecutionGrant,
-} = require("../mcp/lib/physical-authority.js");
+} = require("../mcp/domains/physical/physical-authority.js");
 const {
   assertCurrentPhysicalDispatchAuthority,
   assertCurrentPhysicalDispatchExecutionAuthorityClaim,
@@ -22,30 +22,30 @@ const {
   createActivePhysicalDispatchAuthorityPort,
   createDeterministicMockDispatchAuthorityPort,
   takePhysicalDispatchExecutionAuthorityClaimOwnership,
-} = require("../mcp/lib/physical-dispatch-authority.js");
+} = require("../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   assertAttemptJournalAppend,
   normalizeAttemptJournalEntry,
   normalizeEffectDispatchRecord,
-} = require("../mcp/lib/instrument-lease-contract.js");
+} = require("../mcp/domains/physical/instrument-lease-contract.js");
 const {
   createDurableInstrumentLeaseStore,
   createDurableInstrumentProviderDispatchPort,
-} = require("../mcp/lib/instrument-lease-store.js");
+} = require("../mcp/domains/physical/instrument-lease-store.js");
 const {
   createPhysicalProviderCommandAuthorizationPort,
   createPhysicalProviderCommandRegistry,

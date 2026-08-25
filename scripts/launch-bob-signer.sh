@@ -101,7 +101,7 @@ SESSIONS_ROOT="${SIGNER_HOME}/hacker-bob-sessions"
 
 # Render the custody plan (dir/key modes + owner) from the SINGLE in-repo source
 # of truth so the launcher cannot drift from the modes the server actually mints.
-DIR_MODE="$(node -e 'const c=require(process.argv[1]);process.stdout.write(c.octalModeString(c.SIGNING_KEY_DIR_MODE))' "${REPO_ROOT}/mcp/lib/signing-key-custody.js")"
+DIR_MODE="$(node -e 'const c=require(process.argv[1]);process.stdout.write(c.octalModeString(c.SIGNING_KEY_DIR_MODE))' "${REPO_ROOT}/mcp/core/ledger-integrity/signing-key-custody.js")"
 
 # Establish the signer-owned, owner-only session root. Key files minted later by the
 # server (ensureHandoffSigningKey / ensureHandoffKeypair) are then born signer-owned

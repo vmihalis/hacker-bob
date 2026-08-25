@@ -9,13 +9,13 @@ const path = require("path");
 const {
   planCompositionFloor,
   handler: materializeProducerFloor,
-} = require("../mcp/lib/tools/materialize-producer-floor.js");
-const { appendFrontierEvent, readFrontierEvents } = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/tools/materialize-producer-floor.js");
+const { appendFrontierEvent, readFrontierEvents } = require("../mcp/core/frontier/frontier-events.js");
 const {
   readTransitionProposals,
   TRANSITION_KIND_VALUES,
-} = require("../mcp/lib/task-graph-events.js");
-const { transitionSurfaceId: exportedTransitionSurfaceId } = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/waves/task-graph-events.js");
+const { transitionSurfaceId: exportedTransitionSurfaceId } = require("../mcp/core/frontier/frontier-materializer.js");
 
 function transitionSurfaceId(payload, eventId) {
   if (typeof exportedTransitionSurfaceId === "function") {

@@ -8,7 +8,7 @@ const {
   normalizeProviderBootstrapIntent,
   normalizeProviderBootstrapReport,
   normalizeProviderBootstrapRequest,
-} = require("../mcp/lib/instrument-provider-contract.js");
+} = require("../mcp/domains/physical/instrument-provider-contract.js");
 const {
   instrumentBootstrapIntentDigest,
   instrumentBootstrapProviderReportDigest,
@@ -22,13 +22,13 @@ const {
   normalizeInstrumentBootstrapRedemptionExpected,
   normalizeInstrumentBootstrapTerminalBinding,
   recoveryDispositionForState,
-} = require("../mcp/lib/instrument-bootstrap-contract.js");
+} = require("../mcp/domains/physical/instrument-bootstrap-contract.js");
 const {
   createDeterministicProviderFixture,
 } = require("../packages/bob-instrument-deterministic/lib/fixtures.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

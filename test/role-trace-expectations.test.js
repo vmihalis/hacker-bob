@@ -23,15 +23,15 @@ const {
   ROLE_IDS,
   getExpectationsForRole,
   getExpectationsForRoleByBoundary,
-} = require("../mcp/lib/role-trace-expectations.js");
+} = require("../mcp/core/role-trace-expectations.js");
 const {
   FRICTION_PROMPT_FRAGMENTS,
   isKnownFragmentId,
-} = require("../mcp/lib/friction-prompt-fragments.js");
+} = require("../mcp/core/friction-prompt-fragments.js");
 const {
   STIGMERGIC_PRODUCERS,
   isKnownProducerId,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 
 test("ROLE_TRACE_EXPECTATIONS is Object.freeze'd at every level", () => {
   assert.equal(Object.isFrozen(ROLE_TRACE_EXPECTATIONS), true);

@@ -13,14 +13,14 @@ const crypto = require("node:crypto");
 const {
   offensiveRunsJsonlPath,
   offensiveRunsDir,
-} = require("../../mcp/lib/paths.js");
+} = require("../../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../../mcp/lib/handoff-signing-key.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../../mcp/lib/offensive-row-mac.js");
-const { canonicalizeExploitTarget } = require("../../mcp/lib/claims.js");
+} = require("../../mcp/core/ledger-integrity/index.js");
+const { canonicalizeExploitTarget } = require("../../mcp/core/claims/claims.js");
 const { seedInvariantRunRow } = require("./invariant-run-seed.js");
 
 // The audited cross-stack consuming template — every cross-stack invariant arm must run it.

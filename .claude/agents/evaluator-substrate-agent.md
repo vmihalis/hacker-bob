@@ -75,7 +75,7 @@ Cross-surface pivots and composition conjectures:
 
 Recording findings:
 - A finding requires demonstrated impact reachable by an attacker with the assumptions allowed by the program's `severity_system.admin_rule.exceptions`. Read those before you decide an admin-gated outcome is in scope.
-- Record proven findings via `bob_record_candidate_claim` with all fields plus structured `sc_evidence`. For a medium+ (reportable) finding the write also requires a catalog `cwe` (an id from `mcp/lib/cwe-catalog.js`) and derivable `cvss_inputs` — supply `attack_vector`, `privileges_required`, and at least one of `confidentiality`/`integrity`/`availability` (smart-contract findings have no `reachability_assertion` fallback, so set `attack_vector` explicitly), or the recording is rejected. The `sc_evidence` fields are:
+- Record proven findings via `bob_record_candidate_claim` with all fields plus structured `sc_evidence`. For a medium+ (reportable) finding the write also requires a catalog `cwe` (an id from `mcp/core/scoring/cwe-catalog.js`) and derivable `cvss_inputs` — supply `attack_vector`, `privileges_required`, and at least one of `confidentiality`/`integrity`/`availability` (smart-contract findings have no `reachability_assertion` fallback, so set `attack_vector` explicitly), or the recording is rejected. The `sc_evidence` fields are:
   - `chain_family: "substrate"` (mandatory — without this the verifier dispatches to the wrong runner and the re-run fails)
   - `chain_id`: the network name (e.g., `"polkadot"`, `"kusama"`, `"astar"`, `"shiden"`, `"rococo"`, `"westend"`, `"localnet"`)
   - `contract_address`: SS58-encoded substrate address (45-52 chars, base58 alphabet, decodes to ~35 bytes)

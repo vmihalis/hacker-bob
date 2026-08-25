@@ -18,17 +18,17 @@ const {
   planePhysicalHyperedgeRegistryDigest,
   planePhysicalNodeContractDigest,
   planePhysicalNodeContractRegistryDigest,
-} = require("../mcp/lib/plane-physical-release-contracts.js");
+} = require("../mcp/domains/physical/plane-physical-release-contracts.js");
 const {
   PLANE_PHYSICAL_PACKAGED_RELEASE_SNAPSHOT,
   assertPackagedPlanePhysicalReleaseSnapshot,
   compilePlanePhysicalReleaseSnapshot,
-} = require("../mcp/lib/plane-physical-release-snapshot.js");
+} = require("../mcp/domains/physical/plane-physical-release-snapshot.js");
 const {
   createConformancePlanePhysicalGateEvidenceRuntime,
   issuePlanePhysicalGateEvidence,
   planePhysicalReleaseCandidateDigest,
-} = require("../mcp/lib/plane-physical-gate-evidence.js");
+} = require("../mcp/domains/physical/plane-physical-gate-evidence.js");
 const {
   PLANE_PHYSICAL_RELEASE_QUALIFICATION_CHECK_REGISTRY,
   PLANE_PHYSICAL_SIGNED_RELEASE_QUALIFICATION_CHECK_REGISTRY,
@@ -38,7 +38,7 @@ const {
   evaluateSignedPlanePhysicalReleaseReadiness,
   planePhysicalGateAcceptanceDigest,
   planePhysicalGateContractDigest,
-} = require("../mcp/lib/plane-physical-release-readiness.js");
+} = require("../mcp/domains/physical/plane-physical-release-readiness.js");
 const {
   parsePhysicalProductionRequirement,
 } = require("../scripts/release-check.js");
@@ -478,7 +478,7 @@ test("release fails closed on candidate, package, task-graph, snapshot, gate, an
 
 test("release consumes atomic batch plus runtime-owned nonsemantic receipt surfaces", () => {
   const source = fs.readFileSync(
-    path.join(__dirname, "../mcp/lib/plane-physical-release-readiness.js"),
+    path.join(__dirname, "../mcp/domains/physical/plane-physical-release-readiness.js"),
     "utf8",
   );
   assert.match(source, /resolveAndVerifyPlanePhysicalGateEvidenceBatch/u);
@@ -499,8 +499,8 @@ test("release routes a revocation during production recheck to conformance failu
 }, (t) => {
   const f = fixture();
   t.after(() => f.cleanup());
-  const gatePath = require.resolve("../mcp/lib/plane-physical-gate-evidence.js");
-  const releasePath = require.resolve("../mcp/lib/plane-physical-release-readiness.js");
+  const gatePath = require.resolve("../mcp/domains/physical/plane-physical-gate-evidence.js");
+  const releasePath = require.resolve("../mcp/domains/physical/plane-physical-release-readiness.js");
   const gateModule = require(gatePath);
   const gateCacheEntry = require.cache[gatePath];
   const original = gateModule.assertVerifiedPlanePhysicalGateEvidenceBatch;
@@ -540,8 +540,8 @@ test("release rejects an injected post-batch mutation before receipt commit", {
 }, (t) => {
   const f = fixture();
   t.after(() => f.cleanup());
-  const gatePath = require.resolve("../mcp/lib/plane-physical-gate-evidence.js");
-  const releasePath = require.resolve("../mcp/lib/plane-physical-release-readiness.js");
+  const gatePath = require.resolve("../mcp/domains/physical/plane-physical-gate-evidence.js");
+  const releasePath = require.resolve("../mcp/domains/physical/plane-physical-release-readiness.js");
   const gateModule = require(gatePath);
   const gateCacheEntry = require.cache[gatePath];
   const originalConformance = gateModule.assertConformancePlanePhysicalGateEvidenceBatch;
@@ -595,8 +595,8 @@ test("release cache substitution cannot mint semantics and stale snapshots fail 
 }, (t) => {
   const f = fixture();
   t.after(() => f.cleanup());
-  const gatePath = require.resolve("../mcp/lib/plane-physical-gate-evidence.js");
-  const releasePath = require.resolve("../mcp/lib/plane-physical-release-readiness.js");
+  const gatePath = require.resolve("../mcp/domains/physical/plane-physical-gate-evidence.js");
+  const releasePath = require.resolve("../mcp/domains/physical/plane-physical-release-readiness.js");
   const gateModule = require(gatePath);
   const gateCacheEntry = require.cache[gatePath];
   let forgedCommitCalls = 0;
@@ -896,10 +896,10 @@ test("release-check rejects both CLI and environment physical-production claims"
 
 test("release contract and validator ship in package and installed-runtime manifests", () => {
   for (const relativePath of [
-    "mcp/lib/plane-physical-gate-evidence.js",
-    "mcp/lib/plane-physical-release-contracts.js",
-    "mcp/lib/plane-physical-release-readiness.js",
-    "mcp/lib/plane-physical-release-snapshot.js",
+    "mcp/domains/physical/plane-physical-gate-evidence.js",
+    "mcp/domains/physical/plane-physical-release-contracts.js",
+    "mcp/domains/physical/plane-physical-release-readiness.js",
+    "mcp/domains/physical/plane-physical-release-snapshot.js",
   ]) {
     assert.ok(expectedCanonicalFiles(ROOT).includes(relativePath));
     assert.ok(canonicalInstalledRuntimeFiles(ROOT).includes(relativePath));

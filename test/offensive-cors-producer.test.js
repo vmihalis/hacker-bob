@@ -21,13 +21,13 @@ const {
   mintCanaryOriginPair,
   crossSiteFetchHeaders,
   CORS_DEMONSTRATED_CEILING,
-} = require("../mcp/lib/offensive-cors-producer.js");
-const { OFFENSIVE_TOOL_DEMONSTRATED_CEILING, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/web/offensive-cors-producer.js");
+const { OFFENSIVE_TOOL_DEMONSTRATED_CEILING, canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/core/ledger-integrity/index.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
 
 const SURFACE_ID = "surface:api";
 const ENDPOINT = "/api/data";

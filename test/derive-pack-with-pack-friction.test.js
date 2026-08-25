@@ -29,19 +29,19 @@ const path = require("node:path");
 const {
   PACK_FRICTION_CHRONIC_MIN_COUNT,
   derivePackForNode,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   buildWaveBriefDerivation,
-} = require("../mcp/lib/wave-brief-derivation.js");
+} = require("../mcp/core/waves/wave-brief-derivation.js");
 const {
   routeSurfacesInternal,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

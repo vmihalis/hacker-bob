@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   deriveChildFanoutPlan,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 
 const META = { capability_pack: "web_generic" };
 const BUG_CLASSES = ["idor", "xss", "ssrf"];

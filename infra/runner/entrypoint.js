@@ -464,7 +464,7 @@ async function runSpawnedRunner(
 
 function loadReceiptReader() {
   const engineRoot = process.env.BOB_ENGINE_ROOT || "/opt/hacker-bob";
-  return require(path.join(engineRoot, "mcp/lib/finalization-receipt.js")).readFinalizationReceipt;
+  return require(path.join(engineRoot, "mcp/finalization-receipt.js")).readFinalizationReceipt;
 }
 
 function verifyFinalizationReceipt(payload) {

@@ -21,16 +21,16 @@ const {
   deriveUnroutableSurfacesFromRoutes,
   SURFACE_ROUTES_VERSION,
   SURFACE_ROUTE_VERSION,
-} = require("../mcp/lib/surface-router.js");
-const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { findRoutedSurface } = require("../mcp/lib/offensive-http-common.js");
+} = require("../mcp/core/frontier/surface-router.js");
+const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { findRoutedSurface } = require("../mcp/domains/web/offensive-http-common.js");
 // S1 detector is injected into routing by the tool handler; tests inject it too.
 const {
   surfaceExposesIdBearingCollection: idBearingDetector,
   surfaceIdBearingEndpoints: idBearingEndpoints,
-} = require("../mcp/lib/offensive-idor-producer.js");
-const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/frontier/id-bearing-endpoints.js");
+const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const prev = process.env.HOME;

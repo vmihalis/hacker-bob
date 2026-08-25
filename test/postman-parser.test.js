@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   parsePostmanCollection,
   looksLikePostmanCollection,
-} = require("../mcp/lib/postman-parser.js");
+} = require("../mcp/core/postman-parser.js");
 
 const SIMPLE_COLLECTION = Object.freeze({
   info: {

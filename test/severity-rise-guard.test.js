@@ -9,24 +9,24 @@ const path = require("node:path");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
   normalizeCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   VERIFICATION_CONFIDENCE_REASON_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/verification/verification-vocabulary.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   computeInvariantRunHash,
   invariantFoundryResultHash,
   readInvariantVerifiedSummary,
   verifyInvariantDifferential,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   claimFreezePath,
   claimsJsonlPath,
@@ -36,38 +36,38 @@ const {
   sessionNucleusPath,
   statePath,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SEVERITY_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/constants/shared-vocabulary.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   appendJsonlLine,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   buildVerificationAdjudication,
   prepareVerificationEntry,
-} = require("../mcp/lib/verification.js");
+} = require("../mcp/core/verification/verification.js");
 const {
   clampResultSeveritiesInPlace,
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
-const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
+} = require("../mcp/core/verification/verification-round-store.js");
+const writeVerificationRoundTool = require("../mcp/tools/write-verification-round.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 // issue #111: the offensive row and the claim must share a single surface_id for
 // the binding gate to pass. Default both helpers to this value so existing
@@ -582,16 +582,23 @@ test("the clamp is recorded in the persisted round document", () => withTempHome
   assert.deepEqual(document.severity_clamps, [{ finding_id: "F-1", from: "critical", to: "low" }]);
 }));
 
-test("scope is derived from validated state, so a drifted nucleus file cannot disable the guard", () => withTempHome(() => {
+test("A8: scope is derived from the verified nucleus, so a drifted/tampered nucleus file hard-fails the guard instead of silently falling back to raw state", () => withTempHome(() => {
   const domain = "severity-rise-nucleus-drift.example";
   initWebSession(domain);
   appendFrozenFindingClaim(domain, { findingId: "F-1", severity: "low" });
   freezeClaims(domain);
-  // Tamper the (non-write-guarded) nucleus file to look non-web. The guard reads
-  // scope from the validated state, so the web clamp still fires.
+  // Tamper the (non-write-guarded) nucleus file to look non-web AND malformed
+  // (no target_domain/nucleus_hash/egress_identity/etc). Pre-A8, the guard read
+  // scope from raw state.json and this tamper was invisible to it. Post-A8, scope
+  // is sourced EXCLUSIVELY from a verified nucleus read: a present-but-unverifiable
+  // nucleus is exactly the tamper signal the guard now hard-fails on, rather than
+  // silently trusting whatever raw state.json says.
   fs.writeFileSync(sessionNucleusPath(domain), `${JSON.stringify({ scope_policy: { target_repo: "x/y" } })}\n`, "utf8");
 
-  assert.equal(writeV1Round(domain, verificationResult("F-1", { severity: "critical" })), "low");
+  assert.throws(
+    () => writeV1Round(domain, verificationResult("F-1", { severity: "critical" })),
+    (error) => error.code === "STATE_CONFLICT" && /verified session authority context/.test(error.message),
+  );
 }));
 
 test("an exploit row that demonstrates a lower severity does not unlock a higher rise", () => withTempHome(() => {
@@ -732,7 +739,7 @@ test("clamps are surfaced in the tool response", () => withTempHome(() => {
 }));
 
 test("every severity enum value maps to a non-zero VERIFY_SEVERITY_RANK", () => {
-  const { verifySeverityRank } = require("../mcp/lib/verification-round-store.js");
+  const { verifySeverityRank } = require("../mcp/core/verification/verification-round-store.js");
   for (const severity of SEVERITY_VALUES) {
     assert.ok(verifySeverityRank(severity) > 0, `${severity} must have a non-zero rank`);
   }

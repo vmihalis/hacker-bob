@@ -31,7 +31,7 @@ const {
 } = physicalExecutionTransactionOwnerModule;
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const VERSION = PHYSICAL_EXECUTION_TRANSACTION_OWNER_VERSION;
 const PROTOCOL = PHYSICAL_EXECUTION_TRANSACTION_PROTOCOL;

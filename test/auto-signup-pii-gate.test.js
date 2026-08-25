@@ -3,9 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { assertSignupEmailAllowed } = require("../mcp/lib/signup.js");
-const { tempEmailCreate, tempMailboxIsKnown } = require("../mcp/lib/temp-email.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { assertSignupEmailAllowed } = require("../mcp/domains/web/signup.js");
+const { tempEmailCreate, tempMailboxIsKnown } = require("../mcp/core/temp-email.js");
 
 function assertSignupGateRejects(email, expectedDetailCode, fn) {
   let error = null;

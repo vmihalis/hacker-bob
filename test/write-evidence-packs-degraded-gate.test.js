@@ -14,16 +14,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { evidencePackPaths } = require("../mcp/lib/paths.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { evidencePackPaths } = require("../mcp/core/io/paths.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

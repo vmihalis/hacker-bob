@@ -1,14 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { normalizeContract } = require("../mcp/lib/contracts.js");
-const { mechanicalVerify } = require("../mcp/lib/contract-verifier.js");
+const { normalizeContract } = require("../mcp/core/contract/index.js");
+const { mechanicalVerify } = require("../mcp/core/contract/index.js");
 const {
   buildCellCoverageContract,
   CELL_COVERAGE_EVIDENCE_KIND,
   CELL_ATTEMPT_KIND_VALUES,
   isCellCoveringAttempt,
-} = require("../mcp/lib/cell-contract.js");
+} = require("../mcp/core/contract/index.js");
 
 const CELL = {
   surfaceId: "surface:billing",

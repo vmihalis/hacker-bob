@@ -12,23 +12,23 @@ const {
   createInstrumentSafetySupervisor,
   createPrecommittedRecoveryLauncherPort,
   createSafetyObservationPort,
-} = require("../mcp/lib/instrument-safety-supervisor.js");
+} = require("../mcp/domains/physical/instrument-safety-supervisor.js");
 const {
   normalizeSafetySupervisorContract,
   projectVerifiedRecoveryWorkerBootstrap,
-} = require("../mcp/lib/instrument-lease-contract.js");
+} = require("../mcp/domains/physical/instrument-lease-contract.js");
 const {
   normalizeCleanupCapability,
-} = require("../mcp/lib/physical-authority.js");
+} = require("../mcp/domains/physical/physical-authority.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   createDurableInstrumentLeaseStore,
-} = require("../mcp/lib/instrument-lease-store.js");
+} = require("../mcp/domains/physical/instrument-lease-store.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

@@ -3,10 +3,10 @@
 const {
   buildNormalizedOperationRegistry,
   defineProviderDescriptor,
-} = require("../../../mcp/lib/instrument-provider-contract.js");
+} = require("../../../mcp/domains/physical/instrument-provider-contract.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../../../mcp/lib/requested-effects.js");
+} = require("../../../mcp/core/requested-effects.js");
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;

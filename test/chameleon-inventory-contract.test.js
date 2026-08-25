@@ -27,7 +27,7 @@ const {
 } = require("../packages/bob-instrument-chameleon/lib/operations.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 const ROOT = path.join(__dirname, "..");
 const HARNESS_PATH = path.join(__dirname, "manual", "chameleon-inventory.js");

@@ -22,16 +22,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const {
   beliefModelInfoPath,
   gradeArtifactPaths,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
-const { trainBeliefModel } = require("../mcp/lib/belief/model.js");
-const { buildBeliefSchedulerHints } = require("../mcp/lib/belief/scheduler-priority.js");
+} = require("../mcp/core/io/paths.js");
+const { trainBeliefModel } = require("../mcp/core/belief/model.js");
+const { buildBeliefSchedulerHints } = require("../mcp/core/belief/scheduler-priority.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

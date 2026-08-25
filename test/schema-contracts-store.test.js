@@ -10,7 +10,7 @@ const crypto = require("node:crypto");
 const {
   ingestSchemaDoc,
   querySchemaContracts,
-} = require("../mcp/lib/schema-contracts-store.js");
+} = require("../mcp/core/schema-contracts-store.js");
 
 function uniqueDomain(prefix = "bob-schema-store-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

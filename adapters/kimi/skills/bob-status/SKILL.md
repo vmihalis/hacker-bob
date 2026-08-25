@@ -24,7 +24,7 @@ Latest-session detection must pick the newest target directory by `pipeline-even
 ## Read Order
 First, read the passive update cache if the helper is installed:
 ```bash
-node -e "const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"
+node -e "const update=require('./mcp/core/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"
 ```
 This command must only read the local update cache. Do not run network update checks from `/skill:bob-status`.
 

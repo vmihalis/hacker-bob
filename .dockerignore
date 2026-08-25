@@ -41,7 +41,7 @@ packages/hacker-bob-cc
 packages/hacker-bob-codex
 packages/hacker-bob-kimi
 
-# Runtime schema loaded by mcp/lib/finding-artifact.js in both runner images.
+# Runtime schema loaded by mcp/finding-artifact.js in both runner images.
 !infra/aws
 !infra/aws/hacker-bob-stack
 !infra/aws/hacker-bob-stack/finding-artifact.schema.json

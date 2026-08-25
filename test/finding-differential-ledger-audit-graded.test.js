@@ -12,7 +12,7 @@ const path = require("node:path");
 const {
   isAuditGradedPath,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 test("isAuditGradedPath(finding-differential-verified.jsonl) is true", () => {
   const domain = "fd-audit.example.com";
@@ -36,7 +36,7 @@ test("the generated write-guard tables BLOCK the basename (agent Write is fenced
 });
 
 test("the basename is classified by the resolver inventory (mcp-owned-basename-inventory stays green)", () => {
-  const { sessionRootPathInventory } = require("../mcp/lib/paths.js");
+  const { sessionRootPathInventory } = require("../mcp/core/io/paths.js");
   const records = sessionRootPathInventory();
   const produced = records.some((r) => path.basename(r.abs) === "finding-differential-verified.jsonl");
   assert.ok(produced, "the resolver inventory must produce the new basename so the inventory check can classify it");

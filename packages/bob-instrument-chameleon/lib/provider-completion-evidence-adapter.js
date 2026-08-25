@@ -35,7 +35,7 @@ const {
 } = require("../../bob-instrument-broker/lib/native-dispatch-contract.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const arrayIsArray = Array.isArray;
 const bufferIsBuffer = Buffer.isBuffer;

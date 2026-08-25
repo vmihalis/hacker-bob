@@ -31,23 +31,23 @@ const crypto = require("crypto");
 const {
   mechanicalVerify,
   extractByJsonPath,
-} = require("../mcp/lib/contract-verifier.js");
+} = require("../mcp/core/contract/index.js");
 const {
   WITNESS_KIND_VALUES,
   normalizeContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   sessionDir,
   trafficJsonlPath,
   claimsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/io/storage.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 // ─── Fixture helpers ─────────────────────────────────────────────────────
 
@@ -679,7 +679,7 @@ test("mechanicalVerify accumulates multiple witness failures distinctly", () => 
 // ─── 7-evaluator coverage assertion (Reviewer-grep target) ───────────────
 
 test("EVALUATORS table covers every X-D4 witness kind", () => {
-  const { EVALUATORS } = require("../mcp/lib/contract-verifier.js");
+  const { EVALUATORS } = require("../mcp/core/contract/index.js");
   for (const kind of WITNESS_KIND_VALUES) {
     assert.equal(typeof EVALUATORS[kind], "function", `evaluator for ${kind} missing`);
   }

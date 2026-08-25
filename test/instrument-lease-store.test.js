@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const durableStoreCompatibilityModule = require("../mcp/lib/instrument-lease-store.js");
+const durableStoreCompatibilityModule = require("../mcp/domains/physical/instrument-lease-store.js");
 const durableStoreCanonicalModule = require(
   "../packages/bob-instrument-broker/lib/instrument-lease-store.js"
 );
@@ -35,14 +35,14 @@ const {
   normalizeEffectDispatchRecord,
   normalizeSafetySupervisorContract,
   providerDispatchFenceBindingDigest,
-} = require("../mcp/lib/instrument-lease-contract.js");
+} = require("../mcp/domains/physical/instrument-lease-contract.js");
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   createDeterministicMockDispatchAuthorityPort,
-} = require("../mcp/lib/physical-dispatch-authority.js");
+} = require("../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizePhysicalExecutionCompositeBinding,
 } = require("../packages/bob-instrument-broker/lib/physical-execution-transaction-owner.js");

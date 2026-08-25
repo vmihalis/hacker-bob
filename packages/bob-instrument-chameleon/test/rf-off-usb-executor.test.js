@@ -32,10 +32,10 @@ const {
 } = require("../lib/rf-off-usb-executor.js");
 const {
   createDeterministicMockDispatchAuthorityPort,
-} = require("../../../mcp/lib/physical-dispatch-authority.js");
+} = require("../../../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   beginPhysicalResourceCleanup,
   completePhysicalResourceCleanup,

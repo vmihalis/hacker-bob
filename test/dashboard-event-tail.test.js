@@ -9,15 +9,15 @@ const path = require("node:path");
 const {
   frontierEventsJsonlPath,
   pipelineEventsJsonlPath,
-} = require("../mcp/lib/paths.js");
-const { normalizePipelineEvent } = require("../mcp/lib/pipeline-events.js");
+} = require("../mcp/core/io/paths.js");
+const { normalizePipelineEvent } = require("../mcp/core/telemetry/pipeline-events.js");
 const {
   MAX_FRAME_BYTES,
   readSessionEventFrames,
   framesAfter,
   readJsonlTolerant,
   enforceFrameBudget,
-} = require("../mcp/lib/dashboard-event-tail.js");
+} = require("../mcp/core/telemetry/dashboard-event-tail.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

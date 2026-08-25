@@ -26,9 +26,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const { AUDIT_GRADED_WRITER_TOOLS, isAuditGradedPath, sessionDir } = require("../mcp/lib/paths.js");
+const { AUDIT_GRADED_WRITER_TOOLS, isAuditGradedPath, sessionDir } = require("../mcp/core/io/paths.js");
 
-const TOOLS_DIR = path.resolve(__dirname, "../mcp/lib/tools");
+const TOOLS_DIR = path.resolve(__dirname, "../mcp/tools");
 const PROBE_DOMAIN = "example.com";
 
 // session_artifacts_written entries use placeholder tokens for per-wave/agent

@@ -14,10 +14,10 @@ const {
   lookupByFile,
   lookupBySurfaceId,
   summarizeImpactedSurfacesForDiff,
-} = require("../mcp/lib/symbol-surface-index.js");
+} = require("../mcp/domains/repo/symbol-surface-index.js");
 const {
   extractRoutesFromFiles,
-} = require("../mcp/lib/route-extractor.js");
+} = require("../mcp/core/route-extractor.js");
 
 function uniqueDomain(prefix = "bob-symbol-index-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

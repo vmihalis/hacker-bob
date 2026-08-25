@@ -14,7 +14,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runFoundryTest } = require("../mcp/lib/foundry-runner.js");
+const { runFoundryTest } = require("../mcp/domains/blockchain/smart-contracts/foundry-runner.js");
 
 // Drive runFoundryTest down the no-fork-endpoints refused path so the returned envelope
 // carries the built command verbatim. A bogus chain_id with a private fork_url is policy-

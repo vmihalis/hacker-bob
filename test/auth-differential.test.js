@@ -10,7 +10,7 @@ const {
   SEVERITY_SECURITY,
   SEVERITY_INFO_LEAK,
   SEVERITY_DOC_OR_INFRA,
-} = require("../mcp/lib/auth-differential.js");
+} = require("../mcp/core/auth-differential.js");
 
 test("computeResponseSignature classifies status into status_class and response_class", () => {
   const sig = computeResponseSignature({ status: 200, body: { id: "1" }, sent_with_auth: true });

@@ -77,17 +77,27 @@ for (const relativeRoot of packageRoots) {
     fail(`Physical package has no test script: ${relativeRoot}`);
   }
   process.stdout.write(`\n=== ${relativeRoot} ===\n`);
-  const result = npmExecPath
-    ? spawnSync(process.execPath, [npmExecPath, "test", "--prefix", packageRoot], {
-      cwd: ROOT,
-      env: process.env,
-      stdio: "inherit",
-    })
-    : spawnSync("npm", ["test", "--prefix", packageRoot], {
-      cwd: ROOT,
-      env: process.env,
-      stdio: "inherit",
-    });
-  if (result.error) fail(`Physical package test could not start: ${relativeRoot}`);
-  if (result.status !== 0) process.exit(result.status || 1);
+  // A package that declares a build is built before it is tested. The native
+  // Darwin packages compile a node-gyp addon into a gitignored build/, so a
+  // fresh checkout — which is every CI run — carries no addon at all and every
+  // test that needs one fails with "custody was rejected". This stayed hidden
+  // locally because a developer's build/ survives from an earlier build.
+  const declaresBuild = typeof manifest.scripts.build === "string"
+    && manifest.scripts.build.trim().length > 0;
+  for (const step of declaresBuild ? [["run", "build"], ["test"]] : [["test"]]) {
+    const result = npmExecPath
+      ? spawnSync(process.execPath, [npmExecPath, ...step, "--prefix", packageRoot], {
+        cwd: ROOT,
+        env: process.env,
+        stdio: "inherit",
+      })
+      : spawnSync("npm", [...step, "--prefix", packageRoot], {
+        cwd: ROOT,
+        env: process.env,
+        stdio: "inherit",
+      });
+    const label = step[0] === "run" ? step[1] : step[0];
+    if (result.error) fail(`Physical package ${label} could not start: ${relativeRoot}`);
+    if (result.status !== 0) process.exit(result.status || 1);
+  }
 }

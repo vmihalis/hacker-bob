@@ -82,8 +82,8 @@ COPY .claude/ ./.claude/
 # .claude/settings.json is NEVER touched by this Dockerfile (it stays flag-off so
 # `npm run check:settings` remains green for normal dev off this image). The
 # generator's require graph (adapters/claude/config.js, scripts/merge-claude-config.js,
-# scripts/lib/claude-role-renderer.js, scripts/lib/package-policy.js, plus the mcp/lib/*
-# modules already copied above) reaches mcp/lib/scope.js (via tool-registry.js ->
+# scripts/lib/claude-role-renderer.js, scripts/lib/package-policy.js, plus the mcp/*
+# modules already copied above) reaches mcp/core/scope.js (via tool-registry.js ->
 # tools/index.js), which requires `psl` — a regular (non-dev) dependency. So the bake
 # must run AFTER `npm ci --omit=dev` has installed it, not before.
 COPY scripts/ ./scripts/

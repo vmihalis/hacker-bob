@@ -14,7 +14,7 @@ const {
 const {
   assertVerifiedPhysicalBootstrapGrant,
   normalizeMcpPhysicalExecutionRequest,
-} = require("../../../mcp/lib/physical-authority.js");
+} = require("../../../mcp/domains/physical/physical-authority.js");
 const {
   normalizeOpaqueRef,
 } = require("../../bob-instrument-contracts/lib/physical-quantities.js");
@@ -26,7 +26,7 @@ const {
   assertPhysicalTrustedClockTimestampNonFuture,
   assertPhysicalTrustedClockValidityWindow,
   samplePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 
 const BOOTSTRAP_SCHEMA_VERSION = 1;
 const PROVIDER_ID = "chameleon_ultra";

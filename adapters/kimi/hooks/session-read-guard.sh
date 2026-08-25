@@ -17,7 +17,7 @@ import sys
 
 # Per-workspace session roots. The installer gives each workspace its OWN
 # disjoint session root (BOB_SESSIONS_ROOT, written into the host config and
-# frozen at engine boot by mcp/lib/paths.js) so two workspaces can run engines
+# frozen at engine boot by mcp/core/io/paths.js) so two workspaces can run engines
 # concurrently. This guard must protect the root the engine actually writes to,
 # so the configured root is discovered here — from the environment first, then
 # from the workspace host config, which is authoritative even if the host does

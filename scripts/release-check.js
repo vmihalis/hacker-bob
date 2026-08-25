@@ -30,12 +30,12 @@ const {
 const {
   evaluatePackagedPlanePhysicalReleaseReadiness,
   evaluatePlanePhysicalReleaseReadiness,
-} = require("../mcp/lib/plane-physical-release-readiness.js");
+} = require("../mcp/domains/physical/plane-physical-release-readiness.js");
 const {
   PLANE_PHYSICAL_PACKAGED_RELEASE_SNAPSHOT,
   assertPackagedPlanePhysicalReleaseSnapshot,
   compilePlanePhysicalReleaseSnapshot,
-} = require("../mcp/lib/plane-physical-release-snapshot.js");
+} = require("../mcp/domains/physical/plane-physical-release-snapshot.js");
 
 const ROOT = path.join(__dirname, "..");
 const WRAPPER_PACKAGES = wrapperPackages(ROOT);
@@ -571,7 +571,9 @@ function main() {
     checkPlanePhysicalReleaseReadiness();
     if (failures > 0) {
       console.error(`Installed package diagnostic failed with ${failures} failure(s) and ${warnings} warning(s).`);
-      process.exit(1);
+      // Never process.exit() here: see the note on the failure path below.
+      process.exitCode = 1;
+      return;
     }
     console.log(`Installed package diagnostic completed with ${warnings} warning(s).`);
     return;
@@ -588,7 +590,14 @@ function main() {
 
   if (failures > 0) {
     console.error(`Release check failed with ${failures} failure(s) and ${warnings} warning(s).`);
-    process.exit(1);
+    // Set the code and let Node exit once the streams drain. process.exit()
+    // here discarded whatever was still buffered, and this check emits tens of
+    // kilobytes: when stdout is a pipe (any caller capturing output — CI, a
+    // test, a shell pipeline) writes are asynchronous, so the tail was lost
+    // while a direct-to-file run kept everything. The Plane-PH verdict is
+    // emitted last and was the first thing to disappear.
+    process.exitCode = 1;
+    return;
   }
   console.log(`Release check passed with ${warnings} warning(s).`);
 }

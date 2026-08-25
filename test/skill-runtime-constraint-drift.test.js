@@ -23,7 +23,7 @@ const {
   BINARY_INTERNAL,
   BOB_OWNED,
   evaluateBodyAgainstConstraints,
-} = require("../mcp/lib/runtime-constraints.js");
+} = require("../scripts/lib/runtime-constraints.js");
 const {
   runCheck,
   checkDocument,

@@ -44,8 +44,8 @@ const {
   setRouteSpy,
   ROUTED_SC_RUNNERS,
   SC_TOOLCHAIN_IMAGE_ENV,
-} = require("../mcp/lib/sc-container-exec.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/blockchain/smart-contracts/sc-container-exec.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
 
 function realDockerAvailable() {
   try {
@@ -223,7 +223,7 @@ test("M-docker: the real-daemon probe is cached per process (one execFileSync, n
   // and never re-block for the 5s worst-case probe. We assert both: (a) the runtime
   // override stays live across calls; (b) the no-runtime path is stable and runs the
   // probe at most once after a reset.
-  const { __resetDockerProbeCache } = require("../mcp/lib/sc-container-exec.js");
+  const { __resetDockerProbeCache } = require("../mcp/domains/blockchain/smart-contracts/sc-container-exec.js");
   const cp = require("node:child_process");
   const realExec = cp.execFileSync;
   let probeCalls = 0;
@@ -432,7 +432,7 @@ test("the 7 SC runners import the container-exec seam and do not raw-spawn child
   // the seam and must NOT import child_process directly (which would bypass the
   // seam and be invisible to the spy). repo-env / offensive runners spawn docker
   // themselves (separate mechanism) and are correctly excluded.
-  const libDir = path.join(__dirname, "..", "mcp", "lib");
+  const libDir = path.join(__dirname, "..", "mcp", "domains", "blockchain", "smart-contracts");
   const runners = ["foundry", "anchor", "cosmwasm", "substrate", "sui", "aptos", "halmos"];
   for (const name of runners) {
     const src = fs.readFileSync(path.join(libDir, `${name}-runner.js`), "utf8");
@@ -516,7 +516,7 @@ test("REAL container isolation: a host sentinel outside /work is unreadable in-c
 // ---------------------------------------------------------------------------
 
 test("buildDockerfileScToolchain emits a base+install contract with USER 1000:1000 last and no credential ENV", () => {
-  const { buildDockerfileScToolchain } = require("../mcp/lib/repo-env.js");
+  const { buildDockerfileScToolchain } = require("../mcp/domains/repo/repo-env.js");
   const dockerfile = buildDockerfileScToolchain();
   assert.match(dockerfile, /^FROM ubuntu:24\.04/m, "documented base image");
   const userIdx = dockerfile.indexOf("USER 1000:1000");

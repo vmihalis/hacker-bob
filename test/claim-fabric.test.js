@@ -7,24 +7,24 @@ const path = require("path");
 const {
   appendAgentRun,
   readAgentRuns,
-} = require("../mcp/lib/agent-runs.js");
+} = require("../mcp/core/session/agent-runs.js");
 const {
   appendCandidateClaim,
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   appendClaimCluster,
   readClaimClusters,
-} = require("../mcp/lib/claim-clusters.js");
+} = require("../mcp/core/claims/claim-clusters.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
   verificationSnapshotFromClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   appendReportSnapshot,
   readReportSnapshots,
-} = require("../mcp/lib/report-snapshots.js");
+} = require("../mcp/core/report-snapshots.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

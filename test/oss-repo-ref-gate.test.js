@@ -10,8 +10,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isStdlibRepoRef } = require("../mcp/lib/oss-repo-ref-denylist.js");
-const { classifyOssRepoRefLead } = require("../mcp/lib/lead-promotion.js");
+const { isStdlibRepoRef } = require("../mcp/domains/repo/oss-repo-ref-denylist.js");
+const { classifyOssRepoRefLead } = require("../mcp/core/frontier/lead-promotion.js");
 
 const DENYLISTED_REFS = [
   "github.com/OpenZeppelin/openzeppelin-contracts",

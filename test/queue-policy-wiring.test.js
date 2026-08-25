@@ -13,7 +13,7 @@ const {
   loadQueuePolicy,
   normalizeQueuePolicy,
   writeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 
 // Review HIGH: nesting opt-in must never be ungoverned. Lifting max_spawn_depth past 1
 // without a session spawn budget would expose the large CLAMP_CEILING width with no
@@ -71,11 +71,11 @@ test("normalizeQueuePolicy: raising width ABOVE the on-default without a governo
 });
 const {
   planNextWave,
-} = require("../mcp/lib/wave-planner.js");
+} = require("../mcp/core/waves/wave-planner.js");
 const {
   queuePolicyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -258,7 +258,7 @@ test("loadQueuePolicy falls back to DEFAULT_QUEUE_POLICY when queue-policy.json 
 });
 
 test("wave-planner.js no longer carries the legacy queue constants", () => {
-  const source = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "wave-planner.js"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "mcp", "core", "waves", "wave-planner.js"), "utf8");
   for (const constant of [
     "STANDARD_WAVE_TARGET",
     "STANDARD_WAVE_MAX",

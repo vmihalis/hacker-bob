@@ -22,9 +22,9 @@ const {
   uninstallOptionalProviderPackage,
   updateOptionalProviderPackage,
 } = require("../scripts/lib/optional-provider-lifecycle.js");
-const dashboard = require("../mcp/lib/dashboard.js");
-const { sessionsRoot } = require("../mcp/lib/paths.js");
-const update = require("../mcp/lib/update-check.js");
+const dashboard = require("../mcp/core/telemetry/dashboard.js");
+const { sessionsRoot } = require("../mcp/core/io/paths.js");
+const update = require("../mcp/core/update-check.js");
 
 function usageText() {
   return `Usage:

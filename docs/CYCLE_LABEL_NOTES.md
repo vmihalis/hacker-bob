@@ -52,7 +52,7 @@ git log --all --oneline | grep -E "Y\\.[0-9]+"
 
 Use the runtime artifacts and tests as authority:
 
-- lifecycle states are defined in `mcp/lib/lifecycle-gates.js`;
+- lifecycle states are defined in `mcp/core/session/lifecycle-gates.js`;
 - tool authority is defined in the registry and `scripts/authority-inventory.js`;
 - Plane Y terminal behavior is pinned by `test/plane-y-smoke.test.js`;
 - stigmergy and single-spawner invariants are pinned by their check scripts.

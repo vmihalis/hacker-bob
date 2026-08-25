@@ -8,10 +8,10 @@ const path = require("path");
 
 const {
   readPipelineAnalytics,
-} = require("../mcp/lib/pipeline-analytics.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { sessionDir, surfaceRoutesPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/telemetry/pipeline-analytics.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { sessionDir, surfaceRoutesPath } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -36,6 +36,7 @@ inputs:
           pull-requests: write
           checks: write
           contents: read
+          packages: read
     required: true
 
   anthropic-oauth-token:
@@ -67,12 +68,13 @@ inputs:
 
   bob-install-token:
     description: >
-      GitHub App installation token (preferred) or fine-grained PAT with
-      read:packages and contents:read scopes. Used to authenticate npm
-      against npm.pkg.github.com for @bobnetsec/* packages. Store as the
-      org-level secret BOB_INSTALL_TOKEN and pass it from the caller workflow
-      via secrets.BOB_INSTALL_TOKEN when authenticated package or source
-      checkout access is needed. Optional for public/cached installs.
+      Classic PAT with read:packages, or the workflow GITHUB_TOKEN when that
+      token has package access. Used to authenticate npm against
+      npm.pkg.github.com for @bobnetsec/* packages. Keep private source
+      checkout credentials separate unless the classic PAT also has repo
+      scope. When passing github.token here, the calling workflow must grant
+      packages: read; for a private package, also grant the workflow repository
+      read access to that package. Optional for public/cached installs.
     required: false
     default: ''
 

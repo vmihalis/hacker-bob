@@ -10,7 +10,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 
-const { hashCanonicalJson } = require("../../../mcp/lib/verification-contracts.js");
+const { hashCanonicalJson } = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   signIpcDispatchRequest,
 } = require("../../bob-instrument-broker/lib/ipc-contract.js");

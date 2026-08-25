@@ -6,17 +6,17 @@ const assert = require("node:assert/strict");
 const {
   PHASE,
   phaseFanoutPlan,
-} = require("../mcp/lib/phase-fanout-plan.js");
+} = require("../mcp/core/phase-fanout-plan.js");
 const {
   deriveChildFanoutPlan,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   deriveReconAnglePlan,
-} = require("../mcp/lib/recon-angle-plan.js");
+} = require("../mcp/core/frontier/recon-angle-plan.js");
 const {
   OSS_SANITIZER_CLASS_AXIS,
   OSS_INPUT_CLASS_AXIS,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 
 // The general dispatcher must reproduce each authority emitter's plan
 // IDENTICALLY — byte/structure-for-structure. Any divergence fails here and
@@ -76,7 +76,7 @@ const CELL_CASES = [
       auth_profiles: ["admin"],
       budget: { remaining_depth: 1, max_children: 8 },
       covered_cell_keys: [
-        require("../mcp/lib/capability-pack-derivation.js").fanoutPlanningKey(
+        require("../mcp/core/capability/capability-pack-derivation.js").fanoutPlanningKey(
           "idor",
           "admin",
         ),

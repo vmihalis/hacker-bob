@@ -23,14 +23,14 @@ const {
   LEAN_PROFILE,
   MAX_COVERAGE_PROFILE,
   normalizeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 const {
   effectiveConcurrencyCap,
   effectiveSpawnDepth,
-} = require("../mcp/lib/nested-spawn.js");
-const { deriveReconAnglePlan } = require("../mcp/lib/recon-angle-plan.js");
-const { planNextWave } = require("../mcp/lib/wave-planner.js");
-const { appendSpawnLedgerEntry, readSpawnLedgerEntries, spawnLedgerTotal } = require("../mcp/lib/spawn-ledger.js");
+} = require("../mcp/core/session/nested-spawn.js");
+const { deriveReconAnglePlan } = require("../mcp/core/frontier/recon-angle-plan.js");
+const { planNextWave } = require("../mcp/core/waves/wave-planner.js");
+const { appendSpawnLedgerEntry, readSpawnLedgerEntries, spawnLedgerTotal } = require("../mcp/core/session/spawn-ledger.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

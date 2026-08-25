@@ -12,25 +12,25 @@ const {
   ingestSarif,
   parseSarif,
   readStaticAnalysisResultsFromJsonl,
-} = require("../mcp/lib/sarif-ingest.js");
+} = require("../mcp/domains/repo/sarif-ingest.js");
 const {
   isAuditGradedPath,
   repoRunsDir,
   repoWorkDir,
   staticAnalysisIndexPath,
   staticAnalysisResultsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   readSurfaceLeadsDocument,
-} = require("../mcp/lib/lead-intake.js");
+} = require("../mcp/core/frontier/lead-intake.js");
 
-require("../mcp/lib/lead-promotion.js");
+require("../mcp/core/frontier/lead-promotion.js");
 
 function fixture(name) {
   return fs.readFileSync(path.join(__dirname, "fixtures", "sarif", name), "utf8");

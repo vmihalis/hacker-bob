@@ -11,97 +11,100 @@ const {
   buildPhysicalCompositionProjection,
   createProductionPhysicalCompositionPort,
   installPhysicalCompositionPort,
-} = require("../mcp/lib/capability-pack-composition-adapters.js");
+} = require("../mcp/core/capability/capability-pack-composition-adapters.js");
+// Production installs the plane-owned adapters from the folded physical tool
+// composition root; this direct capstone installs the same wiring explicitly.
+require("../mcp/domains/physical/capability-pack-runtime-wiring.js");
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   buildDurableReceiptTrustRegistry,
   createDurableEvidenceReceiptIssuer,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const {
   createDurableInstrumentLeaseBrokerPort,
   createDurableInstrumentLeaseStore,
-} = require("../mcp/lib/instrument-lease-store.js");
+} = require("../mcp/domains/physical/instrument-lease-store.js");
 const {
   buildPhysicalCampaignClosurePreflight,
-} = require("../mcp/lib/physical-campaign-closure.js");
+} = require("../mcp/domains/physical/physical-campaign-closure.js");
 const {
   installPhysicalCampaignAnchorResolver,
-} = require("../mcp/lib/physical-campaign-anchor.js");
+} = require("../mcp/domains/physical/physical-campaign-anchor.js");
 const {
   openProductionPhysicalCampaignClosureOwner,
-} = require("../mcp/lib/physical-campaign-closure-owner.js");
+} = require("../mcp/domains/physical/physical-campaign-closure-owner.js");
 const {
   initializePhysicalCampaignCoordinator,
   routePhysicalCampaignSegment,
-} = require("../mcp/lib/physical-campaign-coordinator.js");
+} = require("../mcp/domains/physical/physical-campaign-coordinator.js");
 const {
   buildPhysicalFinding,
   derivePhysicalAssignmentContextDigest,
   deriveVerifiedPhysicalCoverageTerminalWitnessDigest,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   assertPhysicalLifecycleEngineeringCapstone,
   auditPhysicalLifecycleEngineeringCapstone,
   buildPhysicalCapstoneCoverageDeclaration,
   buildPhysicalCapstoneVerificationResult,
-} = require("../mcp/lib/physical-lifecycle-capstone.js");
+} = require("../mcp/domains/physical/physical-lifecycle-capstone.js");
 const {
   createPhysicalProviderAuthoringManifest,
-} = require("../mcp/lib/physical-provider-authoring.js");
+} = require("../mcp/domains/physical/physical-provider-authoring.js");
 const {
   physicalSurfaceTransitionClaimPredicateDigest,
-} = require("../mcp/lib/physical-surface-transition.js");
+} = require("../mcp/domains/physical/physical-surface-transition.js");
 const {
   createProductionPhysicalVerdictResolverPort,
   installPhysicalVerdictResolver,
-} = require("../mcp/lib/physical-verdict-runtime.js");
+} = require("../mcp/domains/physical/physical-verdict-runtime.js");
 const {
   proofBundlePaths,
   reportMarkdownPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeProofBundles,
-} = require("../mcp/lib/proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
 const {
   appendReportSnapshot,
   readReportSnapshots,
-} = require("../mcp/lib/report-snapshots.js");
+} = require("../mcp/core/report-snapshots.js");
 const {
   buildInitialSessionState,
-} = require("../mcp/lib/session-state-contracts.js");
+} = require("../mcp/core/session/session-state-contracts.js");
 const {
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   appendEdges,
   createPhysicalSurfaceGraphServerService,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   buildVerificationAdjudication,
   prepareVerificationEntry,
-} = require("../mcp/lib/verification.js");
+} = require("../mcp/core/verification/verification.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
-const recordPhysicalClaimTool = require("../mcp/lib/tools/record-physical-candidate-claim.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const finalizeReportTool = require("../mcp/tools/finalize-report.js");
+const recordPhysicalClaimTool = require("../mcp/tools/physical/record-physical-candidate-claim.js");
 const {
   createProductionPhysicalVerdictFixture,
 } = require("./helpers/production-physical-verdict.js");

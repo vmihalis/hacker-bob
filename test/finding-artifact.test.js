@@ -18,12 +18,12 @@ const {
   assembleFindingArtifact,
   buildArtifactFindings,
   writeFindingArtifact,
-} = require("../mcp/lib/finding-artifact.js");
+} = require("../mcp/finding-artifact.js");
 const {
   normalizeEndpointForDedupe,
   normalizeFindingRecord,
-} = require("../mcp/lib/finding-contracts.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/finding-contracts.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   CONSOLE_REPORT_MAX_BYTES,
   CONSOLE_REPORT_MAX_FINDINGS,
@@ -35,10 +35,10 @@ const {
   projectionSeverity,
   projectionSurfaceType,
   safeRouteTemplate,
-} = require("../mcp/lib/projection-payload.js");
+} = require("../mcp/projection-payload.js");
 const {
   postProjection,
-} = require("../mcp/lib/projection-client.js");
+} = require("../mcp/projection-client.js");
 const {
   sessionDir,
   reportMarkdownPath,
@@ -48,7 +48,7 @@ const {
   claimFreezePath,
   findingArtifactPath,
   findingArtifactSidecarPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 const DOMAIN = "example.com";
 const HASH64 = "a".repeat(64);

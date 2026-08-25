@@ -40,7 +40,8 @@ constexpr uint64_t kNanosecondsPerMillisecond = 1000000ULL;
 constexpr uint64_t kMaximumDeadmanMs = 5000;
 constexpr uint64_t kMaximumCleanupMs = 2000;
 constexpr uint64_t kStartupCustodyMs = 10000;
-constexpr uint64_t kInjectedStartupCustodyMs = 300;
+constexpr uint64_t kInjectedBlockedStartupCustodyMs = 1000;
+constexpr uint64_t kInjectedExpiredStartupCustodyMs = 300;
 constexpr const char* kSemanticDomain =
     "hacker-bob/darwin-safety-semantic-cleanup/v1";
 constexpr const char* kJournalDomain =
@@ -200,8 +201,12 @@ bool BuildChildDeadline(const AbsoluteDeadline& outer,
                         AbsoluteDeadline* child) {
   uint64_t remaining_ns = 0;
   if (!Remaining(outer, &remaining_ns)) return false;
-  uint64_t reserve = remaining_ns / 4;
-  if (reserve > 10000000ULL) reserve = 10000000ULL;
+  // Every nested custodian must finish early enough for its parent to reap it,
+  // persist and read back evidence, and publish the terminal receipt inside the
+  // signed outer bound. A fixed 10 ms reserve made that hierarchy scheduler-
+  // dependent on hosted ARM runners.
+  uint64_t reserve = remaining_ns / 3;
+  if (reserve > 100000000ULL) reserve = 100000000ULL;
   if (reserve < 1000000ULL && remaining_ns > 1000000ULL) reserve = 1000000ULL;
   if (reserve == 0 || reserve >= remaining_ns) return false;
   child->expires = outer.expires - reserve;
@@ -2042,11 +2047,15 @@ bool StartCleanupCustodian(
   AbsoluteDeadline startup_deadline;
   const bool injected_block =
       config.fixture_behavior == "watchdog_block_first_journal_fsync" ||
-      config.fixture_behavior == "watchdog_block_ready_output" ||
+      config.fixture_behavior == "watchdog_block_ready_output";
+  const bool injected_expiry =
       config.fixture_behavior == "custody_late_arm_after_expiry";
+  const uint64_t startup_custody_ms = injected_block
+      ? kInjectedBlockedStartupCustodyMs
+      : injected_expiry ? kInjectedExpiredStartupCustodyMs : kStartupCustodyMs;
   if (!BuildAbsoluteDeadline(
-          injected_block ? kInjectedStartupCustodyMs : kStartupCustodyMs,
-          &startup_deadline) || !CreatePipe(command) || !CreatePipe(receipt)) {
+          startup_custody_ms, &startup_deadline) ||
+      !CreatePipe(command) || !CreatePipe(receipt)) {
     ClosePipe(command);
     ClosePipe(receipt);
     return false;
@@ -2195,20 +2204,26 @@ int RedeemCleanupAfterContract(
   AbsoluteDeadline deadline;
   const bool deadline_valid =
       BuildAbsoluteDeadline(config.cleanup_timeout_ms, &deadline);
+  AbsoluteDeadline custody_deadline;
+  const bool custody_deadline_valid =
+      deadline_valid && BuildChildDeadline(deadline, &custody_deadline);
   bool evidence_healthy = journal != nullptr && journal->initialized();
   if (deadline_valid && !ArmWatcherDeadline(deadline)) evidence_healthy = false;
+  if (!custody_deadline_valid) evidence_healthy = false;
 
   bool trigger_sent = false;
-  if (deadline_valid && channels != nullptr && channels->command_fd >= 0) {
+  if (custody_deadline_valid && channels != nullptr &&
+      channels->command_fd >= 0) {
     std::vector<std::string> fields = {
         "CUSTODY_TRIGGER1", "1"};
     AppendCustodyEnvelope(&fields, config, *channels, getpid());
     fields.emplace_back(trigger_reason);
     fields.emplace_back(std::to_string(last_sequence));
-    fields.emplace_back(std::to_string(deadline.expires));
+    fields.emplace_back(std::to_string(custody_deadline.expires));
     AppendCustodyBindings(&fields, config);
     SignFields(&fields, command_key);
-    trigger_sent = WriteLineUntil(channels->command_fd, fields, deadline);
+    trigger_sent = WriteLineUntil(
+        channels->command_fd, fields, custody_deadline);
     if (!trigger_sent) {
       close(channels->command_fd);
       channels->command_fd = -1;

@@ -6,12 +6,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
-const { rankInterventions } = require("../mcp/lib/belief/intervention-calculus.js");
-const { buildBeliefWindow } = require("../mcp/lib/belief/belief-window.js");
-const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
-const queryInterventionCalculusTool = require("../mcp/lib/tools/query-intervention-calculus.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
+const { rankInterventions } = require("../mcp/core/belief/intervention-calculus.js");
+const { buildBeliefWindow } = require("../mcp/core/belief/belief-window.js");
+const elicitBeliefTool = require("../mcp/tools/elicit-belief.js");
+const queryInterventionCalculusTool = require("../mcp/tools/query-intervention-calculus.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

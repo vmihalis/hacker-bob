@@ -9,7 +9,7 @@ const {
   SEVERITY_SECURITY,
   SEVERITY_INFO_LEAK,
   SEVERITY_DOC_OR_INFRA,
-} = require("../mcp/lib/contract-divergence.js");
+} = require("../mcp/core/contract-divergence.js");
 
 function authedContract(overrides) {
   return {

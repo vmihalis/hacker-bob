@@ -13,7 +13,7 @@ const {
   repoEnvPath,
   repoInventoryPath,
   surfaceRoutesPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   assertHistoryAvailableForRef,
   buildRepoInventory,
@@ -21,42 +21,42 @@ const {
   readRepoSession,
   repoCheck,
   SEED_CORPUS_SUMMARY_LIMIT,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   buildImageTag,
   prepareRepoEnv,
   repoDockerRun,
-} = require("../mcp/lib/repo-env.js");
+} = require("../mcp/domains/repo/repo-env.js");
 const {
   finalizeAgentRun,
-} = require("../mcp/lib/agent-run-completion.js");
+} = require("../mcp/core/session/agent-run-completion.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   logCoverage,
-} = require("../mcp/lib/coverage.js");
+} = require("../mcp/core/frontier/coverage.js");
 const {
   logTechniqueAttempt,
-} = require("../mcp/lib/technique-packs.js");
-const recordFinding = require("../mcp/lib/tools/record-candidate-claim.js").handler;
+} = require("../mcp/core/dispatch/technique-packs.js");
+const recordFinding = require("../mcp/tools/record-candidate-claim.js").handler;
 const {
   routeSurfaces,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   advanceSession,
   readSessionState,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   startWave,
   writeWaveHandoff,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   currentSurfaces,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

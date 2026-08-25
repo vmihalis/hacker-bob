@@ -22,7 +22,7 @@ const CAPTCHA_POLL_MAX_MS = 60000;
 const AUTH_EVIDENCE_KEY_RE = /(sid|session|auth|token|jwt|access|refresh)/i;
 const {
   assertSafeResolvedRequestUrl,
-} = require("./lib/safe-fetch.js");
+} = require("./core/io/safe-fetch.js");
 
 // ── Helpers ──
 

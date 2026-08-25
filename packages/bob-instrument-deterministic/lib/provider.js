@@ -21,16 +21,16 @@ const {
   normalizeSnapshotResponse,
   normalizeStatusRequest,
   normalizeStopRequest,
-} = require("../../../mcp/lib/instrument-provider-contract.js");
+} = require("../../../mcp/domains/physical/instrument-provider-contract.js");
 const {
   assertDurableInstrumentProviderDispatchPort,
-} = require("../../../mcp/lib/instrument-lease-store.js");
+} = require("../../../mcp/domains/physical/instrument-lease-store.js");
 const {
   assertInstrumentBootstrapProviderRedemptionPort,
-} = require("../../../mcp/lib/instrument-bootstrap-store.js");
+} = require("../../../mcp/domains/physical/instrument-bootstrap-store.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const BOOTSTRAP_OPERATION_BY_METHOD = Object.freeze({
   inventory: "instrument.inventory",

@@ -13,7 +13,7 @@ const {
   isKnownCwe,
   assertValidCwe,
   cweTitle,
-} = require("../mcp/lib/cwe-catalog.js");
+} = require("../mcp/core/scoring/cwe-catalog.js");
 
 test("canonicalizeCwe normalizes string, lowercase, bare-number, and numeric inputs", () => {
   assert.equal(canonicalizeCwe("CWE-79"), "CWE-79");

@@ -22,8 +22,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const browserSessions = require("../mcp/lib/browser-sessions.js");
-const browserToolsShared = require("../mcp/lib/browser-tools-shared.js");
+const browserSessions = require("../mcp/domains/web/browser-sessions.js");
+const browserToolsShared = require("../mcp/domains/web/browser-tools-shared.js");
 
 const PATCHRIGHT_AVAILABLE = browserSessions.isPatchrightAvailable();
 // Tests that launch a real browser run only where a headless driver session can
@@ -37,7 +37,7 @@ const BROWSER_LAUNCHABLE =
 function loadHandler(toolName) {
   const moduleSlug = toolName.replace(/^bob_/, "").replace(/_/g, "-");
   // eslint-disable-next-line import/no-dynamic-require, node/no-missing-require
-  const mod = require(path.join("..", "mcp", "lib", "tools", `${moduleSlug}.js`));
+  const mod = require(path.join("..", "mcp", "tools", "web", `${moduleSlug}.js`));
   return mod.handler;
 }
 
@@ -777,7 +777,7 @@ test("browser-driver.js threads proxy into chromium.launch({ proxy }) (source ch
 // ── Schema surface contracts ──
 
 test("bob_browser_session_start inputSchema declares optional egress_profile string", () => {
-  const tool = require("../mcp/lib/tools/browser-session-start.js");
+  const tool = require("../mcp/tools/web/browser-session-start.js");
   const prop = tool.inputSchema.properties.egress_profile;
   assert.ok(prop, "egress_profile must be in inputSchema.properties");
   assert.equal(prop.type, "string");
@@ -786,7 +786,7 @@ test("bob_browser_session_start inputSchema declares optional egress_profile str
 });
 
 test("bob_browser_session_start_recording inputSchema declares optional egress_profile string", () => {
-  const tool = require("../mcp/lib/tools/browser-session-start-recording.js");
+  const tool = require("../mcp/tools/web/browser-session-start-recording.js");
   const prop = tool.inputSchema.properties.egress_profile;
   assert.ok(prop, "egress_profile must be in inputSchema.properties");
   assert.equal(prop.type, "string");

@@ -24,10 +24,10 @@ const { execFileSync } = require("child_process");
 
 const {
   executeTool,
-} = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/dispatch/dispatch.js");
 const {
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   buildDifferentialCheckoutCommand,
   prepareRepoEnv,
@@ -42,21 +42,21 @@ const {
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
   REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES,
   REPO_MOUNT_MODE_VALUES,
-} = require("../mcp/lib/repo-env.js");
+} = require("../mcp/domains/repo/repo-env.js");
 const {
   validateNoSensitiveMaterial,
-} = require("../mcp/lib/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const {
   repoCheckoutDir,
   repoCommandRunsJsonlPath,
   repoRunsDir,
   repoWorkDir,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const repoDockerRunTool = require("../mcp/lib/tools/repo-docker-run.js");
+} = require("../mcp/core/io/paths.js");
+const repoDockerRunTool = require("../mcp/tools/repo/repo-docker-run.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -1700,7 +1700,7 @@ test("repoDockerRun throws when target_domain is not a repo session", async () =
   await withTempHome(async () => {
     await assert.rejects(
       () => repoDockerRun({ target_domain: "repo-missing-12345678", command: ["echo"] }),
-      /is not a repo session|Missing session state/,
+      /is not a repo session|Missing session state|has no verified session nucleus/,
     );
   });
 });

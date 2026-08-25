@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseUnifiedDiff } = require("../mcp/lib/unified-diff-parser.js");
+const { parseUnifiedDiff } = require("../mcp/domains/repo/unified-diff-parser.js");
 
 const SIMPLE_DIFF = `diff --git a/src/users.js b/src/users.js
 index 1111111..2222222 100644

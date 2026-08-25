@@ -433,7 +433,14 @@ function activateCodexPlugin({ targetAbs, pluginDir, homeFs }) {
   const cacheDir = codexCacheRoot({ home, version });
   const safeHomeFs = homeFs || createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
   safeHomeFs.mkdirp(cacheBase);
-  safeHomeFs.removeDirContents(cacheBase);
+  // Every child of cacheBase is a version directory holding a verbatim copy of
+  // pluginDir — written by the copyTree on the next line, whose destination
+  // cacheDir is cacheBase/<version>. Handing that source tree to the delete
+  // guard is what keeps a normal re-install SILENT: a cached file whose bytes
+  // still equal its pluginDir counterpart cannot be destroyed by wiping the
+  // cache ahead of the re-copy, so it is left for the delete instead of being
+  // preserved as local work. Only a genuinely edited cache file is moved aside.
+  safeHomeFs.removeDirContents(cacheBase, { childSourceTree: pluginDir });
   safeHomeFs.copyTree(pluginDir, cacheDir);
 
   const existingConfig = safeHomeFs.readTextIfExists(configPath, "", {

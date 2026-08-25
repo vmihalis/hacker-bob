@@ -40,7 +40,7 @@ const {
   createActivePhysicalExecutionGrantVerifier,
   normalizeMcpPhysicalExecutionRequest,
   projectVerifiedActivePhysicalExecutionGrant,
-} = require("../../../mcp/lib/physical-authority.js");
+} = require("../../../mcp/domains/physical/physical-authority.js");
 const {
   attemptAllocationBindingDigest,
   buildPhysicalObserverEnrollmentRegistry,
@@ -51,26 +51,26 @@ const {
   normalizePhysicalExperimentRowPayload,
   observationConsumptionBindingDigest,
   observerAttemptBindingDigest,
-} = require("../../../mcp/lib/physical-experiment-contract.js");
+} = require("../../../mcp/domains/physical/physical-experiment-contract.js");
 const {
   buildDurableReceiptTrustRegistry,
-} = require("../../../mcp/lib/executed-evidence-registry.js");
+} = require("../../../mcp/core/executed-evidence-registry.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../../../mcp/lib/governance-contracts.js");
+} = require("../../../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../../../mcp/lib/requested-effects.js");
+} = require("../../../mcp/core/requested-effects.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
   samplePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const CAPABILITY_ID = "CU-ADMIN-FIELD-GENERATOR-INVOKE";
 const CLONE_CAPABILITY_ID = "CU-ADMIN-BUTTON-CLONE-INVOKE";
@@ -1520,7 +1520,7 @@ test("cloning or serializing runtime, reservation, execution, or terminal state 
 });
 
 test("no agent-facing tool or generic physical-button surface is introduced", () => {
-  const toolRegistry = require("../../../mcp/lib/tool-registry.js");
+  const toolRegistry = require("../../../mcp/tools/tool-registry.js");
   const serializedTools = JSON.stringify(toolRegistry.TOOL_MANIFEST || toolRegistry);
   assert.equal(/manual[_-]?action|arbitrary[_-]?button|press[_-]?button/ui.test(serializedTools), false);
   const exported = Object.keys(manual).join("\n");

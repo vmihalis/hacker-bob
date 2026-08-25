@@ -15,7 +15,7 @@ const {
   normalizeEdge,
   EDGE_TYPES,
   NODE_TYPES,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 
 function uniqueDomain(prefix = "bob-surface-graph-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

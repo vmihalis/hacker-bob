@@ -33,7 +33,7 @@ import tempfile
 
 REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 HOOK = os.path.join(REPO_ROOT, ".claude", "hooks", "bob-approval-gate-impl.py")
-REPORT_FINALIZE_JS = os.path.join(REPO_ROOT, "mcp", "lib", "report-finalize.js")
+REPORT_FINALIZE_JS = os.path.join(REPO_ROOT, "mcp", "core", "report-finalize.js")
 
 ADVANCE = "mcp__hacker-bob__bob_advance_session"
 FINALIZE = "mcp__hacker-bob__bob_finalize_report"
@@ -76,7 +76,7 @@ def grade_document(domain=DOMAIN, total_score=75):
 
 def compute_grade_verdict_hash(document):
     """Reference canonicalization independently mirroring bob-approval-gate-impl.py's own
-    _current_grade_verdict_hash / mcp/lib/verification-contracts.js hashCanonicalJson (recursive
+    _current_grade_verdict_hash / mcp/core/verification/verification-contracts.js hashCanonicalJson (recursive
     sort_keys + compact separators) -- used here to derive the EXPECTED hash for a given fixture,
     not to duplicate production hashing logic (the hook computes its own from disk)."""
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -428,8 +428,8 @@ def cross_language_parity_check():
     """fx-hmac-content: an AUTOMATED cross-check (not just code inspection) pinning the Python
     hook's own reimplemented canonicalization (_current_grade_verdict_hash:
     json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + sha256)
-    against the REAL production mcp/lib/report-finalize.js's loadGradeVerdictHash (which
-    delegates to mcp/lib/verification-contracts.js's hashCanonicalJson), for the SAME on-disk
+    against the REAL production mcp/core/report-finalize.js's loadGradeVerdictHash (which
+    delegates to mcp/core/verification/verification-contracts.js's hashCanonicalJson), for the SAME on-disk
     grade.json.
 
     This is the one consumer where such a pin matters: the JS consumer (lifecycle-gates.js) and

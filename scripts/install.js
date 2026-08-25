@@ -12,19 +12,35 @@ const {
   detectAdapterId,
   getAdapter,
 } = require("../adapters/index.js");
-const { clearUpdateCache } = require("../mcp/lib/update-check.js");
+const { clearUpdateCache } = require("../mcp/core/update-check.js");
 const { commandExists } = require("./lib/command-exists.js");
 const {
   CANONICAL_INSTALL_SUPPORT_FILES,
   CANONICAL_RUNTIME_PACKAGE_ROOTS,
   MCP_TOP_LEVEL_RUNTIME_FILES,
   isCanonicalRuntimePackageFile,
+  isPackableMcpRuntimeFile,
   sourceTreeFiles,
 } = require("./lib/package-policy.js");
 const {
   retainDirectoryAncestry,
   sameFilesystemIdentity,
 } = require("./lib/optional-provider-lifecycle.js");
+// Drift guard. Family A's copyFile/removeIfExists below route through this so
+// a locally modified installed file is preserved-and-reported instead of
+// silently destroyed. scripts/lib/install-fs.js (family B) requires the SAME
+// module — one implementation, two copy stacks.
+const {
+  INSTALLED_FILE_OWNERSHIP_KEY,
+  PRESERVED_LOCAL_SUFFIX,
+  activeInstallDriftGuard,
+  beginInstallDriftGuard,
+  formatPreservedSummary,
+  guardBeforeDelete,
+  guardBeforeTreeReplace,
+  guardBeforeWrite,
+  recordInstalledFile,
+} = require("./lib/install-drift.js");
 const {
   executeLifecycleMutation,
 } = require("./lib/lifecycle-custodian.js");
@@ -48,7 +64,14 @@ const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES = 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_FILES = 100_000;
-const MAX_RUNTIME_DEPENDENCY_BYTES = 512 * 1024 * 1024;
+// Sized against the real production tree, not a round number. @anthropic-ai
+// ships the agent SDK as prebuilt per-platform binaries and a host may resolve
+// more than one: Linux installs both the gnu and musl arm64 builds at ~240 MB
+// each, so the tree is ~500 MB there against ~230 MB on macOS, which has a
+// single variant. The former overran a 512 MB bound and made `install` fail on
+// every Linux host. This is a runaway-tree backstop, so leave real headroom for
+// another platform variant rather than tracking today's measurement.
+const MAX_RUNTIME_DEPENDENCY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_DEPTH = 32;
 const MAX_RUNTIME_DEPENDENCY_DIRECTORIES = 4096;
 const MAX_RUNTIME_DEPENDENCY_PACKAGES = 4096;
@@ -157,6 +180,7 @@ function writeNeutralInstallMetadata({
   commitSha,
   adapterIds,
   mcpTopLevelRuntimeOwnership,
+  installedFileOwnership = null,
 }) {
   const installManifest = manifest || {};
   const version = installManifest.version || "0.0.0";
@@ -175,6 +199,11 @@ function writeNeutralInstallMetadata({
     commit_sha: commitSha || null,
     installed_adapters: normalizeAdapterIdList(adapterIds),
     mcp_top_level_runtime_ownership: mcpTopLevelRuntimeOwnership,
+    // ADDITIVE (schema_version stays 2): per-installed-file digests, the
+    // record the drift guard compares each destination against on the NEXT
+    // install. Omitted when no guard ran; an install.json without the key is
+    // still valid and simply makes every file "possibly local".
+    ...(installedFileOwnership ? { [INSTALLED_FILE_OWNERSHIP_KEY]: installedFileOwnership } : {}),
   });
 }
 
@@ -261,13 +290,62 @@ function pruneRetiredMcpTopLevelRuntimeFiles(targetAbs, metadata) {
   return removed.sort();
 }
 
+// FAMILY A lowest-level VERBATIM write. It lands the neutral resource sets, the
+// mcp/ runtime copies, and — through the copyFile/copyDirFiles injected into
+// adapters/claude/index.js — .claude/agents, .claude/rules, .claude/skills,
+// .claude/hooks and .claude/commands/bob-egress.md. This is the write that
+// destroyed .claude/agents/report-writer.md, so the guard belongs HERE, not
+// only in the createSafeInstallFs twin.
+//
+// NOT "everything the Claude adapter installs": that adapter also runs writes
+// this file never sees, and they are NOT guarded. Pinned by SYMBOL, never by
+// line number — the five citations that used to sit here rotted by exactly +8
+// the instant this node inserted its own writeTextFile seam into that adapter,
+// and a comment aiming a reader at the wrong line is the same class of false
+// justification as a wrong claim. Each substring below is asserted to still
+// occur in adapters/claude/index.js by test/install-drift.test.js
+// ("the unguarded-adapter-write inventory pins symbols that still exist"), so
+// this list cannot rot silently:
+//   fs.writeFileSync(path.join(claudeDir, "bob", "VERSION"), ...) install stamp
+//   fs.rmSync(mcpPath, { force: true });                          removeMcpConfig
+//   fs.rmSync(settingsPath, { force: true });                     removeSettingsConfig
+//   fs.rmSync(configPath, { force: true });                       removeGeneratedEgressConfig
+// The three removeMcpConfig/removeSettingsConfig/removeGeneratedEgressConfig
+// entries are UNINSTALL-path deletes of Bob-generated config, not install-path
+// writes; the VERSION stamp is regenerated content Bob owns outright.
+// TWO entries have LEFT this list because they are now guarded, not because
+// they were reclassified:
+//   - the renderer-driven commands (bob-evaluate/bob-update/bob-export.md) go
+//     through the guarded writeTextFile below, injected alongside copyFile;
+//   - the LEGACY_BOB_SKILLS loop's recursive rmSync goes through the injected
+//     removeDirIfExists, which sweeps the doomed tree with
+//     guardBeforeTreeReplace first. That one destroyed an operator marker in
+//     .claude/skills/bob-evaluate/SKILL.md with no sidecar and no summary line
+//     while every neighbouring delete in the same function was already guarded.
 function copyFile(source, destination, mode) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
+  const guard = guardBeforeWrite(destination, { sourcePath: source });
   fs.copyFileSync(source, destination);
   if (mode != null) fs.chmodSync(destination, mode);
+  recordInstalledFile(destination, guard);
 }
 
-function copyDirRecursive(sourceDir, destinationDir, predicate) {
+// FAMILY A's GENERATED-file write — the twin of copyFile for content Bob
+// RENDERS rather than copies, and injected into adapters/claude/index.js for
+// exactly that reason. A wholesale render destroys an operator's edit precisely
+// as a verbatim copy does: adapters/claude/index.js writes bob-evaluate.md,
+// bob-update.md and bob-export.md from renderCommand() with no merge semantics
+// whatsoever, so all three were silently destroyed while the fourth command
+// file (bob-egress.md, a real copyFile) was preserved. Same guard, same module,
+// no third path.
+function writeTextFile(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const guard = guardBeforeWrite(filePath, { contents: content });
+  fs.writeFileSync(filePath, content, "utf8");
+  recordInstalledFile(filePath, guard);
+}
+
+function copyDirRecursive(sourceDir, destinationDir, predicate, relativeRoot = sourceDir) {
   fs.mkdirSync(destinationDir, { recursive: true });
   const copied = [];
   for (const name of fs.readdirSync(sourceDir).sort()) {
@@ -276,16 +354,140 @@ function copyDirRecursive(sourceDir, destinationDir, predicate) {
     const stat = fs.statSync(source);
     if (stat.isDirectory()) {
       if (name === "node_modules") continue;
-      copied.push(...copyDirRecursive(source, destination, predicate));
+      copied.push(...copyDirRecursive(source, destination, predicate, relativeRoot));
       continue;
     }
     if (!stat.isFile()) continue;
-    const relative = path.relative(sourceDir, source);
+    const relative = path.relative(relativeRoot, source);
     if (predicate && !predicate(relative, name)) continue;
     copyFile(source, destination);
     copied.push(path.relative(destinationDir, destination));
   }
   return copied;
+}
+
+// Non-vacuity floor for the ONE tree this installer replaces wholesale. The
+// shipped runtime carries ~540 modules; anything near zero means an empty
+// source directory, a partial tarball extraction, or a packaging change that
+// moved the modules off the copy predicate. Hardcoded on purpose: "copied
+// something" is satisfied by copying one file, and the destination has already
+// been removed by the time the copy runs.
+const MIN_MCP_RUNTIME_MODULES = 50;
+const MCP_RUNTIME_TREE_NAMES = Object.freeze(["core", "domains", "tools", "fuzz"]);
+
+function isInstallableMcpRuntimeTreeFile(treeName, relativePath) {
+  if (!MCP_RUNTIME_TREE_NAMES.includes(treeName) || typeof relativePath !== "string") return false;
+  const segments = relativePath.split(/[\\/]/u);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+  return isPackableMcpRuntimeFile(`mcp/${treeName}/${segments.join("/")}`);
+}
+
+// Counts what copyDirRecursive WOULD copy, without copying it, so the refusal
+// can happen BEFORE the destination is destroyed rather than after.
+function countTreeFiles(sourceDir, predicate) {
+  let total = 0;
+  const walk = (dir) => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const source = path.join(dir, name);
+      const stat = fs.statSync(source);
+      if (stat.isDirectory()) {
+        if (name === "node_modules") continue;
+        walk(source);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      if (predicate && !predicate(path.relative(sourceDir, source), name)) continue;
+      total += 1;
+    }
+  };
+  if (fs.existsSync(sourceDir)) walk(sourceDir);
+  return total;
+}
+
+// Reuses the shape of copyResourceSet's empty-guard below (`if
+// (copied.length === 0) throw new Error(resourceSet.emptyMessage)`), raised
+// from "not empty" to a real floor because this destination is wiped first.
+function assertRuntimeModuleFloor(count, { stage, sourceDir }) {
+  if (count >= MIN_MCP_RUNTIME_MODULES) return count;
+  throw new Error(
+    `Refusing to replace the installed mcp runtime: ${stage} reports ${count} modules from ${sourceDir}, `
+    + `below the required floor of ${MIN_MCP_RUNTIME_MODULES}. `
+    + "Installing this would leave the runtime wiped. Re-fetch or re-extract the Bob source and try again.",
+  );
+}
+
+// Non-vacuity floors for the two Claude resource trees this installer ships
+// through the INJECTED copyDirFiles. They are package.json globs
+// (`.claude/agents/**/*`, `.claude/rules/**/*`) of exactly the shape
+// `mcp/lib/**/*.js` has, but unlike the neutral resource sets — which
+// copyResourceSet below refuses empty via `throw new Error(
+// resourceSet.emptyMessage)` — copyDirFiles has no empty guard of its own and
+// the adapter adds none. An emptied or mis-globbed source therefore installed
+// ZERO agents, printed "  0 Claude agent definitions", printed "Done.", and
+// reported success. `.claude/agents` is the directory report-writer.md lives in
+// — the file whose silent destruction this whole guard exists to prevent — so a
+// Bob that silently ships without it is the same failure wearing a different
+// hat. Hardcoded on purpose, exactly like MIN_MCP_LIB_RUNTIME_MODULES:
+// "copied something" is satisfied by copying one file.
+//
+// HEADROOM IS DELIBERATE. These are NON-VACUITY floors, not content
+// assertions: they exist to catch an emptied or mis-globbed source, and they
+// must not fire on a legitimate shrink. The repo ships 21 agents and 2 rules
+// today, but commit 933df67 ("Regenerate evaluation agent surfaces") is the
+// in-tree proof that ordinary regeneration commits DELETE from exactly these
+// two globs — it removed .claude/rules/hunting.md and renamed five
+// hunter-*-agent.md definitions to evaluator-*. That commit happened to stay
+// count-neutral (it added .claude/rules/evaluating.md in the same breath, so
+// rules went 2 -> 2 and agents 16 -> 16); a consolidation that only deletes
+// would not. Pinned at the live count, the very next such commit turns a
+// legitimate content change into "Refusing to finish the install", which sends
+// the operator hunting a corrupt download that does not exist. Agents have also
+// grown 16 -> 21 over recent history, so the live count is a moving ceiling,
+// never a floor. Rules gets 1 rather than 2 for the same reason: at a live
+// count of 2 a floor of 2 has NO headroom at all, and 1 still catches the zero
+// case these floors were written for.
+const MIN_CLAUDE_AGENT_FILES = 15;
+const MIN_CLAUDE_RULE_FILES = 1;
+
+function assertClaudeResourceFloor(count, { label, floor, sourceDir }) {
+  if (Number.isInteger(count) && count >= floor) return count;
+  throw new Error(
+    `Refusing to finish the install: ${label} installed ${count} files from ${sourceDir}, `
+    + `below the required floor of ${floor}. An empty, mis-globbed, or partially extracted source `
+    + "would leave Bob running without those definitions and say nothing. "
+    + "Re-fetch or re-extract the Bob source and try again.",
+  );
+}
+
+// Runs the instant the Claude adapter returns, on the SAME counts the run
+// summary reports at `agents:` / `rules:` below, so the refusal cannot disagree
+// with what the operator is shown.
+function assertClaudeResourceFloors(claudeResult, { sourceRoot }) {
+  // NOT `if (!claudeResult) return claudeResult`. That early return was the
+  // vacuity hole these floors exist to close: an adapter that returned nothing
+  // skipped BOTH floors and the install reported success — the same silent pass
+  // as installing zero agents, reached one level up. The only call site
+  // (installProject below) invokes this with the Claude adapter's own return
+  // value, which is always an object, so a falsy value here is a broken
+  // adapter, not an absent one. Refuse rather than wave it through.
+  if (!claudeResult || typeof claudeResult !== "object") {
+    throw new Error(
+      "Refusing to finish the install: the Claude adapter returned no result, so the "
+      + ".claude/agents and .claude/rules floors could not be checked at all. "
+      + "An install that cannot verify those trees must not report success.",
+    );
+  }
+  assertClaudeResourceFloor(claudeResult.agents, {
+    label: "the Claude agent definitions (.claude/agents)",
+    floor: MIN_CLAUDE_AGENT_FILES,
+    sourceDir: path.join(sourceRoot, ".claude", "agents"),
+  });
+  assertClaudeResourceFloor(claudeResult.rules, {
+    label: "the Claude always-on rules (.claude/rules)",
+    floor: MIN_CLAUDE_RULE_FILES,
+    sourceDir: path.join(sourceRoot, ".claude", "rules"),
+  });
+  return claudeResult;
 }
 
 function copyDirFiles(sourceDir, destinationDir, predicate) {
@@ -1689,17 +1891,81 @@ function copyCanonicalRuntimePackagesDirect(sourceRoot, targetAbs) {
           }
         })();
         if (existing != null) {
-          // The package root is an exclusively Bob-owned leaf. Rename the leaf
-          // itself into the retained-parent backup slot regardless of whether
-          // a prior failed/local install left a directory, file, or symlink.
-          // rename(2) does not follow a leaf symlink. The parent ancestry is
-          // retained and revalidated before promotion; no sibling is touched.
-          fs.renameSync(plan.targetDir, backupDir);
-          priorMoved = true;
+          // WHOLESALE REPLACE. The rename below moves the whole installed root
+          // into a backup slot that is rmSync'd on success, so every local
+          // edit under it dies before any per-file guard could see it — the
+          // same shape as the mcp/lib replace, and the same fix.
+          // package-policy.js defines CANONICAL_RUNTIME_OWNED_ROOTS as
+          // ["mcp/lib", ...CANONICAL_RUNTIME_PACKAGE_ROOTS]: ONE class of
+          // nine, of which only mcp/lib was swept. Reuse
+          // preserveBeforeTreeReplace for the other eight rather than write a
+          // second sweep.
+          //
+          // Quiet on the clean path by construction: the sweep skips every
+          // file whose bytes already equal its counterpart in the incoming
+          // source tree, and every file still matching Bob's recorded digest.
+          // The sibling quarantine is safe here (unlike .claude/skills): the
+          // workspaces list in package.json is an explicit set of names, not a
+          // packages/* glob, so a `<root>.bob-local` sibling is never resolved
+          // as a package.
+          // Ancestry first, ALWAYS. A hostile root swap must be detected before
+          // any other decision — including before the drift refusal below.
+          // Ordering matters: the refusal is newer than this check, and if it
+          // runs first it MASKS the swap rejection, turning a security failure
+          // into a confusing "guard disarmed" error. Caught by
+          // test/optional-provider-lifecycle.test.js:2751 ("rejects a root
+          // swap"), which exercises this path without a full install.
+          targetGuard.revalidate();
+          let vacatedByGuard = false;
+          if (existing.isDirectory()) {
+            // Positive control, as at the mcp/lib replace: guardBeforeTreeReplace
+            // returns [] both when it preserved nothing AND when no guard is
+            // armed. Refuse the destructive path rather than confuse the two.
+            if (!activeInstallDriftGuard()) {
+              throw new Error(
+                `Refusing to replace the installed canonical runtime package ${plan.relativeRoot} with the `
+                + "install drift guard disarmed: local edits under it would be destroyed with no preserved "
+                + "copy and no warning.",
+              );
+            }
+            guardBeforeTreeReplace({
+              targetTree: plan.targetDir,
+              sourceTree: path.join(sourceRoot, plan.relativeRoot),
+              preservedTree: `${plan.targetDir}${PRESERVED_LOCAL_SUFFIX}`,
+            });
+          } else {
+            // A regular file or a symlink where a package ROOT belongs is a
+            // prior failed install or operator work by construction — Bob only
+            // ever promotes a directory here — and the rename-then-rmSync below
+            // destroys it just as silently as it destroyed the tree. The file
+            // twin already knows how to preserve both shapes; a true return
+            // means the rename already vacated the path, so there is nothing
+            // left to move into the backup slot.
+            vacatedByGuard = guardBeforeDelete(plan.targetDir);
+          }
+          if (!vacatedByGuard) {
+            // The package root is an exclusively Bob-owned leaf. Rename the leaf
+            // itself into the retained-parent backup slot regardless of whether
+            // a prior failed/local install left a directory, file, or symlink.
+            // rename(2) does not follow a leaf symlink. The parent ancestry is
+            // retained and revalidated before promotion; no sibling is touched.
+            fs.renameSync(plan.targetDir, backupDir);
+            priorMoved = true;
+          }
         }
         targetGuard.revalidate();
         fs.renameSync(stagingDir, plan.targetDir);
         promoted = true;
+        // Record what was just promoted in the ownership receipt. WITHOUT this
+        // the sweep above has no recorded digest to compare against, so the
+        // FIRST upgrade that legitimately changes a lib/*.js would preserve
+        // every changed file as "no_recorded_digest" — a sidecar for work the
+        // operator never did, on every release. The same-source reinstall stays
+        // quiet either way (the source-identity skip covers it); it is the
+        // upgrade that needs the receipt.
+        for (const file of plan.files) {
+          recordInstalledFile(path.join(plan.targetDir, ...file.relative.split("/")));
+        }
         targetGuard.sync();
         if (priorMoved) fs.rmSync(backupDir, { recursive: true, force: true });
         copied.push(...plan.admitted);
@@ -1750,6 +2016,11 @@ function removeEmptyDirIfExists(dirPath) {
   if (fs.readdirSync(dirPath).length === 0) fs.rmdirSync(dirPath);
 }
 
+// Pre-v2 resource copies under .claude/. This sweep is a DELETE path like any
+// other, so it routes through removeIfExists rather than calling rmSync itself
+// — a file the operator edited at a legacy location is preserved-and-reported,
+// not deleted outright. (It ran zero times on a modern tree, which is exactly
+// why the unguarded rmSync here survived: an empty loop proves nothing.)
 function removeLegacyResourceCopies(sourceRoot, targetAbs) {
   let removed = 0;
   for (const resourceSet of RESOURCE_SETS) {
@@ -1757,17 +2028,97 @@ function removeLegacyResourceCopies(sourceRoot, targetAbs) {
     for (const name of sourceResourceNames(sourceRoot, resourceSet)) {
       const legacyPath = path.join(legacyDir, name);
       if (fs.existsSync(legacyPath) && fs.statSync(legacyPath).isFile()) {
-        fs.rmSync(legacyPath, { force: true });
+        removeIfExists(legacyPath);
         removed += 1;
       }
     }
+    // Skipped when a preserved sidecar still sits in the legacy directory,
+    // which is correct: the operator's copy has to stay reachable.
     removeEmptyDirIfExists(legacyDir);
   }
   return removed;
 }
 
+// The delete twin of copyFile. The Claude adapter sweeps STALE_HOOK_FILES,
+// LEGACY_AGENT_FILES, LEGACY_HOOK_FILES and LEGACY_BOB_COMMAND_FILES through
+// this. Deleting a file the operator edited is the same destruction as
+// overwriting it, so a drifted or unrecorded file is renamed aside instead —
+// guardBeforeDelete returns true once the path is already vacated.
 function removeIfExists(filePath) {
+  if (guardBeforeDelete(filePath)) return;
   fs.rmSync(filePath, { force: true });
+}
+
+// Where a family-A DIRECTORY sweep parks the operator's copies.
+//
+// NOT a sibling `<dir>.bob-local`. The only family-A recursive sweep is the
+// Claude adapter's legacy-skill loop, and Claude Code discovers skills by
+// scanning every directory under .claude/skills for a SKILL.md — so a sibling
+// would reinstate the exact stale skill the sweep exists to retire, under a
+// new name. Family B reached the same conclusion for $CODEX_HOME/skills and
+// answers it with ONE quarantine root at the install root mirroring the
+// original layout (scripts/lib/install-fs.js preservedTreeFor). Same answer,
+// same PRESERVED_LOCAL_SUFFIX spelling, here — the operator learns one word.
+//
+// The install root comes from the armed guard, which is the same root every
+// ownership key is relative to. The sibling fallback is for the one case that
+// root cannot express — a directory outside the install root — and is never
+// reached from removeDirIfExists, which refuses outright when no guard is
+// armed. It only has to be OUTSIDE the doomed tree, which a sibling is.
+function preservedQuarantineDirFor(absDir) {
+  const guard = activeInstallDriftGuard();
+  const root = guard ? guard.targetAbs : null;
+  if (root) {
+    const relative = path.relative(root, absDir);
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      return path.join(root, PRESERVED_LOCAL_SUFFIX, relative);
+    }
+  }
+  return `${absDir}${PRESERVED_LOCAL_SUFFIX}`;
+}
+
+// The DIRECTORY twin of removeIfExists, injected into adapters/claude/index.js
+// beside it. A recursive rmSync destroys every file under the directory before
+// any per-file hook could see them, which is the same shape as the wholesale
+// mcp/lib replace — so it uses the same guardBeforeTreeReplace sweep rather
+// than a second one.
+//
+// `sourceTree` is deliberately null: a legacy directory is legacy precisely
+// because the source no longer ships it, so there is nothing to compare
+// against and every file that is not already in Bob's receipt is treated as
+// the operator's. Idempotent, because the second install finds the directory
+// gone and the sweep returns without touching anything.
+function removeDirIfExists(dirPath) {
+  const abs = path.resolve(dirPath);
+  let stat = null;
+  try {
+    stat = fs.lstatSync(abs);
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+  if (stat && stat.isDirectory()) {
+    // Same positive control as the mcp/lib replace below: guardBeforeTreeReplace
+    // returns [] both when it preserved nothing AND when no guard is armed —
+    // identical return, opposite meanings — and the next statement is a
+    // recursive delete. Refuse to run it unarmed rather than let "the guard ran
+    // and found nothing" be indistinguishable from "no guard ran".
+    if (!activeInstallDriftGuard()) {
+      throw new Error(
+        `Refusing to remove the installed directory ${abs} with the install drift guard disarmed: `
+        + "local edits under it would be destroyed with no preserved copy and no warning.",
+      );
+    }
+    guardBeforeTreeReplace({
+      targetTree: abs,
+      sourceTree: null,
+      preservedTree: preservedQuarantineDirFor(abs),
+    });
+  } else if (guardBeforeDelete(abs)) {
+    // Preserved instead: the rename already vacated the path, so deleting now
+    // would destroy the copy that was just saved.
+    return;
+  }
+  fs.rmSync(abs, { force: true, recursive: true });
 }
 
 function packageManifest(sourceRoot) {
@@ -1877,6 +2228,14 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   const mcpDir = path.join(targetAbs, "mcp");
   const runtimeDependencyPlan = prepareRuntimeNodeDependencyCopy(sourceRoot, mcpDir);
   const mcpTopLevelRuntimeOwnership = buildMcpTopLevelRuntimeOwnership(sourceRoot);
+  // Arm the drift guard BEFORE the first mutation and disarm it in the finally
+  // below, so an aborted install cannot leave an armed ambient guard behind.
+  // It reads the PREVIOUS install.json for the recorded digests and collects
+  // the digests of everything this run writes.
+  const driftGuardSession = beginInstallDriftGuard({
+    targetAbs,
+    previousMetadata: previousInstallMetadata,
+  });
   try {
     fs.mkdirSync(bobResourceDir, { recursive: true });
 
@@ -1895,7 +2254,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   // permits deletion of a retired Bob filename only while its bytes and filesystem identity still match;
   // operator-created or locally modified siblings survive. The manifest is the single source of truth;
   // install-smoke.test.js pins it EQUAL to the real source top-level mcp/*.js so additions/deletions
-  // cannot silently drift. lib/ + its subdirs are copied separately below.
+  // cannot silently drift.
   const removedRetiredMcpTopLevelRuntimeFiles = pruneRetiredMcpTopLevelRuntimeFiles(
     targetAbs,
     previousInstallMetadata,
@@ -1904,36 +2263,64 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
-  // mcp/lib is a wholly Bob-owned runtime root (unlike the surrounding mcp/
-  // directory, where operators may keep their own top-level files). Replace the
-  // complete owned root before copying so a root module or whole subdirectory
-  // removed by a newer Bob release cannot survive an upgrade and later be loaded
-  // through a fixed-path dynamic require. mcp/node_modules is a sibling and is
-  // intentionally untouched: the dependency copier preserves its foreign/stale
-  // packages and operator-owned .bin entries under its separately disclosed
-  // assurance contract. The enrolled lifecycle-custodian mutation registry has
-  // no mcp/lib selection and its production helper remains deliberately
-  // unavailable, so this canonical root still uses a pathname-based Node replace;
-  // doctor's lifecycle-custodian check remains non-authorizing until that native
-  // contract is expanded and qualified.
-  const sourceLibDir = path.join(sourceRoot, "mcp", "lib");
-  const targetLibDir = path.join(mcpDir, "lib");
-  if (path.resolve(sourceLibDir) !== path.resolve(targetLibDir)) {
-    fs.rmSync(targetLibDir, { recursive: true, force: true });
-    // Copy .js modules plus any .sh build assets a module reads at load time
-    // (e.g. repo-env.js resolves a native-fuzz build script under mcp/lib/fuzz/).
-    // Dropping a load-time .sh asset crashes mcp/server.js startup the same way a
-    // dropped subdir would, so the runtime-copy must carry both.
-    copyDirRecursive(
-      sourceLibDir,
-      targetLibDir,
-      (relative, name) => name.endsWith(".js") || name.endsWith(".sh"),
+  // Replace each Bob-owned runtime subtree independently. The surrounding mcp/
+  // root remains mixed ownership.
+  const sourceRuntimeRoot = path.join(sourceRoot, "mcp");
+  if (path.resolve(sourceRuntimeRoot) !== path.resolve(mcpDir)) {
+    const runtimeTrees = MCP_RUNTIME_TREE_NAMES.map((name) => ({
+      name,
+      sourceTree: path.join(sourceRuntimeRoot, name),
+      targetTree: path.join(mcpDir, name),
+      predicate: (relative) => isInstallableMcpRuntimeTreeFile(name, relative),
+    }));
+    for (const tree of runtimeTrees) {
+      let stat = null;
+      try {
+        stat = fs.statSync(tree.sourceTree);
+      } catch {
+        stat = null;
+      }
+      if (!stat || !stat.isDirectory()) {
+        throw new Error(`Refusing to install an incomplete mcp runtime: missing source tree ${tree.sourceTree}`);
+      }
+    }
+    const shippedRuntimeModuleCount = runtimeTrees.reduce(
+      (count, tree) => count + countTreeFiles(tree.sourceTree, tree.predicate),
+      0,
     );
+    assertRuntimeModuleFloor(shippedRuntimeModuleCount, {
+      stage: "the shipped source",
+      sourceDir: sourceRuntimeRoot,
+    });
+    if (!activeInstallDriftGuard()) {
+      throw new Error(
+        "Refusing to replace the installed mcp runtime with the install drift guard disarmed: "
+        + "local edits under mcp would be destroyed with no sidecar and no warning.",
+      );
+    }
+    let copiedRuntimeModuleCount = 0;
+    for (const tree of runtimeTrees) {
+      guardBeforeTreeReplace({
+        targetTree: tree.targetTree,
+        sourceTree: tree.sourceTree,
+        preservedTree: `${tree.targetTree}${PRESERVED_LOCAL_SUFFIX}`,
+      });
+      fs.rmSync(tree.targetTree, { recursive: true, force: true });
+      copiedRuntimeModuleCount += copyDirRecursive(
+        tree.sourceTree,
+        tree.targetTree,
+        tree.predicate,
+      ).length;
+    }
+    assertRuntimeModuleFloor(copiedRuntimeModuleCount, {
+      stage: "the completed copy",
+      sourceDir: sourceRuntimeRoot,
+    });
   }
   // The offensive arsenal image digest lockfile is operator-minted JSON data (scripts/build-offensive-image.sh).
-  // The recursive mcp/lib copy above is .js/.sh-only, so copy this .json explicitly. Absent until the image is pinned.
-  const offensiveImageLock = path.join(sourceRoot, "mcp", "lib", "offensive-image.json");
-  const targetImageLock = path.join(mcpDir, "lib", "offensive-image.json");
+  // The recursive runtime copy above excludes JSON, so copy this lock explicitly. Absent until the image is pinned.
+  const offensiveImageLock = path.join(sourceRoot, "mcp", "offensive-image.json");
+  const targetImageLock = path.join(mcpDir, "offensive-image.json");
   if (fs.existsSync(offensiveImageLock)) {
     copyFile(offensiveImageLock, targetImageLock);
   } else {
@@ -2012,10 +2399,23 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
         packageName,
         readJsonIfExists,
         removeIfExists,
+        // The DIRECTORY twin of removeIfExists. Required, not defaulted, for
+        // the same reason removeIfExists is: a fallback here would be an
+        // unguarded recursive rmSync, which is the defect this injection
+        // exists to close. A missing injection is a loud TypeError.
+        removeDirIfExists,
         serverPath,
         sessionsRoot,
         writeJson,
+        // Guarded family-A render write. Without this the adapter falls back to
+        // its own bare fs.writeFileSync and the three renderer-driven command
+        // files are destroyed without a sidecar or a summary line.
+        writeTextFile,
       });
+      // Empty-source floor on the two globbed Claude resource trees, checked
+      // here rather than at the summary so the refusal lands before the run
+      // claims success.
+      assertClaudeResourceFloors(adapterResults[adapterId], { sourceRoot });
     } else if (adapterId === "generic-mcp") {
       adapterResults[adapterId] = adapter.install({
         sourceRoot,
@@ -2048,6 +2448,9 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
     commitSha,
     adapterIds: metadataAdapters,
     mcpTopLevelRuntimeOwnership,
+    // Every copyFile in BOTH families has run by now; install.json itself is
+    // not a guarded copy, so it never appears in its own receipt.
+    installedFileOwnership: driftGuardSession.guard.ownership(),
   });
   try {
     clearUpdateCache(targetAbs);
@@ -2071,7 +2474,7 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
   let sessionCap = null;
   try {
     const { ensureSessionCapNonce, sessionCapPath } = require(
-      path.join(targetAbs, "mcp", "lib", "session-cap.js"),
+      path.join(targetAbs, "mcp", "core", "session", "session-cap.js"),
     );
     ensureSessionCapNonce();
     sessionCap = sessionCapPath();
@@ -2110,8 +2513,24 @@ function installProjectWithTargetAuthority(projectDir, options, targetAuthority)
     runtimePackageFiles: copiedRuntimePackageFiles.length,
     runtimeDependencyFiles: copiedRuntimeDependencies.length,
     patchrightAvailable: patchrightAvailable(targetAbs, sourceRoot),
+    // EMPTY on the clean path, so printInstallSummary prints nothing new.
+    preservedLocalFiles: driftGuardSession.guard.preservedFiles(),
+    // Also EMPTY on the clean path. Non-empty means one of the guard's bounds
+    // fired and protection was incomplete — printed, never swallowed.
+    driftGuardWarnings: driftGuardSession.guard.warnings(),
+    installedFileOwnershipCount: driftGuardSession.guard.writtenFileCount(),
+    // How many records the PREVIOUS install's receipt actually yielded. Zero on
+    // a first install; a sudden zero on a reinstall means the receipt was
+    // rejected wholesale, which is why the guard warns about it and why the
+    // tests floor this value instead of leaving the accessor unconsumed.
+    driftGuardRecordedCount: driftGuardSession.guard.recordedFileCount(),
+    // True when the receipt filled up and stopped recording. The operator sees
+    // it as a warning line either way; this is the machine-readable form, so
+    // the accessor has a consumer outside its own tests.
+    driftGuardOwnershipOverflowed: driftGuardSession.guard.ownershipOverflowed(),
     };
   } finally {
+    driftGuardSession.end();
     closeRuntimeNodeDependencyCopyPlan(runtimeDependencyPlan);
   }
 }
@@ -2232,6 +2651,17 @@ function printInstallSummary(summary) {
     console.log(`Done. Launch Kimi from ${summary.targetAbs} with: kimi --mcp-config-file .kimi/mcp.json  (Kimi does not auto-discover .kimi/mcp.json, so this flag is mandatory), then run: /skill:bob-evaluate target.com`);
   } else {
     console.log(`Done. Restart the selected host CLIs in ${summary.targetAbs} before continuing.`);
+  }
+  // LAST THING THIS FUNCTION PRINTS. A warning the operator scrolls past is
+  // nearly as bad as no warning, so the preserved-file notice comes after
+  // "Done." and after every optional tool hint. NOT literally the final line on
+  // screen on every path: `bin/hacker-bob.js` prints its own epilogue after
+  // calling printInstallSummary ("Update complete. Fully restart Claude
+  // Code…", plus an optional --purge-legacy-session-root report), so the notice
+  // is last within the summary, not last within the process. Prints NOTHING
+  // when nothing was preserved, which is the clean path.
+  for (const line of formatPreservedSummary(summary.preservedLocalFiles, summary.driftGuardWarnings)) {
+    console.log(line);
   }
 }
 
@@ -2363,6 +2793,7 @@ module.exports = {
   detectInstalledAdapterIds,
   installProject,
   installedAdapterIds,
+  isInstallableMcpRuntimeTreeFile,
   neutralInstallMetadataPath,
   neutralVersionPath,
   patchrightAvailable,
@@ -2370,6 +2801,11 @@ module.exports = {
   printPurgeLegacySessionRootReport,
   purgeLegacySessionRoot,
   readNeutralInstallMetadata,
+  // Exported so the disarmed-guard refusal inside it is DIRECTLY testable.
+  // The refusal is the only thing standing between a recursive rmSync and an
+  // unprotected tree, and a guard whose failure mode is untested is a guard
+  // nobody has checked.
+  removeDirIfExists,
   resolveInstallAdapters,
   writeNeutralInstallMetadata,
 };

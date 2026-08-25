@@ -26,17 +26,17 @@ const {
 } = require("../lib/resource-reservations.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   createProductionPhysicalTechniqueCompositionRoot,
-} = require("../../../mcp/lib/physical-technique-composition-root.js");
+} = require("../../../mcp/domains/physical/physical-technique-composition-root.js");
 const {
   createDeterministicMockDispatchAuthorityPort,
-} = require("../../../mcp/lib/physical-dispatch-authority.js");
+} = require("../../../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizePhysicalResourceBundle,
   normalizeResourceAllocation,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 const {
   clone,
   createPhysicalReservationFixture,

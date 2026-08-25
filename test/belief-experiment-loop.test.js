@@ -6,11 +6,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
-const { readFrontierEvents } = require("../mcp/lib/frontier-events.js");
-const { planBeliefExperiment } = require("../mcp/lib/belief/experiment-loop.js");
-const planBeliefExperimentTool = require("../mcp/lib/tools/plan-belief-experiment.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
+const { readFrontierEvents } = require("../mcp/core/frontier/frontier-events.js");
+const { planBeliefExperiment } = require("../mcp/core/belief/experiment-loop.js");
+const planBeliefExperimentTool = require("../mcp/tools/plan-belief-experiment.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -26,24 +26,24 @@ const {
   auditGradedWriterClosure,
   isAuditGradedPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
-const writeBase = require("../mcp/lib/tools/_write-base.js");
+const writeBase = require("../mcp/tools/_write-base.js");
 
 // Force every writer module to load so DECLARED_AUDIT_GRADED_WRITERS is the
 // all-loaded snapshot before we assert closure.
 const WRITER_MODULES = [
-  "../mcp/lib/tools/write-verification-round.js",
-  "../mcp/lib/tools/write-evidence-packs.js",
-  "../mcp/lib/tools/write-grade-verdict.js",
-  "../mcp/lib/tools/write-wave-handoff.js",
-  "../mcp/lib/tools/write-chain-attempt.js",
-  "../mcp/lib/tools/finalize-report.js",
-  "../mcp/lib/tools/compose-report.js",
-  "../mcp/lib/tools/write-chain-rollup.js",
-  "../mcp/lib/tools/amend-report.js",
-  "../mcp/lib/tools/write-proof-bundle.js",
-  "../mcp/lib/tools/set-friction-scanners.js", // non-audit-graded control
+  "../mcp/tools/write-verification-round.js",
+  "../mcp/tools/write-evidence-packs.js",
+  "../mcp/tools/write-grade-verdict.js",
+  "../mcp/tools/write-wave-handoff.js",
+  "../mcp/tools/write-chain-attempt.js",
+  "../mcp/tools/finalize-report.js",
+  "../mcp/tools/compose-report.js",
+  "../mcp/tools/write-chain-rollup.js",
+  "../mcp/tools/amend-report.js",
+  "../mcp/tools/write-proof-bundle.js",
+  "../mcp/tools/set-friction-scanners.js", // non-audit-graded control
 ];
 const LOADED = WRITER_MODULES.map((m) => require(m));
 

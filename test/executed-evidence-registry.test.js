@@ -4,8 +4,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
-const EXECUTED_EVIDENCE_API = require("../mcp/lib/executed-evidence-registry.js");
-const EXECUTED_EVIDENCE_CONTRACT = require("../mcp/lib/executed-evidence-contract.js");
+const EXECUTED_EVIDENCE_API = require("../mcp/core/executed-evidence-registry.js");
+const EXECUTED_EVIDENCE_CONTRACT = require("../mcp/core/executed-evidence-contract.js");
 const {
   DEPENDENCY_PROOF_PROVIDER_KINDS,
   REPLAY_EXECUTOR_MODES,

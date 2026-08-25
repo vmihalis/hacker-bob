@@ -21,9 +21,9 @@ const {
   planDriftBackpressure,
   buildSeedLoopNonquiescentGap,
   SEED_DRIFT_RETRY_BUDGET,
-} = require("../mcp/lib/tools/schedule-seed-producers.js");
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/tools/schedule-seed-producers.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -81,13 +81,13 @@ test("planDriftBackpressure: a graph that stabilizes within budget is quiescent 
 // / dispatch dependencies. schedule-seed-producers.js destructures those at require
 // time, so we swap them in require.cache and re-require a FRESH copy of the handler
 // bound to the stubs, then restore. No production seam is added for the test.
-const TARGET = require.resolve("../mcp/lib/tools/schedule-seed-producers.js");
+const TARGET = require.resolve("../mcp/tools/schedule-seed-producers.js");
 const DEP_PATHS = {
-  materializer: require.resolve("../mcp/lib/task-graph-materializer.js"),
-  producerRun: require.resolve("../mcp/lib/producer-run-ledger.js"),
-  frontier: require.resolve("../mcp/lib/frontier-events.js"),
-  toolRegistry: require.resolve("../mcp/lib/tool-registry.js"),
-  spawnLedger: require.resolve("../mcp/lib/spawn-ledger.js"),
+  materializer: require.resolve("../mcp/core/waves/task-graph-materializer.js"),
+  producerRun: require.resolve("../mcp/core/producer-run-ledger.js"),
+  frontier: require.resolve("../mcp/core/frontier/frontier-events.js"),
+  toolRegistry: require.resolve("../mcp/core/dispatch/tool-registry.js"),
+  spawnLedger: require.resolve("../mcp/core/session/spawn-ledger.js"),
 };
 
 function stubModule(absPath, exports) {

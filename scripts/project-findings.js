@@ -18,7 +18,7 @@
 const fs = require("fs");
 const {
   postProjection,
-} = require("../mcp/lib/projection-client.js");
+} = require("../mcp/projection-client.js");
 
 function main() {
   const payloadFile = process.argv[2];

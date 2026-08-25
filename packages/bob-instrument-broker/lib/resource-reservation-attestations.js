@@ -10,16 +10,16 @@ const crypto = require("node:crypto");
 
 const {
   normalizePhysicalResourceInventory,
-} = require("../../../mcp/lib/physical-resource-scheduler.js");
+} = require("../../../mcp/domains/physical/physical-resource-scheduler.js");
 const {
   assertPhysicalTrustedClockSample,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   normalizeOpaqueRef,
-} = require("../../../mcp/lib/physical-quantities.js");
+} = require("../../../mcp/domains/physical/physical-quantities.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const RESOURCE_RESERVATION_ATTESTATION_VERSION = 1;
 const RESOURCE_INVENTORY_ATTESTATION_DOMAIN =

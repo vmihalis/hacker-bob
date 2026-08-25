@@ -218,16 +218,14 @@ function commandIds() {
   return Object.keys(COMMAND_SPECS);
 }
 
-// The /bob-evaluate command loads and runs the bob-evaluate-runner skill
-// DIRECTLY rather than invoking it through the Skill tool. The runner skill is
-// `disable-model-invocation: true` (so the model never spuriously auto-fires the
-// orchestrator), and current Claude Code refuses Skill-tool invocation of such
-// skills — a thin `allowed-tools: [Skill]` delegator command is dead on arrival.
-// So the command carries the orchestrator's own tool bundle (registry-driven via
-// hackerBobSkillAllowedTools, identical to the runner skill's allowed-tools, so
-// it can never drift) and instructs the model to read and execute the playbook.
-// This preserves orchestrator/evaluator role separation: the bundle excludes
-// evaluator-only tools like bob_repo_docker_run.
+// The /bob-evaluate command loads and runs the bob-evaluate-runner playbook
+// directly while the runner skill itself permits model invocation through the
+// Skill tool (`disable-model-invocation: false`). The command still carries the
+// orchestrator's own tool bundle (registry-driven via hackerBobSkillAllowedTools,
+// identical to the runner skill's allowed-tools, so it can never drift) and
+// instructs the model to read and execute the playbook. This preserves
+// orchestrator/evaluator role separation: the bundle excludes evaluator-only
+// tools like bob_repo_docker_run.
 function renderEvaluateCommand() {
   const allowedTools = config.hackerBobSkillAllowedTools();
   return [
@@ -240,9 +238,9 @@ function renderEvaluateCommand() {
     "Run or resume a Hacker Bob security evaluation.",
     "",
     "You ARE the Hacker Bob orchestrator for this run. Load the runner playbook and",
-    "execute it verbatim. Do NOT invoke it through the Skill tool — the",
-    "`bob-evaluate-runner` skill is `disable-model-invocation: true` and cannot be",
-    "called that way.",
+    "execute it verbatim. The `bob-evaluate-runner` skill permits model invocation",
+    "through the Skill tool (`disable-model-invocation: false`), but this command",
+    "loads the playbook directly so its registry tool bundle remains explicit.",
     "",
     "1. Read the playbook at the project-relative path",
     "   `.claude/skills/bob-evaluate-runner/SKILL.md`",
@@ -463,9 +461,22 @@ function install({
   packageName,
   readJsonIfExists,
   removeIfExists,
+  // The DIRECTORY twin of removeIfExists, injected by scripts/install.js from
+  // the same family-A drift guard. Required, NOT defaulted: a local fallback
+  // could only be a bare recursive fs.rmSync, which is exactly the hole this
+  // parameter closes. A missing injection must be a loud TypeError.
+  removeDirIfExists,
   serverPath,
   sessionsRoot = null,
   writeJson,
+  // Injected by scripts/install.js alongside copyFile/copyDirFiles: the
+  // drift-guarded family-A render write. The renderer-driven command files are
+  // wholesale rewrites with no merge semantics, so without the guard an
+  // operator's edit to bob-evaluate.md / bob-update.md / bob-export.md is
+  // destroyed with no sidecar and no summary line — while bob-egress.md, the
+  // one real copyFile below, survives. Falls back to the unguarded local
+  // writer so this module stays usable outside an install.
+  writeTextFile: writeGeneratedFile = writeTextFile,
 }) {
   const claudeDir = path.join(targetAbs, ".claude");
   fsSafeMkdir(claudeDir);
@@ -496,11 +507,18 @@ function install({
     removeIfExists(path.join(claudeDir, "commands", "bob", legacyCommand));
   }
   removeEmptyDirIfExists(path.join(claudeDir, "commands", "bob"));
+  // Legacy skill DIRECTORIES. This used to be a raw recursive fs.rmSync while
+  // every neighbouring delete in this function already went through the
+  // guarded removeIfExists, so an operator edit under
+  // .claude/skills/bob-evaluate/ — a directory name that was LIVE until the
+  // bob-evaluate-runner rename above, i.e. one real upgraders still have —
+  // was destroyed with no preserved copy and no summary line. The directory
+  // twin sweeps the doomed tree into the install-root quarantine first.
   for (const legacySkill of LEGACY_BOB_SKILLS) {
-    fs.rmSync(path.join(claudeDir, "skills", legacySkill), { force: true, recursive: true });
+    removeDirIfExists(path.join(claudeDir, "skills", legacySkill));
   }
   for (const commandId of commandIds()) {
-    writeTextFile(
+    writeGeneratedFile(
       path.join(claudeDir, "commands", commandSpec(commandId).file),
       renderCommand(commandId),
     );
@@ -554,7 +572,7 @@ function install({
   const {
     ensureEgressProfilesConfig,
     ensureEgressProfilesExample,
-  } = require("../../mcp/lib/egress-profiles.js");
+  } = require("../../mcp/core/egress-profiles.js");
   ensureEgressProfilesExample(targetAbs);
   ensureEgressProfilesConfig(targetAbs);
 
@@ -719,7 +737,7 @@ function doctor({
     egressProfilesPath,
     egressProfilesExamplePath,
     normalizeEgressProfilesDocument,
-  } = require("../../mcp/lib/egress-profiles.js");
+  } = require("../../mcp/core/egress-profiles.js");
   const egressExample = egressProfilesExamplePath(targetAbs);
   if (fileExists(egressExample)) {
     addCheck(checks, "ok", checkId("egress_profiles_example"), ".claude/bob/egress-profiles.example.json is installed");
@@ -950,7 +968,7 @@ function removeGeneratedEgressConfig(targetAbs, result) {
   const {
     egressProfilesPath,
     isUntouchedGeneratedEgressConfig,
-  } = require("../../mcp/lib/egress-profiles.js");
+  } = require("../../mcp/core/egress-profiles.js");
   const configPath = egressProfilesPath(targetAbs);
   const relativePath = path.join(".claude", "bob", "egress-profiles.json");
   if (!fs.existsSync(configPath)) return;

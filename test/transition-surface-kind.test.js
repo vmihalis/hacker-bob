@@ -3,7 +3,7 @@
 // Plane X Cycle X.3 — Transition surface kind + surface-index extension.
 //
 // X.3 ships:
-//   - mcp/lib/constants.js gains SURFACE_KIND_VALUES (closed enum:
+//   - mcp/core/waves/task-graph-scheduling.js defines SURFACE_KIND_VALUES (closed enum:
 //     surface, transition, hypothesis, claim) — the SoT shared by the
 //     task-graph materializer (X.2) and the surface-index materializer
 //     (X-P6 "transitions persist as kind: 'transition' in surface-index").
@@ -33,25 +33,25 @@ const path = require("path");
 
 const {
   SURFACE_KIND_VALUES,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/waves/task-graph-scheduling.js");
 const {
   TASK_GRAPH_NODE_KIND_VALUES,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendTransitionProposal,
   TRANSITION_KIND_VALUES,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   surfaceIndexPath,
-} = require("../mcp/lib/paths.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/io/paths.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

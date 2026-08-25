@@ -8,7 +8,7 @@ const {
   fitIsotonicRecalibration,
   applyRecalibration,
   recalibrationReport,
-} = require("../mcp/lib/belief/recalibration.js");
+} = require("../mcp/core/belief/recalibration.js");
 
 // A systematically OVERCONFIDENT estimator: it says ~0.9 but is right ~50% of the time.
 function overconfidentSamples(n) {

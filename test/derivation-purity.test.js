@@ -31,23 +31,23 @@ const path = require("path");
 // Loading each module runs its IIFE lint guard. If the guard had tripped,
 // the require() would throw at load time and this file wouldn't reach the
 // test runner. The require itself is the first assertion.
-require("../mcp/lib/capability-pack-derivation.js");
-require("../mcp/lib/friction-selection.js");
-require("../mcp/lib/target-class-pack-derivation.js");
+require("../mcp/core/capability/capability-pack-derivation.js");
+require("../mcp/core/friction-selection.js");
+require("../mcp/core/capability/target-class-pack-derivation.js");
 
 const MODULES_UNDER_LINT = Object.freeze([
   {
-    file: path.resolve(__dirname, "..", "mcp/lib/capability-pack-derivation.js"),
+    file: path.resolve(__dirname, "..", "mcp/core/capability/capability-pack-derivation.js"),
     divider: "─── Per-node-kind derivations ───",
     label: "capability-pack-derivation",
   },
   {
-    file: path.resolve(__dirname, "..", "mcp/lib/friction-selection.js"),
+    file: path.resolve(__dirname, "..", "mcp/core/friction-selection.js"),
     divider: "─── Pure friction selection ───",
     label: "friction-selection",
   },
   {
-    file: path.resolve(__dirname, "..", "mcp/lib/target-class-pack-derivation.js"),
+    file: path.resolve(__dirname, "..", "mcp/core/capability/target-class-pack-derivation.js"),
     divider: "─── Pure target-class derivation ───",
     label: "target-class-pack-derivation",
   },
@@ -98,9 +98,9 @@ test("load-time IIFE guard ran successfully for all three modules (re-require sa
   // public surface. If the IIFE had thrown the first require would have
   // already failed the suite, but this catches a future regression where
   // a load-time guard is silenced.
-  const m1 = require("../mcp/lib/capability-pack-derivation.js");
-  const m2 = require("../mcp/lib/friction-selection.js");
-  const m3 = require("../mcp/lib/target-class-pack-derivation.js");
+  const m1 = require("../mcp/core/capability/capability-pack-derivation.js");
+  const m2 = require("../mcp/core/friction-selection.js");
+  const m3 = require("../mcp/core/capability/target-class-pack-derivation.js");
   assert.equal(typeof m1.derivePackForNode, "function");
   assert.equal(typeof m2.selectRelevantFrictions, "function");
   assert.equal(typeof m3.deriveAuxiliaryToolsForTargetClass, "function");

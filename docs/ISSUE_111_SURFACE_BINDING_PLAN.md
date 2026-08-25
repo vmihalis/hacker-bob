@@ -13,7 +13,7 @@ I have verified every load-bearing claim against source (claims.js gate + stale 
 
 ## 0. Overview
 
-`assertExploitedClaimHasProof` (mcp/lib/claims.js:883) content-binds each cited `exploit_run` row to its ref (`offensiveRunRowSatisfiesEvidence`, 793-833), enforces `run_id` single-use (945-962), and clamps `claim.severity` to the max `demonstrated_severity` over the backed rows (976-1002) — but it **never checks that a cited row's surface matches the claim's finding/surface**. The gap is documented in-source at claims.js:964-975. Once a signed-row producer exists, a claim for surface A could cite a higher-severity row produced for surface B (same `run_id`, used once, content-bound, same domain) and the ceiling would pass: **cross-finding severity laundering**.
+`assertExploitedClaimHasProof` (mcp/core/claims/claims.js:883) content-binds each cited `exploit_run` row to its ref (`offensiveRunRowSatisfiesEvidence`, 793-833), enforces `run_id` single-use (945-962), and clamps `claim.severity` to the max `demonstrated_severity` over the backed rows (976-1002) — but it **never checks that a cited row's surface matches the claim's finding/surface**. The gap is documented in-source at claims.js:964-975. Once a signed-row producer exists, a claim for surface A could cite a higher-severity row produced for surface B (same `run_id`, used once, content-bound, same domain) and the ceiling would pass: **cross-finding severity laundering**.
 
 This PR closes that gap with an **additive, fail-closed surface-binding check** at record time, mirrored at verify time, before any signed-row producer ships. It is the gate the future "second-test-identity IDOR oracle" producer must build on.
 
@@ -67,9 +67,9 @@ The producer must set `row.surface_id` **before** calling `signOffensiveRunRow` 
 
 ---
 
-## 3. The record-time gate — `mcp/lib/claims.js`
+## 3. The record-time gate — `mcp/core/claims/claims.js`
 
-**File:** `mcp/lib/claims.js`
+**File:** `mcp/core/claims/claims.js`
 
 **Location:** inside `assertExploitedClaimHasProof(claim, { existingClaims = [] } = {})` (line 883), **after** the `run_id` single-use loop (ends 962) and **before** the `maxDemonstratedRank` reduce (976). This block **replaces the stale comment at 964-975.** `claim` and `backedRows` are in scope; `ToolError` + `ERROR_CODES` are already imported. **No signature change. No change to `offensiveRunRowSatisfiesEvidence`** (exported at claims.js, reused by verification-round-store.js:254; must keep its signature).
 
@@ -160,9 +160,9 @@ Issue requirement (1) ("wire the claim's surface through") is **structurally alr
 
 ---
 
-## 5. Verify-time mirror — `mcp/lib/verification-round-store.js`
+## 5. Verify-time mirror — `mcp/core/verification/verification-round-store.js`
 
-**File:** `mcp/lib/verification-round-store.js`
+**File:** `mcp/core/verification/verification-round-store.js`
 
 The verify-time severity-rise guard (`clampResultSeveritiesInPlace`) recomputes `maxDemonstratedRank` using the **same surface-blind** `offensiveRunRowSatisfiesEvidence` (line 254) to gate `provenRise` (275-277). Patching only record-time leaves a cross-surface rise validatable at verify against a forged/corrupt freeze. We mirror the record gate here, binding **per-ref to the owning claim's single surface**.
 
@@ -270,8 +270,8 @@ All use already-imported symbols (`withTempHome`, `initWebSession`, `exploitRef`
 Run from the repo root:
 
 ```bash
-node --check mcp/lib/claims.js
-node --check mcp/lib/verification-round-store.js
+node --check mcp/core/claims/claims.js
+node --check mcp/core/verification/verification-round-store.js
 node --check test/severity-rise-guard.test.js
 node --check test/offensive-proof-contract.test.js
 

@@ -20,18 +20,18 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { materializeFrontier } = require("../mcp/lib/frontier-materializer.js");
-const { appendTransitionProposal } = require("../mcp/lib/task-graph-events.js");
-const { logCellCoverage, buildCoverageSummaryForSurface, readCoverageRecordsFromJsonl } = require("../mcp/lib/coverage.js");
-const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
-const { selectNextExecutableNodes } = require("../mcp/lib/graph-scheduler.js");
-const { materializeTaskGraph } = require("../mcp/lib/task-graph-materializer.js");
-const { evaluateSchedulerPrecondition } = require("../mcp/lib/scheduler-preconditions.js");
-const { coverageClosureStat } = require("../mcp/lib/coverage-closure.js");
-const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { materializeFrontier } = require("../mcp/core/frontier/frontier-materializer.js");
+const { appendTransitionProposal } = require("../mcp/core/waves/task-graph-events.js");
+const { logCellCoverage, buildCoverageSummaryForSurface, readCoverageRecordsFromJsonl } = require("../mcp/core/frontier/coverage.js");
+const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/core/io/queue-policy.js");
+const { selectNextExecutableNodes } = require("../mcp/core/waves/graph-scheduler.js");
+const { materializeTaskGraph } = require("../mcp/core/waves/task-graph-materializer.js");
+const { evaluateSchedulerPrecondition } = require("../mcp/core/waves/scheduler-preconditions.js");
+const { coverageClosureStat } = require("../mcp/core/frontier/coverage-closure.js");
+const { transitionEdgeToken } = require("../mcp/core/session/assignment-brief.js");
 
-const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+const floor = require("../mcp/tools/materialize-cell-floor.js").handler;
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -53,8 +53,8 @@ function gate(domain) {
 // bob_finalize_node does on a verified cell — recovering each cell's
 // (surface_id, bug_class, auth_profile) from its proposal and writing coverage.
 function coverDispatchedCells(domain) {
-  const { readCellProposals } = require("../mcp/lib/task-graph-events.js");
-  const { cellNodeId } = require("../mcp/lib/task-graph-materializer.js");
+  const { readCellProposals } = require("../mcp/core/waves/task-graph-events.js");
+  const { cellNodeId } = require("../mcp/core/waves/task-graph-materializer.js");
   const proposalByNode = new Map();
   for (const ev of readCellProposals(domain)) {
     const p = ev && ev.payload;

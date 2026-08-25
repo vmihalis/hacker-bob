@@ -1,0 +1,38 @@
+"use strict";
+
+const { defineReadTool } = require("./_archetypes.js");
+
+const {
+  readToolTelemetry,
+} = require("../core/telemetry/tool-telemetry.js");
+
+module.exports = defineReadTool({
+  name: "bob_read_tool_telemetry",
+  description:
+    "Read diagnostic MCP tool-call telemetry summaries. Returns counts, success rates, latency percentiles, error histograms, authority decision aggregates, last calls, and recent failures without raw tool arguments or payloads.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      target_domain: { type: "string" },
+      tool: { type: "string" },
+      limit: {
+        type: "number",
+        minimum: 1,
+        maximum: 100,
+        description: "Maximum recent failures to include per summary. Defaults to 10.",
+      },
+      include_agent_runs: {
+        type: "boolean",
+        description: "When true, include evaluator SubagentStop run telemetry summaries.",
+      },
+      agent_run_type: { type: "string" },
+      wave: { type: "string" },
+      agent: { type: "string" },
+      surface_id: { type: "string" },
+    },
+  },
+  handler: readToolTelemetry,
+  role_bundles: ["orchestrator"],
+  global_preapproval: false,
+  readToolTelemetry,
+});

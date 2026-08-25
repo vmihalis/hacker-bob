@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const update = require(path.join(__dirname, '..', '..', 'mcp', 'lib', 'update-check.js'));
+const update = require(path.join(__dirname, '..', '..', 'mcp', 'core', 'update-check.js'));
 
 let input = '';
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);

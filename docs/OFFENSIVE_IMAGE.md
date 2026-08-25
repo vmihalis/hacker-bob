@@ -1,6 +1,6 @@
 # Offensive arsenal image (`bob-offense`)
 
-The wide-open offensive container runner (`mcp/lib/offensive-runner.js` + `offensive-sandbox.js`) runs
+The wide-open offensive container runner (`mcp/domains/web/offensive-runner.js` + `offensive-sandbox.js`) runs
 each arsenal tool inside a **digest-pinned** image with `--pull=never`. This doc is the one-time build +
 pin procedure and the design rationale. It is **`PR-IMAGE`**: image infrastructure only — no MCP tool is
 wired here (that is `PR5b-tool`).
@@ -26,13 +26,13 @@ HTTPX_URL=... HTTPX_SHA256=... DALFOX_URL=... DALFOX_SHA256=... ./scripts/build-
 #    (add --stage-only to fetch+verify+stage the binaries without Docker)
 
 # 4. The lockfile is operator-local (gitignored) — DON'T commit it. Refresh your runtime so it's picked up:
-./install.sh <your-runtime>          # install copies the local mcp/lib/offensive-image.json into the runtime
+./install.sh <your-runtime>          # install copies the local mcp/domains/web/offensive-image.json into the runtime
 ```
 
 The script fetches the `httpx` + `dalfox` archives **on the host** from the URLs you supply, verifies each
 against the sha256 you supply, stages them, builds a hermetic image (no in-build network), pushes to your
 `OFFENSIVE_REGISTRY` (default `ghcr.io/bobnetsec/bob-offense`), pulls the result **by digest** so the local
-store can resolve `--pull=never`, and writes the digest to `mcp/lib/offensive-image.json` (the **sole source**
+store can resolve `--pull=never`, and writes the digest to `mcp/domains/web/offensive-image.json` (the **sole source**
 of `runOffensiveTool`'s `imageDigest`). The lockfile is JSON **data** — read fresh with `fs.readFileSync` +
 `JSON.parse`, never executed — operator-local (gitignored); `install.js` copies it into the runtime if present.
 
@@ -49,7 +49,7 @@ of `runOffensiveTool`'s `imageDigest`). The lockfile is JSON **data** — read f
 
 ## Runtime behavior (fail-closed)
 
-`mcp/lib/offensive-image.js`:
+`mcp/domains/web/offensive-image.js`:
 - `resolveOffensiveImageDigest()` reads + validates the lockfile fresh each call; **throws** if absent (not
   yet minted), unparseable, or carrying a non-`name@sha256` digest.
 - `assertOffensiveImagePresent(digest, docker)` runs `docker image inspect <digest>` before a run; **throws**
@@ -73,4 +73,4 @@ Until the lockfile is minted, both fail closed — an offensive container run is
 ## Bumping the image
 
 Re-run the mint (step 3) with the new release URLs + sha256s, then re-run `./install.sh <runtime>` so your
-runtime picks up the regenerated `mcp/lib/offensive-image.json`. The lockfile stays operator-local — don't commit it.
+runtime picks up the regenerated `mcp/domains/web/offensive-image.json`. The lockfile stays operator-local — don't commit it.

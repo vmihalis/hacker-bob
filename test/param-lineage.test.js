@@ -8,7 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extractIds, bindLineage } = require("../mcp/lib/param-lineage.js");
+const { extractIds, bindLineage } = require("../mcp/core/param-lineage.js");
 
 test("extractIds harvests id key->value pairs from a nested 2xx JSON body", () => {
   const body = JSON.stringify({

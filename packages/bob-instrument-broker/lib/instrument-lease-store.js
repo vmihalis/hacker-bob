@@ -112,14 +112,14 @@ const {
   isLeaseBlocking,
   releaseInstrumentLease,
   renewInstrumentLease,
-} = require("../../../mcp/lib/instrument-lease-contract.js");
+} = require("../../../mcp/domains/physical/instrument-lease-contract.js");
 const {
   normalizeOpaqueRef,
 } = require("../../bob-instrument-contracts/lib/physical-quantities.js");
 const {
   assertCurrentPhysicalDispatchAuthority,
   assertPhysicalDispatchAuthorityPort,
-} = require("../../../mcp/lib/physical-dispatch-authority.js");
+} = require("../../../mcp/domains/physical/physical-dispatch-authority.js");
 const {
   normalizePhysicalExecutionCompositeBinding,
 } = require("./physical-execution-transaction-owner.js");

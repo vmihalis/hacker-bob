@@ -68,11 +68,11 @@ function projectRoot() {
 }
 
 function loadAgentRuns() {
-  return require(path.join(projectRoot(), "mcp", "lib", "agent-runs.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "agent-runs.js"));
 }
 
 function loadAssignments() {
-  return require(path.join(projectRoot(), "mcp", "lib", "assignments.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "assignments.js"));
 }
 
 // Look up the surface_id the orchestrator pinned to this agent at wave start.

@@ -1,337 +1,527 @@
 "use strict";
 
-// O-P6 MIXED program (a url PRIMARY axis + an OPTIONAL contracts companion),
-// driven end-to-end through the REAL runtime dispatch path (executeTool ->
-// enforceToolPolicy -> authorizeToolCall). A mixed bob_init_session binds the
-// web target AND seeds one smart_contract surface per companion contract into
-// the same frontier; the two axis scope gates stay INDEPENDENT — an
-// out-of-authority chain tuple is SCOPE_BLOCKED while the web axis is untouched,
-// and a control web-only init is byte-unchanged.
-
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { statePath } = require("../mcp/lib/paths.js");
-const { readJsonFile } = require("../mcp/lib/storage.js");
-const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const {
+  frontierEventsJsonlPath,
+  sessionDir,
+  sessionEventsJsonlPath,
+  sessionNucleusPath,
+  statePath,
+} = require("../mcp/core/io/paths.js");
+const { readSessionStateStrict } = require("../mcp/core/session/session-state-store.js");
+const { readSessionEvents } = require("../mcp/core/session/session-events.js");
+const {
+  readVerifiedSessionNucleus,
+  sessionNucleusFromState,
+} = require("../mcp/core/governance/index.js");
+const { readFrontierEvents } = require("../mcp/core/frontier/frontier-events.js");
+const { deriveRepoTargetDomain } = require("../mcp/core/repo-identity-contracts.js");
+const {
+  chainAuthorityHash,
+  deriveContractSession,
+} = require("../mcp/core/chain-authority-contracts.js");
+const {
+  caip10Endpoint,
+  contractSurfaceId,
+  prepareContractCompanion,
+} = require("../mcp/domains/blockchain/contract-target.js");
 
-const ADDR_IN = "0x0000000000000000000000000000000000000001";
-const ADDR_OUT = "0x0000000000000000000000000000000000000002";
-const CAIP_IN = `evm:1:${ADDR_IN}`;
+const ADDR_A = "0x0000000000000000000000000000000000000001";
+const ADDR_B = "0x0000000000000000000000000000000000000002";
+const CONTRACT_A = Object.freeze({ chain_family: "evm", chain_id: "1", address: ADDR_A });
+const CONTRACT_B = Object.freeze({ chain_family: "evm", chain_id: "1", address: ADDR_B });
+const CONTRACTS = Object.freeze([CONTRACT_A, CONTRACT_B]);
+const DUPLICATE_ADDR_MIXED = `0x${"aBcD".repeat(10)}`;
+const DUPLICATE_ADDR_CANONICAL = DUPLICATE_ADDR_MIXED.toLowerCase();
+const DUPLICATE_CONTRACTS = Object.freeze([
+  Object.freeze({ chain_family: "evm", chain_id: 1, address: DUPLICATE_ADDR_MIXED }),
+  Object.freeze({ chain_family: "evm", chain_id: "1", address: DUPLICATE_ADDR_CANONICAL }),
+  Object.freeze({ chain_family: "evm", chain_id: "1", address: DUPLICATE_ADDR_MIXED }),
+]);
+const DEDUPED_CONTRACT = Object.freeze({
+  chain_family: "evm",
+  chain_id: "1",
+  address: DUPLICATE_ADDR_CANONICAL,
+});
 
 async function withTempHome(fn) {
-  const previousHome = process.env.HOME;
+  const prior = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-mixed-companion-"));
   process.env.HOME = home;
   try {
     return await fn(home);
   } finally {
-    process.env.HOME = previousHome;
-    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    if (prior === undefined) delete process.env.HOME;
+    else process.env.HOME = prior;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 }
 
-test("mixed init binds the web target AND seeds a smart_contract surface", async () => {
-  await withTempHome(async () => {
-    const env = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
-    });
+function primaryFixture(mode, home, label) {
+  if (mode === "web") {
+    const domain = `${label}.example.com`;
+    return {
+      mode,
+      domain,
+      tool: "bob_init_session",
+      args: { target_domain: domain, target_url: `https://${domain}/program` },
+    };
+  }
+  const repoPath = fs.realpathSync(fs.mkdtempSync(path.join(home, `${label}-repo-`)));
+  const sentinelPath = path.join(repoPath, "OUTSIDER.txt");
+  fs.writeFileSync(sentinelPath, `outside-${label}\n`, "utf8");
+  const sentinel = fs.lstatSync(sentinelPath);
+  return {
+    mode,
+    domain: deriveRepoTargetDomain(repoPath),
+    tool: "bob_init_repo_session",
+    args: { repo_path: repoPath },
+    repoPath,
+    sentinelPath,
+    sentinel,
+  };
+}
 
-    assert.equal(env.ok, true, `expected ok:true, got ${JSON.stringify(env)}`);
+function companionArgs(primary, contracts = CONTRACTS) {
+  return { ...primary.args, contracts: contracts.map((entry) => ({ ...entry })) };
+}
 
-    // Web axis bound.
-    assert.equal(env.data.state.target, "example.com");
-    assert.equal(env.data.state.target_url, "https://example.com");
+function rawAuthority(domain) {
+  return {
+    state: fs.readFileSync(statePath(domain), "utf8"),
+    nucleus: fs.readFileSync(sessionNucleusPath(domain), "utf8"),
+    events: fs.readFileSync(sessionEventsJsonlPath(domain), "utf8"),
+  };
+}
 
-    // Contracts companion bound + seeded, unioned into the same session.
-    assert.deepEqual(env.data.target_contracts, [CAIP_IN]);
-    assert.equal(typeof env.data.chain_authority_hash, "string");
-    assert.ok(Array.isArray(env.data.seeded_surfaces) && env.data.seeded_surfaces.length >= 1,
-      `expected >=1 seeded surface, got ${JSON.stringify(env.data.seeded_surfaces)}`);
-    assert.ok(env.data.seeded_surfaces.includes(`sc-evm-1-${ADDR_IN}`));
+function assertRepoUnchanged(primary, expectedBytes) {
+  if (primary.mode !== "repo") return;
+  assert.deepEqual(fs.readdirSync(primary.repoPath), ["OUTSIDER.txt"]);
+  const current = fs.lstatSync(primary.sentinelPath);
+  assert.equal(current.dev, primary.sentinel.dev);
+  assert.equal(current.ino, primary.sentinel.ino);
+  assert.equal(fs.readFileSync(primary.sentinelPath, "utf8"), expectedBytes);
+}
 
-    // state.json projects BOTH the web axis and the contracts companion.
-    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
-    assert.equal(persisted.target_url, "https://example.com");
-    assert.deepEqual(persisted.target_contracts, [CAIP_IN]);
-    assert.equal(typeof persisted.chain_authority_hash, "string");
-  });
+function assertNoSessionCreated(primary) {
+  assert.equal(fs.existsSync(sessionDir(primary.domain)), false);
+  for (const authorityPath of [
+    statePath(primary.domain),
+    sessionNucleusPath(primary.domain),
+    sessionEventsJsonlPath(primary.domain),
+    frontierEventsJsonlPath(primary.domain),
+  ]) {
+    assert.equal(fs.existsSync(authorityPath), false, authorityPath);
+  }
+}
+
+function primeCachedEvmSource(domain, address) {
+  const normalizedAddress = address.toLowerCase();
+  const cacheDir = path.join(sessionDir(domain), "contracts", "1", normalizedAddress);
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, "source-manifest.json"), `${JSON.stringify({
+    chain_id: 1,
+    address: normalizedAddress,
+    source: "mixed-companion-test-cache",
+    files: [],
+    total_bytes: 0,
+  })}\n`, "utf8");
+}
+
+function companionSeedEvents(domain) {
+  return readFrontierEvents(domain).filter((event) => (
+    event.kind === "surface.observed"
+      && event.source
+      && event.source.tool === "bob_init_contract_companion"
+  ));
+}
+
+function expectedSurfaceIds(contracts) {
+  return contracts.map((contract) => contractSurfaceId({
+    chainFamily: contract.chain_family,
+    chainId: contract.chain_id,
+    address: contract.address,
+  })).sort();
+}
+
+function assertExactSeeds(domain, contracts) {
+  const events = companionSeedEvents(domain);
+  assert.deepEqual(events.map((event) => event.surface_id).sort(), expectedSurfaceIds(contracts));
+  assert.equal(new Set(events.map((event) => event.surface_id)).size, contracts.length);
+  for (const event of events) {
+    assert.equal(event.source.artifact, "session-nucleus.json");
+    assert.equal(event.payload.surface_type, "smart_contract");
+  }
+}
+
+function assertCanonicalAuthority(primary, contracts) {
+  const { state } = readSessionStateStrict(primary.domain);
+  const verified = readVerifiedSessionNucleus(primary.domain);
+  const projected = sessionNucleusFromState(state);
+  const prepared = prepareContractCompanion(contracts);
+  assert.equal(projected.nucleus_hash, verified.nucleus_hash);
+  assert.deepEqual(state.target_contracts, prepared.target_contracts);
+  assert.equal(state.chain_authority_hash, prepared.chain_authority_hash);
+  assert.equal(verified.scope_policy.chain_authority_hash, prepared.chain_authority_hash);
+  assert.equal(chainAuthorityHash(verified.scope_policy.target_contracts), prepared.chain_authority_hash);
+  if (primary.mode === "web") {
+    assert.equal(state.target_url, primary.args.target_url);
+    assert.equal(verified.scope_policy.target_url, primary.args.target_url);
+  } else {
+    assert.equal(state.target_repo.root_path, primary.repoPath);
+    assert.equal(verified.scope_policy.target_repo.root_path, primary.repoPath);
+  }
+  const initialized = readSessionEvents(primary.domain)
+    .filter((event) => event.kind === "governance.session.initialized");
+  assert.equal(initialized.length, 1);
+  assert.equal(initialized[0].nucleus_hash, verified.nucleus_hash);
+  assert.equal(initialized[0].payload.chain_authority_hash, prepared.chain_authority_hash);
+  return { state, verified };
+}
+
+test("mixed web and repo primaries commit one canonical authority before idempotent companion seeds", async (t) => {
+  for (const mode of ["web", "repo"]) {
+    await t.test(mode, async () => withTempHome(async (home) => {
+      const primary = primaryFixture(mode, home, `fresh-${mode}`);
+      const response = await executeTool(primary.tool, companionArgs(primary));
+      assert.equal(response.ok, true, JSON.stringify(response));
+      assert.equal(response.data.created, true);
+      assert.deepEqual(response.data.target_contracts, CONTRACTS.map((contract) => (
+        caip10Endpoint({
+          chainFamily: contract.chain_family,
+          chainId: contract.chain_id,
+          address: contract.address,
+        })
+      )));
+      assertCanonicalAuthority(primary, CONTRACTS);
+      assertExactSeeds(primary.domain, CONTRACTS);
+      const before = rawAuthority(primary.domain);
+
+      const resumed = await executeTool(primary.tool, companionArgs(primary));
+      assert.equal(resumed.ok, true, JSON.stringify(resumed));
+      assert.equal(resumed.data.created, false);
+      assert.deepEqual(rawAuthority(primary.domain), before);
+      assertExactSeeds(primary.domain, CONTRACTS);
+      assertRepoUnchanged(primary, `outside-fresh-${mode}\n`);
+    }));
+  }
 });
 
-test("an out-of-authority chain tuple on the mixed session is SCOPE_BLOCKED (independent axis gate)", async () => {
-  await withTempHome(async () => {
-    const boot = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
-    });
-    assert.equal(boot.ok, true, `expected ok:true, got ${JSON.stringify(boot)}`);
+test("mixed web and repo dispatch admit the exact tuple and block an outsider tuple", async (t) => {
+  for (const mode of ["web", "repo"]) {
+    await t.test(mode, async () => withTempHome(async (home) => {
+      const primary = primaryFixture(mode, home, `scope-${mode}`);
+      const boot = await executeTool(primary.tool, companionArgs(primary, [CONTRACT_A]));
+      assert.equal(boot.ok, true, JSON.stringify(boot));
 
-    // Wrong chain_id + address: outside the bound chain authority. The chain
-    // scope gate is the only producer of SCOPE_BLOCKED on this path.
-    const env = await executeTool("bob_evm_fetch_source", {
-      target_domain: "example.com",
-      chain_id: 8453,
-      address: ADDR_OUT,
-    });
-    assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
-    assert.equal(env.error.code, "SCOPE_BLOCKED", `expected SCOPE_BLOCKED, got ${JSON.stringify(env.error)}`);
-    assert.equal(
-      env.error.details.authority.authority_block_reason,
-      "chain_scope_blocked",
-      `expected chain_scope_blocked, got ${JSON.stringify(env.error.details)}`,
-    );
-  });
-});
-
-test("an in-authority chain tuple on the mixed session is admitted past the gate", async () => {
-  await withTempHome(async () => {
-    const boot = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
-    });
-    assert.equal(boot.ok, true, `expected ok:true, got ${JSON.stringify(boot)}`);
-
-    // The bound (evm, 1, 0x..01) tuple is exactly in authority. The downstream
-    // verified-source fetch is network-dependent and may fail in the sandbox,
-    // but the chain scope gate is the ONLY producer of SCOPE_BLOCKED here, so
-    // "admitted past the gate" == the outcome is not SCOPE_BLOCKED.
-    const env = await executeTool("bob_evm_fetch_source", {
-      target_domain: "example.com",
-      chain_id: 1,
-      address: ADDR_IN,
-    });
-    assert.ok(
-      env.ok === true || (env.error && env.error.code !== "SCOPE_BLOCKED"),
-      `expected admit past the gate, got ${JSON.stringify(env)}`,
-    );
-  });
-});
-
-test("an UPPERCASE-family companion binding folds to the SAME chain_authority_hash as the lowercased init tuple (not the empty-set hash)", () => {
-  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
-  // The contracts-axis normal form (tuple objects, family lowercased) is the
-  // authoritative target hash for this single contract.
-  const initHash = chainAuthorityHash([{ chain_family: "evm", chain_id: "1", address: ADDR_IN }]);
-  const emptyHash = chainAuthorityHash([]);
-  assert.notEqual(initHash, emptyHash, "sanity: a non-empty set must not hash to the empty-set hash");
-
-  // Same contract on the COMPANION path but with an uppercase chain_family
-  // (the schema enum guards the dispatch surface, so this exercises the shared
-  // normalizer at its module boundary). Before the shared normalizer, the
-  // companion hashed CAIP-10 strings through the case-sensitive
-  // classifyTargetToken, so 'EVM:1:0x..' dropped and the hash collapsed to the
-  // empty-set hash -> every in-scope contract was chain_scope_blocked. It must
-  // now fold to the identical init-path hash and lowercase the CAIP projection.
-  const companion = prepareContractCompanion([{ chain_family: "EVM", chain_id: "1", address: ADDR_IN }]);
-  assert.equal(companion.chain_authority_hash, initHash,
-    `companion hash must equal the init-path hash, got ${companion.chain_authority_hash}`);
-  assert.notEqual(companion.chain_authority_hash, emptyHash,
-    "companion hash must not be the empty-set hash");
-  assert.deepEqual(companion.target_contracts, [CAIP_IN]);
-});
-
-test("the companion chain_authority_hash matches the contracts-axis init hash and binds a usable in-scope tuple", async () => {
-  await withTempHome(async () => {
-    // The dispatch-reachable proof: a companion contract must derive the SAME
-    // chain_authority_hash the contracts-axis init path derives for that set...
-    const initHash = chainAuthorityHash([{ chain_family: "evm", chain_id: "1", address: ADDR_IN }]);
-    const env = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
-    });
-    assert.equal(env.ok, true, `expected ok:true, got ${JSON.stringify(env)}`);
-    assert.equal(env.data.chain_authority_hash, initHash,
-      `companion hash must equal the init-path hash, got ${env.data.chain_authority_hash}`);
-    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
-    assert.equal(persisted.chain_authority_hash, initHash);
-
-    // ...so the in-scope bound tuple is ADMITTED past the chain-scope gate while
-    // an out-of-set tuple is still SCOPE_BLOCKED.
-    const bound = await executeTool("bob_evm_fetch_source", {
-      target_domain: "example.com",
-      chain_id: 1,
-      address: ADDR_IN,
-    });
-    assert.ok(
-      bound.ok === true || (bound.error && bound.error.code !== "SCOPE_BLOCKED"),
-      `bound in-scope contract must be admitted past the gate, got ${JSON.stringify(bound)}`,
-    );
-    const outOfSet = await executeTool("bob_evm_fetch_source", {
-      target_domain: "example.com",
-      chain_id: 1,
-      address: ADDR_OUT,
-    });
-    assert.equal(outOfSet.ok, false, `expected ok:false, got ${JSON.stringify(outOfSet)}`);
-    assert.equal(outOfSet.error.details.authority.authority_block_reason, "chain_scope_blocked");
-  });
-});
-
-test("a companion contract whose chain_id contains a colon is rejected fail-closed (no session)", async () => {
-  await withTempHome(async (home) => {
-    // The companion is validated BEFORE the primary web session is created, so a
-    // colon chain_id (which would desync the CAIP-10 re-parse) fails closed with
-    // NO session at all — same guard the contracts-axis init path enforces.
-    const env = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1:2", address: ADDR_IN }],
-    });
-    assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
-
-    const sessionsRoot = path.join(home, "hacker-bob-sessions");
-    let entries = [];
-    try {
-      entries = fs.readdirSync(sessionsRoot);
-    } catch {
-      entries = [];
-    }
-    assert.equal(entries.length, 0, `expected no session created, found ${JSON.stringify(entries)}`);
-  });
-});
-
-test("a control web-only init (no contracts) is unchanged", async () => {
-  await withTempHome(async () => {
-    const env = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-    });
-    assert.equal(env.ok, true, `expected ok:true, got ${JSON.stringify(env)}`);
-    // No contracts companion: the historical web-session shape is preserved.
-    assert.equal(env.data.target_contracts, undefined);
-    assert.equal(env.data.seeded_surfaces, undefined);
-
-    // The public projection OMITS an empty target_contracts / null
-    // chain_authority_hash, keeping the historical web-session shape byte-stable
-    // (the normalizer still defaults them to [] / null on read).
-    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
-    assert.equal(persisted.target_contracts, undefined);
-    assert.equal(persisted.chain_authority_hash, undefined);
-
-    // A chain tool on a web-only session resolves an empty target_contracts[],
-    // so the tuple gate is a no-op and the contracts-axis gate rejects it.
-    const chain = await executeTool("bob_evm_fetch_source", {
-      target_domain: "example.com",
-      chain_id: 1,
-      address: ADDR_IN,
-    });
-    assert.equal(chain.ok, false, JSON.stringify(chain));
-    assert.equal(chain.error.code, "SCOPE_BLOCKED");
-    assert.equal(chain.error.details.authority.authority_error_code, "session_axis_mismatch");
-  });
-});
-
-test("a resume (re-init of the same domain with a DIFFERENT companion) does NOT overwrite the bound target_contracts", async () => {
-  await withTempHome(async () => {
-    // First init binds contract ADDR_IN.
-    const first = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
-    });
-    assert.equal(first.ok, true, `expected ok:true, got ${JSON.stringify(first)}`);
-    assert.deepEqual(first.data.target_contracts, [CAIP_IN]);
-
-    // Re-init the SAME domain with a DIFFERENT companion contract. The resume
-    // must not overwrite the already-bound chain authority. (The web-axis init
-    // refuses to re-create an existing session, so this returns an error rather
-    // than silently re-binding.)
-    const resume = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_OUT }],
-    });
-    assert.equal(resume.ok, false, `expected the resume to be refused, got ${JSON.stringify(resume)}`);
-
-    // The originally-bound scope survives untouched: ADDR_IN, never ADDR_OUT.
-    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
-    assert.deepEqual(persisted.target_contracts, [CAIP_IN],
-      `resume must not clobber target_contracts, got ${JSON.stringify(persisted.target_contracts)}`);
-  });
-});
-
-test("the handler guard skips the companion re-bind when initSession reports created !== true (fail-closed resume)", async () => {
-  await withTempHome(async () => {
-    // Establish a real session bound to ADDR_IN so a clobber would be observable
-    // on disk as target_contracts flipping to ADDR_OUT.
-    const first = await executeTool("bob_init_session", {
-      target_domain: "example.com",
-      target_url: "https://example.com",
-      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
-    });
-    assert.equal(first.ok, true, `expected ok:true, got ${JSON.stringify(first)}`);
-    assert.deepEqual(first.data.target_contracts, [CAIP_IN]);
-
-    // Directly exercise the guard: patch initSession to RETURN created:false
-    // (a resume that yields the existing binding instead of throwing), then load
-    // a fresh copy of the tool that destructures the patched function. Without
-    // the guard this would drive bindContractCompanion (a read-modify-write) and
-    // overwrite target_contracts with the ADDR_OUT companion.
-    const sessionStateModule = require("../mcp/lib/session-state.js");
-    const original = sessionStateModule.initSession;
-    const toolPath = require.resolve("../mcp/lib/tools/init-session.js");
-    sessionStateModule.initSession = () => JSON.stringify({
-      version: 1,
-      created: false,
-      session_dir: "example.com",
-      state: { target: "example.com" },
-    });
-    delete require.cache[toolPath];
-    try {
-      const tool = require("../mcp/lib/tools/init-session.js");
-      const out = tool.handler({
-        target_domain: "example.com",
-        target_url: "https://example.com",
-        contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_OUT }],
+      // Keep the admitted-handler half of this dispatch proof offline. The
+      // authority gate still runs, then the real handler resolves this local
+      // verified-source cache instead of contacting Sourcify/Etherscan.
+      primeCachedEvmSource(primary.domain, ADDR_A);
+      const admitted = await executeTool("bob_evm_fetch_source", {
+        target_domain: primary.domain,
+        chain_id: 1,
+        address: ADDR_A,
       });
-      const parsed = JSON.parse(out);
-      // The init result is returned UNTOUCHED: no companion projection is added.
-      assert.equal(parsed.created, false);
-      assert.equal(parsed.target_contracts, undefined,
-        `resume must not project a companion binding, got ${JSON.stringify(parsed.target_contracts)}`);
-      assert.equal(parsed.seeded_surfaces, undefined);
-    } finally {
-      sessionStateModule.initSession = original;
-      delete require.cache[toolPath];
-    }
+      assert.equal(admitted.ok, true, `exact bound tuple must pass the chain gate: ${JSON.stringify(admitted)}`);
 
-    // The read-modify-write never ran: the bound scope is still ADDR_IN.
-    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
-    assert.deepEqual(persisted.target_contracts, [CAIP_IN],
-      `guard must leave target_contracts bound to ADDR_IN, got ${JSON.stringify(persisted.target_contracts)}`);
+      const blocked = await executeTool("bob_evm_fetch_source", {
+        target_domain: primary.domain,
+        chain_id: 1,
+        address: ADDR_B,
+      });
+      assert.equal(blocked.ok, false, JSON.stringify(blocked));
+      assert.equal(blocked.error.code, "SCOPE_BLOCKED");
+      assert.equal(blocked.error.details.authority.authority_block_reason, "chain_scope_blocked");
+      assertCanonicalAuthority(primary, [CONTRACT_A]);
+      assertRepoUnchanged(primary, `outside-scope-${mode}\n`);
+    }));
+  }
+});
+
+test("mixed web and repo reject colon chain ids and malformed addresses before creating a session", async (t) => {
+  const invalidCases = [
+    {
+      name: "colon-chain-id",
+      contract: { chain_family: "evm", chain_id: "1:2", address: ADDR_A },
+    },
+    {
+      name: "malformed-address",
+      contract: { chain_family: "evm", chain_id: "1", address: "0x1234" },
+    },
+  ];
+  for (const mode of ["web", "repo"]) {
+    for (const invalid of invalidCases) {
+      await t.test(`${mode}-${invalid.name}`, async () => withTempHome(async (home) => {
+        const label = `invalid-${invalid.name}-${mode}`;
+        const primary = primaryFixture(mode, home, label);
+        const response = await executeTool(primary.tool, companionArgs(primary, [invalid.contract]));
+        assert.equal(response.ok, false, JSON.stringify(response));
+        assert.equal(response.error.code, "INVALID_ARGUMENTS");
+        assertNoSessionCreated(primary);
+        assertRepoUnchanged(primary, `outside-${label}\n`);
+      }));
+    }
+  }
+});
+
+test("mixed web and repo canonicalize duplicate inputs with retry parity and one seed", async (t) => {
+  const pureAuthority = deriveContractSession(DUPLICATE_CONTRACTS);
+  const prepared = prepareContractCompanion(DUPLICATE_CONTRACTS);
+  assert.equal(prepared.chain_authority_hash, pureAuthority.authorityHash);
+  assert.equal(prepared.contracts.length, 1);
+  assert.deepEqual(prepared.target_contracts, [`evm:1:${DUPLICATE_ADDR_CANONICAL}`]);
+
+  for (const mode of ["web", "repo"]) {
+    await t.test(mode, async () => withTempHome(async (home) => {
+      const primary = primaryFixture(mode, home, `dedupe-${mode}`);
+      const created = await executeTool(primary.tool, companionArgs(primary, DUPLICATE_CONTRACTS));
+      assert.equal(created.ok, true, JSON.stringify(created));
+      assert.equal(created.data.created, true);
+      assert.deepEqual(created.data.target_contracts, prepared.target_contracts);
+      assert.equal(created.data.chain_authority_hash, pureAuthority.authorityHash);
+      assert.equal(created.data.seeded_surfaces.length, 1);
+      assertCanonicalAuthority(primary, [DEDUPED_CONTRACT]);
+      assertExactSeeds(primary.domain, [DEDUPED_CONTRACT]);
+      const authorityBefore = rawAuthority(primary.domain);
+
+      const reversed = [...DUPLICATE_CONTRACTS].reverse();
+      const resumed = await executeTool(primary.tool, companionArgs(primary, reversed));
+      assert.equal(resumed.ok, true, JSON.stringify(resumed));
+      assert.equal(resumed.data.created, false);
+      assert.deepEqual(resumed.data.target_contracts, prepared.target_contracts);
+      assert.deepEqual(rawAuthority(primary.domain), authorityBefore);
+      assertExactSeeds(primary.domain, [DEDUPED_CONTRACT]);
+      assertRepoUnchanged(primary, `outside-dedupe-${mode}\n`);
+    }));
+  }
+});
+
+test("pure web conflict and pure repo resume remain companion-free", async () => {
+  await withTempHome(async (home) => {
+    const web = primaryFixture("web", home, "pure-web");
+    const webCreated = await executeTool(web.tool, web.args);
+    assert.equal(webCreated.ok, true, JSON.stringify(webCreated));
+    assert.equal(webCreated.data.target_contracts, undefined);
+    const webAgain = await executeTool(web.tool, web.args);
+    assert.equal(webAgain.ok, false);
+    assert.equal(webAgain.error.code, "STATE_CONFLICT");
+    assert.equal(JSON.parse(fs.readFileSync(statePath(web.domain), "utf8")).target_contracts, undefined);
+
+    const repo = primaryFixture("repo", home, "pure-repo");
+    const repoCreated = await executeTool(repo.tool, repo.args);
+    const repoResumed = await executeTool(repo.tool, repo.args);
+    assert.equal(repoCreated.ok, true, JSON.stringify(repoCreated));
+    assert.equal(repoCreated.data.created, true);
+    assert.equal(repoResumed.ok, true, JSON.stringify(repoResumed));
+    assert.equal(repoResumed.data.created, false);
+    assert.equal(JSON.parse(fs.readFileSync(statePath(repo.domain), "utf8")).target_contracts, undefined);
+    assert.equal(companionSeedEvents(repo.domain).length, 0);
+
+    for (const primary of [web, repo]) {
+      const before = rawAuthority(primary.domain);
+      const rejectedUpgrade = await executeTool(primary.tool, companionArgs(primary, [CONTRACT_A]));
+      assert.equal(rejectedUpgrade.ok, false, JSON.stringify(rejectedUpgrade));
+      assert.equal(rejectedUpgrade.error.code, "STATE_CONFLICT");
+      assert.deepEqual(rawAuthority(primary.domain), before);
+      assert.equal(companionSeedEvents(primary.domain).length, 0);
+    }
+    assertRepoUnchanged(repo, "outside-pure-repo\n");
   });
 });
 
-test("contract identity keys preserve base58/SS58 case and stay consistent across mint + membership", () => {
-  const { caip10Endpoint, contractSurfaceId } = require("../mcp/lib/contract-target.js");
-  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");
-  // svm (base58, case-SENSITIVE): the minted CAIP-10 endpoint + surface id must
-  // PRESERVE case (the pre-fix unconditional lowercase corrupted Solana identity
-  // and desynced the persisted target_contracts[] from the membership tuple).
+test("state-only legacy repo resume stays read-only while mixed resume requires verified authority", async () => {
+  await withTempHome(async (home) => {
+    const primary = primaryFixture("repo", home, "legacy-repo");
+    const created = await executeTool(primary.tool, primary.args);
+    assert.equal(created.ok, true, JSON.stringify(created));
+    const dir = sessionDir(primary.domain);
+    const stateFile = statePath(primary.domain);
+    for (const name of fs.readdirSync(dir)) {
+      if (path.join(dir, name) === stateFile) continue;
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    }
+    const stateBytes = fs.readFileSync(stateFile);
+    const stateIdentity = fs.lstatSync(stateFile);
+    assert.deepEqual(fs.readdirSync(dir), [path.basename(stateFile)]);
+
+    const resumed = await executeTool(primary.tool, primary.args);
+    assert.equal(resumed.ok, true, JSON.stringify(resumed));
+    assert.equal(resumed.data.created, false);
+    assert.equal(resumed.data.nucleus_hash, null);
+    assert.deepEqual(fs.readdirSync(dir), [path.basename(stateFile)]);
+    assert.deepEqual(fs.readFileSync(stateFile), stateBytes);
+    const afterResume = fs.lstatSync(stateFile);
+    assert.equal(afterResume.dev, stateIdentity.dev);
+    assert.equal(afterResume.ino, stateIdentity.ino);
+
+    const rejectedMixed = await executeTool(primary.tool, companionArgs(primary, [CONTRACT_A]));
+    assert.equal(rejectedMixed.ok, false, JSON.stringify(rejectedMixed));
+    assert.equal(rejectedMixed.error.code, "STATE_CONFLICT");
+    assert.match(rejectedMixed.error.message, /verified session nucleus/i);
+    assert.deepEqual(fs.readdirSync(dir), [path.basename(stateFile)]);
+    assert.deepEqual(fs.readFileSync(stateFile), stateBytes);
+    assert.equal(companionSeedEvents(primary.domain).length, 0);
+    assertRepoUnchanged(primary, "outside-legacy-repo\n");
+  });
+});
+
+test("alternate companions conflict without rebinding authority or seeding a new surface", async (t) => {
+  for (const mode of ["web", "repo"]) {
+    await t.test(mode, async () => withTempHome(async (home) => {
+      const primary = primaryFixture(mode, home, `conflict-${mode}`);
+      const created = await executeTool(primary.tool, companionArgs(primary, [CONTRACT_A]));
+      assert.equal(created.ok, true, JSON.stringify(created));
+      const authorityBefore = rawAuthority(primary.domain);
+      const frontierBefore = fs.readFileSync(frontierEventsJsonlPath(primary.domain), "utf8");
+
+      const conflict = await executeTool(primary.tool, companionArgs(primary, [CONTRACT_B]));
+      assert.equal(conflict.ok, false, JSON.stringify(conflict));
+      assert.equal(conflict.error.code, "STATE_CONFLICT");
+      assert.deepEqual(rawAuthority(primary.domain), authorityBefore);
+      assert.equal(fs.readFileSync(frontierEventsJsonlPath(primary.domain), "utf8"), frontierBefore);
+      assertCanonicalAuthority(primary, [CONTRACT_A]);
+      assertExactSeeds(primary.domain, [CONTRACT_A]);
+      assertRepoUnchanged(primary, `outside-conflict-${mode}\n`);
+    }));
+  }
+});
+
+async function authorityCollision(mode) {
+  return withTempHome(async (home) => {
+    const primary = primaryFixture(mode, home, `authority-${mode}`);
+    const collisionPath = mode === "web"
+      ? sessionEventsJsonlPath(primary.domain)
+      : sessionNucleusPath(primary.domain);
+    const winnerBytes = Buffer.from(`outsider-${mode}\n`);
+    const originalLink = fs.linkSync;
+    let fired = 0;
+    let winner = null;
+    fs.linkSync = (source, destination) => {
+      if (destination === collisionPath && fired === 0) {
+        fired += 1;
+        const descriptor = fs.openSync(
+          destination,
+          fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0),
+          0o600,
+        );
+        try {
+          fs.writeSync(descriptor, winnerBytes, 0, winnerBytes.length, 0);
+        } finally {
+          fs.closeSync(descriptor);
+        }
+        winner = fs.lstatSync(destination);
+        const error = new Error(`outsider collision ${mode}`);
+        error.code = "EEXIST";
+        throw Object.freeze(error);
+      }
+      return originalLink(source, destination);
+    };
+    let response;
+    try {
+      response = await executeTool(primary.tool, companionArgs(primary));
+    } finally {
+      fs.linkSync = originalLink;
+    }
+    assert.equal(response.ok, false, JSON.stringify(response));
+    assert.equal(fired, 1);
+    const live = fs.lstatSync(collisionPath);
+    assert.equal(live.dev, winner.dev);
+    assert.equal(live.ino, winner.ino);
+    assert.deepEqual(fs.readFileSync(collisionPath), winnerBytes);
+    for (const authorityPath of [
+      statePath(primary.domain),
+      sessionNucleusPath(primary.domain),
+      sessionEventsJsonlPath(primary.domain),
+    ]) {
+      assert.equal(fs.existsSync(authorityPath), authorityPath === collisionPath);
+    }
+    assert.equal(fs.existsSync(frontierEventsJsonlPath(primary.domain)), false);
+    const temps = fs.readdirSync(sessionDir(primary.domain)).filter((name) => name.endsWith(".tmp"));
+    assert.deepEqual(temps, []);
+    assertRepoUnchanged(primary, `outside-authority-${mode}\n`);
+  });
+}
+
+test("authority create collisions seed nothing and preserve outsider winners", async (t) => {
+  for (const mode of ["web", "repo"]) {
+    await t.test(mode, () => authorityCollision(mode));
+  }
+});
+
+function frozenSeedError(mode, failAt) {
+  const error = new Error(`companion seed fault ${mode}/${failAt}`);
+  error.code = "EIO";
+  return Object.freeze(error);
+}
+
+async function seedFailureRetry(mode, failAt) {
+  return withTempHome(async (home) => {
+    const primary = primaryFixture(mode, home, `seed-${mode}-${failAt}`);
+    const frontierPath = frontierEventsJsonlPath(primary.domain);
+    const fault = frozenSeedError(mode, failAt);
+    const originalAppend = fs.appendFileSync;
+    let seedAttempts = 0;
+    fs.appendFileSync = (filePath, data, ...rest) => {
+      if (filePath === frontierPath && String(data).includes('"tool":"bob_init_contract_companion"')) {
+        const attempt = seedAttempts;
+        seedAttempts += 1;
+        if (attempt === failAt) throw fault;
+      }
+      return originalAppend(filePath, data, ...rest);
+    };
+    let failed;
+    try {
+      failed = await executeTool(primary.tool, companionArgs(primary));
+    } finally {
+      fs.appendFileSync = originalAppend;
+    }
+    assert.equal(failed.ok, false, JSON.stringify(failed));
+    assert.equal(failed.error.code, "INTERNAL_ERROR");
+    assert.equal(failed.error.message, fault.message);
+    assert.equal(seedAttempts, failAt + 1);
+    assertCanonicalAuthority(primary, CONTRACTS);
+    assert.equal(companionSeedEvents(primary.domain).length, failAt);
+    const authorityBeforeRetry = rawAuthority(primary.domain);
+
+    const resumed = await executeTool(primary.tool, companionArgs(primary));
+    assert.equal(resumed.ok, true, JSON.stringify(resumed));
+    assert.equal(resumed.data.created, false);
+    assert.deepEqual(rawAuthority(primary.domain), authorityBeforeRetry);
+    assertExactSeeds(primary.domain, CONTRACTS);
+
+    const replay = await executeTool(primary.tool, companionArgs(primary));
+    assert.equal(replay.ok, true, JSON.stringify(replay));
+    assert.equal(replay.data.created, false);
+    assert.deepEqual(rawAuthority(primary.domain), authorityBeforeRetry);
+    assertExactSeeds(primary.domain, CONTRACTS);
+    assertRepoUnchanged(primary, `outside-seed-${mode}-${failAt}\n`);
+  });
+}
+
+test("each failed companion seed append is completed exactly once by same-binding resume", async (t) => {
+  for (const mode of ["web", "repo"]) {
+    for (const failAt of [0, 1]) {
+      await t.test(`${mode}-seed-${failAt}`, () => seedFailureRetry(mode, failAt));
+    }
+  }
+});
+
+test("companion normalization shares contract-axis authority and preserves case-sensitive identities", () => {
+  const lowerHash = chainAuthorityHash([CONTRACT_A]);
+  const upper = prepareContractCompanion([
+    { chain_family: "EVM", chain_id: "1", address: ADDR_A.toUpperCase().replace("0X", "0x") },
+  ]);
+  assert.equal(upper.chain_authority_hash, lowerHash);
+  assert.deepEqual(upper.target_contracts, [`evm:1:${ADDR_A}`]);
+
   const svm = { chainFamily: "svm", chainId: "mainnet", address: "AbCdEf1234" };
-  assert.equal(caip10Endpoint(svm), "svm:mainnet:AbCdEf1234", "svm caip10 endpoint case-preserved");
-  assert.ok(contractSurfaceId(svm).endsWith("AbCdEf1234"), "svm surface id case-preserved");
-  // Round-trip: the persisted CAIP-10 string re-parses (normalizeOneTuple) to a tuple
-  // that IS in its own authority, and a case-variant svm address is NOT (fail-closed).
-  const persisted = caip10Endpoint(svm);
-  assert.equal(isChainTupleInAuthority(persisted, [persisted]), true, "persisted svm endpoint self-admits");
-  assert.equal(
-    isChainTupleInAuthority("svm:mainnet:abcdef1234", [persisted]),
-    false,
-    "case-variant svm address is NOT admitted (no fail-open collision)",
-  );
-  // evm (hex, case-INSENSITIVE): still folds, so checksummed and lowercased are one key.
-  assert.equal(
-    caip10Endpoint({ chainFamily: "evm", chainId: "1", address: "0xABCDEF" }),
-    "evm:1:0xabcdef",
-    "evm caip10 endpoint case-folded",
-  );
+  assert.equal(caip10Endpoint(svm), "svm:mainnet:AbCdEf1234");
+  assert.ok(contractSurfaceId(svm).endsWith("AbCdEf1234"));
 });

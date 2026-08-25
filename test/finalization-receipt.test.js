@@ -10,14 +10,14 @@ const {
   normalizeFinalizationReceipt,
   readFinalizationReceipt,
   writeFinalizationReceipt,
-} = require("../mcp/lib/finalization-receipt.js");
+} = require("../mcp/finalization-receipt.js");
 const {
   WRITE_GUARD_TABLES,
   finalizationReceiptPath,
   finalizationReceiptSidecarPath,
   isAuditGradedPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 const DOMAIN = "receipt.example.com";
 const HASH_A = "a".repeat(64);

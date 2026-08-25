@@ -6,11 +6,11 @@ const assert = require("node:assert/strict");
 const {
   CAPABILITY_TO_TOOLS,
   summarizeCapabilityMetrics,
-} = require("../mcp/lib/capability-metrics.js");
+} = require("../mcp/core/capability/capability-metrics.js");
 const {
   capabilityToolMapFromRegistry,
   TOOL_MANIFEST,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 function event({ tool, status = "ok", latency_ms = 10, timestamp = "2026-05-10T00:00:00Z", ok, error_code }) {
   return { tool, status, latency_ms, timestamp, ok, error_code };

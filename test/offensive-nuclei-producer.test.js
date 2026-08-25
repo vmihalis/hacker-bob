@@ -19,11 +19,11 @@ const {
   NUCLEI_TOOL_ID,
   NUCLEI_FORCED_FLAGS,
   NUCLEI_FLAG_SPEC,
-} = require("../mcp/lib/offensive-nuclei-producer.js");
-const { offensiveRunCount } = require("../mcp/lib/offensive-runner.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { repoRunsDir, httpAuditJsonlPath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
-const { OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/lib/claims.js");
+} = require("../mcp/domains/web/offensive-nuclei-producer.js");
+const { offensiveRunCount } = require("../mcp/domains/web/offensive-runner.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { repoRunsDir, httpAuditJsonlPath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
+const { OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/core/claims/claims.js");
 
 const DIGEST = "ghcr.io/bobnetsec/bob-offense@sha256:" + "c".repeat(64);
 
@@ -346,7 +346,7 @@ test("redaction backstop: secret-shaped nuclei output blocks, surfaces no leads,
 }));
 
 test("module hygiene: the producer does NOT spawn processes itself (container exec goes through the runner)", () => {
-  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "offensive-nuclei-producer.js"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "domains", "web", "offensive-nuclei-producer.js"), "utf8");
   // Catch a child_process require/import in ALL forms: node: prefix, single/double quotes,
   // surrounding whitespace, ESM `from`, and dynamic import().
   const cpImport = /(?:require|import)\s*\(\s*["'](?:node:)?child_process["']\s*\)|from\s+["'](?:node:)?child_process["']/;

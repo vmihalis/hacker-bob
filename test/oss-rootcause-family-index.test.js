@@ -5,13 +5,13 @@ const assert = require("node:assert/strict");
 
 const {
   TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
-} = require("../mcp/lib/technique-packs.js");
+} = require("../mcp/core/dispatch/technique-packs.js");
 const {
   OSS_ROOTCAUSE_FAMILIES,
   SUPPORTED_FAMILIES,
   getFamiliesForLens,
   suggestFamiliesForSurface,
-} = require("../mcp/lib/oss-rootcause-family-corpus.js");
+} = require("../mcp/domains/repo/oss-rootcause-family-corpus.js");
 
 const OSS_LENSES = ["code_surface_scout", "taint_trace", "fuzz_run"];
 

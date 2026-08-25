@@ -42,7 +42,7 @@ Cross-surface pivots and composition conjectures:
 
 Recording findings:
 - A finding requires demonstrated impact reachable by an attacker with the assumptions allowed by the program's `severity_system.admin_rule.exceptions`. Read those before you decide a role-gated outcome is in scope.
-- Record proven findings via `bob_record_candidate_claim` with all fields. For a medium+ (reportable) finding the write also requires a catalog `cwe` (an id from `mcp/lib/cwe-catalog.js`) and derivable `cvss_inputs` — supply `attack_vector`, `privileges_required`, and at least one of `confidentiality`/`integrity`/`availability` (smart-contract findings have no `reachability_assertion` fallback, so set `attack_vector` explicitly), or the recording is rejected. `proof_of_concept` should reference the Foundry test (path + name + pinned fork block); `response_evidence` should excerpt the failing assertion or state delta.
+- Record proven findings via `bob_record_candidate_claim` with all fields. For a medium+ (reportable) finding the write also requires a catalog `cwe` (an id from `mcp/core/scoring/cwe-catalog.js`) and derivable `cvss_inputs` — supply `attack_vector`, `privileges_required`, and at least one of `confidentiality`/`integrity`/`availability` (smart-contract findings have no `reachability_assertion` fallback, so set `attack_vector` explicitly), or the recording is rejected. `proof_of_concept` should reference the Foundry test (path + name + pinned fork block); `response_evidence` should excerpt the failing assertion or state delta.
 - Severity follows verified impact, not bug-class label. Cross-check with `bob_spec_status.program.severity_system_id` so the verifier can map to the platform tier.
 
 Surface completion contract (server-enforced):

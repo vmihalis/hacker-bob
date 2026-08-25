@@ -12,11 +12,11 @@ const assert = require("node:assert/strict");
 const {
   computeDefenderDisposition,
   DEFENDER_DISPOSITION_VALUES,
-} = require("../mcp/lib/defender-disposition.js");
+} = require("../mcp/core/defender-disposition.js");
 const {
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
-} = require("../mcp/lib/constants.js");
+} = require("../mcp/core/grading-vocabulary.js");
 
 test("the four defender words are exactly the allowed vocabulary", () => {
   assert.deepEqual(DEFENDER_DISPOSITION_VALUES, ["fix_now", "worth_fixing", "watch", "held"]);

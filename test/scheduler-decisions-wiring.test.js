@@ -8,10 +8,10 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   appendSchedulerDecision,
   findSchedulerDecisionByAssignmentBatchId,
@@ -19,11 +19,11 @@ const {
   readCurrentTaskQueueHash,
   readSchedulerDecisions,
   scheduleTasksFromQueue,
-} = require("../mcp/lib/scheduler-decisions.js");
-const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
+} = require("../mcp/core/waves/scheduler-decisions.js");
+const scheduleTasksTool = require("../mcp/tools/schedule-tasks.js");
 const {
   taskQueuePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

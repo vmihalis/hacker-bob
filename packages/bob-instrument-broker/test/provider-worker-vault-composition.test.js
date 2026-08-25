@@ -16,7 +16,7 @@ const {
 } = require("../lib/provider-worker-vault-composition.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const VERSION = 1;
 const LINEAGE_DOMAIN = "hacker-bob/provider-worker-vault-execution-lineage/v1";

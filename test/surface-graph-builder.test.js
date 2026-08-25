@@ -14,13 +14,13 @@ const {
   edgesFromChainTree,
   edgesFromEvmRoleTableResult,
   edgesFromSchemaCorpus,
-} = require("../mcp/lib/surface-graph-builder.js");
-const { queryEdges } = require("../mcp/lib/surface-graph.js");
-const { ingestSchemaDoc } = require("../mcp/lib/schema-contracts-store.js");
+} = require("../mcp/core/frontier/surface-graph-builder.js");
+const { queryEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { ingestSchemaDoc } = require("../mcp/core/schema-contracts-store.js");
 const {
   authDifferentialResultsPath,
   chainTreeJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function uniqueDomain(prefix = "bob-graph-builder-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

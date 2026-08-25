@@ -15,7 +15,7 @@ const { PassThrough } = require("node:stream");
 const entrypoint = require("../infra/runner/entrypoint.js");
 const {
   writeFinalizationReceipt,
-} = require("../mcp/lib/finalization-receipt.js");
+} = require("../mcp/finalization-receipt.js");
 
 test.after(() => {
   fs.rmSync(TEST_SESSIONS_ROOT, { recursive: true, force: true });

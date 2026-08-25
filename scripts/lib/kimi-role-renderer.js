@@ -2,9 +2,10 @@
 
 const fs = require("fs");
 const path = require("path");
+require("../../mcp/tools/tool-registry.js");
 const {
   roleDefinition,
-} = require("../../mcp/lib/role-model.js");
+} = require("../../mcp/core/dispatch/role-model.js");
 const {
   KIMI_SKILL_SPECS,
 } = require("../../adapters/kimi/config.js");
@@ -13,11 +14,11 @@ const {
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
   substituteProducerCatalogue,
-} = require("../../mcp/lib/capability-packs-rendering.js");
+} = require("../../mcp/core/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
-} = require("../../mcp/lib/capability-playbooks.js");
-const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+} = require("../../mcp/core/capability/capability-playbooks.js");
+const { evaluatorRoleSpecs } = require("../../mcp/core/capability/capability-packs.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
@@ -147,7 +148,7 @@ function applyKimiHostText(document) {
   return document
     .replace(
       "{{STATUS_UPDATE_CACHE_COMMAND}}",
-      'node -e "const update=require(\'./mcp/lib/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"',
+      'node -e "const update=require(\'./mcp/core/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"',
     )
     .replace(/First, read the passive update cache if the helper is installed:\n```\n/g, "First, read the passive update cache if the helper is installed:\n```bash\n")
     .replace(/After resolving `target_domain`, call:\n```\n/g, "After resolving `target_domain`, call:\n```text\n")
@@ -226,7 +227,7 @@ function kimiRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
 }
 
 function renderKimiEvaluatorPackCatalogue() {
-  const { smartContractCapabilityPacks } = require("../../mcp/lib/capability-packs.js");
+  const { smartContractCapabilityPacks } = require("../../mcp/core/capability/capability-packs.js");
   const packs = smartContractCapabilityPacks();
   const lines = packs.map((pack) =>
     `- \`capability_pack: "${pack.id}"\` (chain_family \`${pack.spawn.chain_family}\`) -> evaluator_agent \`${pack.evaluator_agent}\`. chain_id: ${pack.spawn.chain_id_description}. Workflow: ${pack.spawn.workflow_summary} CLI dependency: ${pack.spawn.cli_dependency}; blocked_harness_runs[] kind: ${pack.spawn.blocked_harness_kind_options}.`,
@@ -236,7 +237,7 @@ function renderKimiEvaluatorPackCatalogue() {
     "- If `assignment.brief_profile === \"web\"` -> use the generic evaluator spawn template above; do not use the SC template below.",
     "- Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.",
     "",
-    "Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.",
+    "Pack metadata is the source of truth in `mcp/core/capability/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.",
     "",
     "```text",
     "Agent(subagent_type=\"coder\", prompt: \"",
@@ -271,7 +272,7 @@ function renderKimiPromptBody(roleId, body, options = {}) {
     document = document.replace("## Hard Rules\n", `${kimiOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${kimiRoleContractAppendix(options)}\n`;
     // Also substitute the evaluator pack catalogue placeholder if present
-    const { EVALUATOR_PACK_CATALOGUE_PLACEHOLDER } = require("../../mcp/lib/capability-packs-rendering.js");
+    const { EVALUATOR_PACK_CATALOGUE_PLACEHOLDER } = require("../../mcp/core/capability-packs-rendering.js");
     if (document.includes(EVALUATOR_PACK_CATALOGUE_PLACEHOLDER)) {
       document = document.split(EVALUATOR_PACK_CATALOGUE_PLACEHOLDER).join(renderKimiEvaluatorPackCatalogue());
     }
@@ -288,13 +289,13 @@ function renderUpdateSkill() {
     "## Read Cache",
     "Read the passive local cache without network access:",
     "```bash",
-    'node -e "const update=require(\'./mcp/lib/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"',
+    'node -e "const update=require(\'./mcp/core/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"',
     "```",
     "",
     "## Check Latest",
     "Run this only when the operator explicitly asks to check for updates:",
     "```bash",
-    'node -e "const update=require(\'./mcp/lib/update-check.js\'); update.checkForUpdate(process.cwd(), { includeChangelog: true }).then((result) => console.log(update.renderUpdatePlan(result))).catch((error) => { console.error(error.message || String(error)); process.exit(1); });"',
+    'node -e "const update=require(\'./mcp/core/update-check.js\'); update.checkForUpdate(process.cwd(), { includeChangelog: true }).then((result) => console.log(update.renderUpdatePlan(result))).catch((error) => { console.error(error.message || String(error)); process.exit(1); });"',
     "```",
     "",
     "## Apply Update",
@@ -316,7 +317,7 @@ function renderExportSkill() {
     "",
     "Run from the project root. The command has no v1 flags:",
     "```bash",
-    'node -e "const exporter=require(\'./mcp/lib/bob-export.js\'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));"',
+    'node -e "const exporter=require(\'./mcp/core/bob-export.js\'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));"',
     "```",
     "",
     "Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not hunt, resume sessions, or interact with targets.",
@@ -334,7 +335,7 @@ function renderEgressSkill() {
     "",
     "Run from the project root:",
     "```bash",
-    'node ./mcp/lib/egress-cli.js "$PWD" $ARGUMENTS',
+    'node ./mcp/core/egress-cli.js "$PWD" $ARGUMENTS',
     "```",
     "",
     "Rules:",

@@ -4,8 +4,8 @@
 
 - `id`: `CB-S2`
 - `action`: `extend_existing`
-- `anchor`: `mcp/lib/sensitive-material.js` `validateNoSensitiveMaterial`;
-  `mcp/redaction.js` `redactTextSensitiveValues`; `mcp/lib/claims.js`
+- `anchor`: `mcp/core/redaction/sensitive-material.js` `validateNoSensitiveMaterial`;
+  `mcp/redaction.js` `redactTextSensitiveValues`; `mcp/core/claims/claims.js`
   `EVIDENCE_REFERENCE_KIND_VALUES`
 - `status`: `done`
 
@@ -18,7 +18,7 @@ belief window as evidence or prior.
 
 ## Implementation
 
-- `mcp/lib/belief/authority.js` defines frozen
+- `mcp/core/belief/authority.js` defines frozen
   `BELIEF_PROVENANCE_VALUES`, matching the Plane-B spec.
 - `writeBeliefSignalScratch()` requires `provenance` and `artifact_ref`, redacts
   all string leaves with `redactTextSensitiveValues`, then runs
@@ -39,7 +39,7 @@ Engineering review passed:
 - `npm run test:mcp`
 - `npm run test:prompts`
 - `verify-CB-S2-provenance-secret-safety: PASS` adversarial anchor check
-  grounding `mcp/lib/sensitive-material.js`, `mcp/redaction.js`, and
-  `mcp/lib/belief/authority.js`
+  grounding `mcp/core/redaction/sensitive-material.js`, `mcp/redaction.js`, and
+  `mcp/core/belief/authority.js`
 
 No field review is required for this node.

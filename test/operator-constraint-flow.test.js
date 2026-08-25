@@ -10,13 +10,18 @@ const {
   clearOperatorNote,
   initSession,
   setOperatorNote,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   readSessionEvents,
-} = require("../mcp/lib/session-events.js");
+} = require("../mcp/core/session/session-events.js");
+const {
+  sessionEventsJsonlPath,
+  sessionNucleusPath,
+  statePath,
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -144,5 +149,64 @@ test("setting the same operator note twice still re-emits the nucleus and event 
     assert.equal(secondEvent.payload.nucleus_hash, second.nucleus_hash);
     assert.equal(secondEvent.payload.prior_nucleus_hash, secondEvent.payload.nucleus_hash,
       "a no-op repeat set leaves prior_nucleus_hash == nucleus_hash, proving the nucleus did not drift");
+  });
+});
+
+// A7M: setOperatorNote/clearOperatorNote now delegate to the shared
+// applyOperatorConstraintUpdate writer, which collapses to a single
+// commitSessionAuthority call (A2 CAS) instead of the prior independent
+// writeJsonDocument + appendSessionEvent + writeSessionStateDocument triple.
+// Prove a CAS-layer failure between the verified read and the commit leaves
+// state.json/session-nucleus.json/session-events.jsonl byte-identical to
+// their pre-call snapshots -- no partial nucleus-write-without-event or
+// event-without-state split survives.
+test("a commitSessionAuthority CAS failure through setOperatorNote/clearOperatorNote leaves all three stores untouched", () => {
+  withTempHome((home) => {
+    const domain = "cas-fault.example.com";
+    bootstrapDomain(domain);
+
+    const beforeState = fs.readFileSync(statePath(domain));
+    const beforeNucleus = fs.readFileSync(sessionNucleusPath(domain));
+    const beforeEvents = fs.readFileSync(sessionEventsJsonlPath(domain));
+
+    // Replace session-events.jsonl with a symlink so commitSessionAuthority's
+    // own preimage safety check throws deep inside the CAS transaction --
+    // strictly after applyOperatorConstraintUpdate's verified nucleus read
+    // already succeeded.
+    const externalTarget = path.join(home, "external-events-target.jsonl");
+    fs.writeFileSync(externalTarget, "external event bytes\n");
+    fs.unlinkSync(sessionEventsJsonlPath(domain));
+    fs.symlinkSync(externalTarget, sessionEventsJsonlPath(domain));
+
+    assert.throws(
+      () => setOperatorNote({ target_domain: domain, operator_note: "should not persist" }),
+      /session-events\.jsonl must not be a symbolic link/,
+    );
+    assert.equal(fs.lstatSync(sessionEventsJsonlPath(domain)).isSymbolicLink(), true);
+    assert.equal(Buffer.compare(fs.readFileSync(statePath(domain)), beforeState), 0);
+    assert.equal(Buffer.compare(fs.readFileSync(sessionNucleusPath(domain)), beforeNucleus), 0);
+
+    // Restore the real events file and retry: the same call reaches the same
+    // terminal state cleanly, with no duplicate/partial event left behind by
+    // the failed attempt.
+    fs.unlinkSync(sessionEventsJsonlPath(domain));
+    fs.writeFileSync(sessionEventsJsonlPath(domain), beforeEvents);
+
+    const retried = JSON.parse(setOperatorNote({ target_domain: domain, operator_note: "should not persist" }));
+    assert.equal(retried.updated, true);
+    const events = operatorConstraintEvents(domain);
+    assert.equal(events.length, 1, "the failed attempt left zero events; the retry appended exactly one");
+
+    const clearBeforeState = fs.readFileSync(statePath(domain));
+    const clearBeforeNucleus = fs.readFileSync(sessionNucleusPath(domain));
+    fs.unlinkSync(sessionEventsJsonlPath(domain));
+    fs.symlinkSync(externalTarget, sessionEventsJsonlPath(domain));
+
+    assert.throws(
+      () => clearOperatorNote({ target_domain: domain }),
+      /session-events\.jsonl must not be a symbolic link/,
+    );
+    assert.equal(Buffer.compare(fs.readFileSync(statePath(domain)), clearBeforeState), 0);
+    assert.equal(Buffer.compare(fs.readFileSync(sessionNucleusPath(domain)), clearBeforeNucleus), 0);
   });
 });
