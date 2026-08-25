@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/readme-contributing-header.svg" alt="Hacker Bob contributor operations — build, verify, and explain" width="100%" />
+  <img src="docs/media/readme-contributing-header.svg" alt="Hacker Bob contributor operations: build, verify, and explain" width="100%" />
 </p>
 
 <p align="center">

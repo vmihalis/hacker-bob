@@ -33,8 +33,9 @@ Use a disposable project:
 
 ```bash
 mkdir -p /tmp/hacker-bob-media-workspace
-npx -y hacker-bob@latest install /tmp/hacker-bob-media-workspace
-hacker-bob doctor /tmp/hacker-bob-media-workspace
+npm ci
+node bin/hacker-bob.js install /tmp/hacker-bob-media-workspace
+node bin/hacker-bob.js doctor /tmp/hacker-bob-media-workspace
 cd /tmp/hacker-bob-media-workspace
 claude --dangerously-skip-permissions --effort max
 ```

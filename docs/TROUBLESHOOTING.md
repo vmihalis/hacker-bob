@@ -2,9 +2,10 @@
 
 ## Run Doctor First
 
-Use the CLI doctor before changing files manually:
+Install or refresh the CLI, then run doctor before changing files manually:
 
 ```bash
+npm install --global hacker-bob@latest
 hacker-bob doctor /path/to/your/project
 hacker-bob doctor /path/to/your/project --json
 ```
@@ -19,10 +20,10 @@ hacker-bob doctor /path/to/your/project --adapter codex --json
 
 ## MCP Server Is Not Listed
 
-Bob writes a `hacker-bob` server entry into the selected host config. Claude and generic MCP use the project `.mcp.json`; Codex uses `.codex/plugins/hacker-bob/.mcp.json`; Kimi uses `.kimi/mcp.json` and reads skills from `.kimi/skills/bob-{evaluate,status,debug,update,export,egress}/SKILL.md`. Existing v1.x installs (which used the legacy `bountyagent` server key) are auto-migrated to `hacker-bob` on next install or update — operator-managed sibling servers and custom permissions are preserved. Make sure you installed into the same directory you run the host CLI from:
+Bob writes a `hacker-bob` server entry into the selected host config. Claude and generic MCP use the project `.mcp.json`; Codex uses `.codex/plugins/hacker-bob/.mcp.json`; Kimi uses `.kimi/mcp.json` and reads skills from `.kimi/skills/bob-{evaluate,status,debug,update,export,egress}/SKILL.md`. Existing v1.x installs (which used the legacy `bountyagent` server key) are auto-migrated to `hacker-bob` on next install or update; operator-managed sibling servers and custom permissions are preserved. Make sure you installed into the same directory you run the host CLI from:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter claude
+hacker-bob install /path/to/your/project --adapter claude
 cd /path/to/your/project
 claude mcp list
 ```
@@ -36,7 +37,7 @@ For Codex installs, check that `.codex/plugins/hacker-bob/.codex-plugin/plugin.j
 Codex reads Bob as direct skills from `~/.codex/skills` and reads MCP wiring from the enabled local plugin cache. Rerun the Codex adapter install in the exact project directory you start Codex from:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter codex
+hacker-bob install /path/to/your/project --adapter codex
 cd /path/to/your/project
 codex
 ```
@@ -52,7 +53,7 @@ hacker-bob doctor /path/to/your/project --adapter codex --json
 Kimi CLI reads Bob skills from `.kimi/skills` and MCP wiring from `.kimi/mcp.json`. Rerun the Kimi adapter install in the exact project directory you start Kimi from:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter kimi
+hacker-bob install /path/to/your/project --adapter kimi
 cd /path/to/your/project
 kimi --mcp-config-file .kimi/mcp.json
 ```
@@ -74,7 +75,7 @@ Claude Code reads project MCP and settings during startup. After installing or u
 Legacy Claude installs may not have the update command. Update from outside Claude Code:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project
+hacker-bob install /path/to/your/project
 ```
 
 Then restart Claude Code in that project.
@@ -86,7 +87,7 @@ For Codex installs, use `$bob-update`. For Kimi installs, use `/skill:bob-update
 Claude installs expose `/bob-egress`; Codex installs expose `$bob-egress`. After installing or updating, restart the selected host CLI in the target project. If the command is still missing in Codex, rerun:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter codex
+hacker-bob install /path/to/your/project --adapter codex
 ```
 
 ## Legacy Metadata Warning
@@ -94,15 +95,16 @@ npx -y hacker-bob@latest install /path/to/your/project --adapter codex
 Older Claude-only installs may have `.claude/bob/VERSION` and `.claude/bob/install.json` without neutral `.hacker-bob/` install metadata. Doctor reports this as a warning and uses the legacy version as a migration fallback. Rerun the installer to write `.hacker-bob/VERSION`, `.hacker-bob/install.json`, and the installed adapter list:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter claude
+hacker-bob install /path/to/your/project --adapter claude
 ```
 
 ## npm Cache Or Network Issues
 
-If `npx` cannot fetch the package, retry with a clean npm cache directory:
+If npm cannot fetch the package, retry the global install with a clean npm cache directory:
 
 ```bash
-npm_config_cache=/tmp/hacker-bob-npm-cache npx -y hacker-bob@latest install /path/to/your/project
+npm_config_cache=/tmp/hacker-bob-npm-cache npm install --global hacker-bob@latest
+hacker-bob install /path/to/your/project
 ```
 
 If your network blocks npm, install the CLI on a network that can reach the npm registry or use a source checkout:
@@ -110,6 +112,7 @@ If your network blocks npm, install the CLI on a network that can reach the npm 
 ```bash
 git clone https://github.com/vmihalis/hacker-bob.git
 cd hacker-bob
+npm ci
 ./install.sh /path/to/your/project
 ```
 

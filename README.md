@@ -1,6 +1,18 @@
+<h1 align="center">Hacker Bob</h1>
+
+<p align="center">
+  <strong>17 Common Vulnerabilities and Exposures (CVE) IDs credited across 9 projects, all produced by Bob.</strong><br />
+  One was co-reported with AISLE; one credits Bob as an additional reporter. <a href="#receipt-portfolio">Review the linked receipts.</a>
+</p>
+
+<p align="center">
+  Hacker Bob is an open-source autonomous bug bounty hunter built around a local Model Context Protocol (MCP) runtime.<br />
+  Run it against authorized targets or in continuous integration (CI).
+</p>
+
 <p align="center">
   <a href="https://hackerbob.ai/">
-    <img src="docs/media/readme-hero.png" alt="Hacker Bob — Bob breaks your stack before they do. Point him at a domain, contract address, or repository; he reports what he proved." width="100%" />
+    <img src="docs/media/readme-hero.png" alt="Hacker Bob. Point Bob at an authorized domain, contract address, or repository; Bob reports findings that survive independent verification." width="100%" />
   </a>
 </p>
 
@@ -26,11 +38,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/readme-signal-deck.svg" alt="17 assigned CVE IDs, nine open-source projects, four host adapters, and a local MCP runtime" width="100%" />
+  <img src="docs/media/readme-signal-deck.svg" alt="17 credited CVE IDs, nine open-source projects, four host adapters, and a local MCP runtime" width="100%" />
 </p>
 
 <p align="center">
-  <img src="docs/media/readme-chapter-deploy.svg" alt="Chapter one: Deploy — install, verify, and choose a host" width="100%" />
+  <img src="docs/media/readme-chapter-deploy.svg" alt="Chapter one: Deploy. Install, verify, and choose a host." width="100%" />
 </p>
 
 ## 01: Run Bob
@@ -40,15 +52,21 @@ Choose the project directory where you want to run Bob. Install into that projec
 ### 1. Install
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project
+npm install --global hacker-bob@latest
+hacker-bob install /path/to/your/project
 cd /path/to/your/project
 ```
+
+<details>
+<summary><strong>Watch a clean installation</strong></summary>
 
 <p align="center">
   <img src="docs/media/hacker-bob-demo.gif" alt="Hacker Bob installing into a disposable local project" width="100%" />
 </p>
 
 The installation animation uses the equivalent global-CLI form against a disposable local workspace and filters the real output to its key milestones. It was generated with [VHS](https://github.com/charmbracelet/vhs) ([view source](docs/media/hacker-bob-demo.tape)).
+
+</details>
 
 ### 2. Verify the local MCP runtime
 
@@ -60,13 +78,16 @@ node -e "require('./mcp/server.js'); console.log('MCP ok')"
 
 Restart your host CLI from the same project directory, then run the matching command:
 
+> [!WARNING]
+> Run Bob only against targets you own or are explicitly authorized to test. Replace `<authorized-target>` with an approved domain, contract address, or repository path.
+
 | Host | Evaluate | Status | Update | Export |
 |---|---|---|---|---|
-| Claude Code | `/bob-evaluate target.com` | `/bob-status` | `/bob-update` | `/bob-export` |
-| Codex | `$bob-evaluate target.com` | `$bob-status` | `$bob-update` | `$bob-export` |
-| Kimi CLI | `/skill:bob-evaluate target.com` | `/skill:bob-status` | `/skill:bob-update` | `/skill:bob-export` |
+| Claude Code | `/bob-evaluate <authorized-target>` | `/bob-status` | `/bob-update` | `/bob-export` |
+| Codex | `$bob-evaluate <authorized-target>` | `$bob-status` | `$bob-update` | `$bob-export` |
+| Kimi CLI | `/skill:bob-evaluate <authorized-target>` | `/skill:bob-status` | `/skill:bob-update` | `/skill:bob-export` |
 | Generic MCP host | Connect the generated `.mcp.json`, then follow `.hacker-bob/generic-mcp/hacker-bob.md`. | Use the host's MCP tool interface. | Re-run the shell updater. | Use the host's MCP tool interface. |
-| Shell | — | `hacker-bob doctor /path/to/your/project` | `hacker-bob update /path/to/your/project --adapter claude` | — |
+| Shell | - | `hacker-bob doctor /path/to/your/project` | `hacker-bob update /path/to/your/project --adapter claude` | - |
 
 <details>
 <summary><strong>Watch Bob verify the installation</strong></summary>
@@ -92,7 +113,7 @@ hacker-bob doctor ./project \
   <img src="docs/media/hacker-bob-doctor-demo.gif" alt="Hacker Bob checking a real isolated local installation" width="100%" />
 </p>
 
-The doctor demo above was generated with [VHS](https://github.com/charmbracelet/vhs) from a real, isolated Hacker Bob install ([view source](docs/media/hacker-bob-doctor-demo.tape)). It checks only a disposable local workspace—no live target, recon, signup, or scan.
+The doctor demo above was generated with [VHS](https://github.com/charmbracelet/vhs) from a real, isolated Hacker Bob install ([view source](docs/media/hacker-bob-doctor-demo.tape)). It checks only a disposable local workspace: no live target, recon, signup, or scan.
 
 </details>
 
@@ -114,33 +135,38 @@ The doctor demo above was generated with [VHS](https://github.com/charmbracelet/
 </details>
 
 <p align="center">
-  <img src="docs/media/readme-chapter-proof.svg" alt="Chapter two: Prove — receipts, verification, grading, and reporting" width="100%" />
+  <img src="docs/media/readme-chapter-proof.svg" alt="Chapter two: Prove. Review receipts, verification, grading, and reporting." width="100%" />
 </p>
 
 ## Receipt portfolio
 
-**17 assigned CVE IDs across nine open-source projects.** This is the exact portfolio currently listed in Hacker Bob's [live receipts](https://hackerbob.ai/#receipts). Fourteen IDs link to a public CVE record or project advisory; the remaining three are identified there as assigned but not public yet.
+**17 CVE IDs credited across nine open-source projects, all produced by Bob.** Fourteen IDs link to a public CVE record or project advisory; the remaining three are assigned but not public yet. The portfolio matches Hacker Bob's [live receipts](https://hackerbob.ai/#receipts). rpcbind was co-reported with AISLE; Samba credits Bob as an additional reporter alongside the DREAM team.
+
+<details>
+<summary><strong>Watch the receipt portfolio</strong></summary>
 
 <p align="center">
   <img src="docs/media/hacker-bob-receipts-demo.gif" alt="Animated Hacker Bob receipt roll showing 17 CVE IDs across nine open-source projects" width="100%" />
 </p>
 
-The receipt roll mirrors that live portfolio—not simulated scan output. Red provides visual emphasis; it does not assert CVSS severity. Generated with [VHS](https://github.com/charmbracelet/vhs) from a checked-in [tape](docs/media/hacker-bob-receipts-demo.tape) and [receipt source](docs/media/hacker-bob-receipts-demo.sh).
+The receipt roll mirrors that live portfolio; it is not simulated scan output. Red provides visual emphasis and does not assert Common Vulnerability Scoring System (CVSS) severity. Generated with [VHS](https://github.com/charmbracelet/vhs) from a checked-in [tape](docs/media/hacker-bob-receipts-demo.tape) and [receipt source](docs/media/hacker-bob-receipts-demo.sh).
+
+</details>
 
 <details>
 <summary><strong>Read the CVE receipt list</strong></summary>
 
-| Project | CVE IDs | Public source status |
-|---|---|---|
-| `stable-diffusion.cpp` | [`CVE-2026-47747`](https://www.cve.org/CVERecord?id=CVE-2026-47747), [`CVE-2026-47748`](https://www.cve.org/CVERecord?id=CVE-2026-47748), [`CVE-2026-47749`](https://www.cve.org/CVERecord?id=CVE-2026-47749), [`CVE-2026-47750`](https://www.cve.org/CVERecord?id=CVE-2026-47750) | Published CVE records |
-| `netatalk` | [`CVE-2026-49387`](https://netatalk.io/security/CVE-2026-49387.html), [`CVE-2026-49388`](https://netatalk.io/security/CVE-2026-49388.html), [`CVE-2026-49389`](https://netatalk.io/security/CVE-2026-49389.html), [`CVE-2026-49390`](https://netatalk.io/security/CVE-2026-49390.html) | Published project advisories |
-| `libcupsfilters` | [`CVE-2026-64611`](https://www.cve.org/CVERecord?id=CVE-2026-64611), [`CVE-2026-64612`](https://www.cve.org/CVERecord?id=CVE-2026-64612) | Published CVE records |
-| `libtirpc` | `CVE-2026-66714`, `CVE-2026-66715` | Assigned; public records pending |
-| `OpenSSH` | [`CVE-2026-35388`](https://www.cve.org/CVERecord?id=CVE-2026-35388) | Published CVE record |
-| `libheif` | [`CVE-2026-49271`](https://www.cve.org/CVERecord?id=CVE-2026-49271) | Published CVE record |
-| `Samba` | [`CVE-2026-3012`](https://www.cve.org/CVERecord?id=CVE-2026-3012) | Published CVE record |
-| `rpcbind` | [`CVE-2026-16277`](https://www.cve.org/CVERecord?id=CVE-2026-16277) | Published CVE record |
-| `OpenEXR` | `CVE-2026-65979` | Assigned; public record pending |
+| Project | CVE IDs | Public source status | Reporter role |
+|---|---|---|---|
+| `stable-diffusion.cpp` | [`CVE-2026-47747`](https://www.cve.org/CVERecord?id=CVE-2026-47747), [`CVE-2026-47748`](https://www.cve.org/CVERecord?id=CVE-2026-47748), [`CVE-2026-47749`](https://www.cve.org/CVERecord?id=CVE-2026-47749), [`CVE-2026-47750`](https://www.cve.org/CVERecord?id=CVE-2026-47750) | Published CVE records | Sole reporter |
+| `netatalk` | [`CVE-2026-49387`](https://netatalk.io/security/CVE-2026-49387.html), [`CVE-2026-49388`](https://netatalk.io/security/CVE-2026-49388.html), [`CVE-2026-49389`](https://netatalk.io/security/CVE-2026-49389.html), [`CVE-2026-49390`](https://netatalk.io/security/CVE-2026-49390.html) | Published project advisories | Sole reporter |
+| `libcupsfilters` | [`CVE-2026-64611`](https://www.cve.org/CVERecord?id=CVE-2026-64611), [`CVE-2026-64612`](https://www.cve.org/CVERecord?id=CVE-2026-64612) | Published CVE records | Sole reporter |
+| `libtirpc` | `CVE-2026-66714`, `CVE-2026-66715` | Assigned; public records pending | Sole reporter |
+| `OpenSSH` | [`CVE-2026-35388`](https://www.cve.org/CVERecord?id=CVE-2026-35388) | Published CVE record | Sole reporter |
+| `libheif` | [`CVE-2026-49271`](https://www.cve.org/CVERecord?id=CVE-2026-49271) | Published CVE record | Sole reporter |
+| `Samba` | [`CVE-2026-3012`](https://www.cve.org/CVERecord?id=CVE-2026-3012) | Published CVE record | Additional reporter alongside the DREAM team |
+| `rpcbind` | [`CVE-2026-16277`](https://www.cve.org/CVERecord?id=CVE-2026-16277) | Published CVE record | Co-reported with AISLE |
+| `OpenEXR` | `CVE-2026-65979` | Assigned; public record pending | Sole reporter |
 
 </details>
 
@@ -155,7 +181,7 @@ Hacker Bob installs a local MCP runtime into a project directory and connects it
 | Maps subdomains, live hosts, archives, crawled URLs, JavaScript hints, and repository surfaces. | Establishes authorized auth profiles and runs parallel evaluators against prioritized attack surfaces. | Independently verifies findings, collects bounded evidence, grades impact, and produces submission-ready reports. |
 | Imports local artifacts and optional public-intelligence leads without rewriting the canonical attack surface. | Evaluates whether isolated findings combine into higher-impact chains. | Keeps run state, telemetry, reports, and evidence local under a session-owned root. |
 
-Bob can evaluate staging or authorized live applications, checked-out open-source repositories, smart-contract surfaces, and pull-request diffs in CI.
+Bob can evaluate staging or authorized live applications, checked-out open-source repositories, smart-contract surfaces, and pull-request diffs in continuous integration.
 
 ### Seven stages. One evidence chain.
 
@@ -190,14 +216,14 @@ MCP ranking computes runtime priority for status views and evaluator briefs. Imp
 
 | Surface | How Bob approaches it |
 |---|---|
-| **Web applications and APIs** | Surface discovery, authorized account setup, first-party target-host requests, browser-assisted flows, parallel evaluation, and independent verification. |
+| **Web applications and application programming interfaces (APIs)** | Surface discovery, authorized account setup, first-party target-host requests, browser-assisted flows, parallel evaluation, and independent verification. |
 | **Smart contracts** | Public HTTPS RPC/REST ladders and preflighted endpoints, with dedicated fork runners for Foundry, Anchor, Aptos, Sui, Substrate, CosmWasm, and Halmos workflows. |
 | **Open-source repositories** | Repository inventory, session-scoped Docker plans, read-only repo mounts by default, and a dedicated native C/C++ parser, protocol, and memory-safety surface. |
 | **Pull-request diffs** | Headless GitHub Actions review with inline findings, a Check Run summary, and a full report artifact. |
 
-### OSS project review mode
+### Open-source software (OSS) project review mode
 
-Local open-source project review runs against a checked-out repository instead of a live target domain. It inventories repo files, writes a session-scoped Docker plan, and keeps dependency installs and build repros inside a Docker image when explicitly requested. Docker command replay mounts the repo read-only by default and uses a session-owned writable work directory. Native C/C++ projects get a dedicated parser/protocol/memory-safety surface so evaluators bias toward reachable file/function evidence instead of generic repo audit notes. OSS mode is plumbed through the same v2 governance/frontier/scheduler/claim planes and is exposed as a forward-ported entry point (`/bob-evaluate <repo-path>` semantics) under the unified lifecycle FSM.
+Local open-source project review runs against a checked-out repository instead of a live target domain. It inventories repository files, writes a session-scoped Docker plan, and keeps requested dependency installs and build reproductions inside a Docker image. Docker command replay mounts the repository read-only by default and uses a session-owned writable work directory. Native C/C++ projects receive dedicated parser, protocol, and memory-safety analysis grounded in reachable files and functions.
 
 ### Local multi-session dashboard
 
@@ -210,12 +236,12 @@ hacker-bob dashboard --repo-only
 The dashboard binds to `127.0.0.1:4873` by default and reads `~/hacker-bob-sessions`. It shows OSS/repo progress, pending handoffs, claims, verification/evidence/grade state, and cross-session bottlenecks.
 
 <p align="center">
-  <img src="docs/media/readme-chapter-operate.svg" alt="Chapter three: Operate — CI, safety, reference, and contribution" width="100%" />
+  <img src="docs/media/readme-chapter-operate.svg" alt="Chapter three: Operate. Configure CI, safety, reference, and contribution." width="100%" />
 </p>
 
 ## 04: CI diff review
 
-Bob can review pull request diffs automatically using GitHub Actions. The
+Bob can review pull request (PR) diffs automatically using GitHub Actions. The
 review runs headless inside GitHub-hosted runners and posts inline comments
 plus a Check Run result on every PR.
 
@@ -228,7 +254,7 @@ plus a Check Run result on every PR.
    |---|---|---|
    | `ANTHROPIC_OAUTH_TOKEN` | Secret | Recommended Anthropic OAuth token from `claude setup-token` for the headless Claude reviewer. |
    | `ANTHROPIC_API_KEY` | Secret | Anthropic API key fallback for the headless Claude reviewer. Required only when `ANTHROPIC_OAUTH_TOKEN` is not set. |
-   | `BOB_INSTALL_TOKEN` | Secret | GitHub App token or fine-grained PAT with `read:packages` and `contents:read` scopes. Used to install `@bobnetsec/*` packages. |
+   | `BOB_INSTALL_TOKEN` | Secret | GitHub App token or fine-grained personal access token (PAT) with `read:packages` and `contents:read` scopes. Used to install `@bobnetsec/*` packages. |
    | `BOB_VERSION` | Variable | Bob release tag to cache, e.g. `v1.2.3`. Shared across repos in the org so they reuse the same warm workspace cache. |
 
 2. **Add the caller workflow** to each repository you want reviewed. Create
@@ -253,7 +279,7 @@ plus a Check Run result on every PR.
    ```
 
    That is the complete file. `secrets: inherit` propagates the org-level
-   secrets automatically — no per-repo secret declarations required.
+   secrets automatically; no per-repository secret declarations are required.
 
 <details>
 <summary><strong>Optional inputs, findings, fork PRs, and versioning</strong></summary>
@@ -314,7 +340,7 @@ uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
 > [!WARNING]
 > Only run Bob against targets, accounts, applications, APIs, and infrastructure you own or are explicitly authorized to test. Bob does not prove authorization, enforce a program policy, guarantee containment, or control arbitrary host shell commands and unrelated browser activity.
 
-Bob runs offensive security on surfaces you control—your own code in CI, your staging environments, and authorized live targets. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
+Bob runs offensive security on surfaces you control: your own code in CI, your staging environments, and authorized live targets. It can send real network requests, run local surface-discovery tools, import local artifacts, and preserve sensitive run data on disk. You are responsible for using it only where you have permission.
 
 <details>
 <summary><strong>Full authorization, egress, browser, and smart-contract networking model</strong></summary>
@@ -340,7 +366,13 @@ Bob stores local run state, telemetry, and evidence under a session root that al
 
 ### Session roots and concurrent engines
 
-Bob elects exactly one engine per session root, so two workspaces can only run engines at the same time if their session roots are **disjoint** — an engine sharing another engine's session state would enforce gates against state a second process is already moving. The installer therefore gives each workspace its own root, `~/hacker-bob-sessions-<workspace>-<hash>`, derived from the workspace path (stable across re-installs) and written as `BOB_SESSIONS_ROOT` into that workspace's `.mcp.json` server env and `.claude/settings.json` env. That is **operator configuration**: the engine reads it once at boot and freezes it, and no agent or MCP tool can change it — edit it yourself if you want a different root, keeping it absolute, private to your user, and never nested inside another root. A workspace that was already installed and still has sessions in the shared `~/hacker-bob-sessions/` keeps using it (nothing is orphaned); to move it onto its own root, run `mv ~/hacker-bob-sessions/<target-domain> ~/hacker-bob-sessions-<workspace>-<hash>/` — the installer prints the exact path — and re-run the installer. The standalone `hacker-bob dashboard` CLI reads whatever `BOB_SESSIONS_ROOT` its own shell exports (it is not tied to a workspace), so point it at one root explicitly: `BOB_SESSIONS_ROOT=~/hacker-bob-sessions-<workspace>-<hash> hacker-bob dashboard`. **Operator caution:** disjoint roots make concurrent engines safe, they do not make concurrent evaluations of the SAME target safe. Rate limits, circuit breakers, and request budgets are per-engine, so two engines hunting one target from two roots double the request volume that target sees and neither one knows it. Hunt different targets.
+Bob elects exactly one engine per session root. To run engines concurrently, give each workspace a disjoint root. An engine sharing state with another engine cannot enforce gates safely while that state is changing. The installer creates `~/hacker-bob-sessions-<workspace>-<hash>` from the workspace path and writes it as `BOB_SESSIONS_ROOT` in that workspace's `.mcp.json` server environment and `.claude/settings.json`.
+
+`BOB_SESSIONS_ROOT` is operator configuration. The engine reads and freezes it at boot; no agent or MCP tool can change it. Keep the path absolute, private to your user, and outside every other session root.
+
+Existing workspaces that still have sessions under `~/hacker-bob-sessions/` keep using that shared root. To move one, run `mv ~/hacker-bob-sessions/<target-domain> ~/hacker-bob-sessions-<workspace>-<hash>/` using the exact destination printed by the installer, then reinstall. The standalone dashboard reads the `BOB_SESSIONS_ROOT` exported by its shell. Point it at one root explicitly with `BOB_SESSIONS_ROOT=~/hacker-bob-sessions-<workspace>-<hash> hacker-bob dashboard`.
+
+**Operator caution:** disjoint roots make concurrent engines safe; they do not make concurrent evaluations of the same target safe. Rate limits, circuit breakers, and request budgets are per engine. Two engines evaluating one target double its request volume without coordinating. Evaluate different targets.
 
 During an evaluation, Bob may make outbound HTTP requests, run local surface-discovery tools, import HTTP or static artifacts, and use host-side reasoning over the collected context. Optional third-party services and dependencies, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external surface-discovery tools, are used only when you configure the relevant dependencies or credentials.
 
@@ -352,7 +384,7 @@ Read [DISCLAIMER.md](DISCLAIMER.md) before using Bob on any target.
 
 ## 06: Reference
 
-Dense operational details stay here—complete, searchable, and out of the quick path.
+Dense operational details stay here: complete, searchable, and out of the quick path.
 
 <details>
 <summary><strong>Installation, adapters, migrations, and installed files</strong></summary>
@@ -362,17 +394,18 @@ Dense operational details stay here—complete, searchable, and out of the quick
 `hacker-bob` is the canonical npm package:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project
+npm install --global hacker-bob@latest
+hacker-bob install /path/to/your/project
 ```
 
 Adapter-specific installs are available when you want to choose the host explicitly:
 
 ```bash
-npx -y hacker-bob@latest install /path/to/your/project --adapter claude
-npx -y hacker-bob@latest install /path/to/your/project --adapter codex
-npx -y hacker-bob@latest install /path/to/your/project --adapter generic-mcp
-npx -y hacker-bob@latest install /path/to/your/project --adapter kimi
-npx -y hacker-bob@latest install /path/to/your/project --adapter all
+hacker-bob install /path/to/your/project --adapter claude
+hacker-bob install /path/to/your/project --adapter codex
+hacker-bob install /path/to/your/project --adapter generic-mcp
+hacker-bob install /path/to/your/project --adapter kimi
+hacker-bob install /path/to/your/project --adapter all
 ```
 
 The installer is idempotent and preserves unrelated host configuration. It writes the shared MCP runtime to `mcp/`, neutral Bob resources to `.hacker-bob/`, and adapter-specific files for the selected host.
@@ -392,28 +425,13 @@ When `--adapter` is omitted, Bob chooses an adapter from prior install metadata,
 
 The MCP server name is `hacker-bob`. You will see `hacker-bob` in `.mcp.json`, in `claude mcp list`, and as the prefix on tool names such as `mcp__hacker-bob__bob_*`. Existing v1.x installs are auto-migrated on the next install or update: the legacy `bountyagent` server key and `mcp__bountyagent__*` permission strings are rewritten to the canonical `hacker-bob` form while operator-managed sibling servers and custom permissions are preserved.
 
-Host-specific wrappers—[`hacker-bob-cc`](https://www.npmjs.com/package/hacker-bob-cc), [`hacker-bob-codex`](https://www.npmjs.com/package/hacker-bob-codex), and [`hacker-bob-kimi`](https://www.npmjs.com/package/hacker-bob-kimi)—are available when you want the host choice encoded in the package name:
-
-```bash
-npx -y hacker-bob-cc@latest install /path/to/your/project
-npx -y hacker-bob-codex@latest install /path/to/your/project
-npx -y hacker-bob-kimi@latest install /path/to/your/project
-```
-
-You can also install the CLI globally:
-
-```bash
-npm install -g hacker-bob
-hacker-bob install /path/to/your/project --adapter claude
-```
-
-A global install only adds the `hacker-bob` command to your `PATH`; it does not install Bob into every project automatically.
 
 Source installs are for contributors and local development:
 
 ```bash
 git clone https://github.com/vmihalis/hacker-bob.git
 cd hacker-bob
+npm ci
 ./install.sh /path/to/your/project
 ```
 
@@ -427,9 +445,9 @@ cd hacker-bob
 Claude Code commands:
 
 ```text
-/bob-evaluate target.com         # start a normal evaluate
-/bob-evaluate target.com --deep  # broader surface-discovery and deep lead follow-up
-/bob-evaluate resume target.com  # resume an existing session
+/bob-evaluate <authorized-target>         # start a normal evaluation
+/bob-evaluate <authorized-target> --deep  # broaden discovery and follow-up
+/bob-evaluate resume <authorized-target>  # resume an existing session
 /bob-status                  # show latest session status
 /bob-debug                   # inspect the latest local run
 /bob-update                  # preview and install the latest release
@@ -440,7 +458,7 @@ Claude Code commands:
 Codex uses the same command names with a `$` prefix:
 
 ```text
-$bob-evaluate target.com
+$bob-evaluate <authorized-target>
 $bob-status
 $bob-debug
 $bob-update
@@ -451,7 +469,7 @@ $bob-egress
 Kimi CLI uses a `/skill:` prefix:
 
 ```text
-/skill:bob-evaluate target.com
+/skill:bob-evaluate <authorized-target>
 /skill:bob-status
 /skill:bob-debug
 /skill:bob-update
