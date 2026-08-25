@@ -136,8 +136,23 @@ function openStableTargetDirectory(directory) {
   }
 }
 
+// The double drives a Darwin/arm64-only native fixture. Hosts that cannot run
+// it are reported here rather than discovered as a raw ENOENT partway through
+// enrollment. Deliberately keyed on platform/arch ALONE and not on whether the
+// binary is present: on a supported host a missing fixture must stay a loud,
+// actionable failure ("run npm run build:test"), never a silent downgrade to
+// the unavailable-custodian path that would make the double's tests vacuous.
+function lifecycleCustodianTestDoubleSupported() {
+  return process.platform === "darwin" && process.arch === "arm64";
+}
+
 function readTestBinaryIdentity() {
-  const atPath = fs.lstatSync(TEST_BINARY);
+  let atPath;
+  try {
+    atPath = fs.lstatSync(TEST_BINARY);
+  } catch {
+    throw fixtureError("test_binary_unavailable", TEST_BINARY);
+  }
   if (!atPath.isFile() || atPath.isSymbolicLink() || atPath.nlink !== 1
       || (atPath.mode & 0o777) !== 0o755) throw fixtureError("test_binary_unavailable");
   const descriptor = fs.openSync(
@@ -363,4 +378,7 @@ function installLifecycleCustodianTestDouble() {
   return controller;
 }
 
-module.exports = { installLifecycleCustodianTestDouble };
+module.exports = {
+  installLifecycleCustodianTestDouble,
+  lifecycleCustodianTestDoubleSupported,
+};
