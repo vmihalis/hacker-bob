@@ -215,6 +215,7 @@ function sessionsRoot() {
 
 const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
 const TELEMETRY_TOOL_INVOCATIONS_FILE_NAME = "tool-invocations.jsonl";
+const TELEMETRY_AGENT_RUN_STOP_SEEN_DIR_NAME = "agent-run-stop-seen";
 
 function telemetryDir(env = process.env) {
   const override = typeof env.BOUNTY_TELEMETRY_DIR === "string"
@@ -225,6 +226,10 @@ function telemetryDir(env = process.env) {
 
 function telemetryToolInvocationsJsonlPath(env = process.env) {
   return path.join(telemetryDir(env), TELEMETRY_TOOL_INVOCATIONS_FILE_NAME);
+}
+
+function agentRunStopSeenDir(env = process.env) {
+  return path.join(telemetryDir(env), TELEMETRY_AGENT_RUN_STOP_SEEN_DIR_NAME);
 }
 
 
@@ -1268,6 +1273,7 @@ const INVENTORY_PROBE_DOMAIN = "example.com";
 const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
   "sessionDir",
   "sessionsRoot",
+  "agentRunStopSeenDir",
   "telemetryDir",
   "telemetryToolInvocationsJsonlPath",
   "isAuditGradedPath",
@@ -1340,6 +1346,7 @@ module.exports = {
   LARGE_BODY_THRESHOLD_BYTES,
   TELEMETRY_DIR_NAME,
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
+  agentRunStopSeenDir,
   assertHarnessId,
   assertSeedCorpusId,
   assertSafeDomain,
