@@ -175,15 +175,18 @@
     "install-browser": "npx patchright install chromium"
   },
   "dependencies": {
-    "@babel/parser": "^7.29.7",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.167",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.245",
     "@aws-sdk/client-s3": "^3.709.0",
     "@aws-sdk/client-securityhub": "^3.709.0",
+    "@babel/parser": "^7.29.7",
     "proxy-agent": "^8.0.1",
     "psl": "^1.15.0",
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
     "patchright": "^1.60.2"
+  },
+  "overrides": {
+    "undici": "6.28.0"
   }
 }
