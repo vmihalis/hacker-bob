@@ -2752,6 +2752,7 @@ test("Mechanism-A experiment runtime detects local rollback but stays non-produc
       attempt_id: `attempt-${crypto.randomBytes(4).toString("hex")}`,
       session_nucleus_hash: session.nucleus.nucleus_hash,
       trust_registry_digest: signerFixture.registry.registry_digest,
+      ingestion_policy: { max_future_skew_ms: 10_000, max_ingestion_delay_ms: 20_000 },
     });
     const trustEnrollment = enrollProductionPhysicalExperimentTrust({
       version: 1,
