@@ -341,7 +341,7 @@ Resources:
           trap signal_failure ERR
 
           dnf update -y
-          dnf install -y awscli curl docker git jq tar nodejs22 nodejs22-npm
+          dnf install -y awscli docker git jq tar nodejs22 nodejs22-npm
           alternatives --set node /usr/bin/node-22
           alternatives --set npm /usr/bin/npm-22
           node --version | grep -Eq '^v22\.'
