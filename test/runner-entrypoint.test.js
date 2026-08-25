@@ -146,7 +146,12 @@ function fakeChild({ code = 0, stdout = "", stderr = "", beforeClose = null } = 
   return child;
 }
 
-function recordingClient({ fail = null, events = [], closeError = null } = {}) {
+function recordingClient({
+  fail = null,
+  events = [],
+  closeError = null,
+  statusResult = null,
+} = {}) {
   const calls = [];
   const queries = [];
   let closed = false;
@@ -171,7 +176,8 @@ function recordingClient({ fail = null, events = [], closeError = null } = {}) {
         return { status: "created", slug: `${args.runSlug}-report` };
       }
       if (name === "runs:setStatus") {
-        return { runId: "run-id", status: args.status, applied: true };
+        const status = statusResult ? statusResult(args.status) : args.status;
+        return { runId: "run-id", status, applied: status === args.status };
       }
       return "id";
     },
@@ -421,6 +427,42 @@ test("main awaits the observable lifecycle, verifies the receipt, and completes 
     assert.match(completion.accessHash, /^[0-9a-f]{64}$/);
     assert.match(completion.accessSalt, /^[0-9a-f]{32}$/);
     assert.equal(completion.accessIter, 100000);
+  });
+});
+
+test("main resumes when host replay finds the control plane already running", async (t) => {
+  const runPayload = payload({ runSlug: "runner-host-replay" });
+  await withRunnerEnvironment(runPayload, async ({ sessionsRoot }) => {
+    writeCleanReceipt(runPayload);
+    fs.writeFileSync(
+      path.join(sessionsRoot, runPayload.targetDomain, "state.json"),
+      `${JSON.stringify({ lifecycle_state: "REPORT" })}\n`,
+    );
+    const client = recordingClient({
+      statusResult: (requested) => requested === "provisioning" ? "running" : requested,
+    });
+    t.mock.method(console, "log", () => {});
+    t.mock.method(console, "error", () => {});
+
+    const code = await entrypoint.main({
+      clientFactory: async () => client,
+      spawnFactory: () => fakeChild(),
+      clock: () => Date.UTC(2026, 7, 25, 12),
+      delay: immediateDelay,
+    });
+
+    assert.equal(code, 0);
+    assert.equal(client.closed, true);
+    assert.deepEqual(
+      client.calls
+        .filter((call) => call.name === "runs:setStatus")
+        .map((call) => call.args.status),
+      ["provisioning", "running", "sealing"],
+    );
+    assert.equal(
+      client.calls.some((call) => call.name === "reports:completeHostedRun"),
+      true,
+    );
   });
 });
 
