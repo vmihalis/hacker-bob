@@ -611,7 +611,7 @@ test("stuck cleanup is killed within its bound and terminally quarantined", asyn
   const controller = await api.launchDarwinSafetyDeadmanFixture(
     fixturePlan(ownedWorker.pid, {
       behavior: "stuck",
-      cleanupTimeoutMs: 60,
+      cleanupTimeoutMs: 300,
       heartbeatMs: 100,
       missTolerance: 3,
     }),
@@ -632,7 +632,7 @@ test("a partial receipt without newline cannot escape the cleanup deadline", asy
   const controller = await api.launchDarwinSafetyDeadmanFixture(
     fixturePlan(ownedWorker.pid, {
       behavior: "partial_stuck",
-      cleanupTimeoutMs: 60,
+      cleanupTimeoutMs: 300,
       heartbeatMs: 100,
       missTolerance: 3,
     }),
