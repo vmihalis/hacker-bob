@@ -40,7 +40,8 @@ constexpr uint64_t kNanosecondsPerMillisecond = 1000000ULL;
 constexpr uint64_t kMaximumDeadmanMs = 5000;
 constexpr uint64_t kMaximumCleanupMs = 2000;
 constexpr uint64_t kStartupCustodyMs = 10000;
-constexpr uint64_t kInjectedStartupCustodyMs = 300;
+constexpr uint64_t kInjectedBlockedStartupCustodyMs = 1000;
+constexpr uint64_t kInjectedExpiredStartupCustodyMs = 300;
 constexpr const char* kSemanticDomain =
     "hacker-bob/darwin-safety-semantic-cleanup/v1";
 constexpr const char* kJournalDomain =
@@ -2046,11 +2047,15 @@ bool StartCleanupCustodian(
   AbsoluteDeadline startup_deadline;
   const bool injected_block =
       config.fixture_behavior == "watchdog_block_first_journal_fsync" ||
-      config.fixture_behavior == "watchdog_block_ready_output" ||
+      config.fixture_behavior == "watchdog_block_ready_output";
+  const bool injected_expiry =
       config.fixture_behavior == "custody_late_arm_after_expiry";
+  const uint64_t startup_custody_ms = injected_block
+      ? kInjectedBlockedStartupCustodyMs
+      : injected_expiry ? kInjectedExpiredStartupCustodyMs : kStartupCustodyMs;
   if (!BuildAbsoluteDeadline(
-          injected_block ? kInjectedStartupCustodyMs : kStartupCustodyMs,
-          &startup_deadline) || !CreatePipe(command) || !CreatePipe(receipt)) {
+          startup_custody_ms, &startup_deadline) ||
+      !CreatePipe(command) || !CreatePipe(receipt)) {
     ClosePipe(command);
     ClosePipe(receipt);
     return false;
