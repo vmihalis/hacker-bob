@@ -3,6 +3,7 @@
 const crypto = require("node:crypto");
 const http = require("node:http");
 const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 
 const LISTEN_HOST = "127.0.0.1";
 const LISTEN_PORT = 48125;
@@ -183,7 +184,7 @@ function createToolFilterHandler({ apiKey, fetchImpl = fetch } = {}) {
         response.end();
         return;
       }
-      Readable.fromWeb(upstream.body).pipe(response);
+      await pipeline(Readable.fromWeb(upstream.body), response);
     } catch {
       if (controller.signal.aborted || response.headersSent) {
         response.destroy();

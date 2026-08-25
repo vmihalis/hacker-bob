@@ -45,6 +45,8 @@ function request(server, { authorization, body }) {
         status: response.statusCode,
         body: Buffer.concat(chunks).toString("utf8"),
       }));
+      response.once("aborted", () => reject(new Error("response aborted")));
+      response.once("error", reject);
     });
     req.once("error", reject);
     req.end(body);
@@ -196,6 +198,49 @@ test("loopback proxy maps upstream transport failure to a retryable response", a
   });
   assert.equal(result.status, 502);
   assert.equal(result.body, '{"error":"upstream_unavailable"}');
+});
+
+test("loopback proxy survives upstream body termination so Codex can retry", async (t) => {
+  let calls = 0;
+  const server = await startToolFilterProxy({
+    apiKey: "stream-contract-key",
+    port: 0,
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: partial\n\n"));
+            queueMicrotask(() => controller.error(new TypeError("terminated")));
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  t.after(() => closeServer(server));
+
+  await assert.rejects(
+    request(server, {
+      authorization: "Bearer stream-contract-key",
+      body: JSON.stringify(validRequest()),
+    }),
+    /aborted|terminated|reset|socket hang up/i,
+  );
+
+  const recovered = await request(server, {
+    authorization: "Bearer stream-contract-key",
+    body: JSON.stringify(validRequest()),
+  });
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body, '{"ok":true}');
+  assert.equal(calls, 2);
 });
 
 test("MCP launcher exposes only the runner capability environment", () => {
