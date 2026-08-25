@@ -8,5 +8,8 @@
   },
   "scripts": {
     "test": "node --test"
+  },
+  "dependencies": {
+    "convex": "1.44.0"
   }
 }

@@ -78,6 +78,40 @@ function normalizeSurfaceType(value) {
   return trimmed;
 }
 
+const REQUEST_METHOD_VALUES = Object.freeze([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+  "HEAD",
+  "TRACE",
+]);
+const CONTROL_CHARACTER_RE = /[\u0000-\u001f\u007f-\u009f]/;
+
+function normalizeRequestMethod(value) {
+  const normalized = normalizeOptionalText(value, "request_method");
+  if (normalized == null) return null;
+  const method = normalized.toUpperCase();
+  if (!REQUEST_METHOD_VALUES.includes(method)) {
+    throw new Error(`request_method must be one of: ${REQUEST_METHOD_VALUES.join(", ")}`);
+  }
+  return method;
+}
+
+function normalizeContinuityText(value, fieldName, maxLength) {
+  const normalized = normalizeOptionalText(value, fieldName);
+  if (normalized == null) return null;
+  if (CONTROL_CHARACTER_RE.test(normalized)) {
+    throw new Error(`${fieldName} must not contain control characters`);
+  }
+  if (normalized.length > maxLength) {
+    throw new Error(`${fieldName} must be at most ${maxLength} characters`);
+  }
+  return normalized;
+}
+
 // The structured PoC recipe an OSS native-code finding declares: the exact argv
 // the reproduction verifier re-runs on the vuln tree and the upstream-fix tree to
 // confirm a differential flip. Distinct from the free-text repro_command (a human
@@ -528,6 +562,11 @@ function normalizeEndpointPocFindingRecord(record, { expectedDomain = null, line
       severity,
       cwe: assertCwe(record.cwe, "cwe", { required: cweRequired, strictPresent: requireCwe }),
       endpoint: assertRequiredText(record.endpoint, "endpoint"),
+      request_method: normalizeRequestMethod(record.request_method),
+      injection_point: normalizeContinuityText(record.injection_point, "injection_point", 200),
+      graphql_operation: normalizeContinuityText(record.graphql_operation, "graphql_operation", 128),
+      graphql_resolver: normalizeContinuityText(record.graphql_resolver, "graphql_resolver", 256),
+      source_surface_type: normalizeContinuityText(record.source_surface_type, "source_surface_type", 64),
       file_path: normalizeOptionalText(record.file_path, "file_path"),
       symbol: normalizeOptionalText(record.symbol, "symbol"),
       manifest: normalizeOptionalText(record.manifest, "manifest"),
@@ -757,6 +796,7 @@ module.exports = {
   declaredFindingRecordAdapter,
   normalizeBech32Address,
   normalizeFindingRecord,
+  normalizeEndpointForDedupe,
   normalizeReachabilityAssertion,
   normalizeSignatureVerificationStatus,
   findingSupportsReachabilityAssertion,

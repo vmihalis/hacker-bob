@@ -17,7 +17,12 @@ const {
 } = require("./finding-artifact.js");
 const {
   computeFindingDedupeKey,
+  normalizeEndpointForDedupe,
 } = require("./finding-contracts.js");
+const {
+  assertValidCwe,
+  cweTitle,
+} = require("./cwe-catalog.js");
 const {
   loadFinalVerificationDocument,
 } = require("./report-finalize.js");
@@ -27,27 +32,18 @@ const {
 const {
   gradeArtifactPaths,
 } = require("./paths.js");
+const {
+  CHAIN_FAMILY_VALUES,
+} = require("./constants.js");
 
 const FINGERPRINT_VERSION = 1;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const CONSOLE_REPORT_MAX_BYTES = 900000;
+const CONSOLE_REPORT_MAX_FINDINGS = 10000;
 
-// www/convex/lib/validators.ts surfaceType union. The engine's surface_type
-// vocabulary is close but not identical; unknown values map to "api" rather
-// than failing the projection.
-const PROJECTION_SURFACE_TYPES = new Set([
-  "admin",
-  "api",
-  "auth",
-  "billing",
-  "ci_cd",
-  "cms",
-  "graphql",
-  "js_endpoint",
-  "mobile_api",
-  "secrets",
-  "static",
-  "upload",
-  "smart_contract",
-]);
+// Core findings have a narrower technology classification than www. Preserve
+// those two values exactly and fail closed if a malformed artifact reaches this
+// boundary.
 
 // www findings.ts severity union. "info"-graded findings are not reportable
 // medium+ and are excluded from projection (mapped to null here).
@@ -58,63 +54,165 @@ function projectionSeverity(severity) {
   return null;
 }
 
-// Core DEFENDER_DISPOSITION_VALUES (fix_now/worth_fixing/watch/held) ->
-// www disposition union (fix-now/worth-fixing/watch/held). Absent on legacy
-// verdicts; fall back to worth-fixing rather than inventing a held state.
-function projectionDisposition(defenderDisposition) {
+// Core DEFENDER_DISPOSITION_VALUES (fix_now/worth_fixing/watch/held) map to
+// the www disposition union. Grading is authoritative; projection never
+// fabricates a disposition for absent or unknown grade facts.
+function projectionDisposition(defenderDisposition, findingId = "unknown") {
   switch (defenderDisposition) {
     case "fix_now": return "fix-now";
     case "worth_fixing": return "worth-fixing";
     case "watch": return "watch";
     case "held": return "held";
-    default: return "worth-fixing";
+    default:
+      throw new Error(
+        `finding ${findingId} has missing or unsupported defender_disposition: ${String(defenderDisposition)}`,
+      );
   }
 }
 
 function projectionSurfaceType(surfaceType) {
-  const normalized = String(surfaceType || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return PROJECTION_SURFACE_TYPES.has(normalized) ? normalized : "api";
+  if (surfaceType === "web") return "web";
+  if (surfaceType === "smart_contract") return "smart_contract";
+  throw new Error(`unsupported projection surface_type: ${String(surfaceType)}`);
 }
 
-const CWE_NAMES = {
-  "CWE-862": "Missing Authorization",
-  "CWE-863": "Incorrect Authorization",
-  "CWE-284": "Improper Access Control",
-  "CWE-306": "Missing Authentication for Critical Function",
-  "CWE-918": "Server-Side Request Forgery",
-  "CWE-89": "SQL Injection",
-  "CWE-79": "Cross-site Scripting",
-  "CWE-352": "Cross-Site Request Forgery",
-  "CWE-287": "Improper Authentication",
-  "CWE-200": "Exposure of Sensitive Information",
-  "CWE-269": "Improper Privilege Management",
-  "CWE-639": "Authorization Bypass Through User-Controlled Key",
-  "CWE-601": "Open Redirect",
-  "CWE-22": "Path Traversal",
-  "CWE-611": "XML External Entity",
-  "CWE-502": "Insecure Deserialization",
-};
-
-function projectionCwe(cwe) {
-  const id = String(cwe || "").trim();
-  if (!id) return [];
-  return [{ id, name: CWE_NAMES[id] || id }];
-}
-
-// Generalize an endpoint to its route template: numeric, uuid-shaped, and
-// long-hex segments become {param}; the query string is dropped. Stable
-// across concrete ids so retests correlate to the same fingerprint.
-function templateEndpoint(endpoint) {
-  const raw = String(endpoint || "").trim();
-  if (!raw) return "";
-  let hostPath = raw;
-  try {
-    const parsed = new URL(raw);
-    hostPath = `${parsed.host}${parsed.pathname}`;
-  } catch {
-    hostPath = raw.split("?")[0];
+function assertProjectionContinuity(finding, findingId, surfaceType) {
+  if (surfaceType !== "web") return;
+  const missingWeb = [];
+  if (typeof finding.request_method !== "string" || !finding.request_method.trim()) {
+    missingWeb.push("request_method");
   }
-  return hostPath
+  if (typeof finding.injection_point !== "string" || !finding.injection_point.trim()) {
+    missingWeb.push("injection_point");
+  }
+  if (missingWeb.length > 0) {
+    throw new Error(`finding ${findingId} lacks dispatched web continuity fields: ${missingWeb.join(", ")}`);
+  }
+
+  const sourceSurfaceType = typeof finding.source_surface_type === "string"
+    ? finding.source_surface_type.trim().toLowerCase()
+    : "";
+  const isGraphql = sourceSurfaceType === "graphql"
+    || finding.graphql_operation != null
+    || finding.graphql_resolver != null;
+  if (!isGraphql) return;
+  const missingGraphql = [];
+  if (typeof finding.graphql_operation !== "string" || !finding.graphql_operation.trim()) {
+    missingGraphql.push("graphql_operation");
+  }
+  if (typeof finding.graphql_resolver !== "string" || !finding.graphql_resolver.trim()) {
+    missingGraphql.push("graphql_resolver");
+  }
+  if (missingGraphql.length > 0) {
+    throw new Error(`finding ${findingId} lacks dispatched GraphQL continuity fields: ${missingGraphql.join(", ")}`);
+  }
+}
+
+function projectionCwe(cwe, findingId = "unknown") {
+  let id;
+  try {
+    id = assertValidCwe(cwe);
+  } catch {
+    throw new Error(`finding ${findingId} has missing or unsupported CWE: ${String(cwe)}`);
+  }
+  const name = cweTitle(id);
+  if (!name) throw new Error(`finding ${findingId} has missing or unsupported CWE: ${id}`);
+  return [{ id, name }];
+}
+
+function projectionDisplayFields(cweRow, surfaceType, sourceSurfaceType) {
+  const source = typeof sourceSurfaceType === "string" ? sourceSurfaceType.trim().toLowerCase() : "";
+  const surfaceLabel = surfaceType === "smart_contract"
+    ? "Smart contract"
+    : (source === "graphql" ? "GraphQL" : (source === "api" ? "Web API" : "Web"));
+  return {
+    title: `${cweRow.name} — ${surfaceLabel}`,
+    plainRead: `${surfaceLabel} finding classified as ${cweRow.id}: ${cweRow.name}.`,
+  };
+}
+
+function projectionGradeFields(gradeEntry, findingId) {
+  for (const field of [
+    "total_score",
+    "impact",
+    "proof_quality",
+    "severity_accuracy",
+    "chain_potential",
+    "report_quality",
+  ]) {
+    if (!Number.isFinite(gradeEntry[field])) {
+      throw new Error(`finding ${findingId} lacks valid grade field: ${field}`);
+    }
+  }
+  return {
+    score: gradeEntry.total_score,
+    scoreAxes: {
+      impact: gradeEntry.impact,
+      proof: gradeEntry.proof_quality,
+      severityAccuracy: gradeEntry.severity_accuracy,
+      chain: gradeEntry.chain_potential,
+      report: gradeEntry.report_quality,
+    },
+  };
+}
+
+function projectionSurfaceFields(finding, findingId, surfaceType) {
+  if (surfaceType === "web") {
+    return { endpoint: safeRouteTemplate(finding.endpoint) };
+  }
+  const evidence = finding.sc_evidence;
+  if (evidence == null || typeof evidence !== "object" || Array.isArray(evidence)) {
+    throw new Error(`finding ${findingId} lacks normalized smart-contract evidence`);
+  }
+  const chainFamily = typeof evidence.chain_family === "string"
+    ? evidence.chain_family.trim().toLowerCase()
+    : "";
+  if (!CHAIN_FAMILY_VALUES.includes(chainFamily)) {
+    throw new Error(`finding ${findingId} has unsupported smart-contract chain family`);
+  }
+  const chainId = typeof evidence.chain_id === "number"
+    ? String(evidence.chain_id)
+    : (typeof evidence.chain_id === "string" ? evidence.chain_id.trim() : "");
+  const contractIdentity = typeof evidence.contract_address === "string"
+    ? evidence.contract_address.trim()
+    : "";
+  const functionSignature = typeof evidence.function_signature === "string"
+    ? evidence.function_signature.trim()
+    : "";
+  if (!chainId || !contractIdentity || !functionSignature) {
+    throw new Error(`finding ${findingId} lacks normalized smart-contract identity fields`);
+  }
+  return {
+    chainFamily,
+    scEvidence: {
+      chainId,
+      contractIdentity,
+      functionSignature,
+    },
+  };
+}
+
+// Generalize an endpoint to a browser-safe route template: numeric,
+// UUID-shaped, and long-hex path segments become {param}. Query values are
+// discarded by normalizeEndpointForDedupe while sorted key placeholders are
+// retained, so continuity distinguishes parameter shape without exposing data.
+function safeRouteTemplate(endpoint) {
+  const normalized = normalizeEndpointForDedupe(endpoint);
+  if (!normalized) return "";
+  let hostPath = normalized;
+  let query = "";
+  try {
+    const parsed = new URL(normalized);
+    hostPath = `${parsed.host}${parsed.pathname}`;
+    query = parsed.search;
+  } catch {
+    const queryIndex = normalized.indexOf("?");
+    if (queryIndex >= 0) {
+      hostPath = normalized.slice(0, queryIndex);
+      query = normalized.slice(queryIndex);
+    }
+  }
+  const route = hostPath
     .split("/")
     .map((segment) => {
       if (/^\d+$/.test(segment)) return "{param}";
@@ -125,22 +223,110 @@ function templateEndpoint(endpoint) {
       return segment;
     })
     .join("/");
+  return `${route}${query}`;
 }
 
-// ADR-002 fingerprint v1: sha256 over the canonical JSON of the stable parts.
-function fingerprintV1({ domain, endpoint, cwe, authProfile, surfaceType }) {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify([
-      domain,
-      templateEndpoint(endpoint),
-      cwe || "",
-      authProfile || "",
-      surfaceType,
-    ]))
-    .digest("hex");
+function requiredFingerprintText(value, fieldName, findingId) {
+  const text = typeof value === "number" ? String(value) : (typeof value === "string" ? value.trim() : "");
+  if (!text) {
+    throw new Error(`finding ${findingId} lacks fingerprint input: ${fieldName}`);
+  }
+  return text;
 }
 
+// ADR-002 fingerprint v1: sha256 over the canonical JSON of the continuity
+// tuple. The PR is not merged, so version 1 is replaced rather than migrated.
+function fingerprintV1({
+  findingId,
+  domain,
+  endpoint,
+  requestMethod,
+  injectionPoint,
+  graphqlOperation,
+  graphqlResolver,
+  cwe,
+  authProfile,
+  surfaceType,
+  sourceSurfaceType,
+  scEvidence,
+}) {
+  const id = requiredFingerprintText(findingId, "finding_id", "unknown");
+  const primaryCwe = requiredFingerprintText(cwe, "primary_cwe", id).toUpperCase();
+  let parts;
+  if (surfaceType === "smart_contract") {
+    if (scEvidence == null || typeof scEvidence !== "object" || Array.isArray(scEvidence)) {
+      throw new Error(`finding ${id} lacks fingerprint input: sc_evidence`);
+    }
+    const chainFamily = requiredFingerprintText(
+      scEvidence.chain_family,
+      "sc_evidence.chain_family",
+      id,
+    ).toLowerCase();
+    const chainId = requiredFingerprintText(scEvidence.chain_id, "sc_evidence.chain_id", id);
+    const rawAddress = requiredFingerprintText(
+      scEvidence.contract_address,
+      "sc_evidence.contract_address",
+      id,
+    );
+    const contractAddress = ["evm", "aptos", "sui", "cosmwasm"].includes(chainFamily)
+      ? rawAddress.toLowerCase()
+      : rawAddress;
+    const functionSignature = requiredFingerprintText(
+      scEvidence.function_signature,
+      "sc_evidence.function_signature",
+      id,
+    );
+    parts = [
+      chainFamily,
+      [chainId, contractAddress],
+      functionSignature,
+      primaryCwe,
+      "smart_contract",
+    ];
+  } else {
+    const canonicalDomain = requiredFingerprintText(domain, "domain", id).toLowerCase();
+    const injection = requiredFingerprintText(injectionPoint, "injection_point", id);
+    const auth = requiredFingerprintText(authProfile, "auth_profile", id);
+    const source = typeof sourceSurfaceType === "string" ? sourceSurfaceType.trim().toLowerCase() : "";
+    const isGraphql = source === "graphql" || graphqlOperation != null || graphqlResolver != null;
+    if (isGraphql) {
+      parts = [
+        canonicalDomain,
+        requiredFingerprintText(graphqlOperation, "graphql_operation", id),
+        requiredFingerprintText(graphqlResolver, "graphql_resolver", id),
+        injection,
+        primaryCwe,
+        auth,
+        "graphql",
+      ];
+    } else {
+      parts = [
+        canonicalDomain,
+        requiredFingerprintText(requestMethod, "request_method", id).toUpperCase(),
+        requiredFingerprintText(safeRouteTemplate(endpoint), "safe_route_template", id),
+        injection,
+        primaryCwe,
+        auth,
+        requiredFingerprintText(surfaceType, "surface_type", id),
+      ];
+    }
+  }
+  return crypto.createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+function assertConsoleReportBounds(domain, findings) {
+  if (findings.length > CONSOLE_REPORT_MAX_FINDINGS) {
+    throw new Error(`console report must contain at most ${CONSOLE_REPORT_MAX_FINDINGS} findings`);
+  }
+  const modelJson = JSON.stringify({
+    schemaVersion: 1,
+    domain,
+    findings,
+  });
+  if (Buffer.byteLength(modelJson, "utf8") > CONSOLE_REPORT_MAX_BYTES) {
+    throw new Error(`console report must be ${CONSOLE_REPORT_MAX_BYTES} bytes or fewer`);
+  }
+}
 // Build the www projectedFinding rows from the assembled artifact. Each row
 // is display-safe: no repro steps, no raw evidence — only the verified
 // summary fields the retained ledger admits. The defender disposition and
@@ -162,6 +348,7 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
     if (entry && entry.finding_id) gradesById.set(entry.finding_id, entry);
   }
   const rows = [];
+  const findingIdsByFingerprint = new Map();
   for (const artifactFinding of document.findings) {
     const result = resultsById.get(artifactFinding.id);
     const finding = findingsById.get(artifactFinding.id) || {};
@@ -169,14 +356,38 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
     const severity = projectionSeverity(artifactFinding.severity);
     if (!severity) continue; // info-graded findings never enter the retained ledger
     const surfaceType = projectionSurfaceType(finding.surface_type);
+    assertProjectionContinuity(finding, artifactFinding.id, surfaceType);
+    const projectedCwe = projectionCwe(finding.cwe, artifactFinding.id);
+    const display = projectionDisplayFields(
+      projectedCwe[0],
+      surfaceType,
+      finding.source_surface_type,
+    );
+    const gradeFields = projectionGradeFields(gradeEntry, artifactFinding.id);
+    const surfaceFields = projectionSurfaceFields(finding, artifactFinding.id, surfaceType);
+    const fingerprint = fingerprintV1({
+      findingId: artifactFinding.id,
+      domain,
+      endpoint: finding.endpoint,
+      requestMethod: finding.request_method,
+      injectionPoint: finding.injection_point,
+      graphqlOperation: finding.graphql_operation,
+      graphqlResolver: finding.graphql_resolver,
+      cwe: finding.cwe,
+      authProfile: finding.auth_profile,
+      surfaceType,
+      sourceSurfaceType: finding.source_surface_type,
+      scEvidence: finding.sc_evidence,
+    });
+    const priorFindingId = findingIdsByFingerprint.get(fingerprint);
+    if (priorFindingId) {
+      throw new Error(
+        `findings ${priorFindingId} and ${artifactFinding.id} resolve to duplicate projection fingerprint ${fingerprint}`,
+      );
+    }
+    findingIdsByFingerprint.set(fingerprint, artifactFinding.id);
     const row = {
-      fingerprint: fingerprintV1({
-        domain,
-        endpoint: finding.endpoint,
-        cwe: finding.cwe,
-        authProfile: finding.auth_profile,
-        surfaceType,
-      }),
+      fingerprint,
       fingerprintVersion: FINGERPRINT_VERSION,
       refId: artifactFinding.id,
       dedupeKey: computeFindingDedupeKey({
@@ -188,17 +399,17 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
         response_evidence: finding.response_evidence,
         proof_of_concept: finding.proof_of_concept,
       }),
-      title: artifactFinding.title,
-      plainRead: artifactFinding.what_it_is || artifactFinding.title,
+      title: display.title,
+      plainRead: display.plainRead,
       severity,
-      disposition: projectionDisposition(gradeEntry.defender_disposition),
+      disposition: projectionDisposition(gradeEntry.defender_disposition, artifactFinding.id),
+      ...gradeFields,
       reproduced: result ? result.disposition === "confirmed" : false,
       reachable: result ? result.reportable === true : false,
       reportable: true,
-      cwe: projectionCwe(finding.cwe),
+      cwe: projectedCwe,
       surfaceType,
-      endpoint: finding.endpoint ? String(finding.endpoint) : undefined,
-      remediation: finding.remediation ? String(finding.remediation) : undefined,
+      ...surfaceFields,
       evidenceHash: bundle.evidence_hash,
       snapshotHash: bundle.final_verification_hash,
       open: true,
@@ -219,6 +430,24 @@ function buildProjectionPayload(targetDomain, {
   retestOf = [],
   findings = null,
 } = {}) {
+  if (kind !== "assessment" && kind !== "retest") {
+    throw new Error(`unsupported dispatch kind: ${String(kind)}`);
+  }
+  if (
+    !Array.isArray(retestOf) ||
+    retestOf.length > 100 ||
+    retestOf.some((fingerprint) => typeof fingerprint !== "string" || !SHA256_RE.test(fingerprint)) ||
+    new Set(retestOf).size !== retestOf.length
+  ) {
+    throw new Error("retestOf must contain at most 100 unique lowercase SHA-256 fingerprints");
+  }
+  if (
+    (kind === "assessment" && retestOf.length !== 0) ||
+    (kind === "retest" && retestOf.length === 0)
+  ) {
+    throw new Error("dispatch kind and retestOf do not match");
+  }
+
   const domain = targetDomain;
   const assembled = assembleFindingArtifact(domain, { findings });
   const gradeDocument = loadJsonDocumentStrict(
@@ -228,21 +457,31 @@ function buildProjectionPayload(targetDomain, {
   const projectedFindings = assembled.emitted
     ? buildProjectionFindings(domain, assembled.document, assembled.bundle, assembled.findings, gradeDocument)
     : [];
+  assertConsoleReportBounds(domain, projectedFindings);
+  const reproducedFingerprints = new Set(projectedFindings.map((finding) => finding.fingerprint));
+  const closureMarkers = kind === "retest"
+    ? retestOf
+      .filter((fingerprint) => !reproducedFingerprints.has(fingerprint))
+      .map((fingerprint) => ({ fingerprint, open: false }))
+    : [];
   const payload = {
     runSlug,
     projectionKey,
     freezeHash: assembled.bundle.claim_freeze_hash,
     snapshotHash: assembled.bundle.final_verification_hash,
     kind: kind === "retest" ? "retest" : "scan",
-    findings: projectedFindings,
+    findings: [...projectedFindings, ...closureMarkers],
   };
   if (reportSlug) payload.reportSlug = reportSlug;
-  if (Array.isArray(retestOf) && retestOf.length > 0) payload.retestOf = retestOf;
+  if (retestOf.length > 0) payload.retestOf = retestOf;
   return { payload, assembled };
 }
 
 module.exports = {
+  CONSOLE_REPORT_MAX_BYTES,
+  CONSOLE_REPORT_MAX_FINDINGS,
   FINGERPRINT_VERSION,
+  assertConsoleReportBounds,
   buildProjectionFindings,
   buildProjectionPayload,
   fingerprintV1,
@@ -250,5 +489,5 @@ module.exports = {
   projectionDisposition,
   projectionSeverity,
   projectionSurfaceType,
-  templateEndpoint,
+  safeRouteTemplate,
 };

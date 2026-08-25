@@ -1,10 +1,10 @@
 # Dockerfile.runner-ec2 — the Release A runner image.
 #
-# Bob engine (unmodified mcp/ tree) + DeepSeek Harness (pinned) + the EC2
-# entrypoint. The dsh composition mounts ONLY the Bob MCP server as the model's
-# tool surface: no dsh-native bash/fs/subprocess tools, so every offensive
-# action stays behind Bob's scope/egress kernel. No AgentCore SDK, no Claude
-# CLI, no Bedrock settings — this image is the EC2 path only.
+# Bob engine (unmodified mcp/ tree) + pinned Codex runtime + DeepSeek V4 + the
+# EC2 entrypoint. A loopback filter removes every Codex-native tool before the
+# request reaches DeepSeek, leaving ONLY the Bob MCP namespace so every
+# offensive action stays behind Bob's scope/egress kernel. No AgentCore SDK,
+# Claude CLI, OpenAI model, or Bedrock settings — this image is the EC2 path.
 
 FROM node:22-bookworm-slim
 
@@ -12,27 +12,61 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates jq \
   && rm -rf /var/lib/apt/lists/*
 
-# --- pinned DeepSeek Harness (developer preview: pin exact, bump deliberately) ---
-RUN npm install -g @deepseek-ai/dsh@0.1.1-rc.2
+ENV HOME=/workspace
+
 
 # --- hacker-bob engine (UNMODIFIED) ---
 WORKDIR /opt/hacker-bob
 COPY mcp/ ./mcp/
+COPY infra/aws/hacker-bob-stack/finding-artifact.schema.json ./infra/aws/hacker-bob-stack/finding-artifact.schema.json
+COPY packages/bob-instrument-contracts/ ./packages/bob-instrument-contracts/
 COPY scripts/ ./scripts/
 COPY adapters/ ./adapters/
 COPY package.json package-lock.json ./
 COPY packages/bob-diff-review/package.json ./packages/bob-diff-review/package.json
 RUN npm ci --omit=dev --omit=optional
-# Convex client for the entrypoint (runs.setStatus/appendEvent, reports.publish).
-RUN npm install --save-exact convex@1.44.0
 
-# --- runner files ---
-COPY infra/runner/dsh/cordis.yml /opt/bob-runner/cordis.yml
+# Shared locked Convex runtime for awaited run lifecycle and atomic hosted completion.
+COPY infra/runner-host/dispatch/package.json infra/runner-host/dispatch/package-lock.json /opt/bob-runner/runtime/
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+      --prefix /opt/bob-runner/runtime
+
+# Patchright is isolated from the root optional dependencies so the runner gets
+# exactly one browser library without installing the unused Claude CLI platform package.
+COPY infra/runner/browser-runtime/package.json infra/runner/browser-runtime/package-lock.json /opt/bob-runner/browser-runtime/
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+      --prefix /opt/bob-runner/browser-runtime \
+  && ln -s /opt/bob-runner/browser-runtime/node_modules/patchright \
+      /opt/hacker-bob/node_modules/patchright \
+  && mkdir -p /workspace \
+  && node /opt/bob-runner/browser-runtime/node_modules/patchright/cli.js install --with-deps chromium \
+  && node -e 'const fs=require("fs");const {chromium}=require("patchright");const executable=chromium.executablePath();if(!fs.existsSync(executable))throw new Error(`missing Chromium: ${executable}`);' \
+  && node -e '(async()=>{const {chromium}=require("patchright");const browser=await chromium.launch({headless:true});await browser.close()})().catch((error)=>{console.error(error);process.exit(1)})'
+
+# Internal modules loaded by the MCP registry and its physical-tool fail-closed paths.
+COPY packages/bob-artifact-vault/package.json ./packages/bob-artifact-vault/package.json
+COPY packages/bob-artifact-vault/lib/ ./packages/bob-artifact-vault/lib/
+COPY packages/bob-instrument-broker/package.json ./packages/bob-instrument-broker/package.json
+COPY packages/bob-instrument-broker/lib/ ./packages/bob-instrument-broker/lib/
+COPY packages/bob-instrument-chameleon/package.json ./packages/bob-instrument-chameleon/package.json
+COPY packages/bob-instrument-chameleon/lib/ ./packages/bob-instrument-chameleon/lib/
+COPY packages/bob-instrument-chameleon-worker/package.json ./packages/bob-instrument-chameleon-worker/package.json
+COPY packages/bob-instrument-chameleon-worker/lib/ ./packages/bob-instrument-chameleon-worker/lib/
+COPY packages/bob-instrument-chameleon-worker-runtime/package.json ./packages/bob-instrument-chameleon-worker-runtime/package.json
+COPY packages/bob-instrument-chameleon-worker-runtime/lib/ ./packages/bob-instrument-chameleon-worker-runtime/lib/
+
+# --- locked Codex + DeepSeek runner and entrypoint ---
+COPY infra/runner/codex/package.json infra/runner/codex/package-lock.json /opt/codex-runtime/
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+      --prefix /opt/codex-runtime
+COPY infra/runner/codex/ /opt/codex-home/
 COPY infra/runner/entrypoint.js /opt/bob-runner/entrypoint.js
 
-ENV HOME=/workspace
+ENV CODEX_HOME=/opt/codex-home
+ENV PATH=/opt/codex-runtime/node_modules/.bin:$PATH
 ENV BOB_SESSIONS_ROOT=/workspace/hacker-bob-sessions
-ENV DEEPSEEK_BASE_URL=
 WORKDIR /opt/bob-runner
+RUN node -e 'const server=require("/opt/hacker-bob/mcp/server.js");if(!Array.isArray(server.TOOLS)||server.TOOLS.length===0)throw new Error("Bob MCP tool registry is empty")'
+RUN node /opt/codex-home/assert-profile.js
 
 ENTRYPOINT ["node", "/opt/bob-runner/entrypoint.js"]

@@ -373,6 +373,10 @@ function buildFindingPayloadRecord(args, context, findingId, { requireCwe = fals
     severity: args.severity,
     cwe: args.cwe,
     endpoint: args.endpoint,
+    request_method: args.request_method,
+    injection_point: args.injection_point,
+    graphql_operation: args.graphql_operation,
+    graphql_resolver: args.graphql_resolver,
     // OSS-mode locator fields. The validators in finding-contracts.js cap
     // length and reject empty strings; recorders that omit them keep the
     // legacy web-shaped finding payload unchanged.
@@ -392,6 +396,7 @@ function buildFindingPayloadRecord(args, context, findingId, { requireCwe = fals
     agent: context.agent,
     surface_id: context.surfaceId,
     surface_type: context.surfaceType,
+    source_surface_type: context.sourceSurfaceType,
     capability_pack: context.capabilityPack,
     evaluator_agent: context.evaluatorAgent,
     brief_profile: context.briefProfile,
@@ -595,6 +600,10 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
     "severity",
     "cwe",
     "endpoint",
+    "request_method",
+    "injection_point",
+    "graphql_operation",
+    "graphql_resolver",
     "file_path",
     "symbol",
     "manifest",
@@ -611,6 +620,7 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
     "agent",
     "surface_id",
     "surface_type",
+    "source_surface_type",
     "capability_pack",
     "evaluator_agent",
     "brief_profile",
@@ -690,6 +700,7 @@ function recordCandidateClaimHandler(args) {
   let agent = null;
   let surfaceId = null;
   let surfaceType = null;
+  let sourceSurfaceType = null;
   let capabilityPack = null;
   let evaluatorAgent = null;
   let briefProfile = null;
@@ -698,8 +709,11 @@ function recordCandidateClaimHandler(args) {
     agent = parseAgentId(args.agent);
     surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
     const assignment = validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
-    const rawSurfaceType = assignment && assignment.surface_type ? assignment.surface_type : null;
+    const rawSurfaceType = assignment && typeof assignment.surface_type === "string"
+      ? assignment.surface_type.trim().toLowerCase()
+      : null;
     surfaceType = rawSurfaceType === "smart_contract" ? "smart_contract" : "web";
+    sourceSurfaceType = rawSurfaceType;
     capabilityPack = assignment.capability_pack || null;
     evaluatorAgent = assignment.evaluator_agent || null;
     briefProfile = assignment.brief_profile || null;
@@ -709,6 +723,7 @@ function recordCandidateClaimHandler(args) {
       throw new Error("sc_evidence findings must be recorded with wave and agent so the routed capability pack is captured from the assignment");
     }
     surfaceType = "web";
+    sourceSurfaceType = "web";
     capabilityPack = "web";
     evaluatorAgent = "evaluator-agent";
     briefProfile = "web";
@@ -721,6 +736,7 @@ function recordCandidateClaimHandler(args) {
       agent,
       surfaceId,
       surfaceType,
+      sourceSurfaceType,
       capabilityPack,
       evaluatorAgent,
       briefProfile,
@@ -903,7 +919,7 @@ function degradedReportableFindingIds(domain) {
 module.exports = Object.freeze({
   name: "bob_record_candidate_claim",
   description:
-    "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Survives context rotation.",
+    "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Reportable web findings must record request_method and injection_point; GraphQL findings must also record graphql_operation and graphql_resolver. Survives context rotation.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -928,6 +944,32 @@ module.exports = Object.freeze({
       },
       "endpoint": {
         "type": "string"
+      },
+      "request_method": {
+        "type": "string",
+        "maxLength": 16,
+        "description": "HTTP request method for continuity. Required on every new reportable web finding and normalized to GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE."
+      },
+      "injection_point": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+        "description": "Structured attacker-controlled input location, for example path:order_id, query:returnUrl, header:X-Tenant, or json:user.id. Required on every new reportable web finding."
+      },
+      "graphql_operation": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+        "description": "GraphQL operation name. Required together with graphql_resolver for every new reportable GraphQL finding."
+      },
+      "graphql_resolver": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+        "description": "GraphQL resolver path, for example Mutation.updateUserRole or Query.invoice. Required together with graphql_operation for every new reportable GraphQL finding."
       },
       "file_path": {
         "type": "string",

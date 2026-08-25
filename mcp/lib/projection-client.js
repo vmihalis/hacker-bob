@@ -8,6 +8,36 @@
 // refuses to complete rather than silently losing sealed findings.
 
 const DELAY_CAP_MS = 30000;
+const RESPONSE_BODY_MAX_BYTES = 64 * 1024;
+
+async function readBoundedResponseText(response) {
+  const contentLength = response.headers?.get?.("content-length");
+  if (/^\d+$/u.test(contentLength || "") && Number(contentLength) > RESPONSE_BODY_MAX_BYTES) {
+    throw new Error(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
+  }
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      total += chunk.length;
+      if (total > RESPONSE_BODY_MAX_BYTES) {
+        try { await reader.cancel(); } catch {}
+        throw new Error(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, total).toString("utf8");
+  }
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > RESPONSE_BODY_MAX_BYTES) {
+    throw new Error(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
+  }
+  return text;
+}
 
 function delayFor(attempt, initialDelayMs) {
   return Math.min(initialDelayMs * 2 ** (attempt - 1), DELAY_CAP_MS);
@@ -21,6 +51,29 @@ function sleep(ms) {
 // 2xx, or { ok:false, status, error, attempts } on a definitive non-2xx
 // (4xx — the payload or capability is wrong, retrying cannot fix it). Throws
 // only when retries are exhausted on 5xx/network failures.
+function assertProjectionEndpoint(value) {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    throw new Error("projection URL must be an exact HTTPS /api/findings endpoint");
+  }
+  try {
+    const endpoint = new URL(value);
+    if (
+      endpoint.protocol !== "https:" ||
+      endpoint.hostname.length === 0 ||
+      endpoint.username !== "" ||
+      endpoint.password !== "" ||
+      endpoint.port !== "" ||
+      endpoint.search !== "" ||
+      endpoint.hash !== "" ||
+      endpoint.pathname !== "/api/findings"
+    ) {
+      throw new Error("invalid endpoint");
+    }
+  } catch {
+    throw new Error("projection URL must be an exact HTTPS /api/findings endpoint");
+  }
+}
+
 async function postProjection({
   url,
   secret,
@@ -28,59 +81,76 @@ async function postProjection({
   fetchImpl = null,
   maxAttempts = 5,
   initialDelayMs = 1000,
+  requestTimeoutMs = 30000,
 } = {}) {
-  if (!url || !secret) throw new Error("projection URL and runner secret are required");
+  assertProjectionEndpoint(url);
+  if (
+    typeof secret !== "string" ||
+    secret.length === 0 ||
+    secret.length > 4096 ||
+    /[\u0000-\u001f\u007f-\u009f]/u.test(secret)
+  ) {
+    throw new Error("runner secret is required and must be safe bounded text");
+  }
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
+    throw new Error("projection maxAttempts must be an integer from 1 to 10");
+  }
+  if (!Number.isSafeInteger(initialDelayMs) || initialDelayMs < 0 || initialDelayMs > DELAY_CAP_MS) {
+    throw new Error(`projection initialDelayMs must be an integer from 0 to ${DELAY_CAP_MS}`);
+  }
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 300000) {
+    throw new Error("projection requestTimeoutMs must be an integer from 1 to 300000");
+  }
+  const serializedPayload = JSON.stringify(payload);
+  if (typeof serializedPayload !== "string") throw new Error("projection payload must be JSON serializable");
   const fetchFn = fetchImpl || fetch;
-  let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+    let retryReason = null;
     try {
-      response = await fetchFn(url, {
+      const response = await fetchFn(url, {
         method: "POST",
         redirect: "error",
         headers: {
           Authorization: `Bearer ${secret}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(payload),
+        signal: controller.signal,
+        body: serializedPayload,
       });
+      const body = await readBoundedResponseText(response);
+      if (response.ok) {
+        let result = null;
+        try {
+          result = body ? JSON.parse(body) : null;
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
+        }
+        return { ok: true, status: response.status, result, attempts: attempt };
+      }
+      const failure = {
+        ok: false,
+        status: response.status,
+        error: body.slice(0, 500),
+        attempts: attempt,
+      };
+      if (response.status >= 400 && response.status < 500) {
+        return failure;
+      }
+      retryReason = `HTTP ${response.status}`;
     } catch (error) {
-      lastError = error;
-      if (attempt < maxAttempts) {
-        await sleep(delayFor(attempt, initialDelayMs));
-        continue;
-      }
-      throw new Error(
-        `projection POST failed after ${maxAttempts} attempts: ${error.message || String(error)}`,
-      );
+      retryReason = error && error.message ? error.message : String(error);
+    } finally {
+      clearTimeout(timeout);
     }
-    if (response.ok) {
-      let result = null;
-      try {
-        result = await response.json();
-      } catch {
-        result = null;
-      }
-      return { ok: true, status: response.status, result, attempts: attempt };
-    }
-    const body = await response.text().catch(() => "");
-    const failure = {
-      ok: false,
-      status: response.status,
-      error: body.slice(0, 500),
-      attempts: attempt,
-    };
-    if (response.status >= 400 && response.status < 500) {
-      return failure; // definitive: the payload or capability is rejected
-    }
-    lastError = new Error(`projection POST returned ${response.status}`);
     if (attempt < maxAttempts) {
       await sleep(delayFor(attempt, initialDelayMs));
       continue;
     }
-    throw new Error(`projection POST failed after ${maxAttempts} attempts: HTTP ${response.status}`);
+    throw new Error(`projection POST failed after ${maxAttempts} attempts: ${retryReason || "unknown error"}`);
   }
-  throw lastError || new Error("projection POST failed");
+  throw new Error("projection POST failed");
 }
 
 module.exports = {

@@ -33,6 +33,10 @@ jobs:
           BOB_SKIP_BROWSER_TESTS: "1"
         run: npm test
 
+      - name: Verify pinned Codex DeepSeek runner profile
+        if: matrix.node-version == 22
+        run: npm run check:runner-codex-profile
+
   native-darwin-qualification:
     # GitHub's standard macos-14 image is an Apple-silicon arm64 runner. The
     # command also rejects a mismatched host, so a skip can never satisfy this

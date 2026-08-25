@@ -9,42 +9,90 @@ Description: >
 Parameters:
   DispatchServiceArtifactBucket:
     Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
     Description: S3 bucket holding the packed dispatch service tarball (dispatch.tar.gz).
   DispatchServiceArtifactKey:
     Type: String
     Default: runner-host/dispatch.tar.gz
+    AllowedPattern: '^[A-Za-z0-9._/-]{1,512}$'
     Description: S3 key of the dispatch service tarball.
+  DispatchServiceArtifactSha256:
+    Type: String
+    AllowedPattern: '^[0-9a-f]{64}$'
+    Description: Lowercase SHA-256 digest of the packed dispatch service tarball.
   RunnerImageUri:
     Type: String
-    Description: ECR image URI of the runner container (Phase 4 runner-ec2 target).
+    AllowedPattern: '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$'
+    Description: Immutable ECR image URI for the runner, pinned by digest.
+  RunnerImageRepositoryArn:
+    Type: String
+    AllowedPattern: '^arn:aws(?:-[a-z]+)?:ecr:[a-z0-9-]+:[0-9]{12}:repository/[A-Za-z0-9._/-]+$'
+    Description: Exact ECR repository ARN containing RunnerImageUri.
   ConvexProjectionBaseUrl:
     Type: String
-    Description: The Convex .site base URL the runner projects into (https://<deployment>.convex.site).
+    AllowedPattern: '^https://[a-z0-9-]+\.convex\.site$'
+    Description: The Convex .site base URL the runner projects into.
   ConvexUrl:
     Type: String
-    Description: The Convex .convex.cloud URL for the runner's write client (https://<deployment>.convex.cloud).
+    AllowedPattern: '^https://[a-z0-9-]+\.convex\.cloud$'
+    Description: The Convex .convex.cloud URL for runner and host lifecycle writes.
+  DispatchSecretParameterName:
+    Type: String
+    AllowedPattern: '^/[A-Za-z0-9_.\-/]+$'
+    Description: Existing SecureString parameter containing DISPATCH_SECRET.
+  RunnerSecretParameterName:
+    Type: String
+    AllowedPattern: '^/[A-Za-z0-9_.\-/]+$'
+    Description: Existing SecureString parameter containing RUNNER_SECRET.
+  DeepSeekApiKeyParameterName:
+    Type: String
+    AllowedPattern: '^/[A-Za-z0-9_.\-/]+$'
+    Description: Existing SecureString parameter containing DEEPSEEK_API_KEY.
   DispatchCertificateArn:
     Type: String
-    Description: ACM certificate ARN for the dispatch endpoint (us-east-1).
+    AllowedPattern: '^arn:aws(?:-[a-z]+)?:acm:[a-z0-9-]+:[0-9]{12}:certificate/[A-Za-z0-9-]+$'
+    Description: ACM certificate ARN covering DispatchDomainName.
   DispatchDomainName:
     Type: String
-    Default: ""
-    Description: Optional public hostname for the dispatch endpoint; a Route53 record is created when set.
+    AllowedPattern: '^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+    Description: Required public TLS hostname for the dispatch endpoint.
   DispatchHostedZoneId:
     Type: String
-    Default: ""
-    Description: Route53 hosted zone for DispatchDomainName (required when a domain is set).
+    AllowedPattern: '^Z[A-Z0-9]+$'
+    Description: Route53 hosted zone containing DispatchDomainName.
+  MaxConcurrentRuns:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 32
+  MaxQueuedRuns:
+    Type: Number
+    Default: 8
+    MinValue: 1
+    MaxValue: 256
+  MaxQueueAgeMs:
+    Type: Number
+    Default: 900000
+    MinValue: 1000
+  LedgerCompactRows:
+    Type: Number
+    Default: 10000
+    MinValue: 100
+  RunTimeoutMinutes:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    MaxValue: 1440
   InstanceType:
     Type: String
     Default: t4g.large
-    AllowedValues: [t4g.large, t4g.xlarge, m7g.large]
+    AllowedValues: [t4g.small, t4g.large, t4g.xlarge, m7g.large]
   KeyPairName:
     Type: String
     Default: ""
     Description: Optional EC2 key pair for break-glass console access. Empty = Session Manager only.
 
 Conditions:
-  HasDomain: !Not [!Equals [!Ref DispatchDomainName, ""]]
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
 
 Resources:
@@ -177,13 +225,13 @@ Resources:
       Port: 443
       Protocol: HTTPS
       Certificates: [{ CertificateArn: !Ref DispatchCertificateArn }]
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref AlbTargetGroup
 
   DnsRecord:
     Type: AWS::Route53::RecordSet
-    Condition: HasDomain
     Properties:
       HostedZoneId: !Ref DispatchHostedZoneId
       Name: !Sub "${DispatchDomainName}."
@@ -210,56 +258,38 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: ssm:GetParameters
-                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/bob-dispatch/*"
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DispatchSecretParameterName}"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RunnerSecretParameterName}"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DeepSeekApiKeyParameterName}"
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${DispatchServiceArtifactBucket}/${DispatchServiceArtifactKey}"
               - Effect: Allow
                 Action:
+                  - ecr:BatchCheckLayerAvailability
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchGetImage
-                  - ecr:GetAuthorizationToken
+                Resource: !Ref RunnerImageRepositoryArn
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
                 Resource: "*"
+              - Effect: Allow
+                Action: cloudformation:SignalResource
+                Resource: !Ref AWS::StackId
 
   RunnerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles: [!Ref RunnerRole]
 
-  DispatchSecret:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /bob-dispatch/DISPATCH_SECRET
-      Type: SecureString
-      Value: CHANGE_ME
-      Description: Bearer secret www presents to POST /dispatch.
-
-  RunnerSecret:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /bob-dispatch/RUNNER_SECRET
-      Type: SecureString
-      Value: CHANGE_ME
-      Description: Convex write secret for runs.setStatus/appendEvent and the /api/findings ingest.
-
-  ReportsSecret:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /bob-dispatch/REPORTS_SECRET
-      Type: SecureString
-      Value: CHANGE_ME
-      Description: Convex reports.publish secret.
-
-  DeepSeekApiKey:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: /bob-dispatch/DEEPSEEK_API_KEY
-      Type: SecureString
-      Value: CHANGE_ME
-      Description: DeepSeek API key consumed by the runner container.
 
   RunnerInstance:
     Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-2023/arm64/standard/kernel-6.1/latest}}"
@@ -269,7 +299,7 @@ Resources:
       SecurityGroupIds: [!Ref InstanceSecurityGroup]
       MetadataOptions:
         HttpTokens: required
-        HttpPutResponseHopLimit: 2
+        HttpPutResponseHopLimit: 1
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -278,54 +308,224 @@ Resources:
             Encrypted: true
       Tags: [{ Key: Name, Value: bob-runner-host }]
       UserData:
-        Fn::Base64: !Sub
-          - |
-            #!/bin/bash
-            set -euxo pipefail
-            dnf update -y
-            dnf install -y docker awscli tar jq
-            systemctl enable --now docker
-            curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
-            dnf install -y nodejs
-            mkdir -p /opt/bob-dispatch /var/lib/bob-dispatch/runs /var/lib/bob-dispatch/logs /var/lib/bob-dispatch/ledger
-            aws s3 cp "s3://${DispatchServiceArtifactBucket}/${DispatchServiceArtifactKey}" /tmp/dispatch.tar.gz
-            tar -xzf /tmp/dispatch.tar.gz -C /opt/bob-dispatch
-            PARAMS=$(aws ssm get-parameters --with-decryption \
-              --names /bob-dispatch/DISPATCH_SECRET /bob-dispatch/RUNNER_SECRET /bob-dispatch/REPORTS_SECRET /bob-dispatch/DEEPSEEK_API_KEY \
-              --query "Parameters[*].{Name:Name,Value:Value}" --output json)
-            cat > /etc/bob-dispatch/env <<ENVEOF
-            DISPATCH_SECRET=$(echo "$PARAMS" | jq -r '.[] | select(.Name=="/bob-dispatch/DISPATCH_SECRET") | .Value')
-            RUNNER_SECRET=$(echo "$PARAMS" | jq -r '.[] | select(.Name=="/bob-dispatch/RUNNER_SECRET") | .Value')
-            REPORTS_SECRET=$(echo "$PARAMS" | jq -r '.[] | select(.Name=="/bob-dispatch/REPORTS_SECRET") | .Value')
-            DEEPSEEK_API_KEY=$(echo "$PARAMS" | jq -r '.[] | select(.Name=="/bob-dispatch/DEEPSEEK_API_KEY") | .Value')
-            RUNNER_IMAGE_URI=${RunnerImageUri}
-            BOB_PROJECTION_URL=${ConvexProjectionBaseUrl}/api/findings
-            BOB_CONVEX_URL=${ConvexUrl}
-            RUN_TIMEOUT_MINUTES=90
-            MAX_CONCURRENT_RUNS=2
-            ENVEOF
-            chmod 600 /etc/bob-dispatch/env
-            cat > /etc/systemd/system/bob-dispatch.service <<'UNIT'
-            [Unit]
-            Description=Hacker Bob dispatch service
-            After=docker.service
-            Wants=docker.service
-            [Service]
-            EnvironmentFile=/etc/bob-dispatch/env
-            ExecStart=/usr/bin/node /opt/bob-dispatch/server.js
-            Restart=always
-            RestartSec=5
-            [Install]
-            WantedBy=multi-user.target
-            UNIT
-            systemctl daemon-reload
-            systemctl enable --now bob-dispatch
-          - {}
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -Eeuo pipefail
+
+          signal_stack() {
+            /usr/bin/aws cloudformation signal-resource \
+              --region '${AWS::Region}' \
+              --stack-name '${AWS::StackName}' \
+              --logical-resource-id RunnerInstance \
+              --unique-id "$(/usr/bin/cat /etc/machine-id)" \
+              --status "$1"
+          }
+
+          signal_failure() {
+            status=$?
+            trap - ERR
+            if [ -x /usr/bin/aws ]; then
+              signal_stack FAILURE || true
+            fi
+            exit "$status"
+          }
+          trap signal_failure ERR
+
+          dnf update -y
+          dnf install -y awscli curl docker git jq tar nodejs22 nodejs22-npm
+          alternatives --set node /usr/bin/node-22
+          alternatives --set npm /usr/bin/npm-22
+          node --version | grep -Eq '^v22\.'
+          systemctl enable --now docker
+
+          if ! id -u bob-dispatch >/dev/null 2>&1; then
+            useradd --system --home-dir /opt/bob-dispatch --shell /sbin/nologin --no-create-home bob-dispatch
+          fi
+          usermod -aG docker bob-dispatch
+
+          install -d -o root -g root -m 0755 /opt/bob-dispatch
+          install -d -o root -g root -m 0700 /etc/bob-dispatch
+          install -d -o bob-dispatch -g bob-dispatch -m 0700 \
+            /var/lib/bob-dispatch \
+            /var/lib/bob-dispatch/ledger \
+            /var/lib/bob-dispatch/logs \
+            /run/bob-dispatch
+
+          aws s3 cp "s3://${DispatchServiceArtifactBucket}/${DispatchServiceArtifactKey}" /tmp/dispatch.tar.gz
+          printf '%s  %s\n' '${DispatchServiceArtifactSha256}' /tmp/dispatch.tar.gz \
+            | sha256sum -c -
+          tar -xzf /tmp/dispatch.tar.gz -C /opt/bob-dispatch
+          rm -f /tmp/dispatch.tar.gz
+          npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefix /opt/bob-dispatch
+          chown -R root:root /opt/bob-dispatch
+          chmod -R go-w /opt/bob-dispatch
+
+          cat > /etc/bob-dispatch/start <<'WRAPPER'
+          #!/bin/bash
+          set -euo pipefail
+          /usr/bin/install -d -o bob-dispatch -g bob-dispatch -m 0700 \
+            /var/lib/bob-dispatch/ledger \
+            /var/lib/bob-dispatch/logs \
+            /run/bob-dispatch
+
+
+          PARAMS=$(/usr/bin/aws ssm get-parameters \
+            --with-decryption \
+            --names \
+              '${DispatchSecretParameterName}' \
+              '${RunnerSecretParameterName}' \
+              '${DeepSeekApiKeyParameterName}' \
+            --output json)
+
+          if [ "$(/usr/bin/jq -r '.InvalidParameters | length' <<<"$PARAMS")" -ne 0 ]; then
+            echo "required SecureString parameter was not returned" >&2
+            exit 1
+          fi
+
+          extract_secret() {
+            /usr/bin/jq -er --arg name "$1" \
+              '.Parameters[] | select(.Name == $name) | .Value' <<<"$PARAMS"
+          }
+
+          validate_secret() {
+            local name="$1"
+            local value="$2"
+            local normalized
+            normalized=$(printf '%s' "$value" | /usr/bin/tr '[:lower:]' '[:upper:]')
+            case "$normalized" in
+              ""|CHANGE_ME|CHANGEME|PLACEHOLDER|REPLACE_ME|TODO|NULL|UNDEFINED)
+                echo "$name is empty or still a placeholder" >&2
+                exit 1
+                ;;
+            esac
+            case "$value" in
+              *$'\n'*|*$'\r'*)
+                echo "$name contains a line break" >&2
+                exit 1
+                ;;
+            esac
+          }
+
+          DISPATCH_SECRET=$(extract_secret '${DispatchSecretParameterName}')
+          RUNNER_SECRET=$(extract_secret '${RunnerSecretParameterName}')
+          DEEPSEEK_API_KEY=$(extract_secret '${DeepSeekApiKeyParameterName}')
+          unset PARAMS
+
+          validate_secret DISPATCH_SECRET "$DISPATCH_SECRET"
+          validate_secret RUNNER_SECRET "$RUNNER_SECRET"
+          validate_secret DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
+
+          RUNNER_IMAGE_URI='${RunnerImageUri}'
+          REGISTRY=$(printf '%s' "$RUNNER_IMAGE_URI" | /usr/bin/cut -d/ -f1)
+          ECR_CONFIG=$(/usr/bin/mktemp -d /run/bob-dispatch/ecr-auth.XXXXXX)
+          chmod 0700 "$ECR_CONFIG"
+          export DOCKER_CONFIG="$ECR_CONFIG"
+          trap '/usr/bin/rm -rf "$ECR_CONFIG"' EXIT
+          /usr/bin/aws ecr get-login-password --region '${AWS::Region}' \
+            | /usr/bin/docker login --username AWS --password-stdin "$REGISTRY"
+          /usr/bin/docker pull "$RUNNER_IMAGE_URI"
+          /usr/bin/docker logout "$REGISTRY" >/dev/null 2>&1 || true
+          /usr/bin/rm -rf "$ECR_CONFIG"
+          trap - EXIT
+          unset DOCKER_CONFIG ECR_CONFIG REGISTRY
+
+          exec /usr/bin/setpriv \
+            --reuid=bob-dispatch \
+            --regid=bob-dispatch \
+            --init-groups \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            --bounding-set=-all \
+            --no-new-privs \
+            /usr/bin/env -i \
+              PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+              HOME=/opt/bob-dispatch \
+              NODE_ENV=production \
+              PORT=8080 \
+              AWS_REGION='${AWS::Region}' \
+              DISPATCH_SECRET="$DISPATCH_SECRET" \
+              RUNNER_SECRET="$RUNNER_SECRET" \
+              DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+              RUNNER_IMAGE_URI="$RUNNER_IMAGE_URI" \
+              BOB_PROJECTION_URL='${ConvexProjectionBaseUrl}/api/findings' \
+              BOB_CONVEX_URL='${ConvexUrl}' \
+              RUN_TIMEOUT_MINUTES='${RunTimeoutMinutes}' \
+              MAX_CONCURRENT_RUNS='${MaxConcurrentRuns}' \
+              MAX_QUEUED_RUNS='${MaxQueuedRuns}' \
+              MAX_QUEUE_AGE_MS='${MaxQueueAgeMs}' \
+              LEDGER_COMPACT_ROWS='${LedgerCompactRows}' \
+              RUNS_DIR=/run/bob-dispatch \
+              LOGS_DIR=/var/lib/bob-dispatch/logs \
+              LEDGER_DIR=/var/lib/bob-dispatch/ledger \
+              /usr/bin/node /opt/bob-dispatch/server.js
+          WRAPPER
+          chown root:root /etc/bob-dispatch/start
+          chmod 0700 /etc/bob-dispatch/start
+
+          cat > /etc/systemd/system/bob-dispatch.service <<'UNIT'
+          [Unit]
+          Description=Hacker Bob dispatch service
+          After=network-online.target docker.service
+          Wants=network-online.target docker.service
+
+          [Service]
+          Type=simple
+          User=bob-dispatch
+          Group=bob-dispatch
+          SupplementaryGroups=docker
+          WorkingDirectory=/opt/bob-dispatch
+          ExecStart=!/etc/bob-dispatch/start
+          Restart=always
+          RestartSec=5
+          TimeoutStartSec=300
+          UMask=0077
+          RuntimeDirectory=bob-dispatch
+          RuntimeDirectoryMode=0700
+          NoNewPrivileges=true
+          PrivateDevices=true
+          PrivateTmp=true
+          ProtectClock=true
+          ProtectControlGroups=true
+          ProtectHome=true
+          ProtectHostname=true
+          ProtectKernelLogs=true
+          ProtectKernelModules=true
+          ProtectKernelTunables=true
+          ProtectSystem=strict
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          RestrictRealtime=true
+          RestrictSUIDSGID=true
+          LockPersonality=true
+          ReadWritePaths=/var/lib/bob-dispatch /run/bob-dispatch /run/docker.sock
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          systemctl daemon-reload
+          systemctl enable --now bob-dispatch
+
+          healthy=0
+          for attempt in $(/usr/bin/seq 1 60); do
+            if systemctl is-active --quiet bob-dispatch \
+              && /usr/bin/curl --fail --silent --show-error \
+                http://127.0.0.1:8080/health >/dev/null; then
+              healthy=1
+              break
+            fi
+            /usr/bin/sleep 2
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "dispatch service did not become healthy" >&2
+            false
+          fi
+          signal_stack SUCCESS
+          trap - ERR
 
 Outputs:
   DispatchUrl:
     Description: The dispatch endpoint www must receive as RUNNER_DISPATCH_URL.
-    Value: !If [HasDomain, !Sub "https://${DispatchDomainName}/dispatch", !Sub "https://${Alb.DNSName}/dispatch"]
+    Value: !Sub "https://${DispatchDomainName}/dispatch"
   RunnerInstanceId:
     Value: !Ref RunnerInstance
   InstanceSecurityGroupId:

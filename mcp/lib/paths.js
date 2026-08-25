@@ -661,6 +661,14 @@ function findingArtifactSidecarPath(domain) {
   return path.join(sessionDir(domain), "finding-artifact.sha256");
 }
 
+function finalizationReceiptPath(domain) {
+  return path.join(sessionDir(domain), "finalization-receipt.json");
+}
+
+function finalizationReceiptSidecarPath(domain) {
+  return path.join(sessionDir(domain), "finalization-receipt.sha256");
+}
+
 // Y.3 Stage c — chains.md is now MCP-rendered alongside chain-attempts.jsonl.
 // Authored by `bob_write_chain_rollup`; agents no longer Write here directly.
 function chainsMarkdownPath(domain) {
@@ -844,6 +852,8 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // content-hash sidecar, emitted by bob_finalize_report at seal.
   "finding-artifact.json",
   "finding-artifact.sha256",
+  "finalization-receipt.json",
+  "finalization-receipt.sha256",
   "report-amendments.jsonl",
   "chain-attempts.jsonl",
   // SC1 confirm-half: the live-verifier's verified_pass ledger. MCP-write-only so
@@ -1365,6 +1375,8 @@ module.exports = {
   evidencePackPaths,
   findingArtifactPath,
   findingArtifactSidecarPath,
+  finalizationReceiptPath,
+  finalizationReceiptSidecarPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
   liveDeadEndsJsonlPath,

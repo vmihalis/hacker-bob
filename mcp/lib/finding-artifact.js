@@ -40,6 +40,9 @@ const {
 const {
   findingPayloadsFromClaims,
 } = require("./tools/record-candidate-claim.js");
+const {
+  SEVERITY_VALUES,
+} = require("./constants.js");
 
 const SCHEMA_PATH = path.join(
   __dirname,
@@ -86,7 +89,14 @@ function buildArtifactFindings(domain, reportableResults, findings, gradeDocumen
   for (const result of reportableResults) {
     const finding = findingsById.get(result.finding_id) || {};
     const gradeEntry = gradesById.get(result.finding_id) || {};
-    const severity = gradedSeverityFor(gradeEntry, result) || "low";
+    const severity = gradedSeverityFor(gradeEntry, result);
+    if (!SEVERITY_VALUES.includes(severity)) {
+      throw artifactError(
+        `reportable finding ${result.finding_id} lacks a valid graded severity`,
+        { finding_id: result.finding_id, graded_severity: severity },
+        "Write a valid graded severity before finalizing the report.",
+      );
+    }
     const entry = {
       id: result.finding_id,
       title: String(finding.title || result.finding_id),
@@ -167,7 +177,16 @@ function assembleFindingArtifact(targetDomain, { findings = null } = {}) {
 function writeFindingArtifact(targetDomain, options = {}) {
   const domain = assertSafeDomain(targetDomain);
   const assembled = assembleFindingArtifact(domain, options);
-  if (!assembled.emitted) return assembled;
+  if (!assembled.emitted) {
+    for (const generatedPath of [findingArtifactPath(domain), findingArtifactSidecarPath(domain)]) {
+      try {
+        fs.unlinkSync(generatedPath);
+      } catch (error) {
+        if (!error || error.code !== "ENOENT") throw error;
+      }
+    }
+    return assembled;
+  }
   const artifactPath = findingArtifactPath(domain);
   const content = JSON.stringify(assembled.document, null, 2) + "\n";
   fs.writeFileSync(artifactPath, content, { encoding: "utf8", mode: 0o600 });

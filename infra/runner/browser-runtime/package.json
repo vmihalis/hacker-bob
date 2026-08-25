@@ -1,0 +1,8 @@
+{
+  "name": "@bobnetsec/runner-browser-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "patchright": "1.60.2"
+  }
+}
