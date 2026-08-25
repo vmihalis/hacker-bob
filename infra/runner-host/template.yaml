@@ -83,6 +83,9 @@ Parameters:
     Default: 90
     MinValue: 1
     MaxValue: 1440
+  RunnerAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Operator-resolved Amazon Linux 2023 arm64 AMI ID for the deployment region.
   InstanceType:
     Type: String
     Default: t4g.large
@@ -292,7 +295,7 @@ Resources:
         Timeout: PT30M
     Properties:
       InstanceType: !Ref InstanceType
-      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-2023/arm64/standard/kernel-6.1/latest}}"
+      ImageId: !Ref RunnerAmiId
       IamInstanceProfile: !Ref RunnerInstanceProfile
       KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
       SubnetId: !Ref PublicSubnetA

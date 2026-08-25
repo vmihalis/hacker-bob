@@ -54,6 +54,19 @@ fast-follow if the design partner needs targets outside the static posture.
 DISPATCH_SECRET_PARAMETER=/bob-dispatch/DISPATCH_SECRET
 RUNNER_SECRET_PARAMETER=/bob-dispatch/RUNNER_SECRET
 DEEPSEEK_API_KEY_PARAMETER=/bob-dispatch/DEEPSEEK_API_KEY
+# Resolve the current AL2023 arm64 image through EC2. Passing the image ID
+# avoids requiring the CloudFormation caller to read the public /aws SSM namespace.
+RUNNER_AMI_ID=$(aws ec2 describe-images \
+  --region <region> \
+  --owners amazon \
+  --filters \
+    Name=name,Values='al2023-ami-2023.*-kernel-6.1-arm64' \
+    Name=state,Values=available \
+    Name=architecture,Values=arm64 \
+    Name=root-device-type,Values=ebs \
+  --query 'sort_by(Images,&CreationDate)[-1].ImageId' \
+  --output text)
+test -n "$RUNNER_AMI_ID" && test "$RUNNER_AMI_ID" != None
 
 # 1. Pack and upload the dispatch service, retaining its immutable digest.
 tar -czf /tmp/dispatch.tar.gz -C infra/runner-host/dispatch server.js service.js package.json package-lock.json
@@ -62,8 +75,9 @@ aws s3 cp /tmp/dispatch.tar.gz s3://<bucket>/runner-host/dispatch.tar.gz
 # 2. Build and push the linux/arm64 runner image. Resolve both the immutable
 #    image URI (<repository-uri>@sha256:<64 lowercase hex>) and repository ARN.
 
-# 3. Validate and deploy. Domain, hosted zone, certificate, both Convex URLs,
-#    three parameter names, pinned image, and exact ECR repository are required.
+# 3. Validate and deploy. AMI ID, domain, hosted zone, certificate, both
+#    Convex URLs, three parameter names, pinned image, and exact ECR repository
+#    are required.
 #    The sizing below is a cost-conscious staging profile: keep one active run
 #    and two queued runs on the 2 GiB t4g.small host.
 aws cloudformation validate-template \
@@ -85,6 +99,7 @@ aws cloudformation create-stack \
     ParameterKey=DispatchCertificateArn,ParameterValue=<cert-arn> \
     ParameterKey=DispatchDomainName,ParameterValue=<dispatch.example.com> \
     ParameterKey=DispatchHostedZoneId,ParameterValue=<zone-id> \
+    ParameterKey=RunnerAmiId,ParameterValue=$RUNNER_AMI_ID \
     ParameterKey=InstanceType,ParameterValue=t4g.small \
     ParameterKey=MaxConcurrentRuns,ParameterValue=1 \
     ParameterKey=MaxQueuedRuns,ParameterValue=2 \
