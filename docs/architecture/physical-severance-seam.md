@@ -4,10 +4,10 @@ This inventory is the post-N1, pre-DIP structural-debt baseline for the physical
 
 ## Census
 
-- The walk holds **599 `.js` files** — **540 core, 59 plane** — and **2997 `require()` call sites**.
+- The walk holds **603 `.js` files** — **544 core, 59 plane** — and **3030 `require()` call sites**.
 - **21** of those edges run core -> plane, from **8 distinct core files**.
 - **0** call sites have a computed specifier.
-- **16** edges leave the walk root; **7** of them run from core into a plane-named package.
+- **17** edges leave the walk root; **7** of them run from core into a plane-named package.
 
 24 inventoried rows = 21 policed core -> plane + 2 cross-package + 1 plane -> plane
 
@@ -36,7 +36,7 @@ One citation cannot use the symbol-anchored grammar: `mcp/core/session/session-a
 | 11 | `mcp/core/capability/capability-packs.js:6` -> `../../domains/physical/physical-surface-transition.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 12 | `mcp/core/executed-evidence-registry.js:12` -> `../domains/physical/physical-experiment-contract.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 13 | `mcp/core/executed-evidence-registry.js:18` -> `../domains/physical/physical-surface-transition.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
-| 14 | `mcp/core/finding-contracts.js:658` -> `../domains/physical/physical-finding-record-adapter.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
+| 14 | `mcp/core/finding-contracts.js:697` -> `../domains/physical/physical-finding-record-adapter.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 15 | `mcp/core/frontier/frontier-readiness.js:288` -> `../../domains/physical/physical-campaign-coordinator.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 16 | `mcp/core/frontier/surface-graph.js:30` -> `../../domains/physical/physical-surface-transition.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |
 | 17 | `mcp/core/session/lifecycle-gates.js:605` -> `../../domains/physical/physical-campaign-coordinator.js` | Existing pre-DIP core-to-physical dependency; recorded so new edges fail closed. |

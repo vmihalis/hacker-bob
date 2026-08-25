@@ -53,6 +53,8 @@ function findingInput(domain, index) {
     severity: index % 2 === 0 ? "high" : "medium",
     cwe: "CWE-639",
     endpoint: `https://victim.example/api/records/${index}`,
+    request_method: "get",
+    injection_point: "path:record_id",
     description: `Changing record ${index} identifier returns another tenant payload.`,
     proof_of_concept: `GET /api/records/${index} as the attacker tenant returns private fields.`,
     response_evidence: `Response leaked tenant identifier and email for record ${index}.`,
@@ -122,6 +124,9 @@ test("recording 5 candidate claims writes 5 claims plus 5 claim.candidate.linked
       assert.equal(finding.cvss_inputs.attack_vector, "network");
       assert.equal(finding.cvss_inputs.privileges_required, "low");
       assert.equal(finding.cvss_inputs.confidentiality, "high");
+      assert.equal(finding.request_method, "GET");
+      assert.equal(finding.injection_point, "path:record_id");
+      assert.equal(finding.source_surface_type, "web");
       assert.equal(
         claim.evidence_refs[0].content_hash,
         hashCanonicalJson(finding),

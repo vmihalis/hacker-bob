@@ -1,0 +1,11 @@
+{
+  "name": "hacker-bob-codex-runner",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "dependencies": {
+    "@openai/codex": "0.149.1"
+  }
+}

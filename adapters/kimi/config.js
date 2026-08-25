@@ -8,7 +8,7 @@ const KIMI_SKILL_SPECS = Object.freeze({
     output_path: path.join("adapters", "kimi", "skills", "bob-evaluate", "SKILL.md"),
     references_path: path.join("adapters", "kimi", "skills", "bob-evaluate", "references"),
     name: "bob-evaluate",
-    description: "Run or resume a Hacker Bob bug bounty evaluate in Kimi CLI using the shared MCP runtime.",
+    description: "Run or resume a Hacker Bob security evaluation in Kimi CLI using the shared MCP runtime.",
     type: "standard",
   }),
   status: Object.freeze({

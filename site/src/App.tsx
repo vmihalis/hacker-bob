@@ -151,7 +151,7 @@ function App() {
             <div className="hero__copy">
               <p className="eyebrow">Apache-2.0 / local-first / Claude Code</p>
               <h1>Hacker Bob</h1>
-              <p className="hero__subtitle">Open-source bug bounty workflow framework for Claude Code.</p>
+              <p className="hero__subtitle">Open-source security evaluation framework for Claude Code.</p>
               <p className="hero__body">
                 Bob coordinates surface-discovery, auth capture, evaluating, chaining, verification, grading, and report writing through
                 local agents and a project-local MCP server.
@@ -364,7 +364,7 @@ function App() {
       <footer className="site-footer">
         <div className="site-footer__inner">
           <span>Hacker Bob</span>
-          <span>Open-source bug bounty workflow framework for Claude Code.</span>
+          <span>Open-source security evaluation framework for Claude Code.</span>
           <a href={repoUrl} {...externalProps('Open Hacker Bob on GitHub')}>
             <Github size={16} />
             GitHub

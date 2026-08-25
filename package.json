@@ -8,7 +8,7 @@
     "packages/bob-instrument-chameleon-worker",
     "packages/bob-instrument-chameleon-worker-runtime"
   ],
-  "description": "Portable autonomous bug bounty evaluating MCP framework with host adapters",
+  "description": "Portable autonomous security-evaluation MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -85,6 +85,7 @@
     "mcp/domains/**/*.js",
     "mcp/tools/**/*.js",
     "mcp/fuzz/**/*.js",
+    "infra/aws/hacker-bob-stack/finding-artifact.schema.json",
     "mcp/fuzz/bob-multitu-build.sh",
     "mcp/offensive-image.json",
     "packages/bob-artifact-vault/package.json",
@@ -147,6 +148,7 @@
     "check:no-phase-artifacts": "node scripts/check-no-phase-artifacts.js",
     "check:module-boundaries": "node scripts/check-module-boundaries.js",
     "check:plane-physical": "node scripts/check-plane-physical.js",
+    "check:runner-codex-profile": "npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefix infra/runner/codex && node --test test/runner-codex.test.js",
     "build:bob-diff-review": "npm run build --workspace @bobnetsec/bob-diff-review",
     "test:mcp": "npm run build:bob-diff-review && node scripts/run-mcp-tests.js",
     "measure:idor": "node scripts/measure-idor-oracle.js",
@@ -180,6 +182,7 @@
     "@aws-sdk/client-s3": "^3.709.0",
     "@aws-sdk/client-securityhub": "^3.709.0",
     "@babel/parser": "^7.29.7",
+    "ajv": "^8.20.0",
     "proxy-agent": "^8.0.1",
     "psl": "^1.15.0",
     "ws": "^8.18.0"

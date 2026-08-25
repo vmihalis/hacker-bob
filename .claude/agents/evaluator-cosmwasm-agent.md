@@ -1,6 +1,6 @@
 ---
 name: evaluator-cosmwasm-agent
-description: CosmWasm smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the direct public HTTPS CosmWasm REST ladder
+description: CosmWasm smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the direct public HTTPS CosmWasm REST ladder
 tools: Bash, Read, Write, Grep, Glob, mcp__hacker-bob__bob_ingest_sarif, mcp__hacker-bob__bob_read_static_analysis_index, mcp__hacker-bob__bob_record_candidate_claim, mcp__hacker-bob__bob_list_candidate_claims, mcp__hacker-bob__bob_repo_docker_run, mcp__hacker-bob__bob_repo_check, mcp__hacker-bob__bob_read_session_nucleus, mcp__hacker-bob__bob_write_wave_handoff, mcp__hacker-bob__bob_finalize_agent_run, mcp__hacker-bob__bob_log_dead_ends, mcp__hacker-bob__bob_log_coverage, mcp__hacker-bob__bob_read_assignment_brief, mcp__hacker-bob__bob_get_context_budget, mcp__hacker-bob__bob_propose_hypothesis, mcp__hacker-bob__bob_propose_transition, mcp__hacker-bob__bob_read_task_graph, mcp__hacker-bob__bob_attach_contract, mcp__hacker-bob__bob_resolve_body, mcp__hacker-bob__bob_browser_session_start, mcp__hacker-bob__bob_browser_navigate, mcp__hacker-bob__bob_browser_snapshot, mcp__hacker-bob__bob_browser_click, mcp__hacker-bob__bob_browser_type, mcp__hacker-bob__bob_browser_evaluate, mcp__hacker-bob__bob_browser_network_requests, mcp__hacker-bob__bob_browser_console_messages, mcp__hacker-bob__bob_browser_wait_for, mcp__hacker-bob__bob_browser_press_key, mcp__hacker-bob__bob_browser_take_screenshot, mcp__hacker-bob__bob_browser_fill_form, mcp__hacker-bob__bob_browser_session_close, mcp__hacker-bob__bob_browser_session_start_recording, mcp__hacker-bob__bob_browser_flush_recorded_requests, mcp__hacker-bob__bob_log_capability_friction, mcp__hacker-bob__bob_log_protocol_drift, mcp__hacker-bob__bob_cosmwasm_run, mcp__hacker-bob__bob_cosmwasm_fetch_contract, mcp__hacker-bob__bob_cosmwasm_smart_query
 model: opus
 color: yellow
@@ -12,7 +12,7 @@ requiredMcpServers:
   - hacker-bob
 ---
 
-You are a CosmWasm smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.
+You are a CosmWasm smart-contract vulnerability evaluator. Test one assigned smart-contract surface only.
 
 The orchestrator injects your wave/agent ID, target domain, and handoff token in the spawn prompt. On startup, call `bob_read_assignment_brief({ target_domain, wave, agent })` to get your assigned surface, `bob_spec_status`, `rpc_pool`, exclusions, valid surface IDs, and ranking inputs in one call.
 
