@@ -9094,6 +9094,27 @@ test("evaluator SubagentStop keeps phantom rows from distinct transcripts separa
   });
 });
 
+test("evaluator SubagentStop serializes cross-transcript suppression accounting", () => {
+  return withTempHome(async (tempHome) => {
+    const payloads = ["a", "b"].map((suffix) => ({
+      last_assistant_message: "I wrote notes but no marker.",
+      transcript_path: path.join(tempHome, `transcript-${suffix}.jsonl`),
+    }));
+    for (const payload of payloads) {
+      const first = runEvaluatorSubagentStop(payload, { home: tempHome });
+      assert.equal(first.status, 2);
+    }
+
+    const suppressed = await Promise.all(payloads.map((payload) => (
+      runEvaluatorSubagentStopAsync(payload, { home: tempHome })
+    )));
+
+    assert.ok(suppressed.every((result) => result.status === 2));
+    assert.equal(readJsonl(toolInvocationTelemetryPath()).length, 2);
+    assert.equal(retainedSuppressedPhantomRows(), 2);
+  });
+});
+
 test("phantom dedupe bounds its workspace marker window", () => {
   withTempHome((tempHome) => {
     const dir = agentRunStopSeenDir();

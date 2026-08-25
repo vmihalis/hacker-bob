@@ -20,6 +20,17 @@ const PHANTOM_LOCK_WAIT_MS = 2000;
 const PHANTOM_LOCK_STALE_MS = 30000;
 const PHANTOM_LOCK_POLL_MS = 10;
 const waitCell = new Int32Array(new SharedArrayBuffer(4));
+const warnedLockFailureCodes = new Set();
+
+function warnLockFailure(error) {
+  const failureCode = error && typeof error.code === "string" ? error.code : "UNKNOWN";
+  if (warnedLockFailureCodes.has(failureCode)) return;
+  warnedLockFailureCodes.add(failureCode);
+  process.emitWarning(
+    `Phantom stop telemetry dedupe lock failed (${failureCode}); telemetry may contain duplicates.`,
+    { code: "BOB_PHANTOM_STOP_DEDUPE_LOCK" },
+  );
+}
 
 function phantomTranscriptKey(input) {
   const transcriptPath = input && typeof input.transcript_path === "string"
@@ -70,11 +81,16 @@ function acquireLock(key, env) {
   while (true) {
     try {
       if (writeFileExclusiveAtomic(file, token)) return { file, token };
-    } catch {
+    } catch (error) {
+      warnLockFailure(error);
       return null;
     }
     removeStaleLock(file);
-    if (Date.now() >= deadline) return null;
+    if (Date.now() >= deadline) return { contended: true };
+    // Null-coordinate phantom rows are emitted only by the short-lived
+    // agent-run-stop hook subprocess. MCP finalize-agent-run requests carry
+    // coordinates and never enter this path, so this bounded synchronous wait
+    // cannot stall the long-lived MCP transport event loop.
     Atomics.wait(waitCell, 0, 0, PHANTOM_LOCK_POLL_MS);
   }
 }
@@ -94,6 +110,8 @@ function releaseLock(lock) {
 }
 
 function recordSuppression(key, env) {
+  const lock = acquireLock("suppression", env);
+  if (!lock || lock.contended) return;
   try {
     appendJsonlLine(suppressionFile(env), {
       version: 1,
@@ -102,6 +120,8 @@ function recordSuppression(key, env) {
     }, { maxRecords: PHANTOM_SUPPRESSION_MAX_RECORDS });
   } catch {
     // Best-effort telemetry must not affect the stop-hook decision.
+  } finally {
+    releaseLock(lock);
   }
 }
 
@@ -137,7 +157,7 @@ function pruneMarkers(env, retainCount) {
 
 function writeBoundedMarker(file, env) {
   const retentionLock = acquireLock("retention", env);
-  if (!retentionLock) return false;
+  if (!retentionLock || retentionLock.contended) return false;
   try {
     pruneMarkers(env, PHANTOM_MARKER_MAX_RECORDS - 1);
     return writeFileExclusiveAtomic(file, JSON.stringify({
@@ -153,6 +173,10 @@ function recordPhantomBlockRowOnce(input, recordRow, env = process.env) {
   const key = phantomTranscriptKey(input);
   if (!key) return recordRow();
   const lock = acquireLock(key, env);
+  if (lock && lock.contended) {
+    recordSuppression(key, env);
+    return undefined;
+  }
   if (!lock) return recordRow();
   try {
     const file = markerFile(key, env);
