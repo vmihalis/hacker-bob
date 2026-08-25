@@ -63,6 +63,7 @@
     "docs/**/*.html",
     "!docs/bob-architecture-event.html",
     "docs/**/*.png",
+    "!docs/media/readme-hero.png",
     "!docs/media/doctor-ok.png",
     "!docs/media/evaluate-start.png",
     "!docs/media/status-fresh.png",
