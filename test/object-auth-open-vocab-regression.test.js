@@ -26,18 +26,18 @@ const {
   OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
   getMechanismTemplate,
   getMechanismTemplatesForDomain,
-} = require("../mcp/lib/invariant-template-corpus.js");
+} = require("../mcp/core/mechanism/index.js");
 const {
   OBJECT_AUTH_BINDING,
   instantiateTemplate,
   toCorpusRecord,
-} = require("../mcp/lib/authorization-differential-family.js");
+} = require("../mcp/core/authorization-differential-family.js");
 const {
   registerMechanismCandidates,
-} = require("../mcp/lib/mechanism-candidate-store.js");
+} = require("../mcp/core/mechanism/index.js");
 const {
   evaluatePromotion,
-} = require("../mcp/lib/mechanism-promotion-gate.js");
+} = require("../mcp/core/mechanism-promotion-gate.js");
 
 // The exact field set loadMechanismTemplates validates. Tier / candidate /
 // claim_authority / cwe_in_catalog / advisory_evidence are markers the loader now

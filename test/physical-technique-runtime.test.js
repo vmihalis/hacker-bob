@@ -5,7 +5,7 @@ const test = require("node:test");
 
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   PHYSICAL_TECHNIQUE_FAMILIES,
   createTestPhysicalTechniqueExecutionPort,
@@ -15,10 +15,10 @@ const {
   normalizePhysicalTechniqueExecutionRequest,
   normalizePhysicalTechniqueExecutionResult,
   physicalTechniqueRuntimeReadiness,
-} = require("../mcp/lib/physical-technique-runtime.js");
+} = require("../mcp/domains/physical/physical-technique-runtime.js");
 const {
   TOOL_REGISTRY,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 const digest = (label) => hashCanonicalJson({ label });
 

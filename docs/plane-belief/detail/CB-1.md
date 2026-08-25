@@ -4,9 +4,9 @@
 
 - `id`: `CB-1`
 - `action`: `extend_existing`
-- `anchor`: `mcp/lib/surface-graph.js`; `mcp/lib/surface-graph-builder.js`;
-  `mcp/lib/auth-differential.js`; `mcp/lib/tools/evm-role-table.js`;
-  `mcp/lib/chain-state-tree.js`
+- `anchor`: `mcp/core/frontier/surface-graph.js`; `mcp/core/frontier/surface-graph-builder.js`;
+  `mcp/core/auth-differential.js`; `mcp/tools/blockchain/evm-role-table.js`;
+  `mcp/core/chain-state-tree.js`
 - `status`: `done`
 
 ## Contract
@@ -18,9 +18,9 @@ second query authority.
 
 ## Implementation
 
-- `mcp/lib/surface-graph.js` extends the graph taxonomy with mechanism node and
+- `mcp/core/frontier/surface-graph.js` extends the graph taxonomy with mechanism node and
   edge types while preserving the existing `edge_hash` identity.
-- `mcp/lib/surface-graph-builder.js` projects:
+- `mcp/core/frontier/surface-graph-builder.js` projects:
   - schema `claimed_auth` into `endpoint -> policy_gate -> credential`;
   - auth-differential rows into principal, credential, intervention, effect, and
     IDOR-like `principal -> policy_gate -> effect` paths for

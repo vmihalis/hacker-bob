@@ -10,7 +10,7 @@ const crypto = require("node:crypto");
 const {
   appendEdges,
   summarizeSurfaceGraphForSurface,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 
 function uniqueDomain(prefix = "bob-graph-slice-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

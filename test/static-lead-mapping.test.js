@@ -7,10 +7,10 @@ const {
   STATIC_LEAD_SOURCE,
   STATIC_LEAD_SURFACE_TYPE,
   staticFindingToSurfaceLead,
-} = require("../mcp/lib/static-lead-mapping.js");
+} = require("../mcp/domains/repo/static-lead-mapping.js");
 const {
   normalizeSurfaceLead,
-} = require("../mcp/lib/lead-intake.js");
+} = require("../mcp/core/frontier/lead-intake.js");
 
 function staticFinding(overrides = {}) {
   return {

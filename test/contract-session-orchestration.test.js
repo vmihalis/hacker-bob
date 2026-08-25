@@ -16,7 +16,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;

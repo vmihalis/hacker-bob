@@ -151,7 +151,7 @@ JSON and JSONL files, then giving each agent a small slice.
 The most important context-reduction tool is:
 
 ```text
-mcp/lib/assignment-brief.js
+mcp/core/session/assignment-brief.js
 ```
 
 That file builds a curated evaluator brief from:
@@ -206,15 +206,15 @@ Phase gates inspect those structured artifacts. Prose alone does not count.
 Bob can send real HTTP requests and store sensitive test data. The repo has
 guardrails in several layers:
 
-- MCP input validation in `mcp/lib/tool-validation.js`
-- path safety in `mcp/lib/paths.js`
-- atomic writes and session locks in `mcp/lib/storage.js`
-- redaction in `mcp/redaction.js`, `mcp/lib/http-records.js`, and evidence
+- MCP input validation in `mcp/core/dispatch/tool-validation.js`
+- path safety in `mcp/core/io/paths.js`
+- atomic writes and session locks in `mcp/core/io/storage.js`
+- redaction in `mcp/redaction.js`, `mcp/core/io/http-records.js`, and evidence
   validation
 - write guard hook in `.claude/hooks/session-write-guard.sh`
 - evaluator stop validation in `.claude/hooks/agent-run-stop.js`
-- phase gates in `mcp/lib/phase-gates.js`
-- egress profile handling in `mcp/lib/egress-profiles.js`
+- phase gates in `mcp/core/session/lifecycle-gates.js`
+- egress profile handling in `mcp/core/egress-profiles.js`
 
 \newpage
 
@@ -264,7 +264,6 @@ install.sh
 scripts/install.js
 scripts/merge-claude-config.js
 scripts/lifecycle.js
-mcp/lib/claude-config.js
 ```
 
 The CLI has these main commands:
@@ -361,12 +360,12 @@ Files:
 
 ```text
 mcp/server.js
-mcp/lib/transport.js
-mcp/lib/tool-registry.js
-mcp/lib/dispatch.js
-mcp/lib/tools/index.js
-mcp/lib/tools/*.js
-mcp/lib/*.js
+mcp/core/io/transport.js
+mcp/core/dispatch/tool-registry.js
+mcp/core/dispatch/dispatch.js
+mcp/tools/index.js
+mcp/tools/**/*.js
+mcp/core/**/*.js
 ```
 
 Claude Code talks to `mcp/server.js` over stdio. The server exposes `bounty_*`
@@ -463,8 +462,8 @@ It does not do ad-hoc target testing outside the AUTH path.
 The state machine is implemented in:
 
 ```text
-mcp/lib/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/session-state.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Valid phases:
@@ -509,8 +508,8 @@ Blocked when:
 Code:
 
 ```text
-mcp/lib/phase-gates.js
-computeEvaluationToChainGate()
+mcp/core/session/lifecycle-gates.js
+gateOpenFrontierToClaimFreeze()
 ```
 
 ## CHAIN -> VERIFY
@@ -534,8 +533,8 @@ not_applicable
 Code:
 
 ```text
-mcp/lib/phase-gates.js
-computeChainToVerifyGate()
+mcp/core/session/lifecycle-gates.js
+gateClaimFreezeToVerify()
 ```
 
 ## VERIFY -> GRADE
@@ -546,9 +545,9 @@ missing.
 Code:
 
 ```text
-mcp/lib/phase-gates.js
-computeVerifyToGradeGate()
-mcp/lib/evidence.js
+mcp/core/session/lifecycle-gates.js
+gateVerifyToGrade()
+mcp/core/evidence.js
 requireValidEvidencePacksForFinalReportableFindings()
 ```
 
@@ -564,7 +563,7 @@ verification, evidence, and grade artifacts exist and validate.
 The initial state is created by:
 
 ```text
-mcp/lib/session-state.js
+mcp/core/session/session-state.js
 buildInitialSessionState()
 initSession()
 ```
@@ -773,7 +772,7 @@ startServer()
 File:
 
 ```text
-mcp/lib/transport.js
+mcp/core/io/transport.js
 ```
 
 Responsibilities:
@@ -790,13 +789,13 @@ Responsibilities:
 File:
 
 ```text
-mcp/lib/tool-registry.js
+mcp/core/dispatch/tool-registry.js
 ```
 
 The registry imports:
 
 ```text
-mcp/lib/tools/index.js
+mcp/tools/index.js
 ```
 
 Each tool entry must define:
@@ -830,7 +829,7 @@ This metadata drives:
 File:
 
 ```text
-mcp/lib/dispatch.js
+mcp/core/dispatch/dispatch.js
 ```
 
 Flow:
@@ -853,7 +852,7 @@ executeTool(name, args)
 File:
 
 ```text
-mcp/lib/envelope.js
+mcp/core/io/envelope.js
 ```
 
 Success:
@@ -894,8 +893,8 @@ on failure. Do not infer success from random top-level fields.
 
 # The 39 MCP Tools By Role
 
-The tools are registered in `mcp/lib/tools/index.js` and metadata is enforced
-by `mcp/lib/tool-registry.js`.
+The tools are registered in `mcp/tools/index.js` and metadata is enforced
+by `mcp/core/dispatch/tool-registry.js`.
 
 ## Orchestrator Tools
 
@@ -1052,7 +1051,7 @@ The returned brief includes one assigned surface and bounded summaries.
 File:
 
 ```text
-mcp/lib/assignment-brief.js
+mcp/core/session/assignment-brief.js
 ```
 
 Key context controls in that file:
@@ -1089,7 +1088,7 @@ silently dropped.
 Code:
 
 ```text
-mcp/lib/findings.js
+mcp/core/verification/verification-round-store.js
 writeVerificationRound()
 requirePriorVerificationRound()
 ```
@@ -1109,7 +1108,7 @@ report writing.
 File:
 
 ```text
-mcp/lib/pipeline-analytics.js
+mcp/core/telemetry/pipeline-analytics.js
 ```
 
 It reads artifacts and telemetry to answer:
@@ -1338,7 +1337,7 @@ bounty_start_wave({
 Code:
 
 ```text
-mcp/lib/waves.js
+mcp/core/waves/waves.js
 startWave()
 ```
 
@@ -1415,7 +1414,7 @@ Example simplified handoff:
 Code:
 
 ```text
-mcp/lib/waves.js
+mcp/core/waves/waves.js
 writeWaveHandoff()
 ```
 
@@ -1456,7 +1455,7 @@ bounty_apply_wave_merge({
 Code:
 
 ```text
-mcp/lib/waves.js
+mcp/core/waves/waves.js
 applyWaveMerge()
 ```
 
@@ -1502,8 +1501,9 @@ bounty_record_finding
 Code:
 
 ```text
-mcp/lib/findings.js
-recordFinding()
+mcp/tools/record-candidate-claim.js
+mcp/core/claims/claims.js
+recordCandidateClaimHandler()
 ```
 
 Simplified record:
@@ -1529,7 +1529,7 @@ Simplified record:
 }
 ```
 
-`recordFinding()` also computes a dedupe key from endpoint, title/classification,
+`recordCandidateClaimHandler()` also computes a dedupe key from endpoint, title/classification,
 auth context, and evidence fingerprint. Exact duplicates are not recorded unless
 `force_record` is true.
 
@@ -1544,7 +1544,7 @@ bounty_write_chain_attempt
 Code:
 
 ```text
-mcp/lib/chain-attempts.js
+mcp/core/chain-attempts.js
 ```
 
 Simplified record:
@@ -1673,10 +1673,10 @@ bounty_http_scan
 Code:
 
 ```text
-mcp/lib/http-scan.js
-mcp/lib/safe-fetch.js
-mcp/lib/url-surface.js
-mcp/lib/http-records.js
+mcp/core/http-scan.js
+mcp/core/io/safe-fetch.js
+mcp/core/url-surface.js
+mcp/core/io/http-records.js
 ```
 
 Responsibilities:
@@ -1737,7 +1737,7 @@ bounty_auth_store
 Code:
 
 ```text
-mcp/lib/auth.js
+mcp/core/auth/auth.js
 ```
 
 Auth profiles are stored in:
@@ -1774,7 +1774,7 @@ in `bounty_http_scan` calls.
 Code:
 
 ```text
-mcp/lib/egress-profiles.js
+mcp/core/egress-profiles.js
 .claude/hooks/bob-egress.js
 .claude/commands/bob-egress.md
 ```
@@ -1978,7 +1978,7 @@ File:
 Code:
 
 ```text
-mcp/lib/tool-telemetry.js
+mcp/core/telemetry/tool-telemetry.js
 ```
 
 Telemetry is intentionally metadata-only:
@@ -2011,7 +2011,7 @@ bounty_read_pipeline_analytics
 Code:
 
 ```text
-mcp/lib/pipeline-analytics.js
+mcp/core/telemetry/pipeline-analytics.js
 ```
 
 It can read one session or recent sessions and summarize:
@@ -2070,7 +2070,6 @@ install.sh
 scripts/install.js
 scripts/merge-claude-config.js
 scripts/lifecycle.js
-mcp/lib/claude-config.js
 ```
 
 Trace:
@@ -2155,12 +2154,12 @@ Open:
 
 ```text
 mcp/server.js
-mcp/lib/transport.js
-mcp/lib/tool-registry.js
-mcp/lib/dispatch.js
-mcp/lib/envelope.js
-mcp/lib/tool-validation.js
-mcp/lib/tools/index.js
+mcp/core/io/transport.js
+mcp/core/dispatch/tool-registry.js
+mcp/core/dispatch/dispatch.js
+mcp/core/io/envelope.js
+mcp/core/dispatch/tool-validation.js
+mcp/tools/index.js
 ```
 
 Trace one tool call:
@@ -2188,10 +2187,10 @@ Questions to answer:
 Open:
 
 ```text
-mcp/lib/paths.js
-mcp/lib/storage.js
-mcp/lib/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/io/paths.js
+mcp/core/io/storage.js
+mcp/core/session/session-state.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Questions to answer:
@@ -2207,11 +2206,11 @@ Questions to answer:
 Open:
 
 ```text
-mcp/lib/assignments.js
-mcp/lib/waves.js
-mcp/lib/assignment-brief.js
-mcp/lib/coverage.js
-mcp/lib/ranking.js
+mcp/core/session/assignments.js
+mcp/core/waves/waves.js
+mcp/core/session/assignment-brief.js
+mcp/core/frontier/coverage.js
+mcp/core/ranking.js
 ```
 
 Trace:
@@ -2244,9 +2243,9 @@ Questions to answer:
 Open:
 
 ```text
-mcp/lib/findings.js
-mcp/lib/chain-attempts.js
-mcp/lib/evidence.js
+mcp/core/claims/claims.js
+mcp/core/chain-attempts.js
+mcp/core/evidence.js
 ```
 
 Questions to answer:
@@ -2262,14 +2261,14 @@ Questions to answer:
 Open:
 
 ```text
-mcp/lib/http-scan.js
-mcp/lib/safe-fetch.js
-mcp/lib/url-surface.js
-mcp/lib/http-records.js
-mcp/lib/auth.js
-mcp/lib/signup.js
-mcp/lib/temp-email.js
-mcp/lib/egress-profiles.js
+mcp/core/http-scan.js
+mcp/core/io/safe-fetch.js
+mcp/core/url-surface.js
+mcp/core/io/http-records.js
+mcp/core/auth/auth.js
+mcp/domains/web/signup.js
+mcp/core/temp-email.js
+mcp/core/egress-profiles.js
 mcp/redaction.js
 ```
 
@@ -2317,14 +2316,14 @@ rg --files
 ## Find Tool Definitions
 
 ```bash
-rg "name: \"bob_" mcp/lib/tools
+rg "name: \"bob_" mcp/tools
 ```
 
 ## See Tool Registry Summary
 
 ```bash
 node - <<'NODE'
-const { TOOL_REGISTRY } = require('./mcp/lib/tool-registry.js');
+const { TOOL_REGISTRY } = require('./mcp/core/dispatch/tool-registry.js');
 for (const t of TOOL_REGISTRY) {
   console.log(`${t.name} roles=${t.role_bundles.join(',')} writes=${t.session_artifacts_written.join(',') || '-'}`);
 }
@@ -2399,11 +2398,11 @@ Read:
 
 ```text
 mcp/server.js
-mcp/lib/transport.js
-mcp/lib/tool-registry.js
-mcp/lib/dispatch.js
-mcp/lib/envelope.js
-mcp/lib/tools/index.js
+mcp/core/io/transport.js
+mcp/core/dispatch/tool-registry.js
+mcp/core/dispatch/dispatch.js
+mcp/core/io/envelope.js
+mcp/tools/index.js
 ```
 
 Goal: understand how Claude Code calls become validated local functions.
@@ -2413,11 +2412,11 @@ Goal: understand how Claude Code calls become validated local functions.
 Read:
 
 ```text
-mcp/lib/session-state.js
-mcp/lib/phase-gates.js
-mcp/lib/waves.js
-mcp/lib/assignment-brief.js
-mcp/lib/coverage.js
+mcp/core/session/session-state.js
+mcp/core/session/lifecycle-gates.js
+mcp/core/waves/waves.js
+mcp/core/session/assignment-brief.js
+mcp/core/frontier/coverage.js
 ```
 
 Goal: understand how Bob manages many agents without relying on chat memory.
@@ -2427,9 +2426,9 @@ Goal: understand how Bob manages many agents without relying on chat memory.
 Read:
 
 ```text
-mcp/lib/findings.js
-mcp/lib/chain-attempts.js
-mcp/lib/evidence.js
+mcp/core/claims/claims.js
+mcp/core/chain-attempts.js
+mcp/core/evidence.js
 ```
 
 Goal: understand how a raw evaluator claim becomes a trusted final report.
@@ -2441,8 +2440,8 @@ Read:
 ```text
 .claude/hooks/*.js
 .claude/hooks/*.sh
-mcp/lib/pipeline-analytics.js
-mcp/lib/tool-telemetry.js
+mcp/core/telemetry/pipeline-analytics.js
+mcp/core/telemetry/tool-telemetry.js
 ```
 
 Goal: understand how Bob catches drift, missing artifacts, and stuck sessions.
@@ -2536,10 +2535,10 @@ previous unbound egress fields.
 Code path:
 
 ```text
-mcp/lib/tools/init-session.js
-  -> mcp/lib/session-state.js
-  -> mcp/lib/storage.js
-  -> mcp/lib/pipeline-analytics.js
+mcp/tools/init-session.js
+  -> mcp/core/session/session-state.js
+  -> mcp/core/io/storage.js
+  -> mcp/core/telemetry/pipeline-analytics.js
 ```
 
 Artifact written:
@@ -2711,8 +2710,8 @@ bounty_start_wave({
 Code path:
 
 ```text
-mcp/lib/tools/start-wave.js
-  -> mcp/lib/waves.js
+mcp/tools/start-wave.js
+  -> mcp/core/waves/waves.js
 ```
 
 Artifacts written:
@@ -2802,8 +2801,8 @@ bounty_read_assignment_brief({
 Code path:
 
 ```text
-mcp/lib/tools/read-assignment-brief.js
-  -> mcp/lib/assignment-brief.js
+mcp/tools/read-assignment-brief.js
+  -> mcp/core/session/assignment-brief.js
 ```
 
 The brief contains only what that evaluator needs:
@@ -2853,8 +2852,8 @@ bounty_record_finding({
 Code path:
 
 ```text
-mcp/lib/tools/record-finding.js
-  -> mcp/lib/findings.js
+mcp/tools/record-candidate-claim.js
+  -> mcp/core/claims/claims.js
 ```
 
 Artifacts:
@@ -2934,8 +2933,8 @@ bounty_apply_wave_merge({
 Code path:
 
 ```text
-mcp/lib/tools/apply-wave-merge.js
-  -> mcp/lib/waves.js
+mcp/tools/apply-wave-merge.js
+  -> mcp/core/waves/waves.js
 ```
 
 If not all handoffs are present, MCP returns:
@@ -3006,7 +3005,7 @@ That status includes:
 The EVALUATE -> CHAIN gate is enforced in:
 
 ```text
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 The transition blocks if:
@@ -3224,16 +3223,16 @@ When following this run in the code, read in this order:
 
 ```text
 .claude/skills/bob-evaluate/SKILL.md
-mcp/lib/session-state.js
+mcp/core/session/session-state.js
 .claude/agents/surface-discovery-agent.md
-mcp/lib/waves.js
+mcp/core/waves/waves.js
 .claude/agents/evaluator-agent.md
-mcp/lib/assignment-brief.js
-mcp/lib/findings.js
-mcp/lib/phase-gates.js
+mcp/core/session/assignment-brief.js
+mcp/core/claims/claims.js
+mcp/core/session/lifecycle-gates.js
 .claude/agents/chain-builder.md
 .claude/agents/*verifier.md
-mcp/lib/evidence.js
+mcp/core/evidence.js
 .claude/agents/grader.md
 .claude/agents/report-writer.md
 ```
@@ -3256,7 +3255,7 @@ The default session root is:
 Path construction lives in:
 
 ```text
-mcp/lib/paths.js
+mcp/core/io/paths.js
 ```
 
 ## `state.json`
@@ -3977,7 +3976,7 @@ authoritative event timeline, not authoritative current state
 Owner:
 
 ```text
-mcp/lib/tool-telemetry.js
+mcp/core/telemetry/tool-telemetry.js
 ```
 
 Read by:
@@ -4163,7 +4162,7 @@ Best code/doc pair:
 
 ```text
 .claude/agents/surface-discovery-agent.md
-mcp/lib/attack-surface.js
+mcp/core/frontier/attack-surface.js
 ```
 
 Failure signals:
@@ -4217,9 +4216,9 @@ Best code/doc pair:
 
 ```text
 .claude/agents/evaluator-agent.md
-mcp/lib/assignment-brief.js
-mcp/lib/waves.js
-mcp/lib/findings.js
+mcp/core/session/assignment-brief.js
+mcp/core/waves/waves.js
+mcp/core/claims/claims.js
 ```
 
 Failure signals:
@@ -4269,8 +4268,8 @@ Best code/doc pair:
 
 ```text
 .claude/agents/chain-builder.md
-mcp/lib/chain-attempts.js
-mcp/lib/phase-gates.js
+mcp/core/chain-attempts.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Failure signals:
@@ -4542,8 +4541,8 @@ true before an arrow is allowed.
 Code:
 
 ```text
-mcp/lib/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/session/session-state.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 ## Transition Contract
@@ -4647,7 +4646,7 @@ evidence_packs_invalid
 Open:
 
 ```text
-mcp/lib/session-state.js
+mcp/core/session/session-state.js
 ```
 
 Find:
@@ -4659,16 +4658,16 @@ allowedTransitions
 Then open:
 
 ```text
-mcp/lib/phase-gates.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 Trace these functions:
 
 ```text
-computeEvaluationToChainGate
-computeChainToVerifyGate
-computeVerifyToGradeGate
-formatTransitionBlockers
+gateOpenFrontierToClaimFreeze
+gateClaimFreezeToVerify
+gateVerifyToGrade
+evaluateLifecycleTransition
 ```
 
 That is the complete "why can or cannot we move forward" core.
@@ -5096,7 +5095,7 @@ Likely causes:
 Code to read:
 
 ```text
-mcp/lib/waves.js
+mcp/core/waves/waves.js
 .claude/hooks/agent-run-stop.js
 ```
 
@@ -5131,8 +5130,8 @@ open_requeue_coverage
 Code to read:
 
 ```text
-mcp/lib/phase-gates.js
-computeEvaluationToChainGate
+mcp/core/session/lifecycle-gates.js
+gateOpenFrontierToClaimFreeze
 ```
 
 What to do:
@@ -5164,10 +5163,11 @@ findings or handoff `chain_notes`, but no terminal chain attempt was recorded.
 Code to read:
 
 ```text
-mcp/lib/phase-gates.js
-computeChainRequirement
-computeChainToVerifyGate
-mcp/lib/chain-attempts.js
+mcp/core/session/lifecycle-gates.js
+mcp/core/waves/scheduler-preconditions.js
+evaluateSchedulerPrecondition("chain_work_terminal", ...)
+gateClaimFreezeToVerify
+mcp/core/chain-attempts.js
 ```
 
 What to do:
@@ -5202,8 +5202,8 @@ Common causes:
 Code to read:
 
 ```text
-mcp/lib/evidence.js
-mcp/lib/phase-gates.js
+mcp/core/evidence.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 What to do:
@@ -5261,8 +5261,8 @@ Likely causes:
 Code to read:
 
 ```text
-mcp/lib/assignment-brief.js
-mcp/lib/coverage.js
+mcp/core/session/assignment-brief.js
+mcp/core/frontier/coverage.js
 ```
 
 What to do:
@@ -5306,7 +5306,7 @@ final includes every balanced result
 If that invariant breaks, inspect:
 
 ```text
-mcp/lib/findings.js
+mcp/core/verification/verification-round-store.js
 .claude/agents/balanced-verifier.md
 .claude/agents/final-verifier.md
 test/mcp-server.test.js
@@ -5575,7 +5575,7 @@ turn that spawned evaluators.
 Task:
 
 ```bash
-rg -n "state.json|writeSessionStateDocument|session_artifacts_written" mcp/lib
+rg -n "state.json|writeSessionStateDocument|session_artifacts_written" mcp
 ```
 
 Answer:
@@ -5592,8 +5592,8 @@ bounty_apply_wave_merge
 The core implementation is in:
 
 ```text
-mcp/lib/session-state.js
-mcp/lib/waves.js
+mcp/core/session/session-state.js
+mcp/core/waves/waves.js
 ```
 
 Agents should not write it directly.
@@ -5603,7 +5603,7 @@ Agents should not write it directly.
 Task:
 
 ```bash
-rg -n "handoff_token|sha256|provenance" mcp/lib/waves.js
+rg -n "handoff_token|sha256|provenance" mcp/core/waves/waves.js
 ```
 
 Answer:
@@ -5638,12 +5638,12 @@ the brief is where the assigned context packet comes from.
 Task:
 
 ```bash
-sed -n '1,180p' mcp/lib/phase-gates.js
+sed -n '1,180p' mcp/core/session/lifecycle-gates.js
 ```
 
 Answer:
 
-`computeEvaluationToChainGate()` blocks on:
+`gateOpenFrontierToClaimFreeze()` blocks on:
 
 ```text
 pending_wave
@@ -5674,7 +5674,7 @@ from the pipeline.
 Task:
 
 ```bash
-rg -n "requireValidEvidence|representative_samples|secret|token|final reportable" mcp/lib/evidence.js
+rg -n "requireValidEvidence|representative_samples|secret|token|final reportable" mcp/core/evidence.js
 ```
 
 Answer:
@@ -5687,7 +5687,7 @@ is bounded/redacted. This is the gate before grade/report work.
 Task:
 
 ```bash
-sed -n '1,180p' mcp/lib/tool-registry.js
+sed -n '1,180p' mcp/core/dispatch/tool-registry.js
 ```
 
 Answer:
@@ -5730,10 +5730,10 @@ Trace `bounty_write_wave_handoff`.
 Read:
 
 ```text
-mcp/lib/tools/write-wave-handoff.js
-mcp/lib/tool-registry.js
-mcp/lib/dispatch.js
-mcp/lib/waves.js
+mcp/tools/write-wave-handoff.js
+mcp/core/dispatch/tool-registry.js
+mcp/core/dispatch/dispatch.js
+mcp/core/waves/waves.js
 .claude/agents/evaluator-agent.md
 .claude/hooks/agent-run-stop.js
 test/mcp-server.test.js
@@ -5757,32 +5757,32 @@ Use this section when you know the question but not the file.
 
 ```text
 .claude/skills/bob-evaluate/SKILL.md
-mcp/lib/tools/init-session.js
-mcp/lib/session-state.js
+mcp/tools/init-session.js
+mcp/core/session/session-state.js
 ```
 
 ## Where Are Phases Defined?
 
 ```text
-mcp/lib/constants.js
-mcp/lib/session-state.js
-mcp/lib/phase-gates.js
+mcp/core/constants/shared-vocabulary.js
+mcp/core/session/session-state.js
+mcp/core/session/lifecycle-gates.js
 ```
 
 ## Where Are MCP Tools Registered?
 
 ```text
-mcp/lib/tools/index.js
-mcp/lib/tool-registry.js
-mcp/lib/dispatch.js
+mcp/tools/index.js
+mcp/core/dispatch/tool-registry.js
+mcp/core/dispatch/dispatch.js
 mcp/server.js
 ```
 
 ## Where Is The Standard MCP Response Shape?
 
 ```text
-mcp/lib/envelope.js
-mcp/lib/dispatch.js
+mcp/core/io/envelope.js
+mcp/core/dispatch/dispatch.js
 ```
 
 Look for:
@@ -5795,101 +5795,101 @@ Look for:
 ## Where Are Session Paths Defined?
 
 ```text
-mcp/lib/paths.js
+mcp/core/io/paths.js
 ```
 
 ## Where Is State Persisted And Normalized?
 
 ```text
-mcp/lib/session-state.js
-mcp/lib/storage.js
+mcp/core/session/session-state.js
+mcp/core/io/storage.js
 ```
 
 ## Where Are Waves Implemented?
 
 ```text
-mcp/lib/waves.js
-mcp/lib/assignments.js
-mcp/lib/tools/start-wave.js
-mcp/lib/tools/apply-wave-merge.js
-mcp/lib/tools/write-wave-handoff.js
+mcp/core/waves/waves.js
+mcp/core/session/assignments.js
+mcp/tools/start-wave.js
+mcp/tools/apply-wave-merge.js
+mcp/tools/write-wave-handoff.js
 ```
 
 ## Where Are Evaluator Briefs Built?
 
 ```text
-mcp/lib/assignment-brief.js
-mcp/lib/ranking.js
-mcp/lib/http-records.js
-mcp/lib/coverage.js
+mcp/core/session/assignment-brief.js
+mcp/core/ranking.js
+mcp/core/io/http-records.js
+mcp/core/frontier/coverage.js
 ```
 
 ## Where Are Findings Implemented?
 
 ```text
-mcp/lib/findings.js
-mcp/lib/tools/record-finding.js
-mcp/lib/tools/read-findings.js
-mcp/lib/tools/list-findings.js
+mcp/core/claims/claims.js
+mcp/tools/record-candidate-claim.js
+mcp/tools/read-candidate-claims.js
+mcp/tools/list-candidate-claims.js
 ```
 
 ## Where Are Chain Attempts Implemented?
 
 ```text
-mcp/lib/chain-attempts.js
-mcp/lib/tools/write-chain-attempt.js
-mcp/lib/tools/read-chain-attempts.js
+mcp/core/chain-attempts.js
+mcp/tools/write-chain-attempt.js
+mcp/tools/read-chain-attempts.js
 ```
 
 ## Where Are Verification Rounds Implemented?
 
 ```text
-mcp/lib/findings.js
-mcp/lib/tools/write-verification-round.js
-mcp/lib/tools/read-verification-round.js
+mcp/core/verification/verification-round-store.js
+mcp/tools/write-verification-round.js
+mcp/tools/read-verification-round.js
 ```
 
 ## Where Are Evidence Packs Implemented?
 
 ```text
-mcp/lib/evidence.js
-mcp/lib/tools/write-evidence-packs.js
-mcp/lib/tools/read-evidence-packs.js
+mcp/core/evidence.js
+mcp/tools/write-evidence-packs.js
+mcp/tools/read-evidence-packs.js
 ```
 
 ## Where Is Grading Implemented?
 
 ```text
-mcp/lib/tools/write-grade-verdict.js
-mcp/lib/tools/read-grade-verdict.js
+mcp/tools/write-grade-verdict.js
+mcp/tools/read-grade-verdict.js
 .claude/agents/grader.md
 ```
 
 ## Where Is HTTP Scanning And Audit Implemented?
 
 ```text
-mcp/lib/http-scan.js
-mcp/lib/safe-fetch.js
-mcp/lib/http-records.js
-mcp/lib/tools/http-scan.js
+mcp/core/http-scan.js
+mcp/core/io/safe-fetch.js
+mcp/core/io/http-records.js
+mcp/tools/web/http-scan.js
 mcp/redaction.js
 ```
 
 ## Where Is Auth Stored And Applied?
 
 ```text
-mcp/lib/auth.js
-mcp/lib/signup.js
+mcp/core/auth/auth.js
+mcp/domains/web/signup.js
 mcp/auto-signup.js
-mcp/lib/tools/auth-store.js
-mcp/lib/tools/auto-signup.js
-mcp/lib/tools/list-auth-profiles.js
+mcp/tools/auth-store.js
+mcp/tools/web/auto-signup.js
+mcp/tools/list-auth-profiles.js
 ```
 
 ## Where Are Egress Profiles Implemented?
 
 ```text
-mcp/lib/egress-profiles.js
+mcp/core/egress-profiles.js
 .claude/commands/bob-egress.md
 .claude/hooks/bob-egress.js
 .claude/bob/egress-profiles.json
@@ -5898,8 +5898,8 @@ mcp/lib/egress-profiles.js
 ## Where Are Analytics Implemented?
 
 ```text
-mcp/lib/pipeline-analytics.js
-mcp/lib/tool-telemetry.js
+mcp/core/telemetry/pipeline-analytics.js
+mcp/core/telemetry/tool-telemetry.js
 .claude/skills/bob-status/SKILL.md
 .claude/skills/bob-debug/SKILL.md
 ```
@@ -6069,11 +6069,12 @@ Why it makes sense:
 Right now, artifact schemas are mostly encoded in normalizer functions:
 
 ```text
-mcp/lib/session-state.js
-mcp/lib/waves.js
-mcp/lib/findings.js
-mcp/lib/evidence.js
-mcp/lib/chain-attempts.js
+mcp/core/session/session-state.js
+mcp/core/waves/waves.js
+mcp/core/claims/claims.js
+mcp/core/verification/verification-round-store.js
+mcp/core/evidence.js
+mcp/core/chain-attempts.js
 ```
 
 That is good for enforcement, but harder for a new reader to inspect offline.
@@ -6162,7 +6163,7 @@ because it could link every conclusion back to the artifact that produced it.
 Tradeoff:
 
 It overlaps with `bounty_read_pipeline_analytics`. The implementation should
-reuse `mcp/lib/pipeline-analytics.js` rather than inventing a second analyzer.
+reuse `mcp/core/telemetry/pipeline-analytics.js` rather than inventing a second analyzer.
 
 Priority:
 
@@ -6243,7 +6244,7 @@ Output:
 
 Why it makes sense:
 
-The gate logic already exists in `mcp/lib/phase-gates.js`. Today, blocked
+The gate logic already exists in `mcp/core/session/lifecycle-gates.js`. Today, blocked
 transitions surface as `STATE_CONFLICT` errors from `bounty_transition_phase`.
 A dedicated read-only explainer would make orchestration and `/bob-status`
 clearer without requiring a failed transition attempt.
@@ -6618,7 +6619,7 @@ There are several, depending on what you mean:
 - installer: `scripts/install.js`
 - MCP server: `mcp/server.js`
 - `/bob-evaluate` orchestration prompt: `.claude/skills/bob-evaluate/SKILL.md`
-- MCP tool registry: `mcp/lib/tool-registry.js`
+- MCP tool registry: `mcp/core/dispatch/tool-registry.js`
 
 For runtime behavior, start with `/bob-evaluate` and `mcp/server.js`.
 
@@ -6947,46 +6948,47 @@ docs/releases/
 
 ```text
 mcp/server.js
-mcp/lib/transport.js
-mcp/lib/tool-registry.js
-mcp/lib/dispatch.js
-mcp/lib/envelope.js
-mcp/lib/tool-validation.js
-mcp/lib/tools/index.js
+mcp/core/io/transport.js
+mcp/core/dispatch/tool-registry.js
+mcp/core/dispatch/dispatch.js
+mcp/core/io/envelope.js
+mcp/core/dispatch/tool-validation.js
+mcp/tools/index.js
 ```
 
 ## MCP State And Pipeline
 
 ```text
-mcp/lib/paths.js
-mcp/lib/storage.js
-mcp/lib/session-state.js
-mcp/lib/phase-gates.js
-mcp/lib/waves.js
-mcp/lib/assignments.js
-mcp/lib/coverage.js
-mcp/lib/findings.js
-mcp/lib/chain-attempts.js
-mcp/lib/evidence.js
-mcp/lib/pipeline-analytics.js
-mcp/lib/tool-telemetry.js
+mcp/core/io/paths.js
+mcp/core/io/storage.js
+mcp/core/session/session-state.js
+mcp/core/session/lifecycle-gates.js
+mcp/core/waves/waves.js
+mcp/core/session/assignments.js
+mcp/core/frontier/coverage.js
+mcp/core/claims/claims.js
+mcp/core/verification/verification-round-store.js
+mcp/core/chain-attempts.js
+mcp/core/evidence.js
+mcp/core/telemetry/pipeline-analytics.js
+mcp/core/telemetry/tool-telemetry.js
 ```
 
 ## HTTP, Auth, Surface-discovery Enrichment
 
 ```text
-mcp/lib/http-scan.js
-mcp/lib/safe-fetch.js
-mcp/lib/url-surface.js
-mcp/lib/http-records.js
-mcp/lib/auth.js
-mcp/lib/signup.js
-mcp/lib/temp-email.js
-mcp/lib/egress-profiles.js
-mcp/lib/public-intel.js
-mcp/lib/static-artifacts.js
-mcp/lib/ranking.js
-mcp/lib/assignment-brief.js
+mcp/core/http-scan.js
+mcp/core/io/safe-fetch.js
+mcp/core/url-surface.js
+mcp/core/io/http-records.js
+mcp/core/auth/auth.js
+mcp/domains/web/signup.js
+mcp/core/temp-email.js
+mcp/core/egress-profiles.js
+mcp/core/intel/public-intel.js
+mcp/domains/repo/static-artifacts.js
+mcp/core/ranking.js
+mcp/core/session/assignment-brief.js
 mcp/redaction.js
 ```
 

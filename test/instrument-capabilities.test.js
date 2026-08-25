@@ -8,7 +8,7 @@ const test = require("node:test");
 
 const {
   buildExecutedEvidenceRegistry,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   INSTRUMENT_CAPABILITY_CLAIM_DOMAIN,
   INSTRUMENT_CAPABILITY_EVIDENCE_DOMAIN,
@@ -20,27 +20,27 @@ const {
   installInstrumentCapabilityIndexPort,
   instrumentCapabilitySignatureInputDigest,
   queryInstrumentCapabilityIndexPort,
-} = require("../mcp/lib/instrument-capabilities.js");
+} = require("../mcp/domains/physical/instrument-capabilities.js");
 const {
   chameleonCapabilityProofSignerBinding,
   createChameleonCapabilityExecutedEvidenceRegistry,
   createChameleonInstrumentCapabilitySemanticManifest,
   projectChameleonAlternativeSelection,
   projectChameleonReportedCommands,
-} = require("../mcp/lib/instrument-capabilities-chameleon.js");
+} = require("../mcp/domains/physical/instrument-capabilities-chameleon.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   createDeterministicProviderFixture,
 } = require("../packages/bob-instrument-deterministic/lib/fixtures.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
-const queryTool = require("../mcp/lib/tools/query-instrument-capabilities.js");
+} = require("../mcp/core/verification/verification-contracts.js");
+const queryTool = require("../mcp/tools/physical/query-instrument-capabilities.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });
@@ -352,16 +352,7 @@ test("Chameleon semantics compile all variants behind a provider-neutral public 
     "production_trust_not_enrolled",
   ]);
   const serialized = JSON.stringify(result);
-  // The command codes are word-anchored so they match a leaked code and not a
-  // coincidence inside a digest. Unanchored, this failed whenever a
-  // content-derived digest happened to contain the digits — CI hit
-  // "instrument-capability:79d3a63(1017)f2f5..." and reported a provider leak
-  // that was not there. The vendor and upstream terms need no anchor: they
-  // cannot occur in hex.
-  assert.doesNotMatch(
-    serialized,
-    /chameleon|command:|upstream|provider_capability|signature|proof-|\b(?:1000|1017|1033)\b/iu,
-  );
+  assert.doesNotMatch(serialized, /chameleon|command:|upstream|provider_capability|signature|proof-|1000|1017|1033/iu);
   assert.doesNotMatch(serialized, /"[a-z0-9_]*digest"/iu);
   assert.equal(serialized.includes(fixture.manifest.semantic_manifest_digest), false);
   assert.equal(serialized.includes(fixture.manifest.provider_descriptor_digest), false);
@@ -696,7 +687,7 @@ test("an orthogonal deterministic provider uses the same index and query with no
   });
   assert.equal(result.total_matched, 1);
   assert.equal(result.records[0].requirements_status, "satisfied");
-  const source = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "instrument-capabilities.js"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "mcp", "domains", "physical", "instrument-capabilities.js"), "utf8");
   assert.doesNotMatch(source, /chameleon|command_id|reported_command|firmware_version/iu);
 });
 

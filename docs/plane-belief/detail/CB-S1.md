@@ -4,7 +4,7 @@
 
 - `id`: `CB-S1`
 - `action`: `extend_existing`
-- `anchor`: `mcp/lib/role-model.js` read-only pattern; `mcp/lib/paths.js` `AUDIT_GRADED_PATHS`
+- `anchor`: `mcp/core/dispatch/role-model.js` read-only pattern; `mcp/core/io/paths.js` `AUDIT_GRADED_PATHS`
 - `status`: `done`
 
 ## Contract
@@ -15,9 +15,9 @@ authority.
 
 ## Implementation
 
-- `mcp/lib/paths.js` defines `beliefScratchDir()` and
+- `mcp/core/io/paths.js` defines `beliefScratchDir()` and
   `beliefSignalsJsonlPath()` under each session root.
-- `mcp/lib/belief/authority.js` is the shared substrate for later belief
+- `mcp/core/belief/authority.js` is the shared substrate for later belief
   producers. It classifies `mechanism_projection` and `belief_signal` outputs as
   `advisory`, `derived`, and `scratch`, writes only
   `belief-scratch/belief-signals.jsonl`, and refuses paths rejected by
@@ -38,7 +38,7 @@ Engineering review passed:
 - `npm run test:mcp`
 - `npm run test:prompts`
 - `verify-CB-S1-authority: PASS` adversarial anchor check grounding
-  `mcp/lib/paths.js`, `mcp/lib/tool-registry.js`, and
-  `mcp/lib/role-model.js`
+  `mcp/core/io/paths.js`, `mcp/core/dispatch/tool-registry.js`, and
+  `mcp/core/dispatch/role-model.js`
 
 No field review is required for this node.

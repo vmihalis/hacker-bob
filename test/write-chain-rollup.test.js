@@ -13,13 +13,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const writeChainRollupTool = require("../mcp/lib/tools/write-chain-rollup.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
+const writeChainRollupTool = require("../mcp/tools/write-chain-rollup.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
 const {
   chainAttemptsJsonlPath,
   chainsMarkdownPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

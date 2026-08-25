@@ -9,20 +9,7 @@ const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 const {
   installLifecycleCustodianTestDouble,
-  lifecycleCustodianTestDoubleSupported,
 } = require("./fixtures/lifecycle-custodian-test-port.js");
-
-// Unlike the other install suites, these cases drive the custodian double's
-// controller directly (crash-phase injection, native hooks, result descriptors)
-// and have no meaning without the Darwin/arm64 native fixture. Declare the skip
-// so an unsupported host reports "not run" rather than a silent absence, then
-// stop: `return` at CommonJS module scope leaves the suite undefined.
-if (!lifecycleCustodianTestDoubleSupported()) {
-  test("optional provider lifecycle requires the Darwin/arm64 lifecycle custodian fixture", {
-    skip: `unsupported host ${process.platform}/${process.arch}`,
-  }, () => {});
-  return;
-}
 
 const lifecycleCustodianTest = installLifecycleCustodianTestDouble();
 
@@ -961,7 +948,7 @@ test("static Bob-owned runtime inspection is bounded, traversal-closed, and non-
   const sourceRoot = path.join(root, "trusted-source");
   const targetRoot = path.join(root, "workspace");
   const marker = path.join(root, "evaluated");
-  const relativeFile = "mcp/lib/runtime.js";
+  const relativeFile = "mcp/core/runtime.js";
   const effectfulSource = [
     "\"use strict\";",
     `require(\"node:fs\").writeFileSync(${JSON.stringify(marker)}, \"executed\");`,
@@ -969,7 +956,7 @@ test("static Bob-owned runtime inspection is bounded, traversal-closed, and non-
     "",
   ].join("\n");
   for (const directory of [sourceRoot, targetRoot]) {
-    const filePath = path.join(directory, "mcp", "lib", "runtime.js");
+    const filePath = path.join(directory, "mcp", "core", "runtime.js");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, effectfulSource, "utf8");
   }
@@ -978,7 +965,7 @@ test("static Bob-owned runtime inspection is bounded, traversal-closed, and non-
     sourceRoot,
     targetRoot,
     runtimeFiles: [relativeFile],
-    ownedRoots: ["mcp/lib"],
+    ownedRoots: ["mcp/core"],
   });
   assert.equal(exact.ok, true);
   assert.equal(exact.coverage, "bob_owned_runtime_only");
@@ -988,8 +975,8 @@ test("static Bob-owned runtime inspection is bounded, traversal-closed, and non-
   const traversal = inspectBobOwnedRuntimeStatically({
     sourceRoot,
     targetRoot,
-    runtimeFiles: ["mcp/lib/../outside.js"],
-    ownedRoots: ["mcp/lib"],
+    runtimeFiles: ["mcp/core/../outside.js"],
+    ownedRoots: ["mcp/core"],
   });
   assert.equal(traversal.ok, false);
   assert.equal(traversal.reason_code, "runtime_manifest_rejected");
@@ -997,8 +984,8 @@ test("static Bob-owned runtime inspection is bounded, traversal-closed, and non-
   const oversized = inspectBobOwnedRuntimeStatically({
     sourceRoot,
     targetRoot,
-    runtimeFiles: Array.from({ length: 1025 }, (_, index) => `mcp/lib/f${index}.js`),
-    ownedRoots: ["mcp/lib"],
+    runtimeFiles: Array.from({ length: 1025 }, (_, index) => `mcp/core/f${index}.js`),
+    ownedRoots: ["mcp/core"],
   });
   assert.equal(oversized.ok, false);
   assert.equal(oversized.reason_code, "runtime_manifest_rejected");

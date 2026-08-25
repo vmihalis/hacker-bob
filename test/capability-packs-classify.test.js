@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { classifySurfaceCapability, deriveConfidenceAdjustment } = require("../mcp/lib/capability-packs.js");
+const { classifySurfaceCapability, deriveConfidenceAdjustment } = require("../mcp/core/capability/capability-packs.js");
 
 const CONFIDENCE_LADDER = ["high", "medium", "low"];
 

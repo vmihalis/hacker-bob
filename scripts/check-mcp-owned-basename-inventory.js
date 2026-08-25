@@ -27,7 +27,7 @@ const {
   sessionRootPathInventory,
   INVENTORY_PROBE_DOMAIN,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 // The agent-writable filename pattern that, when it matches an MCP-owned
 // basename, would shadow it at the runtime hook (agent-allow precedes mcp-owned).
@@ -117,7 +117,7 @@ function main() {
       console.error(
         "MCP-owned basename inventory: UNCLASSIFIED session-root basenames " +
         "(add to HOOK_MCP_OWNED_BASENAMES / an MCP-owned dir, or classify " +
-        "explicitly in mcp/lib/paths.js):",
+        "explicitly in mcp/core/io/paths.js):",
       );
       for (const u of unclassified) console.error(`  ${u.rel}  (from ${u.resolver})`);
     }

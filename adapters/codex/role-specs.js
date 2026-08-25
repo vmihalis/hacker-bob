@@ -1,6 +1,6 @@
 "use strict";
 
-const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+const { evaluatorRoleSpecs } = require("../../mcp/core/capability/capability-packs.js");
 
 const CODEX_ROLE_SPECS = Object.freeze({
   "surface-discovery": Object.freeze({

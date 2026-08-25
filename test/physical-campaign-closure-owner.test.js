@@ -9,57 +9,57 @@ const test = require("node:test");
 
 const {
   buildPhysicalCampaignClosurePreflight,
-} = require("../mcp/lib/physical-campaign-closure.js");
+} = require("../mcp/domains/physical/physical-campaign-closure.js");
 const {
   assertDurablePhysicalCompletion,
   buildPhysicalFinding,
   derivePhysicalAssignmentContextDigest,
   deriveVerifiedPhysicalCoverageTerminalWitnessDigest,
   projectDurablePhysicalCampaignCompletion,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   openProductionPhysicalCampaignClosureOwner,
   assertProductionPhysicalCampaignClosureOwner,
-} = require("../mcp/lib/physical-campaign-closure-owner.js");
+} = require("../mcp/domains/physical/physical-campaign-closure-owner.js");
 const {
   installPhysicalCampaignAnchorResolver,
   physicalCampaignAnchorPortAssurance,
-} = require("../mcp/lib/physical-campaign-anchor.js");
+} = require("../mcp/domains/physical/physical-campaign-anchor.js");
 const {
   initializePhysicalCampaignCoordinator,
   physicalCampaignClosureReadiness,
   readVerifiedPhysicalCampaignCompletionState,
   routePhysicalCampaignSegment,
-} = require("../mcp/lib/physical-campaign-coordinator.js");
+} = require("../mcp/domains/physical/physical-campaign-coordinator.js");
 const {
   createDurableInstrumentLeaseBrokerPort,
   createDurableInstrumentLeaseStore,
-} = require("../mcp/lib/instrument-lease-store.js");
+} = require("../mcp/domains/physical/instrument-lease-store.js");
 const {
   sessionNucleusFromState,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildInitialSessionState,
-} = require("../mcp/lib/session-state-contracts.js");
+} = require("../mcp/core/session/session-state-contracts.js");
 const {
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/physical-scope-axis.js");
+} = require("../mcp/core/session/physical-scope-axis-contract.js");
 const {
   physicalCampaignDir,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SANDBOX_AGENT_UID_ENV,
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   createProductionPhysicalVerdictFixture,
 } = require("./helpers/production-physical-verdict.js");

@@ -8,7 +8,7 @@ function projectRootFromHook() {
 }
 
 function loadExporter(projectRoot) {
-  return require(path.join(projectRoot, "mcp", "lib", "bob-export.js"));
+  return require(path.join(projectRoot, "mcp", "core", "bob-export.js"));
 }
 
 function main(argv) {

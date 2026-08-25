@@ -12,7 +12,7 @@ const {
   queryBeliefSignals,
   readBeliefSignals,
   writeBeliefSignalScratch,
-} = require("../mcp/lib/belief/authority.js");
+} = require("../mcp/core/belief/authority.js");
 const {
   beliefScratchDir,
   beliefSignalsJsonlPath,
@@ -22,8 +22,8 @@ const {
   reportMarkdownPath,
   sessionDir,
   verificationAdjudicationPath,
-} = require("../mcp/lib/paths.js");
-const { TOOL_MANIFEST } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/io/paths.js");
+const { TOOL_MANIFEST } = require("../mcp/tools/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

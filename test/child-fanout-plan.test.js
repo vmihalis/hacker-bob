@@ -5,10 +5,10 @@ const {
   deriveChildFanoutPlan,
   fanoutPlanningKey,
   CHILD_FANOUT_HARD_CAP,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   toolNamesForRoleBundle,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 function dedupeSorted(values) {
   return Array.from(new Set(values.filter((v) => typeof v === "string" && v.length > 0))).sort();
@@ -35,7 +35,7 @@ test("OSS surfaces fan out (sanitizer-class x input-class) cells, no auth axis",
     isOssSurfaceMetadata,
     OSS_SANITIZER_CLASS_AXIS,
     OSS_INPUT_CLASS_AXIS,
-  } = require("../mcp/lib/capability-packs.js");
+  } = require("../mcp/core/capability/capability-packs.js");
   const ossMeta = { surface_type: "oss_native_code" };
   assert.equal(isOssSurfaceMetadata(ossMeta), true);
   assert.equal(isOssSurfaceMetadata({ capability_pack: "web" }), false);
@@ -150,6 +150,23 @@ test("hard cap defends the spawn budget against a pathological axis", () => {
     budget: { remaining_depth: 1, max_children: 999 },
   });
   assert.ok(plan.children.length <= CHILD_FANOUT_HARD_CAP);
+});
+
+test("unknown closure class routes to HOLD, not the generic web fallback", () => {
+  const plan = deriveChildFanoutPlan("S-autonomous", { surface_type: "totally_unknown_type" }, {
+    bug_class_hints: ["autonomous_new_class"],
+    auth_profiles: ["admin"],
+    budget: { remaining_depth: 1, max_children: 8 },
+  });
+  assert.equal(plan.capability_pack, "web", "ordinary unknown surface recon still resolves to web");
+  assert.equal(plan.children.length, 1);
+  const child = plan.children[0];
+  assert.equal(child.disposition, "hold");
+  assert.equal(child.routable, false);
+  assert.match(child.hold_reason, /unknown control-validity class/);
+  assert.deepEqual(child.capability_pack_ids, []);
+  assert.deepEqual(child.allowed_tools_for_node, []);
+  assert.ok(!child.allowed_tools_for_node.includes("bob_http_scan"));
 });
 
 test("deterministic: output is independent of input axis order (X-P4 purity)", () => {

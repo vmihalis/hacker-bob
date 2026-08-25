@@ -42,11 +42,11 @@ const { spawnSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const HOOK_PATH = path.join(ROOT, ".claude", "hooks", "bob-approval-gate-impl.py");
 
-const { gradeToReportApprovalBlocker } = require("../mcp/lib/lifecycle-gates.js");
-const { _setApprovalBackendForTest, _setApprovalHmacKeyForTest } = require("../mcp/lib/approval-store.js");
-const { gradeArtifactPaths } = require("../mcp/lib/paths.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
-const { loadGradeVerdictHash } = require("../mcp/lib/report-finalize.js");
+const { gradeToReportApprovalBlocker } = require("../mcp/core/session/lifecycle-gates.js");
+const { _setApprovalBackendForTest, _setApprovalHmacKeyForTest } = require("../mcp/core/approval-store.js");
+const { gradeArtifactPaths } = require("../mcp/core/io/paths.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
+const { loadGradeVerdictHash } = require("../mcp/core/report-finalize.js");
 
 const TARGET_DOMAIN = "10.0.0.42"; // the port-stripped form both consumers key by
 const HMAC_KEY = "integration-test-only-hmac-key-do-not-use-in-prod";
@@ -284,7 +284,7 @@ test("both consumers allow/abstain when BOB_AGENTCORE != \"1\", regardless of ar
 });
 
 test("Node production approval backend resolves Secrets Manager through image-owned Python+boto3, never an absent AWS CLI", () => {
-  const source = fs.readFileSync(path.join(ROOT, "mcp", "lib", "approval-store.js"), "utf8");
+  const source = fs.readFileSync(path.join(ROOT, "mcp", "core", "approval-store.js"), "utf8");
   const dockerfile = fs.readFileSync(path.join(ROOT, "infra", "runner", "Dockerfile"), "utf8");
   assert.match(source, /execFileSync\(\s*"python3"/);
   assert.match(source, /boto3\.client\('secretsmanager'\)/);

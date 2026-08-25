@@ -51,10 +51,10 @@ const {
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 const SESSION_HASH = "a".repeat(64);
 const ZERO_DIGEST = "0".repeat(64);
@@ -866,33 +866,13 @@ test("fixed semantic validator rejects status, payload, frame, operation, time, 
     /operation_id drifted/u,
   );
 
-  // ANCHORED TO A SYNTHETIC BASE, NOT HOST UPTIME. `process.hrtime.bigint()` is
-  // nanoseconds since BOOT, so subtracting the validation window from it goes
-  // NEGATIVE on any host that booted less than maximum_validation_age_ms ago —
-  // 300s here. A fresh CI runner reaches this test seconds after boot, the
-  // fixture serializes as "-…", and assertPositiveUint64 rejects it as a
-  // non-canonical uint64 BEFORE the staleness assertion below is ever reached.
-  // The failure is invisible on a developer machine with days of uptime, which
-  // is why it survived until this suite first ran on hosted CI.
-  //
-  // Clamping the settlement alone would only trade the crash for a different
-  // failure: with a low-uptime clock the fixture would be positive but no longer
-  // OLDER than the window, so the staleness rejection would not fire. Both sides
-  // move together instead — the settlement and the clock the validator reads are
-  // derived from the same synthetic base, so the fixture expresses exactly
-  // "one millisecond past the validation window" on every host.
-  const staleAgeNs = BigInt(
-    CHAMELEON_GET_APP_VERSION_SEMANTIC_VALIDATOR_PROFILE.maximum_validation_age_ms + 1,
-  ) * 1000000n;
-  const staleBaseNs = staleAgeNs * 2n;
-  const staleBaseMs = Number(staleBaseNs / 1000000n);
-  const staleSettlement = (staleBaseNs - staleAgeNs).toString();
+  const staleSettlement = (
+    process.hrtime.bigint()
+      - BigInt(CHAMELEON_GET_APP_VERSION_SEMANTIC_VALIDATOR_PROFILE.maximum_validation_age_ms + 1)
+        * 1000000n
+  ).toString();
   const stale = committedSemanticRawFixture(t, "stale-settlement", {
     settled_continuous_ns: staleSettlement,
-    trusted_clock: semanticTrustedClock({
-      read_monotonic_ms: () => staleBaseMs,
-      payload: { reference_monotonic_ms: staleBaseMs },
-    }),
   });
   assert.throws(
     () => validateChameleonGetAppVersionRawCustody(

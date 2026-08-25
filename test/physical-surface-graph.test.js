@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const surfaceGraph = require("../mcp/lib/surface-graph.js");
+const surfaceGraph = require("../mcp/core/frontier/surface-graph.js");
 const {
   appendEdges,
   createPhysicalSurfaceGraphServerService,
@@ -20,18 +20,18 @@ const {
 } = surfaceGraph;
 const {
   buildDurableReceiptTrustRegistry,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   PHYSICAL_SURFACE_NODE_TYPES,
   normalizePhysicalSurfaceTransitionPayload,
   physicalSurfaceTransitionClaimPredicateDigest,
-} = require("../mcp/lib/physical-surface-transition.js");
-const { acquireSessionLock } = require("../mcp/lib/storage.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/domains/physical/physical-surface-transition.js");
+const { acquireSessionLock } = require("../mcp/core/io/storage.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 
 const SIGNED_AT = new Date(Date.now() - 5_000).toISOString();
 const DECIDED_AT = new Date(Date.parse(SIGNED_AT) - 1_000).toISOString();
@@ -820,7 +820,7 @@ test("ordinary and verified appends reject a symlinked sessions root before writ
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bob-surface-outside-"));
   try {
     fs.symlinkSync(outside, path.join(home, "hacker-bob-sessions"), "dir");
-    const modulePath = path.resolve(__dirname, "../mcp/lib/surface-graph.js");
+    const modulePath = path.resolve(__dirname, "../mcp/core/frontier/surface-graph.js");
     const script = `
       const graph = require(${JSON.stringify(modulePath)});
       const results = [];
@@ -852,7 +852,7 @@ test("ordinary and verified appends reject a symlinked sessions root before writ
 });
 
 test("session-directory and final lock symlinks or hardlinks are rejected before any outside lock write", () => {
-  const modulePath = path.resolve(__dirname, "../mcp/lib/surface-graph.js");
+  const modulePath = path.resolve(__dirname, "../mcp/core/frontier/surface-graph.js");
   const run = (home) => childProcess.execFileSync(process.execPath, ["-e", `
     const graph = require(${JSON.stringify(modulePath)});
     try {
@@ -924,7 +924,7 @@ test("session-directory and final lock symlinks or hardlinks are rejected before
 
 test("session-directory replacement during lock acquisition is detected before graph persistence", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-surface-lock-race-home-"));
-  const modulePath = path.resolve(__dirname, "../mcp/lib/surface-graph.js");
+  const modulePath = path.resolve(__dirname, "../mcp/core/frontier/surface-graph.js");
   try {
     const output = childProcess.execFileSync(process.execPath, ["-e", `
       const fs = require("node:fs");

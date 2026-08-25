@@ -17,13 +17,13 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendEdges,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   buildBeliefWindow,
   makeVariable,
@@ -31,7 +31,7 @@ const {
   UNKNOWN_VARIABLE_TYPE,
   KNOWN_PLUS_UNKNOWN_VARIABLE_TYPES,
   RESOLUTION_THRESHOLD,
-} = require("../mcp/lib/belief/belief-window.js");
+} = require("../mcp/core/belief/belief-window.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

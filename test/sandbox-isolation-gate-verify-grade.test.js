@@ -25,19 +25,19 @@ const path = require("node:path");
 
 const {
   sandboxIsolationBlockersForReportableVerdictClaims,
-} = require("../mcp/lib/lifecycle-gates.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/io/paths.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";
@@ -176,7 +176,7 @@ test("clean session (no verdict-ledger-backed reportable medium+ finding) -> NO 
   seedReportableFinding(domain);
   // No claim-freeze write... actually buildClaimFreeze wrote one; remove it so there is
   // genuinely no verdict-ledger backing for this assertion.
-  const { claimFreezePath } = require("../mcp/lib/paths.js");
+  const { claimFreezePath } = require("../mcp/core/io/paths.js");
   fs.rmSync(claimFreezePath(domain), { force: true });
   const blockers = sandboxIsolationBlockersForReportableVerdictClaims(domain);
   assert.deepEqual(blockers, [], "a session with no keyed verdict-ledger row is inert");

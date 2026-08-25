@@ -9,13 +9,13 @@ const path = require("path");
 const {
   buildDockerRunArgv,
   REPO_MOUNT_MODE_VALUES,
-} = require("../mcp/lib/repo-env.js");
+} = require("../mcp/domains/repo/repo-env.js");
 const {
   assertRepoRootPath,
-} = require("../mcp/lib/governance-contracts.js");
-const initRepoSessionTool = require("../mcp/lib/tools/init-repo-session.js");
-const repoPrepareEnvTool = require("../mcp/lib/tools/repo-prepare-env.js");
-const repoDockerRunTool = require("../mcp/lib/tools/repo-docker-run.js");
+} = require("../mcp/core/governance/index.js");
+const initRepoSessionTool = require("../mcp/tools/repo/init-repo-session.js");
+const repoPrepareEnvTool = require("../mcp/tools/repo/repo-prepare-env.js");
+const repoDockerRunTool = require("../mcp/tools/repo/repo-docker-run.js");
 
 function valueAfterFlag(args, flag) {
   const index = args.indexOf(flag);

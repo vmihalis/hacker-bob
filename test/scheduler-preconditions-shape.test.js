@@ -19,51 +19,51 @@ const {
   SCHEDULER_PRECONDITION_VALUES,
   PRECONDITION_CHECKS,
   evaluateSchedulerPrecondition,
-} = require("../mcp/lib/scheduler-preconditions.js");
+} = require("../mcp/core/waves/scheduler-preconditions.js");
 const {
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   writeChainAttempt,
-} = require("../mcp/lib/chain-attempts.js");
+} = require("../mcp/core/chain-attempts.js");
 const {
   initSession,
   advanceSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   startWave,
   writeWaveHandoff,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   attackSurfacePath,
   httpAuditJsonlPath,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   recordProducerRun,
-} = require("../mcp/lib/producer-run-ledger.js");
+} = require("../mcp/core/producer-run-ledger.js");
 const {
   authStore,
-} = require("../mcp/lib/auth.js");
+} = require("../mcp/core/auth/index.js");
 const {
   BLOCKED_PREREQ_KIND_CAPABILITY,
   computeCapabilityClearedPremiseSurfaceIds,
   computeRequeueSurfaceIds,
   detectTerminalPromotions,
-} = require("../mcp/lib/waves/wave-promotion-detector.js");
+} = require("../mcp/core/waves/wave-promotion-detector.js");
 const {
   capabilityToolMapFromRegistry,
-} = require("../mcp/lib/tool-registry.js");
-const producerFloorTool = require("../mcp/lib/tools/materialize-producer-floor.js");
-const initContractSessionTool = require("../mcp/lib/tools/init-contract-session.js");
+} = require("../mcp/tools/tool-registry.js");
+const producerFloorTool = require("../mcp/tools/materialize-producer-floor.js");
+const initContractSessionTool = require("../mcp/tools/blockchain/init-contract-session.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -645,7 +645,7 @@ test("unscanned_bodies_drained blocks when a materialized http body corpus leave
     assert.equal(result.obligation_active, true);
     assert.ok(result.ready_web_onchain_ref_count >= 1);
 
-    const lifecycleGates = require("../mcp/lib/lifecycle-gates.js");
+    const lifecycleGates = require("../mcp/core/session/lifecycle-gates.js");
     const gate = lifecycleGates.gateOpenFrontierToClaimFreeze
       || lifecycleGates.TRANSITION_GATES["OPEN_FRONTIER->CLAIM_FREEZE"];
     if (typeof gate === "function") {

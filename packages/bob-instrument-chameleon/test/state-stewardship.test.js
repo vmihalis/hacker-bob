@@ -33,10 +33,10 @@ const {
   physicalClockMappingSigningMessage,
   publicKeyDigest,
   samplePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

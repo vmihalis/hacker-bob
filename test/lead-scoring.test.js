@@ -7,7 +7,7 @@ const {
   normalizePromotionOptions,
   scoreStaticLeadWithReachability,
   shouldPromoteLead,
-} = require("../mcp/lib/lead-scoring.js");
+} = require("../mcp/core/frontier/lead-scoring.js");
 
 function baseStaticLead(overrides = {}) {
   return {

@@ -14,10 +14,10 @@ is reproduced below.
 Every count below is the output of a command, not a reading of a line range, and
 every "X does not exist" claim is paired with a positive control run under the same
 grep shape so a zero result cannot be confused with a broken pattern. Reproduction
-is by `renderMarkdown` (`mcp/lib/tools/compose-report.js:1085-1140`) driven directly
+is by `renderMarkdown` (`mcp/tools/compose-report.js:1085-1140`) driven directly
 and its output fed to `parseAuditReportMarkdown`
-(`mcp/lib/audit-report-parser.js:85`). `renderMarkdown` is not in the module's export
-list (`mcp/lib/tools/compose-report.js:1438-1448`, and `module.exports` is the
+(`mcp/core/audit-report-parser.js:85`). `renderMarkdown` is not in the module's export
+list (`mcp/tools/compose-report.js:1438-1448`, and `module.exports` is the
 non-extensible result of `wrapWriteTool` at `:1381`), so the probe compiles the
 untouched source text with one appended `globalThis` handoff line under the real file
 path. No repo file is modified and no session directory is written.
@@ -26,7 +26,7 @@ path. No repo file is modified and no session directory is written.
 
 ## 1. CONFIRMED — `SECTION_KINDS` is a frozen eight-value enum
 
-`mcp/lib/tools/compose-report.js:64-73` declares the array; the eight string literals
+`mcp/tools/compose-report.js:64-73` declares the array; the eight string literals
 are on `:65-72`:
 
 ```js
@@ -44,7 +44,7 @@ values=["impact","repro","evidence","severity","remediation","chain_summary","pr
 ```
 
 Enforcement is `assertEnum(section.kind, SECTION_KINDS, …)` at
-`mcp/lib/tools/compose-report.js:791`; `assertEnum` is defined at `:120-128` and
+`mcp/tools/compose-report.js:791`; `assertEnum` is defined at `:120-128` and
 throws `ERROR_CODES.INVALID_ARGUMENTS` from `:122-125` on any other value. The same
 closed list is mirrored into the published JSON schema at `:1397`
 (`enum: [...SECTION_KINDS]`).
@@ -62,7 +62,7 @@ is closed the same way and checked at `:794`: `bob_verified` / `operator_osint` 
 
 ## 2. CONFIRMED — `SECTION_PROSE_MAX` is 4096, and over-limit prose is REFUSED, not truncated
 
-`mcp/lib/tools/compose-report.js:80` — `const SECTION_PROSE_MAX = 4096;`
+`mcp/tools/compose-report.js:80` — `const SECTION_PROSE_MAX = 4096;`
 
 Applied at `:793` via `assertString(section.prose, …, { maxLength: SECTION_PROSE_MAX })`.
 `assertString` is defined at `:107-118`; its over-length branch is `:114` and the
@@ -94,7 +94,7 @@ That was wrong: `:823` is `if (steps.length > REPRO_STEPS_PER_FINDING_MAX) {` an
 
 ## 3. CONFIRMED — `section_id` auto-fills to `section-N` and never has to name a finding
 
-`mcp/lib/tools/compose-report.js:799-801`:
+`mcp/tools/compose-report.js:799-801`:
 
 ```js
 const sectionId = typeof section.section_id === "string" && section.section_id
@@ -121,12 +121,12 @@ validator, and `mcp/server.js` is 64 lines containing zero occurrences of
 positive control for that second count.
 
 `FINDING_ID_RE` and `parseFindingId` are never applied to `section_id`. Controlled
-negative: `grep -rn 'FINDING_ID_RE\|parseFindingId' mcp/lib --include='*.js'` returns
+negative: `grep -rn 'FINDING_ID_RE\|parseFindingId' mcp --include='*.js'` returns
 **48** hits across the tree (the control — the pattern is live) and **0** of them are
 in `compose-report.js`. `FINDING_ID_RE` itself resolves at only four sites:
-`mcp/lib/constants.js:3` (definition), `:251` (export), `mcp/lib/validation.js:5`
+`mcp/core/io/identifier-contracts.js` (definition/export), `mcp/core/io/validation.js`
 (import) and `:163` (its sole `.test()`), inside `parseFindingId`
-(`mcp/lib/validation.js:161-167`). So a `section_id` is arbitrary non-empty text at
+(`mcp/core/io/validation.js:161-167`). So a `section_id` is arbitrary non-empty text at
 runtime and is not required to lead with, contain, or resolve to a finding id.
 
 **Two caveats worth knowing before you rely on it:**
@@ -134,17 +134,17 @@ runtime and is not required to lead with, contain, or resolve to a finding id.
 - The auto-filled id is derived from the section's array index, so auto-filled ids
   never collide with each other — but **explicit caller-supplied `section_id`s are
   not checked against each other**. The only collision check
-  (`mcp/lib/tools/compose-report.js:497-508`) builds `callerIds` as a `Set` at `:497`
+  (`mcp/tools/compose-report.js:497-508`) builds `callerIds` as a `Set` at `:497`
   and compares *capability-pack-generated* ids against it and against other generated
   ids at `:501`. Building a `Set` silently absorbs caller-vs-caller duplicates; two
   caller sections may legally share one id.
 - `bob_amend_report` targets a section **by `section_id`**
-  (`mcp/lib/tools/amend-report.js:49`), and the amendment renders under
-  `### ${amend.section_id}` (`mcp/lib/tools/compose-report.js:1131`). A duplicated or
+  (`mcp/tools/amend-report.js:49`), and the amendment renders under
+  `### ${amend.section_id}` (`mcp/tools/compose-report.js:1131`). A duplicated or
   index-derived id therefore makes the amend target ambiguous or position-dependent.
   Pass explicit, stable, unique `section_id`s when you intend to amend later. Note the
   asymmetry: `bob_amend_report` *does* apply a runtime 64-char cap to its own
-  `section_id` (`mcp/lib/tools/amend-report.js:30`, asserted at `:49` through the
+  `section_id` (`mcp/tools/amend-report.js:30`, asserted at `:49` through the
   local `assertString` at `:34-42`); `bob_compose_report` does not.
 
 ## 4. PARTLY FALSIFIED, PARTLY REPRODUCED — the heading footgun
@@ -163,7 +163,7 @@ pattern:  [A-Za-z]{1,3} | [a-zA-Z]{1,3} | [A-Z]{1,3} | [a-z]{1,3} | \w{1,3} | [A
 hits(target family) = 0
 POSITIVE CONTROL, same grep -rnE shape, same --include/--exclude:
 pattern:  [1-9]\d*
-hits(control)       = 13   (mcp/lib/constants.js:3,4,5,135,141, …)
+hits(control)       = 13   (domain constant homes such as mcp/core/io/identifier-contracts.js, …)
 ```
 
 That command is blind to `\w{1,3}` written another way, to a runtime-built `RegExp`,
@@ -174,7 +174,7 @@ claim the evidence did not deliver, and it is withdrawn.
 
 **Strong claim (exhaustive by enumeration).** The verdict rests instead on
 enumerating every regex that can ever see a heading string.
-`mcp/lib/audit-report-parser.js` contains **34** regex literals in total; **11** of
+`mcp/core/audit-report-parser.js` contains **34** regex literals in total; **11** of
 them are reachable from a heading line, and every one is a literal keyword or
 markdown-marker pattern:
 
@@ -202,19 +202,19 @@ document said "exactly one", citing only `FINDING_ID_RE`. Counted:
 
 ```
 /^F-([1-9]\d*)$/          (JS RegExp literal)         sites=3
-    mcp/lib/constants.js:3                          (FINDING_ID_RE)
-    mcp/lib/tools/record-candidate-claim.js:194     (independent inline copy)
-    mcp/lib/wave-handoff-contracts.js:484           (independent inline copy)
+    mcp/core/io/identifier-contracts.js             (FINDING_ID_RE)
+    mcp/tools/record-candidate-claim.js:194     (independent inline copy)
+    mcp/core/waves/wave-handoff-contracts.js:484           (independent inline copy)
 ^F-[1-9][0-9]*$           (JSON-schema spelling)      sites=7
-    mcp/lib/tools/verify-physical-candidate-claim.js:32
-    mcp/lib/tools/write-chain-attempt.js:17
-    mcp/lib/tools/write-evidence-packs.js:24
-    mcp/lib/tools/write-proof-bundle.js:27, :46
-    mcp/lib/tools/replay-context-schema.js:10
-    mcp/lib/tools/write-wave-handoff.js:173
+    mcp/tools/physical/verify-physical-candidate-claim.js:32
+    mcp/tools/write-chain-attempt.js:17
+    mcp/tools/write-evidence-packs.js:24
+    mcp/tools/write-proof-bundle.js:27, :46
+    mcp/tools/replay-context-schema.js:10
+    mcp/tools/write-wave-handoff.js:173
 ^F-[0-9]+$                (LOOSE: accepts F-0, F-007) sites=2
-    mcp/lib/tools/run-invariant-for-finding.js:68
-    mcp/lib/tools/verify-invariant-differential.js:45
+    mcp/tools/blockchain/run-invariant-for-finding.js:68
+    mcp/tools/blockchain/verify-invariant-differential.js:45
 distinct_spellings=3  total_sites=12
 ```
 
@@ -227,13 +227,13 @@ matcher, and none is applied to a heading.
 
 Letters-then-digits matchers *do* exist elsewhere in-tree — for example
 `/\b[A-Za-z]{2}\d{2}[A-Za-z0-9]{10,30}\b/g` at
-`mcp/lib/offensive-massread-producer.js:276` and `/&[a-zA-Z]{2,6};/` at
-`mcp/lib/auth-placeholders.js:358`. Neither touches a heading; they are named here so
+`mcp/domains/web/offensive-massread-producer.js:276` and `/&[a-zA-Z]{2,6};/` at
+`mcp/core/auth/auth-placeholders.js:358`. Neither touches a heading; they are named here so
 the negative above is not mistaken for a claim that no such shape exists anywhere.
 
 ### 4b. CONFIRMED: `renderMarkdown` interpolates caller text into report.md unescaped at 11 of 11 sites
 
-`renderMarkdown` spans `mcp/lib/tools/compose-report.js:1085-1140`. Within it, every
+`renderMarkdown` spans `mcp/tools/compose-report.js:1085-1140`. Within it, every
 `parts.push` that interpolates rather than pushing a literal string was extracted
 programmatically and counted:
 
@@ -257,7 +257,7 @@ column 0 with no prefix at all (`:1092`, `:1100`, `:1135`). The other eight carr
 prefix — but every validator on the path is length-only, so an embedded `\n` ends the
 prefixed line and puts the rest of the value at column 0. `assertString` (`:107-118`)
 checks `typeof`, `minLength` and `maxLength`; it has no character-class branch.
-`assertSafeDomain` (`mcp/lib/paths.js:20-26`) rejects only `/`, `\` and `..`.
+`assertSafeDomain` (`mcp/core/io/paths.js:20-26`) rejects only `/`, `\` and `..`.
 
 Each of the eleven was driven end-to-end through `renderMarkdown` →
 `parseAuditReportMarkdown`. All eleven mint at least one finding the caller never
@@ -282,7 +282,7 @@ for why that is not evidence of a passing check.
 
 Channel 6 is admissible because `validateProvenance` returns immediately for any
 section whose provenance is not `bob_verified`
-(`mcp/lib/tools/compose-report.js:711-712`); only on the `bob_verified` path is an
+(`mcp/tools/compose-report.js:711-712`); only on the `bob_verified` path is an
 unclassifiable ref refused (`:726-735`). The probe used `external_research`.
 
 Round 1 of this document claimed "every other H2 in a bob report is
@@ -327,13 +327,13 @@ of the eleven interpolated values above — which is exactly the mistake round 1
 
 ### 4c. CONFIRMED: bob's own markdown parser treats an H2 as a finding boundary, with one narrow exemption
 
-`mcp/lib/audit-report-parser.js` is hacker-bob's in-tree markdown-to-findings parser,
+`mcp/core/audit-report-parser.js` is hacker-bob's in-tree markdown-to-findings parser,
 reached through `bob_ingest_audit_report`. The tool module requires the entry point at
-`mcp/lib/tools/ingest-audit-report.js:3`, wraps it at `:5-11`, and binds it as
+`mcp/tools/ingest-audit-report.js:3`, wraps it at `:5-11`, and binds it as
 `handler` at `:32`; the schema text that states the rule outright — *"H1 is the title;
 H2 sections are findings"* — is the `raw_markdown` description at `:23`.
 
-The grammar, at `mcp/lib/audit-report-parser.js:163-172` (`:172` is the closing
+The grammar, at `mcp/core/audit-report-parser.js:163-172` (`:172` is the closing
 brace shown below):
 
 ```js
@@ -386,7 +386,7 @@ Three properties settle the footgun:
 ### 4d. CONFIRMED: bob will emit an `### F-N` heading for a finding that does not exist
 
 `repro_steps_by_finding[].finding_id` is validated as a **plain 64-char string**
-(`mcp/lib/tools/compose-report.js:821`):
+(`mcp/tools/compose-report.js:821`):
 
 ```js
 const findingId = assertString(entry.finding_id, `repro_steps_by_finding[${idx}].finding_id`, { maxLength: 64 });
@@ -414,7 +414,7 @@ recorded.
 ### 4e. The silence is structural, not observed
 
 Every reproduction above returned `parser_warnings: []`. That is **not** evidence
-that the parser checked anything. `mcp/lib/audit-report-parser.js` declares
+that the parser checked anything. `mcp/core/audit-report-parser.js` declares
 `const warnings = []` at `:86` and contains exactly **one** `warnings.push` site —
 `warnings.push("no_findings_detected")` at `:200`, guarded by
 `if (findings.length === 0)` at `:199` — returned as `parser_warnings` at `:233`.
@@ -453,13 +453,13 @@ finding_count=5
 parser_warnings=[]
 ```
 
-Note the last row: `### F-1` (emitted at `mcp/lib/tools/compose-report.js:1114`) is an
+Note the last row: `### F-1` (emitted at `mcp/tools/compose-report.js:1114`) is an
 unknown H3 under the open "Reproduction Steps" finding, so
-`mcp/lib/audit-report-parser.js:181` buffered its text and `flushSection` wrote the
+`mcp/core/audit-report-parser.js:181` buffered its text and `flushSection` wrote the
 buffer into `description` at `:116`, the `currentSection === "_default"` branch that
 `startFinding` set at `:141`. The real `F-1` is thus recorded as *body text of a
 phantom*. Note also that the section-id HTML comment emitted at
-`mcp/lib/tools/compose-report.js:1098` is not stripped — it becomes the first line of
+`mcp/tools/compose-report.js:1098` is not stripped — it becomes the first line of
 the description of each of the three section-derived findings.
 
 ### What this means when you author sections
@@ -485,7 +485,7 @@ document made exactly that error.
 - **Keep global material above the first finding section and prefix it** with
   `Summary`, `Overview`, `Introduction`, or `Scope` — that is the one and only
   exemption the parser honours, and it only works before the first finding
-  (`mcp/lib/audit-report-parser.js:166`).
+  (`mcp/core/audit-report-parser.js:166`).
 - **Pass `repro_steps_by_finding[].finding_id` values you have actually recorded.**
   Nothing checks them against the ledger.
 - **Do not treat an empty `parser_warnings` as a clean bill of health.** It holds at
@@ -494,10 +494,10 @@ document made exactly that error.
 ### Scope of this hazard
 
 `parseAuditReportMarkdown` has exactly one caller: `ingestAuditReport` at
-`mcp/lib/audit-report-parser.js:287`, which parses the `raw_markdown` **tool
+`mcp/core/audit-report-parser.js:287`, which parses the `raw_markdown` **tool
 argument** (asserted a non-empty string at `:283`), not a file on disk.
 `ingestAuditReport` in turn is required only by
-`mcp/lib/tools/ingest-audit-report.js:3` and dispatched as `bob_ingest_audit_report`'s
+`mcp/tools/ingest-audit-report.js:3` and dispatched as `bob_ingest_audit_report`'s
 handler at `:32`. So nothing in this repo round-trips a composed `report.md` back
 through the parser today. That scoping is stated so the reproduction is not mistaken
 for a live data-flow inside bob.
@@ -508,11 +508,11 @@ speculative:
 1. `bob_ingest_audit_report` accepts arbitrary caller `raw_markdown`, so the grammar
    above is reachable with any document, including one a composer produced.
 2. The rendered `report.md` leaves bob verbatim. `report.md` is read at
-   `mcp/lib/report-finalize.js:75`, `mcp/lib/session-summary.js:219`,
-   `mcp/lib/pipeline-session-artifacts.js:990`,
-   `mcp/lib/physical-lifecycle-capstone.js:455`, `mcp/lib/pipeline-analytics.js:1200`,
-   `mcp/lib/bob-export.js:253` and — most directly —
-   `mcp/lib/tools/export-security-hub-finding.js:139`, which embeds the whole file
+   `mcp/core/report-finalize.js:75`, `mcp/core/session/session-summary.js:219`,
+   `mcp/core/telemetry/pipeline-session-artifacts.js:990`,
+   `mcp/domains/physical/physical-lifecycle-capstone.js:455`, `mcp/core/telemetry/pipeline-analytics.js:1200`,
+   `mcp/core/bob-export.js:253` and — most directly —
+   `mcp/tools/export-security-hub-finding.js:139`, which embeds the whole file
    into an exported evidence bundle. None of those calls the parser, but each carries
    the document, and its heading ambiguity, outward. The composer is the producer of
    that ambiguity, so the constraint belongs in the composer's docs.
@@ -536,7 +536,7 @@ dropped.
 | D5 | "free-form text up to 64 chars" overstated | **FIXED.** §3 now states the cap is schema-only (`:1396`) and `normalizeSection` (`:787-810`) applies none |
 | D5 | `ingest-audit-report.js:4-11` cited for the schema text | **FIXED.** Require at `:3`, handler `:5-11`, quoted text at `:23`, bound at `:32` |
 | D6 | Scope paragraph accurate, not overstated | **NO CHANGE NEEDED** — kept, and strengthened with the `:287` / `:283` / `:3` / `:32` chain and the seven `report.md` readers |
-| D8 | "exactly one finding-id grammar" false | **FIXED.** 3 spellings / 12 sites enumerated and counted, including a third inline copy the review did not list (`mcp/lib/wave-handoff-contracts.js:484`) |
+| D8 | "exactly one finding-id grammar" false | **FIXED.** 3 spellings / 12 sites enumerated and counted, including a third inline copy the review did not list (`mcp/core/waves/wave-handoff-contracts.js:484`) |
 | D9 | Handler extent `1240-1345`; "grep returns nothing" false | **FIXED.** Handler is `:1244-1377`; `finding_id` occurs at `:1368` and `:1370`; conclusion re-grounded on the traced chain `:821 → :832 → :1256 → :1326 → :1114` |
 | D10 | "No such regex exists anywhere in this repo" overstated | **FIXED.** Narrowed to what the grep covers; the verdict now rests on enumerating all 34 parser regex literals and the 11 heading-reachable ones |
 | D11 | H3 claim over-broad | **FIXED.** Four-way split (bare typed / typed-with-trailing-text / unknown / no-finding-open), each verified by execution |

@@ -9,130 +9,130 @@ const PACKAGE_JSON_PATH = path.join(ROOT, "package.json");
 
 const MODULE_GUARD_TESTS = Object.freeze([
   Object.freeze({
-    module: "mcp/lib/physical-quantities.js",
+    module: "mcp/domains/physical/physical-quantities.js",
     guards: Object.freeze([
       "test/physical-effects-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/requested-effects.js",
+    module: "mcp/core/requested-effects.js",
     guards: Object.freeze([
       "test/physical-effects-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-authority.js",
+    module: "mcp/domains/physical/physical-authority.js",
     guards: Object.freeze([
       "test/physical-authority-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-dispatch-authority.js",
+    module: "mcp/domains/physical/physical-dispatch-authority.js",
     guards: Object.freeze([
       "test/physical-dispatch-authority.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-trusted-clock.js",
+    module: "mcp/domains/physical/physical-trusted-clock.js",
     guards: Object.freeze([
       "test/physical-trusted-clock.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-trusted-clock-store.js",
+    module: "mcp/domains/physical/physical-trusted-clock-store.js",
     guards: Object.freeze([
       "test/physical-trusted-clock-store.test.js",
       "test/physical-experiment-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-inventory-checkpoint.js",
+    module: "mcp/domains/physical/physical-inventory-checkpoint.js",
     guards: Object.freeze([
       "test/physical-inventory-checkpoint.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-resource-arbiter.js",
+    module: "mcp/domains/physical/physical-resource-arbiter.js",
     guards: Object.freeze([
       "test/physical-resource-arbiter.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-resource-graph-coordinator.js",
+    module: "mcp/domains/physical/physical-resource-graph-coordinator.js",
     guards: Object.freeze([
       "test/physical-resource-graph-coordinator.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-provider-authoring.js",
+    module: "mcp/domains/physical/physical-provider-authoring.js",
     guards: Object.freeze([
       "test/physical-provider-authoring.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-campaign-anchor.js",
+    module: "mcp/domains/physical/physical-campaign-anchor.js",
     guards: Object.freeze([
       "test/physical-campaign-coordinator.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-campaign-closure.js",
+    module: "mcp/domains/physical/physical-campaign-closure.js",
     guards: Object.freeze([
       "test/physical-campaign-closure.test.js",
       "test/physical-campaign-coordinator.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-campaign-coordinator.js",
+    module: "mcp/domains/physical/physical-campaign-coordinator.js",
     guards: Object.freeze([
       "test/physical-campaign-coordinator.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-lifecycle-capstone.js",
+    module: "mcp/domains/physical/physical-lifecycle-capstone.js",
     guards: Object.freeze([
       "test/physical-lifecycle-capstone.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/plane-physical-gate-evidence.js",
+    module: "mcp/domains/physical/plane-physical-gate-evidence.js",
     guards: Object.freeze([
       "test/plane-physical-gate-evidence.test.js",
       "test/plane-physical-release-readiness.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/plane-physical-release-contracts.js",
+    module: "mcp/domains/physical/plane-physical-release-contracts.js",
     guards: Object.freeze([
       "test/plane-physical-release-readiness.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/plane-physical-release-readiness.js",
+    module: "mcp/domains/physical/plane-physical-release-readiness.js",
     guards: Object.freeze([
       "test/plane-physical-release-readiness.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/plane-physical-release-snapshot.js",
+    module: "mcp/domains/physical/plane-physical-release-snapshot.js",
     guards: Object.freeze([
       "test/plane-physical-release-readiness.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-provider-contract.js",
+    module: "mcp/domains/physical/instrument-provider-contract.js",
     guards: Object.freeze([
       "test/instrument-provider-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-bootstrap-contract.js",
+    module: "mcp/domains/physical/instrument-bootstrap-contract.js",
     guards: Object.freeze([
       "test/instrument-bootstrap-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-bootstrap-store.js",
+    module: "mcp/domains/physical/instrument-bootstrap-store.js",
     guards: Object.freeze([
       "test/instrument-bootstrap-store.test.js",
       "test/instrument-bootstrap-async-observation.test.js",
@@ -280,52 +280,52 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/executed-evidence-registry.js",
+    module: "mcp/core/executed-evidence-registry.js",
     guards: Object.freeze([
       "test/executed-evidence-registry.test.js",
       "test/physical-surface-graph-ph-s8-acceptance.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-capabilities.js",
+    module: "mcp/domains/physical/instrument-capabilities.js",
     guards: Object.freeze([
       "test/instrument-capabilities.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-capabilities-chameleon.js",
+    module: "mcp/domains/physical/instrument-capabilities-chameleon.js",
     guards: Object.freeze([
       "test/instrument-capabilities.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/tools/query-instrument-capabilities.js",
+    module: "mcp/tools/physical/query-instrument-capabilities.js",
     guards: Object.freeze([
       "test/instrument-capabilities.test.js",
       "test/mcp-server.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-scope.js",
+    module: "mcp/domains/physical/physical-scope.js",
     guards: Object.freeze([
       "test/physical-scope-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-experiment-contract.js",
+    module: "mcp/domains/physical/physical-experiment-contract.js",
     guards: Object.freeze([
       "test/physical-experiment-contract.test.js",
       "test/physical-surface-graph-ph-s8-acceptance.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-lease-contract.js",
+    module: "mcp/domains/physical/instrument-lease-contract.js",
     guards: Object.freeze([
       "test/instrument-lease-contract.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-lease-store.js",
+    module: "mcp/domains/physical/instrument-lease-store.js",
     guards: Object.freeze([
       "test/instrument-lease-store.test.js",
     ]),
@@ -337,7 +337,7 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/instrument-safety-supervisor.js",
+    module: "mcp/domains/physical/instrument-safety-supervisor.js",
     guards: Object.freeze([
       "test/instrument-safety-supervisor.test.js",
     ]),
@@ -380,7 +380,7 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/surface-graph.js",
+    module: "mcp/core/frontier/surface-graph.js",
     guards: Object.freeze([
       "test/surface-graph.test.js",
       "test/physical-surface-graph.test.js",
@@ -388,21 +388,21 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/physical-surface-transition.js",
+    module: "mcp/domains/physical/physical-surface-transition.js",
     guards: Object.freeze([
       "test/physical-surface-graph.test.js",
       "test/physical-surface-graph-ph-s8-acceptance.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/reachability.js",
+    module: "mcp/core/frontier/reachability.js",
     guards: Object.freeze([
       "test/reachability.test.js",
       "test/repo-target.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/reachability-ceiling.js",
+    module: "mcp/core/frontier/reachability-ceiling.js",
     guards: Object.freeze([
       "test/reachability.test.js",
       "test/grade-from-frozen-payload.test.js",
@@ -410,7 +410,7 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/repo-target.js",
+    module: "mcp/domains/repo/repo-target.js",
     guards: Object.freeze([
       "test/repo-target-binding.test.js",
       "test/repo-inventory.test.js",
@@ -418,62 +418,74 @@ const MODULE_GUARD_TESTS = Object.freeze([
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/stigmergic-consumers.js",
+    module: "mcp/core/stigmergic-consumers.js",
     guards: Object.freeze([
       "test/stigmergic-consumers-shape.test.js",
       "test/stigmergy-coherence.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/authority.js",
+    module: "mcp/core/belief/authority.js",
     guards: Object.freeze([
       "test/belief-authority.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/frontier-facts.js",
+    module: "mcp/core/belief/frontier-facts.js",
     guards: Object.freeze([
       "test/belief-frontier-facts.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/belief-window.js",
+    module: "mcp/core/belief/organs/product-model.js",
+    guards: Object.freeze([
+      "test/belief-product-model.test.js",
+    ]),
+  }),
+  Object.freeze({
+    module: "mcp/core/belief/contract-compiler.js",
+    guards: Object.freeze([
+      "test/contract-compiler.test.js",
+    ]),
+  }),
+  Object.freeze({
+    module: "mcp/core/belief/belief-window.js",
     guards: Object.freeze([
       "test/belief-window.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/factor-graph.js",
+    module: "mcp/core/belief/factor-graph.js",
     guards: Object.freeze([
       "test/belief-factor-graph.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/residual.js",
+    module: "mcp/core/belief/residual.js",
     guards: Object.freeze([
       "test/belief-residual.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/intervention-calculus.js",
+    module: "mcp/core/belief/intervention-calculus.js",
     guards: Object.freeze([
       "test/belief-intervention-calculus.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/experiment-loop.js",
+    module: "mcp/core/belief/experiment-loop.js",
     guards: Object.freeze([
       "test/belief-experiment-loop.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/scheduler-priority.js",
+    module: "mcp/core/belief/scheduler-priority.js",
     guards: Object.freeze([
       "test/wave-planner.test.js",
     ]),
   }),
   Object.freeze({
-    module: "mcp/lib/belief/model.js",
+    module: "mcp/core/belief/model.js",
     guards: Object.freeze([
       "test/belief-model.test.js",
     ]),

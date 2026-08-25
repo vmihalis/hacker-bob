@@ -26,18 +26,18 @@ const {
   initRepoSession,
   repoCheck,
   REPO_CHECK_MAX_FILE_BYTES,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   redactTextSensitiveValues,
   validateNoSensitiveMaterial,
-} = require("../mcp/lib/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const {
   repoChecksJsonlPath,
-} = require("../mcp/lib/paths.js");
-const repoCheckTool = require("../mcp/lib/tools/repo-check.js");
+} = require("../mcp/core/io/paths.js");
+const repoCheckTool = require("../mcp/tools/repo/repo-check.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -19,7 +19,7 @@ local Claude Code workspace:
 1. Use `./dev-sync.sh /absolute/path/to/test-workspace` from this repo.
 2. This script backs up the target `.mcp.json` and `.claude/settings.json`,
    runs the installer, recopies repo-backed MCP files including
-   `mcp/lib/tools/*.js`, re-merges the dev config, and runs `claude mcp list`
+   `mcp/tools/*.js`, re-merges the dev config, and runs `claude mcp list`
    unless `--no-health-check` is supplied.
 3. It is intended for a dedicated local test workspace because it overwrites
    Bob-owned runtime files after backing up the target MCP/settings files.
@@ -40,7 +40,7 @@ Maintainer workflow:
   allowed-tools, Claude settings, and scope-hook registration must remain
   registry-driven.
 - Correctness-vocabulary tags (S*, I*, C*, X.*, Y-P*, Y-D*, Y-R*) are
-  registry-driven via `mcp/lib/invariant-registry.js`. Every tag in the tree
+  registry-driven via `mcp/core/invariant-registry.js`. Every tag in the tree
   must resolve to a REGISTRY entry (or the frozen, only-shrinking
   `ALLOWLIST_UNDOCUMENTED` backlog), and every entry's `enforced_by`
   file:symbol must exist. The collision-prone S/C/I families are matched only
@@ -54,7 +54,7 @@ Maintainer workflow:
 - Markdown mirrors are human/debug artifacts. Chain evidence is MCP-owned in
   `chain-attempts.jsonl`; `report.md` remains the final human-facing
   agent-composed (via bob_compose_report) report.
-- Audit-graded session paths are MCP-rendered (Y-P13). `mcp/lib/paths.js`
+- Audit-graded session paths are MCP-rendered (Y-P13). `mcp/core/io/paths.js`
   exports `AUDIT_GRADED_PATHS` (positive list — `report.md`, `chains.md`,
   `evidence-packs.md`, `grade.md`, verification-round mirrors, wave-handoff
   mirrors, claim-freeze snapshots, and the hash-bound JSONL ledgers) and the

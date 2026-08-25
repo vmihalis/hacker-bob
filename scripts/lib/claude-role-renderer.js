@@ -8,20 +8,20 @@ const {
 const {
   mcpToolNamesForRole,
   roleDefinition,
-} = require("../../mcp/lib/role-model.js");
+} = require("../../mcp/core/dispatch/role-model.js");
 const {
   substituteCapabilityPackVerifierTable,
   substituteClaudeEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
   substituteProducerCatalogue,
-} = require("../../mcp/lib/capability-packs-rendering.js");
+} = require("../../mcp/core/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
-} = require("../../mcp/lib/capability-playbooks.js");
-const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
-const { FANOUT_ROLE_REGISTRY } = require("../../mcp/lib/nested-spawn.js");
-const { TOOL_REGISTRY } = require("../../mcp/lib/tool-registry.js");
+} = require("../../mcp/core/capability/capability-playbooks.js");
+const { evaluatorRoleSpecs } = require("../../mcp/core/capability/capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("../../mcp/core/session/nested-spawn.js");
+const { TOOL_REGISTRY } = require("../../mcp/tools/tool-registry.js");
 const { parseSkillText } = require("./skill-parser.js");
 
 // Y.8 Do step 0b — `@schema_ref` directive auto-injection. The
@@ -197,7 +197,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     output_path: path.join(".claude", "skills", "bob-evaluate-runner", "SKILL.md"),
     name: "bob-evaluate-runner",
     description: "Hacker Bob orchestrator runtime — invoked by /bob-evaluate. Do not call directly.",
-    disable_model_invocation: true,
+    disable_model_invocation: false,
     argument_hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
     local_tools: Object.freeze(["Task", "Read"]),
   }),

@@ -4,7 +4,7 @@
 #
 # WHY: offensive-sandbox.js runs the container with `--pull=never` + `name@sha256:<digest>`. A local
 # `docker build` has NO RepoDigest, so the only way to mint a resolvable digest is build -> push to a
-# registry -> pull-by-digest. This does that against ghcr.io and writes mcp/lib/offensive-image.json
+# registry -> pull-by-digest. This does that against ghcr.io and writes mcp/offensive-image.json
 # (the SOLE source of runOffensiveTool's imageDigest).
 #
 # PROVENANCE: you supply each tool's exact release archive URL + its published sha256 (both REQUIRED).
@@ -41,7 +41,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTEXT_DIR="${REPO_ROOT}/docker/offensive-context"
 BIN_DIR="${CONTEXT_DIR}/bin"
 DOCKERFILE="${REPO_ROOT}/docker/offensive.Dockerfile"
-LOCKFILE="${REPO_ROOT}/mcp/lib/offensive-image.json"
+LOCKFILE="${REPO_ROOT}/mcp/offensive-image.json"
 
 STAGE_ONLY=0
 [ "${1:-}" = "--stage-only" ] && STAGE_ONLY=1

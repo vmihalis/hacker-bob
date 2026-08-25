@@ -7,7 +7,7 @@ can reason about findings the same way regardless of platform.
 
 The spec is read at session init and consumed by:
 - Surface-discovery SC ingestion (writes `bob-spec.yaml` from a platform page + extends).
-- Evaluator brief (`mcp/lib/assignment-brief.js`) — surfaces trust assumptions and
+- Evaluator brief (`mcp/core/session/assignment-brief.js`) — surfaces trust assumptions and
   bypass conditions so evaluators know which "admin-only" claims are still
   reportable.
 - Anti-stop rule (`prompts/roles/evaluator-evm.md` etc., `.claude/rules/evaluating.md`)
@@ -304,7 +304,7 @@ side-by-side.
 Beyond `bob-spec.yaml` and the per-family evaluator / verifier / chain / reporter
 prompts, SC findings flow through four shared mechanisms introduced in main:
 
-### 1. Lifecycle gates (`mcp/lib/lifecycle-gates.js`)
+### 1. Lifecycle gates (`mcp/core/session/lifecycle-gates.js`)
 
 The orchestrator's `bob_advance_session(to_state)` enforces gates between
 lifecycle states. The transitions that matter for SC claims:

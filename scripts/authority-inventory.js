@@ -9,10 +9,10 @@ const INVENTORY_PATH = path.join(ROOT, "docs", "refactor-authority-inventory.md"
 
 const {
   TOOL_REGISTRY,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL: RUNTIME_AUTHORITY_CLASS_BY_TOOL,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 
 const AUTHORITY_CLASSES = Object.freeze([
   "bootstrap_session",
@@ -36,6 +36,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_aptos_fetch_resource: "smart_contract_contextual",
   bob_aptos_run: "smart_contract_contextual",
   bob_attach_contract: "initialized_session_mutation",
+  bob_compile_contract_binding: "initialized_session_mutation",
   bob_auth_store: "initialized_session_mutation",
   bob_auto_signup: "scoped_http_network",
   bob_browser_click: "initialized_session_mutation",
@@ -502,12 +503,21 @@ function relativePath(filePath) {
   return path.relative(ROOT, filePath).split(path.sep).join("/");
 }
 
+function recursiveJavaScriptFiles(dir) {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const filePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...recursiveJavaScriptFiles(filePath));
+    else if (entry.isFile() && entry.name.endsWith(".js")) files.push(filePath);
+  }
+  return files;
+}
+
 function toolFileMap() {
-  const toolsDir = path.join(ROOT, "mcp", "lib", "tools");
+  const toolsDir = path.join(ROOT, "mcp", "tools");
   const result = new Map();
-  for (const entry of fs.readdirSync(toolsDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".js") || entry.name === "index.js") continue;
-    const filePath = path.join(toolsDir, entry.name);
+  for (const filePath of recursiveJavaScriptFiles(toolsDir)) {
+    if (path.basename(filePath) === "index.js") continue;
     const tool = require(filePath);
     if (tool && typeof tool.name === "string") {
       result.set(tool.name, relativePath(filePath));

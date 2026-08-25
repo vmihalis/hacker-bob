@@ -270,6 +270,8 @@ SURFACE_DISCOVERY -> AUTH -> EVALUATE -> CHAIN -> VERIFY -> GRADE -> REPORT
 
 MCP ranking computes runtime priority for status views and evaluator briefs. Imports and public-intel fetches do not rewrite `attack_surface.json`.
 
+Underneath that narrative, the engine drives a strict six-state lifecycle FSM (`SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT`, with defined back-edges so an operator can re-enter `OPEN_FRONTIER` from any later state). The persisted `SessionNucleus` (`session-nucleus.json`) is the sole authority for a session's identity, scope, and lifecycle state; `state.json` is a grant-free READ PROJECTION derived from it, never a second write path; and `session-events.jsonl` is provenance/audit only. A session that predates (or somehow lost) its nucleus gains one exactly once through `migrateLegacySessionAuthority`, and its legacy projection stays readable but grant-free until that migration runs. `bob_read_session_nucleus` and `bob_read_session_summary` both surface a `verified` boolean alongside the nucleus so callers can distinguish a cryptographically verified nucleus from an unverified state-derived fallback.
+
 ### OSS Project Review Mode
 
 Local open-source project review runs against a checked-out repository instead of a live target domain. It inventories repo files, writes a session-scoped Docker plan, and keeps dependency installs and build repros inside a Docker image when explicitly requested. Docker command replay mounts the repo read-only by default and uses a session-owned writable work directory. Native C/C++ projects get a dedicated parser/protocol/memory-safety surface so evaluators bias toward reachable file/function evidence instead of generic repo audit notes. OSS mode is plumbed through the same v2 governance/frontier/scheduler/claim planes and is exposed as a forward-ported entry point (`/bob-evaluate <repo-path>` semantics) under the unified lifecycle FSM.
@@ -365,7 +367,7 @@ Common checks:
 - Codex must be restarted after install or update before `$bob-*` skills and local plugin wiring load.
 - Kimi CLI must be restarted after install or update before `/skill:bob-*` skills and MCP config load.
 - `.mcp.json` should contain an `mcpServers["hacker-bob"]` entry pointing at the installed project's `mcp/server.js`. v1.x installs are auto-migrated to this canonical key on next install or update.
-- If an upgrade leaves `mcp/lib/tools/` missing, rerun the installer with `hacker-bob@latest`.
+- If an upgrade leaves `mcp/tools/` missing, rerun the installer with `hacker-bob@latest`.
 
 Detailed guides:
 

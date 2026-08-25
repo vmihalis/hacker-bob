@@ -2,32 +2,50 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
 const {
+  attackSurfacePath,
+  frontierEventsJsonlPath,
+  queuePolicyPath,
+  repoDockerfilePath,
+  repoEnvPath,
+  repoInventoryPath,
+  sessionEventsJsonlPath,
+  sessionNucleusPath,
+  statePath,
+  surfaceRoutesPath,
+} = require("../mcp/core/io/paths.js");
+const {
   initRepoSession,
   readRepoSession,
   deriveRepoTargetDomain,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   readSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+  readVerifiedSessionNucleus,
+  sessionNucleusFromState,
+} = require("../mcp/core/governance/index.js");
 const {
   readSessionStateStrict,
-} = require("../mcp/lib/session-state-store.js");
+} = require("../mcp/core/session/session-state-store.js");
+const {
+  readSessionEvents,
+} = require("../mcp/core/session/session-events.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
   REPO_TARGET_DOMAIN_PATTERN,
   authorizeToolCall,
-} = require("../mcp/lib/session-authority.js");
+} = require("../mcp/core/session/session-authority.js");
 const {
   normalizeScopePolicy,
   buildSessionNucleus,
-} = require("../mcp/lib/governance-contracts.js");
-const initRepoSessionTool = require("../mcp/lib/tools/init-repo-session.js");
-const initSessionTool = require("../mcp/lib/tools/init-session.js");
+} = require("../mcp/core/governance/index.js");
+const initRepoSessionTool = require("../mcp/tools/repo/init-repo-session.js");
+const initSessionTool = require("../mcp/tools/init-session.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -51,6 +69,51 @@ function makeTempRepoDir(prefix = "bob-repo-fixture-") {
   // deterministic comparison.
   const raw = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   return fs.realpathSync.native ? fs.realpathSync.native(raw) : fs.realpathSync(raw);
+}
+
+function readUtf8(filePath) {
+  return fs.readFileSync(filePath, "utf8");
+}
+
+function listRelativeEntries(root) {
+  const entries = [];
+  function compareStrings(left, right) {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  }
+  function walk(directory, prefix = "") {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => {
+      return compareStrings(left.name, right.name);
+    })) {
+      const relative = path.join(prefix, entry.name);
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        entries.push({ path: `${relative}/`, type: "directory" });
+        walk(fullPath, relative);
+      } else if (entry.isFile()) {
+        entries.push({
+          path: relative,
+          type: "file",
+          sha256: crypto.createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex"),
+        });
+      } else if (entry.isSymbolicLink()) {
+        entries.push({ path: relative, type: "symlink" });
+      } else {
+        entries.push({ path: relative, type: "other" });
+      }
+    }
+  }
+  walk(root);
+  return entries.sort((left, right) => {
+    const pathOrder = compareStrings(left.path, right.path);
+    if (pathOrder !== 0) return pathOrder;
+    return compareStrings(left.type, right.type);
+  });
+}
+
+function initializedEvents(domain) {
+  return readSessionEvents(domain).filter((event) => event.kind === "governance.session.initialized");
 }
 
 test("initRepoSession creates a SessionNucleus and state with target_repo binding", () => {
@@ -79,6 +142,74 @@ test("initRepoSession creates a SessionNucleus and state with target_repo bindin
     assert.equal(state.target_repo.root_path, repoPath);
     assert.equal(state.repo_hash, result.repo_hash);
     assert.equal(state.lifecycle_state, "SETUP");
+
+    const verified = readVerifiedSessionNucleus(result.target_domain);
+    const stateDerived = sessionNucleusFromState(state);
+    assert.equal(verified.nucleus_hash, result.nucleus_hash);
+    assert.equal(stateDerived.nucleus_hash, verified.nucleus_hash);
+  });
+});
+
+test("initRepoSession records one initialized authority event across create and resume", () => {
+  withTempHome(() => {
+    const repoPath = makeTempRepoDir();
+    const created = initRepoSession({ repo_path: repoPath });
+    const resumed = initRepoSession({ repo_path: repoPath });
+
+    assert.equal(created.created, true);
+    assert.equal(resumed.created, false);
+    const events = initializedEvents(created.target_domain);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].nucleus_hash, created.nucleus_hash);
+    assert.equal(events[0].payload.repo_hash, created.repo_hash);
+  });
+});
+
+test("initRepoSession different-root conflict leaves authority artifacts unchanged", () => {
+  withTempHome(() => {
+    const firstRepo = makeTempRepoDir("bob-repo-conflict-first-");
+    const secondRepo = makeTempRepoDir("bob-repo-conflict-second-");
+    const targetDomain = "repo-shared-conflict";
+    const created = initRepoSession({ repo_path: firstRepo, target_domain: targetDomain });
+    const before = {
+      state: readUtf8(statePath(targetDomain)),
+      nucleus: readUtf8(sessionNucleusPath(targetDomain)),
+      events: readUtf8(sessionEventsJsonlPath(targetDomain)),
+    };
+
+    assert.throws(
+      () => initRepoSession({ repo_path: secondRepo, target_domain: targetDomain }),
+      /different repo/,
+    );
+
+    assert.equal(readUtf8(statePath(targetDomain)), before.state);
+    assert.equal(readUtf8(sessionNucleusPath(targetDomain)), before.nucleus);
+    assert.equal(readUtf8(sessionEventsJsonlPath(targetDomain)), before.events);
+    assert.equal(initializedEvents(targetDomain).length, 1);
+    assert.equal(readVerifiedSessionNucleus(targetDomain).nucleus_hash, created.nucleus_hash);
+  });
+});
+
+test("initRepoSession does not create downstream repo artifacts or mutate host repo", () => {
+  withTempHome(() => {
+    const repoPath = makeTempRepoDir();
+    fs.mkdirSync(path.join(repoPath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(repoPath, "src", "app.js"), "module.exports = 1;\n", "utf8");
+    const hostBefore = listRelativeEntries(repoPath);
+    const result = initRepoSession({ repo_path: repoPath });
+
+    assert.deepEqual(listRelativeEntries(repoPath), hostBefore);
+    for (const filePath of [
+      attackSurfacePath(result.target_domain),
+      frontierEventsJsonlPath(result.target_domain),
+      queuePolicyPath(result.target_domain),
+      repoDockerfilePath(result.target_domain),
+      repoEnvPath(result.target_domain),
+      repoInventoryPath(result.target_domain),
+      surfaceRoutesPath(result.target_domain),
+    ]) {
+      assert.equal(fs.existsSync(filePath), false, `${path.basename(filePath)} must not be created by init`);
+    }
   });
 });
 
@@ -342,6 +473,44 @@ test("bob_init_session refuses target_repo with a redirect pointer", () => {
   });
 });
 
+test("bob_init_session schema is web-only: no target_kind enum member and no repo object property", () => {
+  const { properties } = initSessionTool.inputSchema;
+  assert.equal(properties.target_kind, undefined, "target_kind must not be a declared property");
+  assert.equal(properties.repo, undefined, "repo must not be a declared property");
+  assert.equal(initSessionTool.inputSchema.additionalProperties, false);
+});
+
+test("bob_init_session dispatch schema-rejects target_kind:\"repo\" before the handler runs, writing no session artifacts", async () => {
+  await withTempHome(async () => {
+    const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+    const targetDomain = "example.com";
+    const envelope = await executeTool("bob_init_session", {
+      target_domain: targetDomain,
+      target_url: "https://example.com/",
+      target_kind: "repo",
+    });
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.error.code, "INVALID_ARGUMENTS");
+    assert.equal(fs.existsSync(statePath(targetDomain)), false, "no session artifact must be written on schema rejection");
+  });
+});
+
+test("bob_init_session dispatch schema-rejects a bare target_repo before the handler runs, writing no session artifacts", async () => {
+  await withTempHome(async () => {
+    const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+    const repoPath = makeTempRepoDir();
+    const targetDomain = deriveRepoTargetDomain(repoPath);
+    const envelope = await executeTool("bob_init_session", {
+      target_domain: targetDomain,
+      target_url: "https://example.com/",
+      target_repo: { root_path: repoPath },
+    });
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.error.code, "INVALID_ARGUMENTS");
+    assert.equal(fs.existsSync(statePath(targetDomain)), false, "no session artifact must be written on schema rejection");
+  });
+});
+
 test("readRepoSession round-trips the bound target_repo and repo_hash", () => {
   withTempHome(() => {
     const repoPath = makeTempRepoDir();
@@ -361,6 +530,26 @@ test("explicit target_domain is accepted as a custom safe slug (supports --targe
     const customSlug = "repo-myproject-stable";
     const result = initRepoSession({ repo_path: repoPath, target_domain: customSlug });
     assert.equal(result.target_domain, customSlug);
+  });
+});
+
+test("readRepoSession sources repo identity from the verified nucleus, never a raw state.json field (A8)", () => {
+  withTempHome(() => {
+    const repoPath = makeTempRepoDir();
+    const init = initRepoSession({ repo_path: repoPath });
+    const forgedRoot = makeTempRepoDir("bob-repo-forged-raw-state-");
+
+    // Directly tamper raw state.json's target_repo (bypassing commitSessionAuthority,
+    // never touching session-nucleus.json). If readRepoSession derived identity from
+    // raw state shape, this forged root would leak through; sourcing exclusively from
+    // the verified nucleus means it is silently ignored.
+    const stateDoc = JSON.parse(fs.readFileSync(statePath(init.target_domain), "utf8"));
+    stateDoc.target_repo = { ...stateDoc.target_repo, root_path: forgedRoot };
+    fs.writeFileSync(statePath(init.target_domain), `${JSON.stringify(stateDoc, null, 2)}\n`, "utf8");
+
+    const read = readRepoSession(init.target_domain);
+    assert.equal(read.target_repo.root_path, repoPath, "must reflect the verified nucleus, not the tampered raw state");
+    assert.notEqual(read.target_repo.root_path, forgedRoot);
   });
 });
 

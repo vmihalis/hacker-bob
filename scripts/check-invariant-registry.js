@@ -9,7 +9,7 @@ const ROOT = path.join(__dirname, "..");
 const {
   REGISTRY, TAG_GRAMMAR, ALLOWLIST_UNDOCUMENTED, SELF_FILES,
   knownTags, enforcingSites,
-} = require("../mcp/lib/invariant-registry.js");
+} = require("../mcp/core/invariant-registry.js");
 
 // Files that legitimately embed every REGISTRY key as a string (the registry
 // itself, this driver, and the test). They are excluded from the tag-scan to

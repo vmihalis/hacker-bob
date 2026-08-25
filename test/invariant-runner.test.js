@@ -22,15 +22,15 @@ const {
   readInvariantVerifiedSummary,
   computeInvariantRunHash,
   invariantFoundryResultHash,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   invariantRunsJsonlPath,
   invariantVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function uniqueDomain(prefix = "bob-invariant-runner-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -95,7 +95,7 @@ function spawnInvariantRecordChild({
   targetContract = `Pool${tag}`,
   withdrawAmount = "1",
 }) {
-  const invariantRunnerPath = path.join(__dirname, "..", "mcp", "lib", "invariant-runner.js");
+  const invariantRunnerPath = path.join(__dirname, "..", "mcp", "core", "invariant-runner.js");
   const script = `
 const fs = require("node:fs");
 const os = require("node:os");
@@ -346,7 +346,7 @@ test("dry_run returns a report without writing the test file or persisting", asy
 test("cross-stack target cross-check uses the TRUSTED ladder, NOT agent-supplied fork_urls (forgery fix)", async () => {
   const domain = uniqueDomain();
   const harness = makeHarness();
-  const evmClient = require("../mcp/lib/evm-client.js");
+  const evmClient = require("../mcp/domains/blockchain/smart-contracts/evm-client.js");
   const originalAgreed = evmClient.ethGetCodeAgreed;
   let agreedArgs = null;
   evmClient.ethGetCodeAgreed = async (args) => { agreedArgs = args; return { status: "unavailable", reason: "stubbed" }; };

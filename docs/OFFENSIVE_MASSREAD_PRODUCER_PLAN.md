@@ -66,7 +66,7 @@ existing Patchright + system-Chrome stack (used by `bob_http_xss_confirm`) beats
 (implemented in PR1, hardened across review rounds 2–3):
 
 - **Auth injection over stdin, never the env** — cookies are sent to the driver AFTER ready
-  via a server-side-only `set_auth_cookies` command (`mcp/lib/browser-sessions.js` →
+  via a server-side-only `set_auth_cookies` command (`mcp/domains/web/browser-sessions.js` →
   `mcp/browser-driver.js#setAuthCookies`), so auth secrets never touch the process
   environment (no child/renderer inheritance, no `/proc/<pid>/environ` snapshot). EACH
   cookie's target host is scope-validated against `target_domain` before it reaches the
@@ -121,7 +121,7 @@ IMPACT (bulk read); the underlying vuln (e.g. a hardcoded credential) is the fin
   `authed_fetch` command in `mcp/browser-driver.js` (+ `browser-sessions.js` /
   `browser-tools-shared.js` plumbing) with its own driver-level tests (local test server).
   The security-critical, reusable piece, reviewed in isolation.
-- **PR2 — the producer**: `mcp/lib/offensive-massread-producer.js` + the
+- **PR2 — the producer**: `mcp/domains/web/offensive-massread-producer.js` + the
   `bob_http_massread_confirm` tool wrapper + the differential oracle + dual-output witness
   + registration (ceiling, dual authority-class map, tools/index, evaluator prose) +
   generators + tests.
@@ -130,11 +130,11 @@ IMPACT (bulk read); the underlying vuln (e.g. a hardcoded credential) is the fin
 
 Most of the registry is auto-derived from the tool module's `role_bundles: ["evaluator-web"]`.
 The manual, fail-closed edits:
-- `mcp/lib/claims.js` `OFFENSIVE_TOOL_DEMONSTRATED_CEILING` — add `bob_http_massread_confirm: "high"`.
-- `mcp/lib/session-authority.js` + `scripts/authority-inventory.js` — add the **identical**
+- `mcp/core/claims/claims.js` `OFFENSIVE_TOOL_DEMONSTRATED_CEILING` — add `bob_http_massread_confirm: "high"`.
+- `mcp/core/session/session-authority.js` + `scripts/authority-inventory.js` — add the **identical**
   `bob_http_massread_confirm: "scoped_http_network"` (the two maps must match or
   `validateExplicitAuthorityMap` throws).
-- `mcp/lib/tools/index.js` — register the module in `TOOL_MODULES` (order-sensitive vs the
+- `mcp/tools/index.js` — register the module in `TOOL_MODULES` (order-sensitive vs the
   test's `EXPECTED_TOOL_NAMES`).
 - `prompts/roles/evaluator.md` + `prompts/roles/evaluator-spawn.md` — primitive→producer
   call-guidance prose (the #150 pattern).

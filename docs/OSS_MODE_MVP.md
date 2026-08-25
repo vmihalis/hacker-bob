@@ -6,7 +6,7 @@ as **Plane O technique packs** — the seven `oss_*` capability packs surfaced
 through the same registry-driven `bob_*` MCP tools, the single wave-scheduler /
 graph-scheduler spawner topology, and the server-enforced v2 lifecycle
 (`SETUP → OPEN_FRONTIER → CLAIM_FREEZE → VERIFY → GRADE → REPORT`) defined by
-`mcp/lib/lifecycle-gates.js`. It stays inside this repo and reuses the current
+`mcp/core/session/lifecycle-gates.js`. It stays inside this repo and reuses the current
 MCP pipeline, host adapters, session artifacts, capability routing,
 verification, grading, and reporting unchanged.
 

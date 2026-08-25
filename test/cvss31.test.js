@@ -3,8 +3,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { deriveCvss31, roundup, severityBand, normalizeCvssInputs } = require("../mcp/lib/cvss31.js");
-const { classifyCvss } = require("../mcp/lib/cve-feed-parser.js");
+const { deriveCvss31, roundup, severityBand, normalizeCvssInputs } = require("../mcp/core/scoring/cvss31.js");
+const { classifyCvss } = require("../mcp/domains/repo/cve-feed-parser.js");
 const fs = require("fs");
 const path = require("path");
 
@@ -165,9 +165,9 @@ test("normalizeCvssInputs is strict on write (throws) but tolerant on read-back 
 test("CVSS banding is shared so cvss31 does not depend on the CVE feed parser", () => {
   // Dependency-direction fix: both surfaces import classifyCvss from the
   // dependency-free cvss-bands.js; cvss31.js no longer requires cve-feed-parser.
-  const bands = require("../mcp/lib/cvss-bands.js");
+  const bands = require("../mcp/core/scoring/cvss-bands.js");
   assert.equal(bands.classifyCvss, classifyCvss, "cve-feed-parser must re-export the shared classifyCvss");
-  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "cvss31.js"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "core", "scoring", "cvss31.js"), "utf8");
   assert.match(src, /require\("\.\/cvss-bands\.js"\)/);
   assert.doesNotMatch(src, /require\("\.\/cve-feed-parser\.js"\)/);
 });

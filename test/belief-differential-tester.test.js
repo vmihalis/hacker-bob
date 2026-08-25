@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   evaluateObjectAuthDifferential,
   buildCausalSupport,
-} = require("../mcp/lib/belief/differential-tester.js");
+} = require("../mcp/core/belief/differential-tester.js");
 
 // A full control set whose observed effects are all "safe" -> confirmed IDOR.
 function confirmedInput() {

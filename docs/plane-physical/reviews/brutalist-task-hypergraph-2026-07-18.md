@@ -237,7 +237,7 @@ disconnect, stuck calls, stale leases, failed reset, and power isolation.
 
 ### 4. The resource grammar conflates materially different semantics
 
-`mcp/lib/physical-resource-contract.js` names batteries, consumables, controls,
+`mcp/core/physical-resource-contracts.js` names batteries, consumables, controls,
 instruments, observers, operator presence, power, RF bands/zones, target media,
 thermal zones, and workspaces. All are nevertheless projected through one
 reservation grammar with only `exclusive|shared` ownership,

@@ -26,20 +26,20 @@ const {
   readInvariantRuns,
   readInvariantVerifiedSummary,
   invariantFoundryResultHash,
-} = require("../mcp/lib/invariant-runner.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/lib/sandbox-isolation-gate.js");
+} = require("../mcp/core/invariant-runner.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   handoffSigningPrivateKeyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 function uniqueDomain(tag) {
   return `halmos-ci-${tag}-${Math.random().toString(36).slice(2)}.example.com`;

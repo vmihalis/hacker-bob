@@ -16,9 +16,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const writeBase = require("../mcp/lib/tools/_write-base.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { VALID_ROLE_BUNDLES } = require("../mcp/lib/tool-registry.js");
+const writeBase = require("../mcp/tools/_write-base.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { VALID_ROLE_BUNDLES } = require("../mcp/tools/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -105,7 +105,7 @@ test("retry tracker auto-emits runtime drift after recovered INVALID_ARGUMENTS",
     // same path the real writers do; the auto-emit path is best-effort and
     // silently no-ops when target_domain is absent.
     const domain = "audit-target.example";
-    const { sessionDir } = require("../mcp/lib/paths.js");
+    const { sessionDir } = require("../mcp/core/io/paths.js");
     fs.mkdirSync(sessionDir(domain), { recursive: true });
     fs.writeFileSync(
       path.join(sessionDir(domain), "session-nucleus.json"),
@@ -158,12 +158,12 @@ test("retry tracker auto-emits runtime drift after recovered INVALID_ARGUMENTS",
 
 test("six existing writers load through wrapWriteTool with stable name + handler shape", () => {
   const expected = [
-    ["../mcp/lib/tools/write-verification-round.js", "bob_write_verification_round"],
-    ["../mcp/lib/tools/write-evidence-packs.js", "bob_write_evidence_packs"],
-    ["../mcp/lib/tools/write-grade-verdict.js", "bob_write_grade_verdict"],
-    ["../mcp/lib/tools/write-wave-handoff.js", "bob_write_wave_handoff"],
-    ["../mcp/lib/tools/write-chain-attempt.js", "bob_write_chain_attempt"],
-    ["../mcp/lib/tools/finalize-report.js", "bob_finalize_report"],
+    ["../mcp/tools/write-verification-round.js", "bob_write_verification_round"],
+    ["../mcp/tools/write-evidence-packs.js", "bob_write_evidence_packs"],
+    ["../mcp/tools/write-grade-verdict.js", "bob_write_grade_verdict"],
+    ["../mcp/tools/write-wave-handoff.js", "bob_write_wave_handoff"],
+    ["../mcp/tools/write-chain-attempt.js", "bob_write_chain_attempt"],
+    ["../mcp/tools/finalize-report.js", "bob_finalize_report"],
   ];
   for (const [modPath, toolName] of expected) {
     const mod = require(modPath);
@@ -179,11 +179,11 @@ test("no writer module directly calls bob_append_frontier_event (writers go thro
   // — we scan for the string. The stores they wrap may emit events, but the
   // tool-spec modules themselves should not.
   const writerSources = [
-    "mcp/lib/tools/write-verification-round.js",
-    "mcp/lib/tools/write-evidence-packs.js",
-    "mcp/lib/tools/write-grade-verdict.js",
-    "mcp/lib/tools/write-wave-handoff.js",
-    "mcp/lib/tools/write-chain-attempt.js",
+    "mcp/tools/write-verification-round.js",
+    "mcp/tools/write-evidence-packs.js",
+    "mcp/tools/write-grade-verdict.js",
+    "mcp/tools/write-wave-handoff.js",
+    "mcp/tools/write-chain-attempt.js",
   ];
   for (const file of writerSources) {
     const text = fs.readFileSync(path.join(__dirname, "..", file), "utf8");

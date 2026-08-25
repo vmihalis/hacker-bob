@@ -15,16 +15,16 @@ const { spawnSync } = require("node:child_process");
 const ROOT = path.join(__dirname, "..");
 const HOOK = path.join(ROOT, ".claude", "hooks", "agent-run-stop.js");
 
-const { attackSurfacePath, pipelineEventsJsonlPath, sessionDir } = require("../mcp/lib/paths.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
-const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-const { startWave } = require("../mcp/lib/waves.js");
-const { DEFAULT_QUEUE_POLICY, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
-const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
-const { logCoverage } = require("../mcp/lib/coverage.js");
-const { readAgentRuns } = require("../mcp/lib/agent-runs.js");
-const { toolInvocationTelemetryPath } = require("../mcp/lib/tool-telemetry.js");
-const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+const { attackSurfacePath, pipelineEventsJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
+const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+const { startWave } = require("../mcp/core/waves/waves.js");
+const { DEFAULT_QUEUE_POLICY, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
+const { buildChildFanoutPlanForSurface } = require("../mcp/core/session/assignment-brief.js");
+const { logCoverage } = require("../mcp/core/frontier/coverage.js");
+const { readAgentRuns } = require("../mcp/core/session/agent-runs.js");
+const { toolInvocationTelemetryPath } = require("../mcp/core/telemetry/tool-telemetry.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/core/session/nested-spawn.js");
 
 function readJsonl(file) {
   if (!fs.existsSync(file)) return [];

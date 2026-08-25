@@ -8,14 +8,14 @@
 const {
   buildNormalizedOperationRegistry,
   defineProviderDescriptor,
-} = require("../../../mcp/lib/instrument-provider-contract.js");
+} = require("../../../mcp/domains/physical/instrument-provider-contract.js");
 const {
   buildEffectTemplateRegistry,
   requestedEffectDigest,
-} = require("../../../mcp/lib/requested-effects.js");
+} = require("../../../mcp/core/requested-effects.js");
 const {
   normalizePhysicalResourceBundle,
-} = require("../../../mcp/lib/physical-resource-contract.js");
+} = require("../../../mcp/core/physical-resource-contracts.js");
 
 const PUBLIC_SUMMARY_CODES = Object.freeze([
   "operation_failed",

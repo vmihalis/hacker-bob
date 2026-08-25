@@ -21,14 +21,14 @@ const {
 } = require("../../bob-instrument-contracts/lib/verification-contracts.js");
 const {
   assertVerifiedActivePhysicalExecutionGrant,
-} = require("../../../mcp/lib/physical-authority.js");
+} = require("../../../mcp/domains/physical/physical-authority.js");
 const {
   assertPhysicalObserverEnrollmentRegistry,
   normalizePhysicalExperimentPlan,
-} = require("../../../mcp/lib/physical-experiment-contract.js");
+} = require("../../../mcp/domains/physical/physical-experiment-contract.js");
 const {
   assertPhysicalTrustedClockSample,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   assertChameleonStateRestoreResult,
   assertChameleonStateSnapshot,

@@ -38,19 +38,19 @@ const {
   releaseInstrumentLease,
   requestInstrumentLeaseStop,
   renewInstrumentLease,
-} = require("../mcp/lib/instrument-lease-contract.js");
+} = require("../mcp/domains/physical/instrument-lease-contract.js");
 const {
   buildNormalizedOperationRegistry,
-} = require("../mcp/lib/instrument-provider-contract.js");
+} = require("../mcp/domains/physical/instrument-provider-contract.js");
 const {
   normalizeCleanupCapability,
-} = require("../mcp/lib/physical-authority.js");
+} = require("../mcp/domains/physical/physical-authority.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

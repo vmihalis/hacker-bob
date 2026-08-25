@@ -32,26 +32,26 @@ const crypto = require("node:crypto");
 const {
   verifyCompositionPath,
   readCompositionVerifiedSummary,
-} = require("../mcp/lib/composition-live-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const {
   canonicalizeExploitTarget,
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   offensiveRunsJsonlPath,
   offensiveRunsDir,
   surfaceRoutesPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   classifySurfaceCapability,
-} = require("../mcp/lib/capability-packs.js");
+} = require("../mcp/core/capability/capability-packs.js");
 const {
   seedInvariantRunRow: seedInvariantRunRowRaw,
 } = require("./helpers/invariant-run-seed.js");
@@ -410,8 +410,8 @@ test("HIGH-3: a guard-only verified_pass path_hash is NOT in verified_cross_stac
     // NO has_bind_leaf -> guard-only.
     leaves: [{ leaf_status: "verified", edge_type: "guard", evidence_ref: "frontier_event:e1" }],
   };
-  const { compositionVerifiedJsonlPath } = require("../mcp/lib/paths.js");
-  const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+  const { compositionVerifiedJsonlPath } = require("../mcp/core/io/paths.js");
+  const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
   forged.results_hash = hashCanonicalJson(forged);
   fs.mkdirSync(path.dirname(compositionVerifiedJsonlPath(domain)), { recursive: true });
   fs.writeFileSync(compositionVerifiedJsonlPath(domain), `${JSON.stringify(forged)}\n`);

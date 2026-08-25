@@ -15,12 +15,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   computeFindingDedupeKey,
   normalizeFindingRecord,
-} = require("../mcp/lib/finding-contracts.js");
-const { normalizeCvssInputs } = require("../mcp/lib/cvss31.js");
+} = require("../mcp/core/finding-contracts.js");
+const { normalizeCvssInputs } = require("../mcp/core/scoring/cvss31.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

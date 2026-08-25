@@ -60,47 +60,47 @@ const {
   LARGE_BODY_THRESHOLD_BYTES,
   attackSurfacePath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   CAPABILITY_OBSERVATION_KIND_VALUES,
-} = require("../mcp/lib/capability-observations.js");
+} = require("../mcp/core/capability/capability-observations.js");
 const {
   FRICTION_PROMPT_FRAGMENTS,
   FRAGMENT_IDS,
-} = require("../mcp/lib/friction-prompt-fragments.js");
+} = require("../mcp/core/friction-prompt-fragments.js");
 const {
   ROLE_TRACE_EXPECTATIONS,
-} = require("../mcp/lib/role-trace-expectations.js");
+} = require("../mcp/core/role-trace-expectations.js");
 const {
   STIGMERGIC_PRODUCERS,
   PRODUCER_IDS,
-} = require("../mcp/lib/stigmergic-producers.js");
+} = require("../mcp/core/stigmergic-producers.js");
 const {
   STIGMERGIC_CONSUMERS,
   CONSUMER_IDS,
-} = require("../mcp/lib/stigmergic-consumers.js");
+} = require("../mcp/core/stigmergic-consumers.js");
 const {
   composeTraceReadingExpectationsForRole,
-} = require("../mcp/lib/trace-reading-composer.js");
+} = require("../mcp/core/trace-reading-composer.js");
 const {
   DEFAULT_SCANNERS,
   SYNTHESIZERS,
   scanTranscript,
   listEvidenceFiles,
-} = require("../mcp/lib/friction-scanners.js");
+} = require("../mcp/core/friction-scanners.js");
 const {
   EVIDENCE_REF_HANDLE_PREFIXES,
-} = require("../mcp/lib/tools/write-chain-rollup.js");
-const writeChainRollupTool = require("../mcp/lib/tools/write-chain-rollup.js");
-const writeChainAttemptTool = require("../mcp/lib/tools/write-chain-attempt.js");
-const logFrictionTool = require("../mcp/lib/tools/log-capability-friction.js");
+} = require("../mcp/tools/write-chain-rollup.js");
+const writeChainRollupTool = require("../mcp/tools/write-chain-rollup.js");
+const writeChainAttemptTool = require("../mcp/tools/write-chain-attempt.js");
+const logFrictionTool = require("../mcp/tools/log-capability-friction.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   getLatestMergedWavePartialSurfaceIds,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   checkAssertionA,
   checkAssertionB,
@@ -703,20 +703,8 @@ test("Y.13 Subtest G-2 (A4 coverage) — surface-leads producer-side rationale e
   // producer-side tool is bob_record_surface_leads, NOT a fabricated
   // bob_promote_surface_leads({promote:false}) path. The Y.7 silent_lead_
   // threshold_drop scanner is the runtime tripwire complement.
-  const recordSurfaceLeads = path.join(
-    REPO_ROOT,
-    "mcp",
-    "lib",
-    "tools",
-    "record-surface-leads.js",
-  );
-  const promoteSurfaceLeads = path.join(
-    REPO_ROOT,
-    "mcp",
-    "lib",
-    "tools",
-    "promote-surface-leads.js",
-  );
+  const recordSurfaceLeads = path.join(REPO_ROOT, "mcp", "tools", "record-surface-leads.js");
+  const promoteSurfaceLeads = path.join(REPO_ROOT, "mcp", "tools", "promote-surface-leads.js");
   assert.ok(fs.existsSync(recordSurfaceLeads));
   assert.ok(fs.existsSync(promoteSurfaceLeads));
   const promoteText = fs.readFileSync(promoteSurfaceLeads, "utf8");
@@ -996,7 +984,7 @@ test("Y.13 Subtest G-10 (rev 4.1 chain-bundle audit verification — defect 3)",
     "append-chain-node.js",
     "query-chain-tree.js",
   ];
-  const toolsDir = path.join(REPO_ROOT, "mcp", "lib", "tools");
+  const toolsDir = path.join(REPO_ROOT, "mcp", "tools");
   for (const tool of graphTools) {
     const abs = path.join(toolsDir, tool);
     assert.ok(fs.existsSync(abs), `Y.11 graph tool ${tool} MUST exist`);
@@ -1048,7 +1036,7 @@ test("Y.13 deferred negative #3 — stigmergy gate rejects consumer producer_id 
   const consumer = Object.freeze({
     consumer_id: "y13_negative_unknown_producer",
     source_location: Object.freeze({
-      file: "mcp/lib/stigmergic-consumers.js",
+      file: "mcp/core/stigmergic-consumers.js",
       token_or_regex: "STIGMERGIC_CONSUMERS",
     }),
     producer_id: "not_a_manifested_producer",

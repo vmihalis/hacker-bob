@@ -19,7 +19,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
 
-const browserSessions = require("../mcp/lib/browser-sessions.js");
+const browserSessions = require("../mcp/domains/web/browser-sessions.js");
 
 const BROWSER_LAUNCHABLE =
   !process.env.BOB_SKIP_BROWSER_TESTS && browserSessions.isBrowserLaunchable();
@@ -299,7 +299,7 @@ test("the agent-facing evaluate sandbox is UNCHANGED: fetch( still blocked in ev
 });
 
 test("no bob_browser_* MCP tool exposes authed_fetch OR set_auth_cookies (server-side-only)", () => {
-  const toolsDir = path.join(__dirname, "..", "mcp", "lib", "tools");
+  const toolsDir = path.join(__dirname, "..", "mcp", "tools", "web");
   const offenders = fs.readdirSync(toolsDir)
     .filter((f) => f.startsWith("browser-") && f.endsWith(".js"))
     .filter((f) => {

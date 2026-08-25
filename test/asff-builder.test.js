@@ -33,7 +33,7 @@ const {
   assertProofBundleBindsCurrentReport,
   s3UriFor,
   s3KeyFromUri,
-} = require("../mcp/lib/asff-builder.js");
+} = require("../mcp/domains/repo/asff-builder.js");
 
 const PRODUCT_ARN = "arn:aws:securityhub:us-east-1:123456789012:product/123456789012/default";
 
@@ -62,7 +62,7 @@ test("asff-builder loads without fs/AWS SDK/session-path modules at require time
       }
       return originalLoad.apply(this, arguments);
     };
-    const lib = require("./mcp/lib/asff-builder.js");
+    const lib = require("./mcp/domains/repo/asff-builder.js");
     if (typeof lib.buildAsffRecord !== "function") process.exit(2);
   `;
   const result = spawnSync(process.execPath, ["-e", script], {

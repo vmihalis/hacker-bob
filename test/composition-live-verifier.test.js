@@ -16,12 +16,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   compositionVerifiedJsonlPath,
   isAuditGradedPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   verifyCompositionPath,
   readCompositionVerifiedSummary,
@@ -29,8 +29,8 @@ const {
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
   RESULT_OFFLINE_REFUSED,
-} = require("../mcp/lib/composition-live-verifier.js");
-const { TOOL_MANIFEST } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/differential/index.js");
+const { TOOL_MANIFEST } = require("../mcp/tools/tool-registry.js");
 
 // example.com is a real registrable domain, so validateHttpScanScope accepts
 // https://example.com/... as first-party — the verifier exercises real scope.

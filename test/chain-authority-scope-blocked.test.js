@@ -14,10 +14,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { executeTool } = require("../mcp/lib/dispatch.js");
-const { authorizeToolCall } = require("../mcp/lib/session-authority.js");
-const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/lib/tool-registry.js");
-const { validateToolArguments } = require("../mcp/lib/tool-validation.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
+const { authorizeToolCall } = require("../mcp/core/session/session-authority.js");
+const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/tools/tool-registry.js");
+const { validateToolArguments } = require("../mcp/core/dispatch/tool-validation.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -313,7 +313,7 @@ test("a bound contract fetch tuple is still enforced at the authority layer (con
 });
 
 test("normalizeOneTuple case-folds hex families but PRESERVES base58/SS58 identity (no scope fail-open)", () => {
-  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");
+  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/core/chain-authority-contracts.js");
   // base58 (svm) is case-SENSITIVE: two addresses differing only in case are
   // DISTINCT and must not collide; membership must stay fail-closed. The pre-fix
   // unconditional lowercase collided them (a scope-membership fail-open).
@@ -347,7 +347,7 @@ test("normalizeOneTuple case-folds hex families but PRESERVES base58/SS58 identi
 test("chain-authority hardening: traversal-guarded chain_id/address, fail-closed query family, inert provenanced", () => {
   const {
     normalizeContractTupleStrict, normalizeOneTuple, isChainTupleInAuthority,
-  } = require("../mcp/lib/chain-authority.js");
+  } = require("../mcp/core/chain-authority-contracts.js");
   // (1) chain_id / address are interpolated into contracts/<chain_id>/<address>/ —
   // path-traversal / separator chars must fail closed at bind time.
   for (const bad of ["../../x", "a/b", "a\\b", "1:2"]) {

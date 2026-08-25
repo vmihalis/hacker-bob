@@ -14,7 +14,7 @@ const {
   ancestry,
   ROOT_PARENT_STATE_HASH,
   VERDICT_VALUES,
-} = require("../mcp/lib/chain-state-tree.js");
+} = require("../mcp/core/chain-state-tree.js");
 
 function uniqueDomain(prefix = "bob-chain-tree-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

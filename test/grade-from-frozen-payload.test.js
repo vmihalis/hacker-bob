@@ -17,11 +17,11 @@ const path = require("path");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   appendJsonlLine,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   evidencePackPaths,
   gradeArtifactPaths,
@@ -31,40 +31,40 @@ const {
   findingDifferentialVerifiedJsonlPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildRepoInventory,
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   seedGenuineReproPair,
 } = require("./helpers/repro-run-pair.js");
 const {
   normalizeFindingRecord,
-} = require("../mcp/lib/finding-contracts.js");
+} = require("../mcp/core/finding-contracts.js");
 const {
   validateAgainstSchema,
-} = require("../mcp/lib/tool-validation.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/dispatch/tool-validation.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   readGradeVerdict,
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   hashDocumentExcluding,
-} = require("../mcp/lib/fabric-common.js");
+} = require("../mcp/core/verification/document-hash.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {
@@ -326,11 +326,11 @@ function seedFrozenRepoFinding(domain, surfaceIds, {
 // exploited_safely positive + blocked_by_defense control (distinct command_hash, same
 // surface, demonstrated severity >= the finding's), then the verdict line binding them.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface:billing-profile", demonstratedSeverity = "high") {
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-  const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
+  const { offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",

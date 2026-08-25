@@ -3,8 +3,6 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
-const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -1570,24 +1568,10 @@ test("v2 verification survives hostile same-process mutable intrinsic replacemen
     }
     if (forgedResult !== "signature_invalid" || keySubstitutions !== 0) process.exit(43);
   `;
-  // Run from a file, not `node -e`. The script embeds the fixture payload,
-  // which pushes it past Linux's 128 KiB single-argument ceiling
-  // (MAX_ARG_STRLEN), so the spawn failed outright with E2BIG. That surfaced as
-  // `null !== 0` against empty stderr, because a spawn that never starts has no
-  // exit status and no output — indistinguishable from the hostile child being
-  // killed. macOS allows a far larger argument, so this only failed on Linux.
-  const scriptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "bob-prebuild-trust-"));
-  const scriptPath = path.join(scriptDirectory, "hostile-intrinsics.js");
-  let result;
-  try {
-    fs.writeFileSync(scriptPath, script);
-    result = spawnSync(process.execPath, [scriptPath], {
-      encoding: "utf8",
-      timeout: 5000,
-    });
-  } finally {
-    fs.rmSync(scriptDirectory, { recursive: true, force: true });
-  }
-  assert.equal(result.status, 0, result.error ? String(result.error) : result.stderr);
+  const result = spawnSync(process.execPath, ["-e", script], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
 });

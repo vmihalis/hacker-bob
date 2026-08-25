@@ -12,13 +12,13 @@ const {
   worstCaseTreeSize,
   maxBranchingForBudget,
   validateSpawnFanout,
-} = require("../mcp/lib/nested-spawn.js");
+} = require("../mcp/core/session/nested-spawn.js");
 
 const {
   normalizeQueuePolicy,
   DEFAULT_QUEUE_POLICY,
   LEAN_PROFILE,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 
 // ─── queue-policy spawn budget (A1) ──────────────────────────────────────
 

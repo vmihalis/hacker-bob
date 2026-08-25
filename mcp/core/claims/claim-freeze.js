@@ -1,0 +1,735 @@
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const {
+  assertSafeDomain,
+  claimFreezePath,
+  offensiveRunsDir,
+  repoChecksJsonlPath,
+  repoRunsDir,
+  sessionsRoot,
+} = require("../io/paths.js");
+const {
+  hashCanonicalJson,
+} = require("../verification/verification-contracts.js");
+const {
+  hashDocumentExcluding,
+} = require("../verification/document-hash.js");
+const {
+  normalizeIsoTimestamp,
+  normalizeOptionalId,
+} = require("../io/validation.js");
+const {
+  writeJsonDocument,
+} = require("../io/storage.js");
+const {
+  readCandidateClaims,
+} = require("./claims.js");
+const {
+  appendClaimCluster,
+  normalizeClaimCluster,
+  readClaimClusters,
+} = require("./claim-clusters.js");
+const {
+  correlateClaims,
+} = require("./claim-correlator.js");
+const {
+  readFrontierEvents,
+} = require("../frontier/frontier-events.js");
+const {
+  readJsonFile,
+  withSessionLock,
+  DEFAULT_ARTIFACT_READ_MAX_BYTES,
+} = require("../io/storage.js");
+// Cycle B: KEY claim-freeze.json with a domain-separated ed25519 signature carried in a
+// freeze_mac field (the SAME signRowWithMac envelope/preimage as the JSONL ledgers, only
+// the carrier field differs — NOT a new MAC, NOT a read-time re-hash of the keyless
+// freeze_hash). The signed preimage covers the freeze minus freeze_mac, which INCLUDES
+// freeze_hash, so freeze_hash is transitively keyed with no re-derivation theater (the
+// re-hash forbidden at the freeze_hash mint comment / claim-freeze.js:120-130 is NOT
+// added). Signed at WRITE inside withSessionLock when write===true; verified in
+// readCurrentClaimFreeze (protects exploitRunSkipReverifies + reclampSeveritiesAgainstFreeze).
+// Does NOT close F3: the private key is still 0600 at the agent uid (F2 collapses INTO F3;
+// genuine close = Cycle C). A read-only preview (write!==true) is not signed (no key).
+const {
+  assertRowMacOrLegacy,
+  CLAIM_FREEZE_MAC_CONTEXT,
+} = require("../ledger-integrity/index.js");
+const {
+  signRowViaIsolatedSignerOrLocal,
+  resolveRowVerifierSafely,
+} = require("../ledger-integrity/index.js");
+
+const CLAIM_FREEZE_VERSION = 1;
+const CLAIM_FREEZE_MAC_FIELD = "freeze_mac";
+
+// EvidenceReference helpers come from claims.js. The schema lives there because
+// CandidateClaim is the first-class carrier of evidence_refs[]; this module
+// composes the frozen payload over those refs.
+const {
+  EVIDENCE_REFERENCE_KIND_VALUES,
+  evidenceReferenceLookupKey,
+  normalizeEvidenceReferenceShape,
+} = require("./claims.js");
+
+function generatedClaimFreezeId(fields) {
+  return `CF-${hashCanonicalJson(fields).slice(0, 24)}`;
+}
+
+// Materialize the ClaimCluster rows implied by the frozen claim batch. Each
+// candidate cluster from correlateClaims is normalized (which assigns the
+// deterministic cluster_id + cluster_hash); if a cluster with the same
+// cluster_hash is already on disk it is skipped so re-running the freeze on
+// an unchanged claim set never duplicates rows. The function returns the set
+// of normalized clusters (existing + newly appended) for inclusion in the
+// freeze payload.
+function materializeClusters(domain, claims) {
+  const candidates = correlateClaims(claims);
+  if (candidates.length === 0) return [];
+
+  const existing = readClaimClusters(domain);
+  const existingHashes = new Set(existing.map((cluster) => cluster.cluster_hash));
+
+  const materialized = [];
+  for (const candidate of candidates) {
+    const normalized = normalizeClaimCluster(candidate);
+    if (existingHashes.has(normalized.cluster_hash)) {
+      materialized.push(normalized);
+      continue;
+    }
+    const appended = appendClaimCluster(candidate);
+    existingHashes.add(appended.cluster_hash);
+    materialized.push(appended);
+  }
+  return materialized;
+}
+
+function buildClaimFreezeDocument(domain, { write = false, now = new Date(), freezeId = null } = {}) {
+  const frozenAt = normalizeIsoTimestamp(now, "frozen_at", null);
+  const claims = readCandidateClaims(domain).slice().sort((a, b) => a.claim_id.localeCompare(b.claim_id));
+  if (write) {
+    materializeClusters(domain, claims);
+  }
+  const clusters = readClaimClusters(domain).slice().sort((a, b) => a.cluster_id.localeCompare(b.cluster_id));
+  const clusterIds = clusters.map((cluster) => cluster.cluster_id);
+  const frontierEvents = readFrontierEvents(domain);
+  const sourceHashes = {
+    claims_hash: hashCanonicalJson(claims),
+    claim_clusters_hash: hashCanonicalJson(clusters),
+    frontier_events_hash: hashCanonicalJson(frontierEvents.map((event) => event.event_hash)),
+  };
+  const base = {
+    version: CLAIM_FREEZE_VERSION,
+    target_domain: domain,
+    frozen_at: frozenAt,
+    claim_count: claims.length,
+    cluster_count: clusters.length,
+    source_event_count: frontierEvents.length,
+    source_hashes: sourceHashes,
+    claims,
+    clusters,
+    cluster_ids: clusterIds,
+  };
+  const normalizedFreezeId = normalizeOptionalId(freezeId, "freeze_id")
+    || generatedClaimFreezeId({
+      target_domain: domain,
+      source_hashes: sourceHashes,
+    });
+  const freeze = {
+    freeze_id: normalizedFreezeId,
+    ...base,
+  };
+  // freeze_hash is a KEYLESS self-hash of the frozen body. Its integrity rests on (a) the
+  // audit-graded write-block (claim-freeze.json is in AUDIT_GRADED_PATHS, agent-Write-
+  // blocked) and (b) the deferred offensive-sandbox separation — NOT on re-verifying this
+  // hash. Re-verifying a keyless self-hash on read adds nothing against an actor who can
+  // recompute it: a runtime-indirection rewrite of the frozen claims can re-run
+  // hashDocumentExcluding and rewrite freeze_hash to match. The real close is KEYING it (a
+  // per-session MAC), which needs the sandbox-protected key — the same offensive-runs MAC-
+  // key residual documented at claims.js (THREAT-MODEL BOUNDARY) and
+  // finding-differential-verifier.js (reverify note). Until then, do NOT add a read-time
+  // re-hash check that would look like a fix but is not.
+  freeze.freeze_hash = hashDocumentExcluding(freeze, ["frozen_at", "freeze_hash"]);
+
+  if (write) {
+    // KEY the freeze before persisting (buildClaimFreeze wraps write:true in
+    // withSessionLock, C4) through the single signing seam. The signed preimage covers
+    // the freeze minus freeze_mac — freeze_id, version, target_domain, counts,
+    // source_hashes, claims[], clusters[], cluster_ids[], AND freeze_hash itself
+    // (transitively keyed, no re-derivation). A keyed signature, NOT a read-time re-hash
+    // of the keyless freeze_hash (forbidden above). The seam isolates the secret when the
+    // server runs under a dedicated signer uid; on the same-uid box it degrades to a
+    // local sign and the verdict-level attestation gate enforces trust. A read-only
+    // preview (write===false) needs no key and carries no freeze_mac.
+    signRowViaIsolatedSignerOrLocal(
+      domain,
+      CLAIM_FREEZE_MAC_CONTEXT,
+      freeze,
+      { macField: CLAIM_FREEZE_MAC_FIELD },
+    );
+    writeJsonDocument(claimFreezePath(domain), freeze);
+  }
+  return freeze;
+}
+
+function buildClaimFreeze(targetDomain, options = {}) {
+  const domain = assertSafeDomain(targetDomain);
+  if (options.write) {
+    return withSessionLock(domain, () => buildClaimFreezeDocument(domain, options));
+  }
+  return buildClaimFreezeDocument(domain, options);
+}
+
+function verificationSnapshotFromClaimFreeze(input, { now = new Date() } = {}) {
+  const freeze = input && input.freeze ? input.freeze : input;
+  if (freeze == null || typeof freeze !== "object" || Array.isArray(freeze)) {
+    throw new Error("claim freeze must be an object");
+  }
+  const createdAt = normalizeIsoTimestamp(now, "created_at", null);
+  const snapshot = {
+    version: 1,
+    target_domain: assertSafeDomain(freeze.target_domain),
+    created_at: createdAt,
+    freeze_id: normalizeOptionalId(freeze.freeze_id, "freeze_id"),
+    claim_freeze_hash: normalizeOptionalId(freeze.freeze_hash, "freeze_hash"),
+    claim_count: Array.isArray(freeze.claims) ? freeze.claims.length : 0,
+    cluster_count: Array.isArray(freeze.clusters) ? freeze.clusters.length : 0,
+    claims: Array.isArray(freeze.claims) ? freeze.claims : [],
+    clusters: Array.isArray(freeze.clusters) ? freeze.clusters : [],
+  };
+  snapshot.verification_snapshot_hash = hashDocumentExcluding(snapshot, [
+    "created_at",
+    "verification_snapshot_hash",
+  ]);
+  return snapshot;
+}
+
+function readCurrentClaimFreeze(targetDomain) {
+  const domain = assertSafeDomain(targetDomain);
+  const filePath = claimFreezePath(domain);
+  if (!fs.existsSync(filePath)) return null;
+  // Still does NOT re-verify freeze_hash: it is a keyless self-hash (see the freeze_hash
+  // mint comment above), so a read-time re-hash is theater against a recompute-capable
+  // actor. Cycle B instead KEYS the freeze with freeze_mac (a signature the actor cannot
+  // produce without the key) and verifies THAT here — a real keying, not a re-hash.
+  //
+  // THREE-STATE contract (CONSTRAINT 7), distinguished so a TAMPERED freeze can never
+  // silently relax a validation:
+  //   * file ABSENT                      -> null (handled above; genuine absence, inert);
+  //   * freeze present, freeze_mac ABSENT (assertRowMacOrLegacy -> {legacy:true}, no
+  //     throw) -> return the doc WITH a one-line accept-with-warning (legacy in-flight
+  //     freeze; the audit-graded write-block still guards it — backward-compat for
+  //     in-flight sessions);
+  //   * freeze present, freeze_mac PRESENT-BUT-INVALID (forged/tampered/cross-context;
+  //     assertRowMacOrLegacy THROWS a STATE_CONFLICT) -> RE-THROW so the read HARD-FAILS
+  //     up the stack. The relaxing consumer (reclampSeveritiesAgainstFreeze) already
+  //     wraps this read in try/catch -> STATE_CONFLICT halt, so a tampered freeze HALTS
+  //     the severity clamp instead of silently un-clamping (the MEDIUM-A fail-open);
+  //   * CORRUPT/oversized/unparseable freeze (readJsonFile throws BEFORE the verifier
+  //     assert, i.e. NOT the freeze_mac STATE_CONFLICT) -> null (torn-write fail-closed,
+  //     distinct from a tamper — the two consumers see the same null as the absent-file
+  //     state).
+  //
+  // Does NOT close F3: a same-uid actor holding the agent-readable key can re-sign a
+  // tampered freeze; F2 collapses INTO F3 (Cycle C). Cycle B freeze_mac is ed25519;
+  // resolveRowVerifierSafely yields a public-key-only verifier (hmacKey:null) for a
+  // non-offensive session and null for a pre-keypair session, and a present freeze_mac
+  // with a null verifier fails the verify -> THROW (re-thrown here as a tamper).
+  let freeze;
+  try {
+    freeze = readJsonFile(filePath, { label: "claim-freeze.json" });
+  } catch {
+    // A corrupt/oversized/unparseable freeze is a torn write, NOT a tamper: fail closed
+    // to null so the two consumers match the absent-file two-state contract.
+    return null;
+  }
+  const verifier = resolveRowVerifierSafely(domain);
+  // assertRowMacOrLegacy returns {legacy:true} for an ABSENT freeze_mac (accept-with-
+  // warning) and THROWS a STATE_CONFLICT for a PRESENT-BUT-INVALID one. We re-throw the
+  // tamper (hard-fail) and emit a single stderr line for the legacy accept path.
+  const macState = assertRowMacOrLegacy(
+    CLAIM_FREEZE_MAC_CONTEXT,
+    freeze,
+    verifier,
+    { macField: CLAIM_FREEZE_MAC_FIELD },
+  );
+  if (macState && macState.legacy === true && freeze && freeze[CLAIM_FREEZE_MAC_FIELD] == null) {
+    try {
+      process.stderr.write(
+        "claim-freeze: accepting an unsigned legacy in-flight freeze (no freeze_mac); "
+        + "the audit-graded write-block still guards it. Re-run buildClaimFreeze to key it.\n",
+      );
+    } catch {
+      // stderr unavailable; the accept is still honored (the doc is returned).
+    }
+  }
+  return freeze;
+}
+
+// Iterate the EvidenceReference entries on every CandidateClaim in the freeze.
+// Emits {claim, claimId, ref, refKey} tuples for deterministic traversal.
+function* iterateFrozenEvidenceRefs(freeze) {
+  if (!freeze || !Array.isArray(freeze.claims)) return;
+  for (const claim of freeze.claims) {
+    if (!claim || typeof claim !== "object") continue;
+    const claimId = typeof claim.claim_id === "string" ? claim.claim_id : null;
+    if (!Array.isArray(claim.evidence_refs)) continue;
+    for (const ref of claim.evidence_refs) {
+      if (!ref || typeof ref !== "object") continue;
+      yield {
+        claim,
+        claim_id: claimId,
+        ref,
+        ref_key: evidenceReferenceLookupKey(ref),
+      };
+    }
+  }
+}
+
+// Cycle C.5 completeness gate. The frozen claim batch is authoritative; the
+// gate measures whether every CandidateClaim's required EvidenceReference is
+// observed in the supplied evidence_refs[] payload (and whether the observed
+// content_hash matches the frozen reference). Missing/mismatched refs are
+// blockers; the GRADE phase must not advance while complete: false.
+//
+// Parameters:
+//   freeze           : the claim-freeze document (typically from
+//                      readCurrentClaimFreeze).
+//   suppliedRefs     : observed refs (e.g., evidence-pack lookup keys) keyed
+//                      by `evidenceReferenceLookupKey(ref)` with the observed
+//                      content_hash as the map value, or an iterable of
+//                      ref objects.
+//
+// Returns a structured verdict:
+//   {
+//     complete: boolean,
+//     required: number,
+//     satisfied: number,
+//     missing: [{claim_id, kind, ref_key}],
+//     mismatched: [{claim_id, kind, ref_key, expected_hash, observed_hash}],
+//     extras: [{ref_key}], // observed refs not present in the freeze
+//   }
+// O.8: pick the identity hash for an EvidenceReference. Each kind exposes its
+// content-identity through a kind-specific field — for repo_command_run the
+// natural content-identity is `stdout_hash` (the sha256 of the captured stdout
+// file, written by repoDockerRun); for every other kind the legacy
+// `content_hash` field is the identity. The completeness gate uses this
+// selector on both the frozen ref (expected) and the observed ref (whatever
+// the verifier projected from disk or supplied directly) so the equality
+// comparison is unambiguous.
+function evidenceReferenceIdentityHash(ref) {
+  if (!ref || typeof ref !== "object") return null;
+  // PR #108 review (Codex P1): exploit_run shares repo_command_run's
+  // content-identity model — its `stdout_hash` is the natural capture identity.
+  // Without this, the completeness gate falls back to `content_hash` (which
+  // exploit_run refs never carry), so an observed ref with a matching run_id but
+  // a tampered/mismatched capture hash would satisfy the freeze silently.
+  if (ref.kind === "repo_command_run" || ref.kind === "exploit_run") {
+    return typeof ref.stdout_hash === "string" ? ref.stdout_hash : null;
+  }
+  return typeof ref.content_hash === "string" ? ref.content_hash : null;
+}
+
+function suppliedRefsAsMap(supplied) {
+  if (supplied == null) return new Map();
+  if (supplied instanceof Map) return supplied;
+  const map = new Map();
+  if (Array.isArray(supplied)) {
+    for (const ref of supplied) {
+      const key = evidenceReferenceLookupKey(ref);
+      if (key == null) continue;
+      const hash = evidenceReferenceIdentityHash(ref);
+      map.set(key, hash);
+    }
+    return map;
+  }
+  if (typeof supplied === "object") {
+    for (const [key, value] of Object.entries(supplied)) {
+      map.set(key, typeof value === "string" ? value : null);
+    }
+  }
+  return map;
+}
+
+function assertCompletenessAgainstFreeze(freeze, suppliedRefs) {
+  const required = [];
+  for (const entry of iterateFrozenEvidenceRefs(freeze)) {
+    required.push(entry);
+  }
+  const observed = suppliedRefsAsMap(suppliedRefs);
+  const missing = [];
+  const mismatched = [];
+  let satisfied = 0;
+  const requiredKeys = new Set();
+  for (const entry of required) {
+    requiredKeys.add(entry.ref_key);
+    if (!observed.has(entry.ref_key)) {
+      missing.push({
+        claim_id: entry.claim_id,
+        kind: entry.ref ? entry.ref.kind || null : null,
+        ref_key: entry.ref_key,
+      });
+      continue;
+    }
+    const expectedHash = evidenceReferenceIdentityHash(entry.ref);
+    const observedHash = observed.get(entry.ref_key);
+    // PR #108 review (Codex P1): exploit_run is hash-bound proof material. An
+    // observed ref that omits the capture hash must NOT silently satisfy the
+    // freeze (key-presence alone), so a missing observed hash counts as a
+    // mismatch for this kind rather than passing through.
+    if (entry.ref && entry.ref.kind === "exploit_run" && expectedHash != null && observedHash == null) {
+      mismatched.push({
+        claim_id: entry.claim_id,
+        kind: entry.ref.kind,
+        ref_key: entry.ref_key,
+        expected_hash: expectedHash,
+        observed_hash: null,
+      });
+      continue;
+    }
+    if (expectedHash != null && observedHash != null && expectedHash !== observedHash) {
+      mismatched.push({
+        claim_id: entry.claim_id,
+        kind: entry.ref.kind || null,
+        ref_key: entry.ref_key,
+        expected_hash: expectedHash,
+        observed_hash: observedHash,
+      });
+      continue;
+    }
+    satisfied += 1;
+  }
+  const extras = [];
+  for (const key of observed.keys()) {
+    if (!requiredKeys.has(key)) extras.push({ ref_key: key });
+  }
+  return {
+    complete: missing.length === 0 && mismatched.length === 0,
+    required: required.length,
+    satisfied,
+    missing,
+    mismatched,
+    extras,
+  };
+}
+
+// Plane O Cycle O.8 — verifier-side projection of code-bound EvidenceReference
+// observed hashes from on-disk repo session artifacts. The verifier calls these
+// when it needs to satisfy the completeness gate for repo_file /
+// repo_command_run frozen refs without an explicit suppliedRefs list: each
+// helper reads the on-disk artifact (repo-checks.jsonl or
+// repo-runs/<run_id>.{stdout,stderr}), recomputes the sha256 of the
+// authoritative bytes, and yields a ref-shaped projection the completeness
+// gate compares against the frozen ref's content_hash / stdout_hash.
+//
+// When the on-disk artifact is missing (file deleted between freeze and
+// verify) or the recomputed hash does not match the recorded one (tamper or
+// drift), the projection emits the observed-hash slot as null or as the
+// actually-recomputed value — `assertCompletenessAgainstFreeze` then surfaces
+// the discrepancy as missing/mismatched in its verdict.
+
+function sha256File(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const data = fs.readFileSync(filePath);
+    return crypto.createHash("sha256").update(data).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function readRepoChecksRows(domain) {
+  const filePath = repoChecksJsonlPath(domain);
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const rows = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        rows.push(JSON.parse(trimmed));
+      } catch {
+        // Skip unparseable lines; the producer's own validation gate is
+        // authoritative for write-time integrity.
+      }
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+// Project a `repo_file` observed ref by scanning `repo-checks.jsonl` for any
+// row that recorded the same file_path. If any row's `file_hash` matches the
+// frozen ref's `content_hash`, project that matching hash (completeness
+// passes). If at least one row was observed for the file_path but none matched
+// the expected hash, project the freshest non-null observed hash so the
+// completeness gate surfaces a `mismatched` entry. If no rows touched the
+// file_path at all (file removed or never probed), return null so the gate
+// surfaces a `missing` entry — we explicitly do NOT add a projected ref with
+// content_hash=null because the gate treats "key present, hash null" as a
+// silent satisfy (legacy compatibility for `finding`-shaped refs whose
+// evidence packs don't always carry hashes).
+function projectRepoFileObservedRef(domain, frozenRef) {
+  if (!frozenRef || frozenRef.kind !== "repo_file") return null;
+  const rows = readRepoChecksRows(domain);
+  if (rows.length === 0) return null;
+  const matchingByPath = rows.filter((row) => row && row.file_path === frozenRef.file_path);
+  if (matchingByPath.length === 0) return null;
+  for (const row of matchingByPath) {
+    if (typeof row.file_hash === "string" && row.file_hash === frozenRef.content_hash) {
+      return { ...frozenRef, content_hash: row.file_hash };
+    }
+  }
+  // No row carried a matching hash — project the freshest observed hash so the
+  // gate reports a mismatch with the actual on-disk value. Iterate in reverse
+  // because the file is append-only and the latest probe wins.
+  for (let i = matchingByPath.length - 1; i >= 0; i -= 1) {
+    const hash = matchingByPath[i] && matchingByPath[i].file_hash;
+    if (typeof hash === "string" && hash.length > 0) {
+      return { ...frozenRef, content_hash: hash };
+    }
+  }
+  return null;
+}
+
+// Project a `repo_command_run` observed ref by recomputing the sha256 of the
+// on-disk stdout capture file at `repo-runs/<run_id>.stdout`. The frozen ref's
+// `stdout_hash` is the authoritative identity; the completeness gate (via
+// `evidenceReferenceIdentityHash`) picks `stdout_hash` for this kind on both
+// sides. When the stdout file is missing or unreadable, returns null so the
+// gate surfaces a `missing` entry; when the file is present but tampered,
+// projects the actually-recomputed sha so the gate reports a `mismatched`
+// entry.
+function projectRepoCommandRunObservedRef(domain, frozenRef) {
+  if (!frozenRef || frozenRef.kind !== "repo_command_run") return null;
+  if (typeof frozenRef.run_id !== "string" || !frozenRef.run_id) return null;
+  const stdoutPath = path.join(repoRunsDir(domain), `${frozenRef.run_id}.stdout`);
+  const observed = sha256File(stdoutPath);
+  if (observed == null) return null;
+  return {
+    ...frozenRef,
+    // The gate's identity-hash selector picks `stdout_hash` for
+    // kind="repo_command_run"; supply the recomputed sha here so the gate
+    // compares it against the frozen ref's `stdout_hash` slot.
+    stdout_hash: observed,
+  };
+}
+
+// Securely recompute the sha256 of an offensive-runs capture leaf for projection.
+// `run_id` is only shape-validated upstream as a non-empty string (claims.js
+// assertExploitRunEvidenceShape), so the path/symlink discipline lives here.
+// Mirrors the realpath + O_NOFOLLOW + nlink + size-cap discipline that
+// readOffensiveRunRecords (claims.js) applies to the proof ledger:
+//   - lexical containment: the leaf must be a DIRECT child of offensive-runs/
+//     (rejects a "../x" traversal run_id);
+//   - symlinked-parent defense: the REAL capture dir must resolve to
+//     <real session dir>/offensive-runs (rejects a symlinked offensive-runs/ or
+//     session dir — O_NOFOLLOW on the leaf alone does not catch a symlinked parent);
+//   - O_NOFOLLOW + fstat: reject a symlinked leaf, a non-regular file, a
+//     hard-linked file, and a file over the artifact read cap.
+// Fail-closed: any of the above (or a missing/unreadable leaf) returns null, which
+// the completeness gate surfaces as `missing` so the lifecycle blocks. Without this,
+// a planted symlink would make sha256File follow the link and hash an
+// attacker-chosen inode (a content read-oracle), and an oversized leaf would force
+// an unbounded synchronous read on the lifecycle-gate path. None of this can launder
+// a `complete` verdict (the frozen stdout_hash is MAC-bound to a signed
+// offensive-runs.jsonl row). The identical repo_command_run twin and a shared
+// secure-hash helper are tracked in #114.
+function sha256OffensiveCaptureSecure(domain, runId) {
+  // run_id is only shape-validated upstream as a non-empty string (claims.js
+  // assertExploitRunEvidenceShape, tracked for a source-level fix in #114). Reject
+  // any run_id that is not a single clean path segment BEFORE building the leaf: a
+  // separator/NUL or a "."/".." segment (e.g. "subdir/../victim") can normalize
+  // back inside offensive-runs/ and alias a DIFFERENT capture file, slipping the
+  // `dirname === runsDir` guard below instead of failing closed.
+  if (typeof runId !== "string" || !runId) return null;
+  if (
+    runId.includes("/") || runId.includes("\\") || runId.includes("\0") ||
+    runId === "." || runId === ".."
+  ) {
+    return null;
+  }
+  const runsDir = path.resolve(offensiveRunsDir(domain));
+  const leaf = path.resolve(path.join(runsDir, `${runId}.stdout`));
+  if (path.dirname(leaf) !== runsDir) return null;
+  // Anchor the expected capture dir to the REAL sessions root + safe domain, the
+  // way claims.js::resolveOffensiveRunsFilePathSecure does — NOT to
+  // realpathSync(sessionDir(domain)), which would resolve a symlinked session dir
+  // before comparing and silently accept it (the recording path rejects it, so
+  // anchoring to realpath of the session dir would be a split-brain bypass).
+  let realDir;
+  let expectedDir;
+  try {
+    const realRoot = fs.realpathSync(sessionsRoot());
+    expectedDir = path.join(realRoot, assertSafeDomain(domain), "offensive-runs");
+    realDir = fs.realpathSync(runsDir);
+  } catch {
+    return null;
+  }
+  if (realDir !== expectedDir) return null;
+  const realLeaf = path.join(realDir, path.basename(leaf));
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  // On platforms without O_NOFOLLOW, pre-check the leaf for a symlink.
+  if (!noFollow) {
+    let lst;
+    try {
+      lst = fs.lstatSync(realLeaf);
+    } catch {
+      return null;
+    }
+    if (lst.isSymbolicLink()) return null;
+  }
+  let fd = null;
+  try {
+    fd = fs.openSync(realLeaf, fs.constants.O_RDONLY | noFollow);
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.nlink !== 1) return null;
+    if (DEFAULT_ARTIFACT_READ_MAX_BYTES != null && stats.size > DEFAULT_ARTIFACT_READ_MAX_BYTES) {
+      return null;
+    }
+    return crypto.createHash("sha256").update(fs.readFileSync(fd)).digest("hex");
+  } catch {
+    // ENOENT / ELOOP (symlinked leaf under O_NOFOLLOW) / any error -> missing.
+    return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
+// Securely read the RAW BYTES of an offensive capture leaf by run_id under the
+// IDENTICAL realpath + O_NOFOLLOW + nlink + size-cap discipline as
+// sha256OffensiveCaptureSecure — the only difference is it returns the Buffer (and
+// the recomputed sha256) instead of the digest alone, because the cross-stack consume
+// path must INJECT the bytes, not just hash them. The caller re-hashes the returned
+// bytes against the named offensive row's MAC-covered consumed_artifact_hash/stdout_hash
+// to confirm it fetched the bytes that run actually captured; a missing/suspicious leaf
+// returns null and the consume path fails closed (no injection). suffix is restricted to
+// the two known capture leaves so a run_id can never be aimed at a sibling artifact.
+const OFFENSIVE_CAPTURE_SUFFIXES = Object.freeze(new Set(["stdout", "consumed"]));
+
+function readOffensiveCaptureBytesSecure(domain, runId, suffix = "stdout") {
+  if (!OFFENSIVE_CAPTURE_SUFFIXES.has(suffix)) return null;
+  // run_id segment discipline — identical to sha256OffensiveCaptureSecure: reject any
+  // separator/NUL or "."/".." segment that could normalize back inside offensive-runs/
+  // and alias a DIFFERENT capture file before the `dirname === runsDir` guard.
+  if (typeof runId !== "string" || !runId) return null;
+  if (
+    runId.includes("/") || runId.includes("\\") || runId.includes("\0") ||
+    runId === "." || runId === ".."
+  ) {
+    return null;
+  }
+  const runsDir = path.resolve(offensiveRunsDir(domain));
+  const leaf = path.resolve(path.join(runsDir, `${runId}.${suffix}`));
+  if (path.dirname(leaf) !== runsDir) return null;
+  let realDir;
+  let expectedDir;
+  try {
+    const realRoot = fs.realpathSync(sessionsRoot());
+    expectedDir = path.join(realRoot, assertSafeDomain(domain), "offensive-runs");
+    realDir = fs.realpathSync(runsDir);
+  } catch {
+    return null;
+  }
+  if (realDir !== expectedDir) return null;
+  const realLeaf = path.join(realDir, path.basename(leaf));
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  if (!noFollow) {
+    let lst;
+    try {
+      lst = fs.lstatSync(realLeaf);
+    } catch {
+      return null;
+    }
+    if (lst.isSymbolicLink()) return null;
+  }
+  let fd = null;
+  try {
+    fd = fs.openSync(realLeaf, fs.constants.O_RDONLY | noFollow);
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.nlink !== 1) return null;
+    if (DEFAULT_ARTIFACT_READ_MAX_BYTES != null && stats.size > DEFAULT_ARTIFACT_READ_MAX_BYTES) {
+      return null;
+    }
+    const bytes = fs.readFileSync(fd);
+    const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    return { bytes, sha256 };
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
+// Project an `exploit_run` observed ref by securely recomputing the sha256 of the
+// on-disk stdout capture file at `offensive-runs/<run_id>.stdout`. Mirrors
+// projectRepoCommandRunObservedRef: the frozen ref's `stdout_hash` is the
+// authoritative identity (the completeness gate's `evidenceReferenceIdentityHash`
+// selector already picks `stdout_hash` for kind="exploit_run"). A missing/unreadable/
+// suspicious file → null (gate surfaces `missing`); a present-but-tampered file → the
+// actually recomputed sha (gate surfaces `mismatched`). Path/symlink/size safety is
+// enforced by sha256OffensiveCaptureSecure (see #114 for the twin + shared helper).
+function projectExploitRunObservedRef(domain, frozenRef) {
+  if (!frozenRef || frozenRef.kind !== "exploit_run") return null;
+  if (typeof frozenRef.run_id !== "string" || !frozenRef.run_id) return null;
+  const observed = sha256OffensiveCaptureSecure(domain, frozenRef.run_id);
+  if (observed == null) return null;
+  return {
+    ...frozenRef,
+    stdout_hash: observed,
+  };
+}
+
+// Build the full observed-ref set for the code-bound kinds in a freeze. The
+// caller (typically `assertEvidenceCompletenessForFreeze`) folds these into
+// the existing finding/etc observed set before invoking
+// `assertCompletenessAgainstFreeze`. Projection helpers return null when the
+// underlying on-disk artifact is gone — the unified gate then surfaces those
+// keys as `missing` entries (rather than silently treating them as satisfied).
+function projectCodeBoundObservedRefs(domain, freeze) {
+  const projected = [];
+  if (!freeze) return projected;
+  for (const entry of iterateFrozenEvidenceRefs(freeze)) {
+    if (!entry || !entry.ref) continue;
+    const kind = entry.ref.kind;
+    if (kind === "repo_file") {
+      const obs = projectRepoFileObservedRef(domain, entry.ref);
+      if (obs) projected.push(obs);
+    } else if (kind === "repo_command_run") {
+      const obs = projectRepoCommandRunObservedRef(domain, entry.ref);
+      if (obs) projected.push(obs);
+    } else if (kind === "exploit_run") {
+      const obs = projectExploitRunObservedRef(domain, entry.ref);
+      if (obs) projected.push(obs);
+    }
+  }
+  return projected;
+}
+
+module.exports = {
+  CLAIM_FREEZE_VERSION,
+  EVIDENCE_REFERENCE_KIND_VALUES,
+  assertCompletenessAgainstFreeze,
+  buildClaimFreeze,
+  evidenceReferenceIdentityHash,
+  evidenceReferenceLookupKey,
+  generatedClaimFreezeId,
+  iterateFrozenEvidenceRefs,
+  normalizeEvidenceReferenceShape,
+  projectCodeBoundObservedRefs,
+  projectExploitRunObservedRef,
+  projectRepoCommandRunObservedRef,
+  projectRepoFileObservedRef,
+  readCurrentClaimFreeze,
+  readOffensiveCaptureBytesSecure,
+  sha256File,
+  verificationSnapshotFromClaimFreeze,
+};

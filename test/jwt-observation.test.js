@@ -26,16 +26,16 @@ const {
   detectJwts,
   parseJwtHeaderAndPayload,
   recordJwtObservations,
-} = require("../mcp/lib/http-records.js");
+} = require("../mcp/core/io/http-records.js");
 const {
   selectCliToolPacks,
-} = require("../mcp/lib/cli-tool-packs.js");
+} = require("../mcp/core/dispatch/cli-tool-packs.js");
 const {
   observationsForSurface,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function base64url(input) {
   return Buffer.from(input, "utf8").toString("base64url");

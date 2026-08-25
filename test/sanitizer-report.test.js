@@ -7,7 +7,7 @@ const {
   detectCrash,
   parseSanitizerReport,
   MEMORY_SAFETY_SIGNAL_RE,
-} = require("../mcp/lib/sanitizer-report.js");
+} = require("../mcp/domains/repo/sanitizer-report.js");
 
 // The real ASAN report from the live oracle re-execution of ARVO case 25402
 // (muparser/oss-fuzz-25402), trimmed to the crash banner + top frames.

@@ -16,13 +16,13 @@ const {
   toCorpusRecord,
   deriveEvidencePredicate,
   validateFamilyAgainstLoader,
-} = require("../mcp/lib/authorization-differential-family.js");
+} = require("../mcp/core/authorization-differential-family.js");
 
 const {
   OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
   loadMechanismTemplates,
   normalizeMechanismTemplate,
-} = require("../mcp/lib/invariant-template-corpus.js");
+} = require("../mcp/core/mechanism/index.js");
 
 // The four axes that parameterize the family.
 test("the family is parameterized by exactly the four authorization axes", () => {
@@ -195,7 +195,7 @@ test("a binding may declare a documented superset of required_entities and still
 // state. It produces data only.
 // ---------------------------------------------------------------------------
 test("the live MECHANISM_TEMPLATES corpus is untouched by the family module", () => {
-  const corpus = require("../mcp/lib/invariant-template-corpus.js").MECHANISM_TEMPLATES;
+  const corpus = require("../mcp/core/mechanism/index.js").MECHANISM_TEMPLATES;
   // The live corpus still holds only the single hardcoded mechanism.
   assert.equal(corpus.length, 1);
   assert.equal(corpus[0].id, "object_authorization");

@@ -1,0 +1,61 @@
+"use strict";
+
+const { defineWriteTool } = require("./_archetypes.js");
+
+const { writeChainAttempt } = require("../core/chain-attempts.js");
+const { wrapWriteTool } = require("./_write-base.js");
+
+module.exports = wrapWriteTool(defineWriteTool({
+  name: "bob_write_chain_attempt",
+  writes_audit_graded: true,
+  description:
+    "Append one structured CHAIN-phase impact proof-chain attempt to MCP-owned chain-attempts.jsonl.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      target_domain: { type: "string" },
+      finding_ids: {
+        type: "array",
+        items: { type: "string", pattern: "^F-[1-9][0-9]*$" },
+      },
+      surface_ids: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+      },
+      hypothesis: { type: "string", minLength: 1, maxLength: 2000 },
+      steps: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 1000 },
+      },
+      outcome: {
+        type: "string",
+        enum: ["confirmed", "denied", "blocked", "inconclusive", "not_applicable"],
+      },
+      evidence_summary: { type: "string", minLength: 1, maxLength: 4000 },
+      request_refs: {
+        type: "array",
+        maxItems: 100,
+        items: { type: "string", minLength: 1, maxLength: 300 },
+      },
+      auth_profiles: {
+        type: "array",
+        maxItems: 20,
+        items: { type: "string", minLength: 1, maxLength: 120 },
+      },
+    },
+    required: [
+      "target_domain",
+      "finding_ids",
+      "surface_ids",
+      "hypothesis",
+      "steps",
+      "outcome",
+      "evidence_summary",
+    ],
+  },
+  handler: writeChainAttempt,
+  role_bundles: ["chain"],
+  session_artifacts_written: ["chain-attempts.jsonl"],
+}));

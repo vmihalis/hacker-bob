@@ -16,20 +16,20 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { evaluateVerdictSandboxGate } = require("../mcp/lib/sandbox-isolation-gate.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/core/ledger-integrity/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { evaluateVerdictSandboxGate } = require("../mcp/core/verdict-sandbox-gate.js");
 const {
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/io/paths.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/index.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";

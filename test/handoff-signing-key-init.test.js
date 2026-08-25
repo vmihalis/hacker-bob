@@ -16,8 +16,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { initSession } = require("../mcp/lib/session-state.js");
-const { initRepoSession } = require("../mcp/lib/repo-target.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { initRepoSession } = require("../mcp/domains/repo/repo-target.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
@@ -26,13 +26,13 @@ const {
   readHandoffSigningPublicKey,
   resolveOffensiveRowVerifier,
   resolveRowVerifierSafely,
-} = require("../mcp/lib/handoff-signing-key.js");
-const { assertExploitedClaimHasProof } = require("../mcp/lib/claims.js");
+} = require("../mcp/core/ledger-integrity/index.js");
+const { assertExploitedClaimHasProof } = require("../mcp/core/claims/claims.js");
 const {
   handoffSigningKeyPath,
   handoffSigningPrivateKeyPath,
   handoffSigningPublicKeyPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -245,9 +245,9 @@ function hex(char) { return char.repeat(64); }
 function seedEd25519OffensiveRow(domain) {
   const {
     signRowViaIsolatedSignerOrLocal,
-  } = require("../mcp/lib/handoff-signing-key.js");
-  const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRunsJsonlPath, sessionDir } = require("../mcp/lib/paths.js");
+  } = require("../mcp/core/ledger-integrity/index.js");
+  const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRunsJsonlPath, sessionDir } = require("../mcp/core/io/paths.js");
   fs.mkdirSync(sessionDir(domain), { recursive: true });
   const row = {
     version: 1, target_domain: domain, run_id: "row-ed-onlyed", tool_id: "bob_http_idor_confirm",

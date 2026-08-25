@@ -12,10 +12,7 @@ permissions:
 
 jobs:
   native-darwin-qualification:
-    # macos-15, not macos-14: direct_cdc_custody.mm needs the IOUSBHost option
-    # IOUSBHostObjectInitOptionsDeviceSeize, absent from the macOS 14 SDK.
-    # Kept in step with the same job in ci.yml — this one gates publish.
-    runs-on: macos-15
+    runs-on: macos-14
 
     steps:
       - name: Checkout

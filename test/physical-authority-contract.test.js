@@ -26,22 +26,22 @@ const {
   projectVerifiedPhysicalBootstrapGrant,
   resolvePhysicalEffectAuthority,
   resolvePhysicalRequestAuthority,
-} = require("../mcp/lib/physical-authority.js");
+} = require("../mcp/domains/physical/physical-authority.js");
 const {
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
+} = require("../mcp/core/governance/index.js");
 const {
   buildEffectTemplateRegistry,
-} = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/requested-effects.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   createPhysicalTrustedClockPort,
   physicalClockMappingSigningMessage,
   publicKeyDigest,
-} = require("../mcp/lib/physical-trusted-clock.js");
+} = require("../mcp/domains/physical/physical-trusted-clock.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

@@ -4,7 +4,7 @@ const net = require("node:net");
 
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   _internals: {
     assertClosedObject,

@@ -19,7 +19,7 @@ const {
   isAuditGradedPath,
   sandboxIsolationPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 test("AUDIT_GRADED_PATHS is frozen at the outer + inner levels", () => {
   assert.equal(Object.isFrozen(AUDIT_GRADED_PATHS), true);

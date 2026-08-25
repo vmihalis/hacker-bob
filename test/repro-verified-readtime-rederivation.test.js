@@ -20,15 +20,15 @@ const path = require("node:path");
 const {
   reverifyReproRecord,
   readReproVerifiedSummary,
-} = require("../mcp/lib/repro-replay-verifier.js");
-const { reproVerifiedGapForNativeReportableFindings, appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
+const { reproVerifiedGapForNativeReportableFindings, appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   repoCommandRunsJsonlPath,
   repoRunsDir,
-} = require("../mcp/lib/paths.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/paths.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
 const {
   seedGenuineReproPair,
   seedBareForgedReproPass,

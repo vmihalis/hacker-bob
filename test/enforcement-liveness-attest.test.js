@@ -11,8 +11,8 @@ const {
   SHADOW_ACK_ENV,
   SHADOW_ACK_TOKEN,
   AUTHORITY_MODE_ENV,
-} = require("../mcp/lib/enforcement-attest.js");
-const { executeTool } = require("../mcp/lib/dispatch.js");
+} = require("../mcp/core/enforcement-attest.js");
+const { executeTool } = require("../mcp/core/dispatch/dispatch.js");
 
 const ROOT = path.join(__dirname, "..");
 
@@ -187,7 +187,7 @@ test("BOB_SESSION_AUTHORITY_SHADOW_ACK is single-homed in mcp/ (enforcement-atte
   walk(path.join(ROOT, "mcp"));
   assert.deepEqual(
     hits.sort(),
-    ["mcp/lib/enforcement-attest.js"],
+    ["mcp/core/enforcement-attest.js"],
     `BOB_SESSION_AUTHORITY_SHADOW_ACK must live only in enforcement-attest.js under mcp/, found: ${hits.join(", ")}`,
   );
 });

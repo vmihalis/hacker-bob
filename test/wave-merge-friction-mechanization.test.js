@@ -16,25 +16,25 @@ const path = require("node:path");
 const {
   attackSurfacePath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   settleAgentRunFromHandoff,
-} = require("../mcp/lib/agent-runs.js");
+} = require("../mcp/core/session/agent-runs.js");
 const {
   loadWaveArtifacts,
-} = require("../mcp/lib/wave-handoff-store.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
 const {
   startWave,
   applyWaveMerge,
   writeWaveHandoff,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   initSession,
   advanceSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 const {
   mechanizeWaveFriction,
@@ -42,13 +42,13 @@ const {
   forwardFrictionSynthetics,
   buildScannerList,
   SERVER_WITNESSABLE_SCANNER_KINDS,
-} = require("../mcp/lib/friction-mechanization.js");
-const logCapabilityFrictionTool = require("../mcp/lib/tools/log-capability-friction.js");
-const { readFrontierEvents } = require("../mcp/lib/frontier-events.js");
-const { writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
-const { DEFAULT_SCANNERS, SYNTHESIZERS } = require("../mcp/lib/friction-scanners.js");
-const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
-const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/friction-mechanization.js");
+const logCapabilityFrictionTool = require("../mcp/tools/log-capability-friction.js");
+const { readFrontierEvents } = require("../mcp/core/frontier/frontier-events.js");
+const { writeQueuePolicy } = require("../mcp/core/io/queue-policy.js");
+const { DEFAULT_SCANNERS, SYNTHESIZERS } = require("../mcp/core/friction-scanners.js");
+const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
+const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
 
 void frictionIdempotencyKey;
 
@@ -192,7 +192,7 @@ test("Y-P11: server NEVER auto-promotes tool_inadequate", () => {
     ensureSession(domain);
     writeQueuePolicy(domain, { friction_promotion_threshold: 2 });
 
-    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
     for (let i = 0; i < 2; i += 1) {
       const witness = appendFrontierEvent({
         target_domain: domain,

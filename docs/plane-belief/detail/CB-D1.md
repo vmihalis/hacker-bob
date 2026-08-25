@@ -10,7 +10,7 @@ free hard label; the elicitation primitive (CB-B7) is only the fallback prior.
 
 ## What it does
 
-`evaluateObjectAuthDifferential({ primary_effect, controls })` (`mcp/lib/belief/differential-tester.js:41`):
+`evaluateObjectAuthDifferential({ primary_effect, controls })` (`mcp/core/belief/differential-tester.js:41`):
 
 - `primary_effect.reached` is the attack -- the attacker principal reaching the
   victim object. Not reached -> `denied`.
@@ -46,7 +46,7 @@ and the verdict flips; that is the behavioral gate.
 
 ## Build slices (real anchors)
 
-- `mcp/lib/belief/differential-tester.js` -- verdict logic + CB-C2 payload builder;
+- `mcp/core/belief/differential-tester.js` -- verdict logic + CB-C2 payload builder;
   imports `hashCanonicalJson` (`verification-contracts.js:*`) and `OBJECT_AUTH_CONTROLS`
   (`intervention-calculus.js:25`); no re-implemented hashing (DRY vs the audit finding).
 - `test/belief-differential-tester.test.js` -- behavioral suite; registered in

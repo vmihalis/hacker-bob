@@ -1,0 +1,9 @@
+"use strict";
+
+const PUBLIC_INTEL_MAX_ITEMS = 10;
+const PUBLIC_INTEL_MAX_RESPONSE_BYTES = 300_000;
+
+module.exports = {
+  PUBLIC_INTEL_MAX_ITEMS,
+  PUBLIC_INTEL_MAX_RESPONSE_BYTES,
+};

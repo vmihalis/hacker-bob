@@ -18,16 +18,16 @@ const {
   appendCandidateClaim,
   findingDifferentialGapForStandaloneReportableFindings,
   reproVerifiedGapForNativeReportableFindings,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   repoCommandRunsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   seedGenuineReproPair,
   seedBareForgedReproPass,
