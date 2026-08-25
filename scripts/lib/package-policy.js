@@ -56,6 +56,10 @@ const MCP_TOP_LEVEL_RUNTIME_FILES = Object.freeze([
   "auto-signup.js",
   "redaction.js",
   "browser-driver.js",
+  "finalization-receipt.js",
+  "finding-artifact.js",
+  "projection-client.js",
+  "projection-payload.js",
 ]);
 
 const WRAPPER_PACKAGE_SPECS = Object.freeze([
@@ -164,6 +168,11 @@ const REQUIRED_SUPPORT_SURFACES = Object.freeze([
 // not merely exist beside the npm package. Source and destination are explicit
 // so lifecycle ownership never expands to an operator's whole docs/ tree.
 const CANONICAL_INSTALL_SUPPORT_FILES = Object.freeze([
+  Object.freeze({
+    id: "finding_artifact_schema",
+    source: "infra/aws/hacker-bob-stack/finding-artifact.schema.json",
+    destination: "infra/aws/hacker-bob-stack/finding-artifact.schema.json",
+  }),
   Object.freeze({
     id: "physical_provider_authoring",
     source: "docs/provider-authoring.md",

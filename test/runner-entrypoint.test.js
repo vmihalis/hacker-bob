@@ -8,17 +8,27 @@ const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
 
-const TEST_SESSIONS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "bob-runner-entrypoint-suite-"));
-process.env.BOB_SESSIONS_ROOT = TEST_SESSIONS_ROOT;
+const INHERITED_SESSIONS_ROOT = process.env.BOB_SESSIONS_ROOT;
+const REQUESTED_SESSIONS_ROOT = INHERITED_SESSIONS_ROOT
+  || fs.mkdtempSync(path.join(os.tmpdir(), "bob-runner-entrypoint-suite-"));
+process.env.BOB_SESSIONS_ROOT = REQUESTED_SESSIONS_ROOT;
 const { PassThrough } = require("node:stream");
 
 const entrypoint = require("../infra/runner/entrypoint.js");
+const { sessionsRoot } = require("../mcp/core/io/paths.js");
 const {
   writeFinalizationReceipt,
 } = require("../mcp/finalization-receipt.js");
 
+const TEST_SESSIONS_ROOT = sessionsRoot();
+const TEST_TARGET_DOMAIN = `runner-entrypoint-${process.pid}.example.test`;
+process.env.BOB_SESSIONS_ROOT = TEST_SESSIONS_ROOT;
+
 test.after(() => {
-  fs.rmSync(TEST_SESSIONS_ROOT, { recursive: true, force: true });
+  fs.rmSync(path.join(TEST_SESSIONS_ROOT, TEST_TARGET_DOMAIN), { recursive: true, force: true });
+  if (!INHERITED_SESSIONS_ROOT) {
+    fs.rmSync(REQUESTED_SESSIONS_ROOT, { recursive: true, force: true });
+  }
 });
 
 const CORE_ROOT = path.resolve(__dirname, "..");
@@ -45,8 +55,8 @@ function payload(overrides = {}) {
     assessmentId: "assessment-1",
     runId: "run-id-1234",
     runSlug: "runner-slug-1234",
-    target: "https://example.com",
-    targetDomain: "example.com",
+    target: `https://${TEST_TARGET_DOMAIN}`,
+    targetDomain: TEST_TARGET_DOMAIN,
     targetKind: "web",
     runMode: "standard",
     autonomy: "operator-approved",
@@ -239,8 +249,8 @@ test("taskFor makes the kind-specific initializer the exact first Bob call", () 
   assert.deepEqual(web, {
     name: "bob_init_session",
     args: {
-      target_domain: "example.com",
-      target_url: "https://example.com",
+      target_domain: TEST_TARGET_DOMAIN,
+      target_url: `https://${TEST_TARGET_DOMAIN}`,
       deep_mode: false,
     },
   });
