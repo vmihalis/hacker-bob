@@ -43,8 +43,8 @@ fast-follow if the design partner needs targets outside the static posture.
   `ProtectSystem=strict`, kernel/filesystem protections, and explicit writable
   paths. The service retains Docker-group access because it must launch and
   reattach runner containers; treat that account as host-privileged.
-- EC2 requires IMDSv2 with hop limit 1, preventing ordinary bridge containers
-  from receiving instance-metadata responses.
+- EC2 requires IMDSv2 with hop limit 1. A Docker-coupled `DOCKER-USER`
+  firewall rule also drops container traffic to the IPv4 metadata endpoint.
 
 ## Deploy
 

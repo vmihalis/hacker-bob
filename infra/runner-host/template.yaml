@@ -470,11 +470,29 @@ Resources:
           chown root:root /etc/bob-dispatch/start
           chmod 0700 /etc/bob-dispatch/start
 
+          cat > /etc/systemd/system/bob-docker-metadata-deny.service <<'UNIT'
+          [Unit]
+          Description=Block runner containers from EC2 instance metadata
+          Requires=docker.service
+          After=docker.service
+          PartOf=docker.service
+          Before=bob-dispatch.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/sh -c '/usr/sbin/iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || /usr/sbin/iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP'
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
           cat > /etc/systemd/system/bob-dispatch.service <<'UNIT'
           [Unit]
           Description=Hacker Bob dispatch service
-          After=network-online.target docker.service
+          After=network-online.target docker.service bob-docker-metadata-deny.service
           Wants=network-online.target docker.service
+          Requires=bob-docker-metadata-deny.service
 
           [Service]
           Type=simple
@@ -511,6 +529,7 @@ Resources:
           UNIT
 
           systemctl daemon-reload
+          systemctl enable bob-docker-metadata-deny
           systemctl enable --now bob-dispatch
 
           healthy=0
