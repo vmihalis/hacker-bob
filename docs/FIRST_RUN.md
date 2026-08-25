@@ -100,7 +100,7 @@ For Claude, run:
 /bob-status
 ```
 
-For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files. Bob writes session state under `~/hacker-bob-sessions/<target_domain>/`. The pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or auto-copied. Clean up a leftover legacy root with `hacker-bob install /path/to/your/project --purge-legacy-session-root [--yes]`.
+For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files. Bob writes session state under `~/hacker-bob-sessions/<target_domain>/`. The pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or auto-copied. Inspect cleanup of a leftover legacy root with `hacker-bob install /path/to/your/project --purge-legacy-session-root`. Add `--yes` to that command to confirm deletion.
 
 For Codex, invoke `$bob-status`. For Kimi, invoke `/skill:bob-status`. For generic MCP hosts, list the `hacker-bob` tools or call a read-only status tool through the host's MCP UI.
 

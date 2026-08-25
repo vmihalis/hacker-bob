@@ -36,6 +36,7 @@ inputs:
           pull-requests: write
           checks: write
           contents: read
+          packages: read
     required: true
 
   anthropic-oauth-token:
@@ -71,7 +72,9 @@ inputs:
       token has package access. Used to authenticate npm against
       npm.pkg.github.com for @bobnetsec/* packages. Keep private source
       checkout credentials separate unless the classic PAT also has repo
-      scope. Optional for public/cached installs.
+      scope. When passing github.token here, the calling workflow must grant
+      packages: read; for a private package, also grant the workflow repository
+      read access to that package. Optional for public/cached installs.
     required: false
     default: ''
 
