@@ -151,7 +151,69 @@ function selectWebEvaluatorPack(classification, { idBearing = false, highPriorit
   return highValue ? WEB_FANOUT_CAPABILITY_PACK : WEB_CAPABILITY_PACK;
 }
 
-function ossCapabilityPack(id, sampleType) {
+/**
+ * Which tool verifies an OSS finding, and why it is per-pack rather than shared.
+ *
+ * bob_repo_check is a read-only evidence probe: file_exists, file_contains
+ * (literal substring), regex_match (per-line regex). For a hardcoded secret, an
+ * unpinned dependency in a manifest, or a CI YAML misconfiguration, that IS the
+ * appropriate evidence: the finding is a fact about the text of the tree, and a
+ * match is a genuine observation of it.
+ *
+ * For a native-code memory-safety bug it is not. Grepping the source for a
+ * pattern cannot distinguish a real heap overflow from a plausible-looking one,
+ * so an OSS native-code finding graded through bob_repo_check was graded on a
+ * string match. bob_verify_repro_reproduction is the purpose-built gate there:
+ * it re-runs the same PoC in two fresh sandboxed containers (vulnerable tree and
+ * upstream-fix tree), parses the sanitizer bytes it captured itself rather than
+ * any self-reported crash field, and mints verified_pass ONLY on a genuine flip.
+ * A printf-forged banner fires on both trees and is refuted.
+ *
+ * WHY THIS IS A PARAMETER (2026-08-14). The 2026-08-02 correction set the tool
+ * inside this shared factory, so all seven OSS packs got the native-code gate.
+ * The other six structurally cannot feed it: its schema hard-requires `command`
+ * (an executable PoC argv) and `control_ref` (an upstream-fix commit), and a
+ * secrets or dependency finding has neither. An evidence agent following that
+ * wiring hits the required-field schema and errors out or returns inconclusive,
+ * and the per-pack sample_type below becomes vestigial because the runner
+ * ignores it and always performs the two-tree differential.
+ *
+ * It did not surface as a test failure because the grade gate keys its mandatory
+ * verified_pass on nativeCodeSurfacesForClaim (claims.js:1095), so the six were
+ * never blocked from grading. That makes it misdirected tooling rather than a
+ * pipeline stall, which is exactly the kind of defect a green suite hides.
+ *
+ * It also has to stay in step with the hand-authored verifier prose in
+ * prompts/roles/balanced-verifier.md and final-verifier.md, which says OSS repo
+ * uses bob_repo_check and reserves the differential gate for oss_native_code.
+ * That prose is not coupled to this generator, so a verifier agent handed both a
+ * contradicting table and prose oscillates between the two tools.
+ *
+ * Note this is only the verifier wiring: role_bundles below still resolves to
+ * evaluator-web, a separate and larger defect (see
+ * capability-pack-derivation.js:94 for why the cheap path was taken 2026-06-17).
+ */
+/*
+ * VERIFIER AND EVIDENCE ARE SEPARATE, and binding them to one argument was the
+ * second half of the same mistake (caught in review, 2026-08-14).
+ *
+ * verifier.replay_tool is a refute/confirm execution gate. evidence.runner
+ * builds a bounded proof bundle: representative_samples[], aggregate_counts,
+ * redacted snippets. bob_verify_repro_reproduction implements the gate contract
+ * and returns {result, reason}; it emits no samples and hard-requires
+ * control_ref commit hashes. Handing it to the evidence agent as a sampling
+ * runner means it cannot construct a valid evidence pack even for the native
+ * code case, which can block the GRADE transition.
+ *
+ * So evidence.runner stays bob_repo_check for all seven packs. Reading the tree
+ * is the correct way to SAMPLE evidence; it was only ever the wrong way to
+ * PROVE a memory-safety bug. Only oss_native_code's verifier moves.
+ */
+const OSS_EVIDENCE_RUNNER = "bob_repo_check";
+const OSS_DEFAULT_REPLAY_TOOL = "bob_repo_check";
+const OSS_NATIVE_CODE_REPLAY_TOOL = "bob_verify_repro_reproduction";
+
+function ossCapabilityPack(id, sampleType, replayTool = OSS_DEFAULT_REPLAY_TOOL) {
   return Object.freeze({
     id,
     capability_pack_version: 1,
@@ -161,14 +223,14 @@ function ossCapabilityPack(id, sampleType) {
     completion_gate: "web_wave_handoff",
     context_budget: DEFAULT_CONTEXT_BUDGET,
     verifier: Object.freeze({
-      replay_tool: "bob_repo_check",
+      replay_tool: replayTool,
       sample_type: sampleType,
       fresh_state_omit_field: null,
       disambiguation: null,
       replay_safety: DEFAULT_REPLAY_SAFETY,
     }),
     evidence: Object.freeze({
-      runner: "bob_repo_check",
+      runner: OSS_EVIDENCE_RUNNER,
       sample_type: sampleType,
     }),
     spawn: Object.freeze({
@@ -178,7 +240,11 @@ function ossCapabilityPack(id, sampleType) {
 }
 
 const OSS_DEPENDENCY_CAPABILITY_PACK = ossCapabilityPack("oss_dependency", "repo_dependency_check");
-const OSS_NATIVE_CODE_CAPABILITY_PACK = ossCapabilityPack("oss_native_code", "repo_native_code_check");
+const OSS_NATIVE_CODE_CAPABILITY_PACK = ossCapabilityPack(
+  "oss_native_code",
+  "repo_native_code_check",
+  OSS_NATIVE_CODE_REPLAY_TOOL,
+);
 const OSS_API_SCHEMA_CAPABILITY_PACK = ossCapabilityPack("oss_api_schema", "repo_api_schema_check");
 const OSS_AUTHZ_CAPABILITY_PACK = ossCapabilityPack("oss_authz", "repo_authz_check");
 const OSS_CI_CD_CAPABILITY_PACK = ossCapabilityPack("oss_ci_cd", "repo_ci_cd_check");
@@ -518,7 +584,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-evm": Object.freeze({
     role_id: "evaluator-evm",
     name: "evaluator-evm-agent",
-    description: "EVM smart-contract bug bounty evaluator — spawned per smart_contract surface, scaffolds and runs Foundry tests against the direct public HTTPS RPC ladder",
+    description: "EVM smart-contract vulnerability evaluator — spawned per smart_contract surface, scaffolds and runs Foundry tests against the direct public HTTPS RPC ladder",
     color: "magenta",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-evm"]),
     prompt_body_filename: "evaluator-evm.md",
@@ -526,7 +592,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-svm": Object.freeze({
     role_id: "evaluator-svm",
     name: "evaluator-svm-agent",
-    description: "SVM (Solana) smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=svm, scaffolds and runs Anchor tests against the direct public HTTPS Solana RPC ladder",
+    description: "SVM (Solana) smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=svm, scaffolds and runs Anchor tests against the direct public HTTPS Solana RPC ladder",
     color: "cyan",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-svm"]),
     prompt_body_filename: "evaluator-svm.md",
@@ -534,7 +600,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-move": Object.freeze({
     role_id: "evaluator-move",
     name: "evaluator-move-agent",
-    description: "Move (Aptos + Sui) smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family in {aptos, sui}, scaffolds and runs aptos move test or sui move test against direct public HTTPS Move RPC/REST ladders",
+    description: "Move (Aptos + Sui) smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family in {aptos, sui}, scaffolds and runs aptos move test or sui move test against direct public HTTPS Move RPC/REST ladders",
     color: "blue",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-move"]),
     prompt_body_filename: "evaluator-move.md",
@@ -542,7 +608,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-substrate": Object.freeze({
     role_id: "evaluator-substrate",
     name: "evaluator-substrate-agent",
-    description: "Substrate / ink! smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=substrate, scaffolds and runs cargo test on ink! contracts against the direct public HTTPS Substrate JSON-RPC ladder",
+    description: "Substrate / ink! smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=substrate, scaffolds and runs cargo test on ink! contracts against the direct public HTTPS Substrate JSON-RPC ladder",
     color: "pink",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-substrate"]),
     prompt_body_filename: "evaluator-substrate.md",
@@ -550,7 +616,7 @@ const EVALUATOR_ROLES = Object.freeze({
   "evaluator-cosmwasm": Object.freeze({
     role_id: "evaluator-cosmwasm",
     name: "evaluator-cosmwasm-agent",
-    description: "CosmWasm smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the direct public HTTPS CosmWasm REST ladder",
+    description: "CosmWasm smart-contract vulnerability evaluator — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the direct public HTTPS CosmWasm REST ladder",
     color: "yellow",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-cosmwasm"]),
     prompt_body_filename: "evaluator-cosmwasm.md",

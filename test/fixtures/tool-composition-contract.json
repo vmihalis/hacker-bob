@@ -1946,7 +1946,7 @@
     },
     {
       "name": "bob_record_candidate_claim",
-      "description": "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Survives context rotation.",
+      "description": "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Reportable web findings must record request_method, injection_point, and auth_profile (use unauthenticated when no authenticated session applies); GraphQL findings must also record graphql_operation and graphql_resolver. Survives context rotation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1971,6 +1971,32 @@
           },
           "endpoint": {
             "type": "string"
+          },
+          "request_method": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "HTTP request method for continuity. Required on every new reportable web finding and normalized to GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE."
+          },
+          "injection_point": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+            "description": "Structured attacker-controlled input location, for example path:order_id, query:returnUrl, header:X-Tenant, or json:user.id. Required on every new reportable web finding."
+          },
+          "graphql_operation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+            "description": "GraphQL operation name. Required together with graphql_resolver for every new reportable GraphQL finding."
+          },
+          "graphql_resolver": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+            "description": "GraphQL resolver path, for example Mutation.updateUserRole or Query.invoice. Required together with graphql_operation for every new reportable GraphQL finding."
           },
           "file_path": {
             "type": "string",
@@ -2016,7 +2042,9 @@
             "type": "string"
           },
           "auth_profile": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "description": "Authentication context used for the proof. Required on every new reportable web or GraphQL finding; use unauthenticated when no authenticated session applies."
           },
           "mechanism_id": {
             "type": "string",
@@ -5472,7 +5500,7 @@
     },
     {
       "name": "bob_finalize_report",
-      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Append-only; subsequent calls produce a new row with the current report content hash so re-finalize after a report.md edit is detectable in the ledger.",
+      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Completion is immutable once the hash-verified finalization receipt is written; identical redelivery returns that receipt without appending another snapshot. Hosted projection is performed by the trusted runner parent after this tool completes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -12487,7 +12515,7 @@
     },
     {
       "name": "bob_record_candidate_claim",
-      "description": "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Survives context rotation.",
+      "description": "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Reportable web findings must record request_method, injection_point, and auth_profile (use unauthenticated when no authenticated session applies); GraphQL findings must also record graphql_operation and graphql_resolver. Survives context rotation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -12512,6 +12540,32 @@
           },
           "endpoint": {
             "type": "string"
+          },
+          "request_method": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "HTTP request method for continuity. Required on every new reportable web finding and normalized to GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE."
+          },
+          "injection_point": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+            "description": "Structured attacker-controlled input location, for example path:order_id, query:returnUrl, header:X-Tenant, or json:user.id. Required on every new reportable web finding."
+          },
+          "graphql_operation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+            "description": "GraphQL operation name. Required together with graphql_resolver for every new reportable GraphQL finding."
+          },
+          "graphql_resolver": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+            "description": "GraphQL resolver path, for example Mutation.updateUserRole or Query.invoice. Required together with graphql_operation for every new reportable GraphQL finding."
           },
           "file_path": {
             "type": "string",
@@ -12557,7 +12611,9 @@
             "type": "string"
           },
           "auth_profile": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "description": "Authentication context used for the proof. Required on every new reportable web or GraphQL finding; use unauthenticated when no authenticated session applies."
           },
           "mechanism_id": {
             "type": "string",
@@ -17070,7 +17126,7 @@
     },
     {
       "name": "bob_finalize_report",
-      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Append-only; subsequent calls produce a new row with the current report content hash so re-finalize after a report.md edit is detectable in the ledger.",
+      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Completion is immutable once the hash-verified finalization receipt is written; identical redelivery returns that receipt without appending another snapshot. Hosted projection is performed by the trusted runner parent after this tool completes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -17094,7 +17150,11 @@
       "session_artifacts_written": [
         "report-snapshots.jsonl",
         "frontier-events.jsonl",
-        "pipeline-events.jsonl"
+        "pipeline-events.jsonl",
+        "finding-artifact.json",
+        "finding-artifact.sha256",
+        "finalization-receipt.json",
+        "finalization-receipt.sha256"
       ],
       "capability_id": null,
       "scope_url_fields": [],
@@ -26715,7 +26775,11 @@
         "session_artifacts_written": [
           "report-snapshots.jsonl",
           "frontier-events.jsonl",
-          "pipeline-events.jsonl"
+          "pipeline-events.jsonl",
+          "finding-artifact.json",
+          "finding-artifact.sha256",
+          "finalization-receipt.json",
+          "finalization-receipt.sha256"
         ],
         "capability_id": null,
         "scope_url_fields": [],

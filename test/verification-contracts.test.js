@@ -146,6 +146,8 @@ function findingInput(domain, overrides = {}) {
     severity: "high",
     cwe: "CWE-639",
     endpoint: "https://victim.example/api/billing/123",
+    request_method: "GET",
+    injection_point: "path:billing_id",
     description: "Changing the billing profile identifier returns another tenant's billing metadata.",
     proof_of_concept: "GET /api/billing/123 as a different tenant returns private billing fields.",
     response_evidence: "Response included another tenant billing_profile_id and billing email.",

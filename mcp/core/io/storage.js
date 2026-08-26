@@ -89,11 +89,11 @@ function readJsonFile(filePath, options = {}) {
   return JSON.parse(readFileUtf8(filePath, options));
 }
 
-function writeFileAtomic(filePath, content) {
+function writeFileAtomic(filePath, content, { mode } = {}) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = siblingTempPath(filePath);
   try {
-    fs.writeFileSync(tempPath, content);
+    fs.writeFileSync(tempPath, content, mode == null ? undefined : { mode });
     fs.renameSync(tempPath, filePath);
   } finally {
     try { fs.unlinkSync(tempPath); } catch {}

@@ -75,6 +75,8 @@ function baseFinding(domain, overrides = {}) {
     severity: "medium",
     cwe: "CWE-639",
     endpoint: `https://${domain}/api/records/1`,
+    request_method: "GET",
+    injection_point: "path:record_id",
     description: "Changing the record identifier returns another tenant payload.",
     proof_of_concept: "GET /api/records/1 as the attacker tenant returns private fields.",
     response_evidence: "Response leaked another tenant identifier and email.",
@@ -92,6 +94,20 @@ function baseFinding(domain, overrides = {}) {
     ...overrides,
   };
 }
+
+test("write path requires continuity fields for reportable web findings", () => {
+  withTempHome(() => {
+    const domain = "continuity-required.example.com";
+    assert.throws(
+      () => recordCandidateClaimTool.handler(baseFinding(domain, {
+        request_method: undefined,
+        injection_point: undefined,
+        auth_profile: undefined,
+      })),
+      /reportable web finding requires continuity fields: request_method, injection_point, auth_profile/,
+    );
+  });
+});
 
 test("write path requires derivable cvss_inputs for medium/high/critical findings", () => {
   for (const severity of ["medium", "high", "critical"]) {

@@ -8,7 +8,7 @@
     "packages/bob-instrument-chameleon-worker",
     "packages/bob-instrument-chameleon-worker-runtime"
   ],
-  "description": "Portable autonomous bug bounty evaluating MCP framework with host adapters",
+  "description": "Portable autonomous security-evaluation MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -85,6 +85,7 @@
     "mcp/domains/**/*.js",
     "mcp/tools/**/*.js",
     "mcp/fuzz/**/*.js",
+    "infra/aws/hacker-bob-stack/finding-artifact.schema.json",
     "mcp/fuzz/bob-multitu-build.sh",
     "mcp/offensive-image.json",
     "packages/bob-artifact-vault/package.json",
@@ -129,6 +130,7 @@
     "check:syntax": "node --check bin/hacker-bob.js && node --check scripts/install.js && node --check scripts/lifecycle.js && node --check scripts/run-physical-package-tests.js && node --check scripts/lib/lifecycle-custodian-contract.js && node --check scripts/lib/lifecycle-custodian.js && node --check scripts/lib/optional-provider-registry.js && node --check scripts/lib/optional-provider-lifecycle.js && node --check scripts/lib/physical-package-test-matrix.js && node --check scripts/lib/static-runtime-inspection.js && find mcp .claude/hooks packages/bob-artifact-vault packages/bob-instrument-broker packages/bob-instrument-contracts packages/bob-instrument-chameleon packages/bob-instrument-chameleon-worker-runtime packages/bob-instrument-deterministic packages/bob-instrument-native-prebuild-trust packages/bob-instrument-principal-acl-darwin -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
     "check:agent-tools": "node scripts/generate-agent-tools.js --check",
     "check:authority-inventory": "node scripts/authority-inventory.js --check",
+    "update:tool-composition-contract": "node scripts/update-tool-composition-contract.js",
     "check:skill": "node scripts/generate-hacker-bob-skill.js --check",
     "check:codex-skill": "node scripts/generate-codex-skills.js --check",
     "check:kimi-skill": "node scripts/generate-kimi-roles.js --check",
@@ -147,8 +149,10 @@
     "check:no-phase-artifacts": "node scripts/check-no-phase-artifacts.js",
     "check:module-boundaries": "node scripts/check-module-boundaries.js",
     "check:plane-physical": "node scripts/check-plane-physical.js",
+    "check:runner-codex-profile": "npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefix infra/runner/codex && node --test test/runner-codex.test.js",
     "build:bob-diff-review": "npm run build --workspace @bobnetsec/bob-diff-review",
     "test:mcp": "npm run build:bob-diff-review && node scripts/run-mcp-tests.js",
+    "update:mcp-test-manifest": "node scripts/update-mcp-test-manifest.js",
     "measure:idor": "node scripts/measure-idor-oracle.js",
     "test:bob-diff-review": "npm run test --workspace @bobnetsec/bob-diff-review",
     "test:prompts": "npm run check:agent-tools && npm run check:skill && npm run check:codex-skill && npm run check:kimi-skill && npm run check:settings && npm run check:write-guard-tables && npm run check:write-guard-mirror && npm run check:audit-graded-writers && npm run check:mcp-owned-basename-inventory && npm run check:skill-protocol-coherence && npm run check:skill-runtime-constraint-drift && npm run check:skill-scheduler-coherence && npm run check:stigmergy-coherence && npm run check:invariant-registry && npm run check:no-phase-artifacts && npm run check:module-boundaries && node --test test/prompt-contracts.test.js test/report-format-facts.test.js test/skill-protocol-coherence.test.js test/skill-runtime-constraint-drift.test.js test/skill-scheduler-coherence.test.js test/scheduler-preconditions-shape.test.js test/wave-handoff-store-merge-snapshot.test.js test/session-cap.test.js test/report-finalize-remediation.test.js test/stigmergic-consumers-shape.test.js test/stigmergy-coherence.test.js test/single-spawner-topology.test.js test/invariant-registry-orphan.test.js test/module-boundaries.test.js test/write-guard-tables-coherence.test.js test/no-phase-artifacts.test.js && npm run check:producer-coherence",
@@ -180,6 +184,7 @@
     "@aws-sdk/client-s3": "^3.709.0",
     "@aws-sdk/client-securityhub": "^3.709.0",
     "@babel/parser": "^7.29.7",
+    "ajv": "^8.20.0",
     "proxy-agent": "^8.0.1",
     "psl": "^1.15.0",
     "ws": "^8.18.0"

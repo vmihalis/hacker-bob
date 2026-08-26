@@ -71,6 +71,8 @@ ENV PATH=/opt/agentcore-venv/bin:$PATH
 # --- hacker-bob engine (UNMODIFIED) ---
 WORKDIR /opt/hacker-bob
 COPY mcp/ ./mcp/
+COPY infra/aws/hacker-bob-stack/finding-artifact.schema.json ./infra/aws/hacker-bob-stack/finding-artifact.schema.json
+COPY packages/bob-instrument-contracts/ ./packages/bob-instrument-contracts/
 # Schema mirrors packages/bob-diff-review/src/bob-runner.ts buildMcpConfig().
 RUN printf '{"mcpServers":{"hacker-bob":{"command":"node","args":["/opt/hacker-bob/mcp/server.js"]}}}' > /opt/hacker-bob/mcp/agentcore-mcp-config.json
 COPY .claude/ ./.claude/

@@ -111,7 +111,7 @@ function seedVerdictBackedFinding(domain) {
   fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
   recordFindingTool.handler({
     target_domain: domain, title: "IDOR on billing profile", severity: "medium", cwe: "CWE-639",
-    endpoint: "https://victim.example/api/billing/1", description: "Tenant boundary allows cross-account view",
+    endpoint: "https://victim.example/api/billing/1", request_method: "GET", injection_point: "path:billing_id", description: "Tenant boundary allows cross-account view",
     proof_of_concept: "GET /api/billing/1 returns another tenant payload",
     response_evidence: "Cross-tenant billing payload", impact: "Cross-tenant billing disclosure",
     validated: true, auth_profile: "attacker", surface_id: WEB_SURFACE,

@@ -103,7 +103,7 @@ function seedOffensiveRow(domain, runId) {
 function recordKeyedFinding(domain, row) {
   recordFindingTool.handler({
     target_domain: domain, title: "IDOR on billing profile", severity: "medium", cwe: "CWE-639",
-    endpoint: row.target, description: "Tenant boundary allows cross-account view",
+    endpoint: row.target, request_method: "GET", injection_point: "path:billing_id", description: "Tenant boundary allows cross-account view",
     proof_of_concept: "GET /api/billing/1 returns another tenant payload",
     response_evidence: "Cross-tenant billing payload", impact: "Cross-tenant billing disclosure",
     validated: true, auth_profile: "attacker", surface_id: KEYED_SURFACE,
@@ -128,7 +128,7 @@ function recordKeyedFinding(domain, row) {
 function recordOsintFinding(domain) {
   recordFindingTool.handler({
     target_domain: domain, title: "Sensitive endpoint indexed publicly", severity: "medium", cwe: "CWE-200",
-    endpoint: `https://${domain}/exposed/config`, description: "A config endpoint is reachable without auth",
+    endpoint: `https://${domain}/exposed/config`, request_method: "GET", injection_point: "path:config", description: "A config endpoint is reachable without auth",
     proof_of_concept: "GET /exposed/config returns service metadata",
     response_evidence: "Public service metadata payload", impact: "Public information disclosure",
     validated: true, auth_profile: "anonymous", surface_id: OSINT_SURFACE,

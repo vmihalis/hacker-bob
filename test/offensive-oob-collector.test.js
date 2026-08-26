@@ -190,6 +190,24 @@ test("mint: writes ONE in-scope binding + returns benign token payloads + no off
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("mint: rejects random hex that resembles payment-card PII before persisting a token", () => withTempHome(async () => {
+  const domain = "oob-mint-pii-safe.example.test";
+  setupSession(domain);
+  const samples = [
+    "4242424242424242abcdefabcdefabcd",
+    "abcdefabcdefabcdefabcdefabcdefab",
+    "fedcbafedcbafedcbafedcbafedcbafe",
+  ];
+  let sampleIndex = 0;
+  const randomBytes = () => Buffer.from(samples[sampleIndex++], "hex");
+
+  const result = await oobMint(mintArgs(domain), { config: CONFIG, randomBytes });
+  assert.equal(result.minted, true);
+  assert.equal(sampleIndex, 3, "PII-shaped first sample must be rejected and resampled");
+  const { binding } = resolveBinding(domain, result.token_handle);
+  assert.equal(binding.token, `oob${samples[2]}`);
+}));
+
 test("mint: refuses an ambiguous multi-endpoint surface (single-endpoint hard scope)", () => withTempHome(async () => {
   const domain = "oob-multi.example.test";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));

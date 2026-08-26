@@ -373,6 +373,14 @@ function readJournalEvents(raw) {
   return text.trimEnd().split("\n").map((line) => line.split("\t")[3]);
 }
 
+function readCompleteJournalEvents(raw) {
+  const text = fs.readFileSync(raw.journal, "utf8");
+  const completeEnd = text.lastIndexOf("\n");
+  if (completeEnd < 0) return [];
+  return text.slice(0, completeEnd).split("\n")
+    .map((line) => line.split("\t")[3]);
+}
+
 async function assertSingleCustodyCleanup(raw, fields, expectedReason) {
   assert.equal(fields[5], String(raw.child.pid));
   if (Array.isArray(expectedReason)) {
@@ -409,7 +417,12 @@ async function assertSingleCustodyCleanup(raw, fields, expectedReason) {
 async function terminateBlockedWatchdog(raw, pids) {
   raw.child.kill("SIGKILL");
   const exit = await waitForChildExit(raw.child, 2000);
-  assert.deepEqual(exit, { code: null, signal: "SIGKILL" });
+  // Exit 87 is the native fail-closed custody-admission outcome.
+  assert.ok(
+    (exit.code === null && exit.signal === "SIGKILL") ||
+      (exit.code === 87 && exit.signal === null),
+    `unexpected watchdog exit: ${JSON.stringify(exit)}`,
+  );
   await waitForProcessGone(pids.watcherPid);
   await waitForProcessGone(pids.custodianPid);
   await waitForProcessGone(pids.cleanupPid);
@@ -826,7 +839,9 @@ test("control close immediately redeems custody despite blocked fsync or READY o
       "control_channel_closed",
     );
     assert.ok(elapsedMs < 1000, `behavior=${behavior} elapsed=${elapsedMs}`);
-    assert.ok(readJournalEvents(raw).every((event) => event === "watchdog_started"));
+    // The watcher may still be inside its first regular-file write here.
+    assert.ok(readCompleteJournalEvents(raw)
+      .every((event) => event === "watchdog_started"));
     await terminateBlockedWatchdog(raw, pids);
   }
 });

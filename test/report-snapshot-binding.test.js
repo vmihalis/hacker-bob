@@ -12,10 +12,11 @@
 // The five-hash binding is the realization of the C.7 ReportSnapshot ledger:
 // a downstream consumer can read one snapshot row, hash the on-disk artifacts,
 // and prove the report was finalized over an exact CLAIM_FREEZE → VERIFY →
-// GRADE → REPORT chain. Re-running finalize after a report.md mutation
-// produces a new row with a different report_content_hash; a missing
-// upstream (no freeze / no final verification / no grade verdict / no
-// evidence pack) refuses finalization.
+// GRADE → REPORT chain. A completed receipt makes finalization immutable:
+// identical redelivery does not append another snapshot. Hosted projection is
+// performed later by the trusted runner parent.
+// A missing upstream (no freeze / no final verification / no grade verdict /
+// no evidence pack) refuses finalization.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -25,6 +26,7 @@ const os = require("os");
 const path = require("path");
 
 const finalizeReportTool = require("../mcp/tools/finalize-report.js");
+const runnerEntrypoint = require("../infra/runner/entrypoint.js");
 const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   _setApprovalBackendForTest,
@@ -44,6 +46,9 @@ const {
   loadGradeVerdictHash,
 } = require("../mcp/core/report-finalize.js");
 const {
+  readFinalizationReceipt,
+} = require("../mcp/finalization-receipt.js");
+const {
   normalizeProofBundlesDocument,
 } = require("../mcp/core/proof-bundle.js");
 const {
@@ -60,6 +65,7 @@ const {
 } = require("../mcp/core/frontier/frontier-events.js");
 const {
   evidencePackPaths,
+  findingArtifactPath,
   gradeArtifactPaths,
   proofBundlePaths,
   repoCommandRunsJsonlPath,
@@ -99,6 +105,32 @@ async function withTempHome(fn) {
     process.env.HOME = previousHome;
     resetMaterializationDebounce();
     fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function withProjectionEnvironment(runSlug, fn) {
+  const values = {
+    BOB_PROJECTION_URL: "https://projection.example/api/findings",
+    BOB_RUN_SLUG: runSlug,
+    BOB_REPORT_SLUG: `${runSlug}-report`,
+    BOB_PROJECTION_KEY: "P".repeat(43),
+    RUNNER_SECRET: "runner-shared-secret",
+    BOB_RUN_KIND: "assessment",
+    BOB_RETEST_OF: undefined,
+  };
+  const previous = {};
+  for (const [key, value] of Object.entries(values)) {
+    previous[key] = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 
@@ -217,6 +249,8 @@ function recordFinding(domain, overrides = {}) {
     severity: overrides.severity || "high",
     cwe: overrides.cwe || "CWE-639",
     endpoint: overrides.endpoint || "https://victim.example/api/billing/1",
+    request_method: overrides.request_method || "GET",
+    injection_point: overrides.injection_point || "path:billing_id",
     description: overrides.description || "Tenant boundary allows cross-account view",
     proof_of_concept: overrides.poc || "GET /api/billing/1 returns another tenant payload",
     response_evidence: overrides.response_evidence || "Cross-tenant billing payload",
@@ -277,6 +311,27 @@ function gradeFindingInput(findingId = "F-1", overrides = {}) {
 // stamp so the C.7 bob_finalize_report resolver finds the four-hash chain.
 // Finally writes report.md. Returns nothing; tests read the on-disk state
 // via the public resolvers.
+function upgradeFinalVerificationToV2(domain) {
+  const finalPath = verificationRoundPaths(domain, "final").json;
+  const v1FinalDocument = JSON.parse(fs.readFileSync(finalPath, "utf8"));
+  const freeze = readCurrentClaimFreeze(domain);
+  const v2FinalDocument = {
+    version: 2,
+    target_domain: domain,
+    round: "final",
+    notes: null,
+    verification_attempt_id: `attempt-${freeze.freeze_id}`,
+    verification_snapshot_hash: freeze.freeze_hash,
+    round_profile: "final",
+    adjudication_plan_hash: crypto.createHash("sha256")
+      .update(`adjudication:${freeze.freeze_id}`)
+      .digest("hex"),
+    results: v1FinalDocument.results,
+  };
+  v2FinalDocument.final_verification_hash = finalVerificationHash(v2FinalDocument);
+  fs.writeFileSync(finalPath, JSON.stringify(v2FinalDocument, null, 2) + "\n");
+}
+
 function drivePipelineToReportWritten(domain) {
   seedSessionState(domain);
   recordFinding(domain);
@@ -323,32 +378,33 @@ function drivePipelineToReportWritten(domain) {
     findings: [gradeFindingInput("F-1")],
   }));
 
-  // C.7 requires a V2-shape final round bound to the claim freeze (the
-  // final_verification_hash field is only stamped on V2 final rounds). We
-  // upgrade the V1 final round in-place on disk: same results, V2 envelope,
-  // freeze-derived snapshot binding. The bob_finalize_report resolver only
-  // reads final_verification_hash from the document; nothing else in the
-  // post-write pipeline reads this artifact between now and finalize.
-  const finalPath = verificationRoundPaths(domain, "final").json;
-  const v1FinalDocument = JSON.parse(fs.readFileSync(finalPath, "utf8"));
-  const freeze = readCurrentClaimFreeze(domain);
-  const v2FinalDocument = {
-    version: 2,
-    target_domain: domain,
-    round: "final",
-    notes: null,
-    verification_attempt_id: `attempt-${freeze.freeze_id}`,
-    verification_snapshot_hash: freeze.freeze_hash,
-    round_profile: "final",
-    adjudication_plan_hash: crypto.createHash("sha256")
-      .update(`adjudication:${freeze.freeze_id}`)
-      .digest("hex"),
-    results: v1FinalDocument.results,
-  };
-  v2FinalDocument.final_verification_hash = finalVerificationHash(v2FinalDocument);
-  fs.writeFileSync(finalPath, JSON.stringify(v2FinalDocument, null, 2) + "\n");
+  // C.7 requires a V2 final round bound to the claim freeze.
+  upgradeFinalVerificationToV2(domain);
 
   fs.writeFileSync(reportMarkdownPath(domain), "# Bob Report\n\n## Findings\n\n- F-1: IDOR\n");
+}
+
+function driveCleanPipelineToReportWritten(domain) {
+  seedSessionState(domain);
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-05-27T01:00:00.000Z") });
+  for (const round of ["brutalist", "balanced", "final"]) {
+    writeVerificationRound({
+      target_domain: domain,
+      round,
+      notes: null,
+      results: [],
+    });
+  }
+  writeEvidencePacks({ target_domain: domain, packs: [] });
+  withIsolatedSigner(() => writeGradeVerdict({
+    target_domain: domain,
+    verdict: "SKIP",
+    total_score: 0,
+    findings: [],
+    feedback: "No reportable findings survived verification.",
+  }));
+  upgradeFinalVerificationToV2(domain);
+  fs.writeFileSync(reportMarkdownPath(domain), "# Bob Report\n\nNo reportable findings.\n");
 }
 
 function sha256OfFile(filePath) {
@@ -456,6 +512,11 @@ test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pi
     assert.match(response.evidence_hash, HASH_HEX_RE);
     assert.match(response.grade_verdict_hash, HASH_HEX_RE);
     assert.match(response.report_content_hash, HASH_HEX_RE);
+    const completed = readFinalizationReceipt(domain);
+    assert.equal(completed.receipt.artifact.emitted, true);
+    assert.equal(completed.receipt.projection.required, false);
+    assert.equal(completed.receipt.projection.succeeded, false);
+    assert.deepEqual(completed.receipt.consoleReport.findings, []);
 
     const snapshots = readReportSnapshots(domain);
     assert.equal(snapshots.length, 1, "report-snapshots.jsonl must hold exactly one row after a single finalize");
@@ -488,10 +549,91 @@ test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pi
   });
 });
 
+test("MCP finalization stays network-inert under hosted environment and replays locally", async () => {
+  await withTempHome(async () => {
+    const domain = "projection-success.example.com";
+    const runSlug = "run-projection-success";
+    drivePipelineToReportWritten(domain);
+    const first = withProjectionEnvironment(runSlug, () => (
+      JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
+    ));
+    const stored = readFinalizationReceipt(domain);
+    assert.equal(stored.receipt.runSlug, runSlug);
+    assert.equal(stored.receipt.reportSlug, `${runSlug}-report`);
+    assert.deepEqual(stored.receipt.projection, {
+      required: false,
+      succeeded: false,
+      duplicate: false,
+      projected: 0,
+      reopened: 0,
+      closed: 0,
+    });
+    assert.equal(stored.receipt.artifact.emitted, true);
+    assert.equal(stored.receipt.artifact.findingCount, 1);
+    assert.deepEqual(stored.receipt.consoleReport.findings, []);
+    assert.deepEqual(first.finalization_receipt, stored.receipt);
+
+    let projectedRequest = null;
+    const hostedReceipt = await withProjectionEnvironment(runSlug, () => (
+      runnerEntrypoint.projectHostedFindings({
+        runSlug,
+        targetDomain: domain,
+        kind: "assessment",
+        retestOf: [],
+      }, stored.receipt, async (request) => {
+        projectedRequest = request;
+        return {
+          ok: true,
+          status: 200,
+          result: { projected: 1, reopened: 0, closed: 0, duplicate: false },
+        };
+      })
+    ));
+    assert.equal(projectedRequest.secret, "runner-shared-secret");
+    assert.equal(projectedRequest.payload.projectionKey, "P".repeat(43));
+    assert.equal(hostedReceipt.projection.required, true);
+    assert.equal(hostedReceipt.projection.succeeded, true);
+    assert.equal(hostedReceipt.consoleReport.findings.length, 1);
+
+    const replay = withProjectionEnvironment(runSlug, () => (
+      JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
+    ));
+    assert.equal(replay.replayed, true);
+    assert.equal(readReportSnapshots(domain).length, 1);
+
+    withProjectionEnvironment("different-run", () => {
+      assert.throws(
+        () => finalizeReportTool.handler({ target_domain: domain }),
+        /completed finalization receipt conflicts with current identity/,
+      );
+    });
+  });
+});
+
+test("clean hosted-shaped finalization writes an honest local zero-finding receipt", async () => {
+  await withTempHome(async () => {
+    const domain = "projection-clean.example.com";
+    const runSlug = "run-projection-clean";
+    driveCleanPipelineToReportWritten(domain);
+    const response = withProjectionEnvironment(runSlug, () => (
+      JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
+    ));
+    const stored = readFinalizationReceipt(domain);
+    assert.equal(response.artifact.emitted, false);
+    assert.deepEqual(stored.receipt.artifact, {
+      emitted: false,
+      sha256: null,
+      findingCount: 0,
+    });
+    assert.deepEqual(stored.receipt.consoleReport.findings, []);
+    assert.equal(stored.receipt.projection.required, false);
+    assert.equal(fs.existsSync(findingArtifactPath(domain)), false);
+  });
+});
+
 // fx-gate-hardening (P1-3): bob_finalize_report must apply the SAME GRADE -> REPORT
-// human-approval blocker gateGradeToReport enforces at the bob_advance_session transition --
-// a defense-in-depth re-check for the append-only/re-finalizable nature of this tool (its own
-// description: "subsequent calls produce a new row ... re-finalize after a report.md edit").
+// human-approval blocker gateGradeToReport enforces at the bob_advance_session transition.
+// This is a defense-in-depth check before the immutable completion receipt is created.
 // Both branches (blocked when BOB_AGENTCORE=1 with no valid artifact; a complete no-op when
 // BOB_AGENTCORE is unset) are asserted here against the exact same drivePipelineToReportWritten
 // pipeline the unguarded test above already proved succeeds.
@@ -711,42 +853,30 @@ test("bob_finalize_report refuses proof bundles stale against current final veri
   });
 });
 
-test("re-finalize after mutating report.md produces a new row with a different report_content_hash", async () => {
+test("completed receipt replays an exact report and rejects content mutation", async () => {
   await withTempHome(async () => {
     const domain = "remutate.example.com";
     drivePipelineToReportWritten(domain);
 
     const firstResponse = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
-    const firstRow = readReportSnapshots(domain)[0];
+    const [firstRow] = readReportSnapshots(domain);
     assert.equal(firstRow.report_content_hash, firstResponse.report_content_hash);
 
-    // Manually poke report.md (overwrite with new content).
-    fs.writeFileSync(reportMarkdownPath(domain), "# Bob Report — revised\n\nSecond pass.\n");
-
     const secondResponse = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
-    const rows = readReportSnapshots(domain);
-    assert.equal(rows.length, 2, "re-finalize must append a second snapshot row");
-    const secondRow = rows[1];
-
-    assert.notEqual(
-      secondRow.report_content_hash,
-      firstRow.report_content_hash,
-      "re-finalize after report.md mutation must change report_content_hash",
-    );
-    assert.equal(
-      secondRow.report_content_hash,
-      sha256OfFile(reportMarkdownPath(domain)),
-      "the new row must bind to the new report.md content",
+    assert.equal(secondResponse.replayed, true);
+    assert.equal(readReportSnapshots(domain).length, 1);
+    assert.deepEqual(
+      secondResponse.finalization_receipt,
+      firstResponse.finalization_receipt,
     );
 
-    // The upstream four hashes are stable across the re-finalize because no
-    // upstream artifact changed; only the report content moved.
-    assert.equal(secondRow.claim_freeze_hash, firstRow.claim_freeze_hash);
-    assert.equal(secondRow.final_verification_hash, firstRow.final_verification_hash);
-    assert.equal(secondRow.evidence_hash, firstRow.evidence_hash);
-    assert.equal(secondRow.grade_verdict_hash, firstRow.grade_verdict_hash);
-
-    assert.equal(secondResponse.report_content_hash, secondRow.report_content_hash);
+    fs.writeFileSync(reportMarkdownPath(domain), "# Bob Report — revised\n\nSecond pass.\n");
+    assert.throws(
+      () => finalizeReportTool.handler({ target_domain: domain }),
+      /finalization receipt conflicts with current identity: reportContentHash/,
+    );
+    assert.equal(readReportSnapshots(domain).length, 1);
+    assert.notEqual(firstRow.report_content_hash, sha256OfFile(reportMarkdownPath(domain)));
   });
 });
 

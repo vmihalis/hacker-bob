@@ -197,21 +197,42 @@ void DisarmProcessDeadline() {
   setitimer(ITIMER_REAL, &timer, nullptr);
 }
 
-bool BuildChildDeadline(const AbsoluteDeadline& outer,
-                        AbsoluteDeadline* child) {
+bool BuildChildDeadlineAt(const AbsoluteDeadline& outer, uint64_t now,
+                          AbsoluteDeadline* child) {
   uint64_t remaining_ns = 0;
-  if (!Remaining(outer, &remaining_ns)) return false;
+  if (!RemainingAt(outer, now, &remaining_ns)) return false;
   // Every nested custodian must finish early enough for its parent to reap it,
   // persist and read back evidence, and publish the terminal receipt inside the
-  // signed outer bound. A fixed 10 ms reserve made that hierarchy scheduler-
-  // dependent on hosted ARM runners.
+  // signed outer bound. Capping this reserve made the two-level hierarchy
+  // scheduler-dependent on hosted ARM runners for longer cleanup windows.
   uint64_t reserve = remaining_ns / 3;
-  if (reserve > 100000000ULL) reserve = 100000000ULL;
   if (reserve < 1000000ULL && remaining_ns > 1000000ULL) reserve = 1000000ULL;
   if (reserve == 0 || reserve >= remaining_ns) return false;
   child->expires = outer.expires - reserve;
   child->valid = true;
   return true;
+}
+
+bool BuildChildDeadline(const AbsoluteDeadline& outer,
+                        AbsoluteDeadline* child) {
+  return BuildChildDeadlineAt(outer, MonotonicNanoseconds(), child);
+}
+
+int ChildDeadlineHelperSelftest() {
+  const uint64_t now = 100000000ULL;
+  const AbsoluteDeadline outer = {1000000000ULL, true};
+  AbsoluteDeadline custody;
+  AbsoluteDeadline cleanup;
+  AbsoluteDeadline invalid = {1000000000ULL, false};
+  if (!BuildChildDeadlineAt(outer, now, &custody) || !custody.valid ||
+      custody.expires != 700000000ULL ||
+      !BuildChildDeadlineAt(custody, now, &cleanup) || !cleanup.valid ||
+      cleanup.expires != 500000000ULL ||
+      BuildChildDeadlineAt(invalid, now, &cleanup) ||
+      BuildChildDeadlineAt(outer, outer.expires, &cleanup)) {
+    return 67;
+  }
+  return 0;
 }
 
 bool BuildHandoffStallFixtureDeadlines(
@@ -2727,7 +2748,12 @@ int WatchdogMain() {
   }
   uint64_t deadline =
       arm_issued + config.deadman_ms * kNanosecondsPerMillisecond;
-  const AbsoluteDeadline arm_write_deadline = {deadline, true};
+  // Bound this exchange by the earlier absolute deadline.
+  const AbsoluteDeadline arm_write_deadline = {
+      custody.startup_deadline.valid &&
+              deadline < custody.startup_deadline.expires
+          ? deadline : custody.startup_deadline.expires,
+      custody.startup_deadline.valid};
   std::vector<std::string> arm_acceptance;
   if (!SendCustodyArm(config, custody, custody_command_key,
                       custody_evidence_key, arm_issued, deadline,
@@ -3010,7 +3036,9 @@ int main(int argc, char** argv) {
     return CleanupWorkerMain();
   }
   if (std::strcmp(argv[1], "--deadline-helper-selftest") == 0) {
-    return DeadlineHelperSelftest();
+    const int absolute_result = DeadlineHelperSelftest();
+    return absolute_result == 0 ? ChildDeadlineHelperSelftest()
+                                : absolute_result;
   }
   if (std::strcmp(argv[1], "--child-lifecycle-selftest") == 0) {
     return ChildLifecycleSelftest();

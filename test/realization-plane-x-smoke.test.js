@@ -393,6 +393,8 @@ function driveReportSnapshotChain(domain, {
     severity: "high",
     cwe: "CWE-345",
     endpoint: `https://${domain}${promotedSurfacePath}`,
+    request_method: "POST",
+    injection_point: "header:authorization",
     description: "JWT.sub is trusted as the on-chain wallet identity without binding to the recovered signer.",
     proof_of_concept: "Issue JWT for victim address; replay against vault — vault accepts attacker tx.",
     response_evidence: "JWT.sub == 0xVICTIM AND recover_signer(tx) == 0xATTACKER but vault dispatched anyway.",

@@ -99,6 +99,10 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/browser-driver.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/finalization-receipt.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/finding-artifact.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/projection-client.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/projection-payload.js" "$TARGET_ABS/mcp/"
   # Mirror the installer-owned runtime trees without copying local workspace
   # dependencies such as mcp/node_modules. Keep this list aligned with
   # scripts/install.js MCP_RUNTIME_TREE_NAMES.

@@ -82,6 +82,8 @@ function seedStandaloneWebFinding(domain, { severity = "high" } = {}) {
     severity,
     cwe: "CWE-639",
     endpoint: "https://victim.example/api/billing/1",
+    request_method: "GET",
+    injection_point: "path:billing_id",
     description: "Tenant boundary allows cross-account view",
     proof_of_concept: "GET /api/billing/1 returns another tenant payload",
     response_evidence: "Cross-tenant billing payload",

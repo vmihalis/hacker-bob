@@ -20,6 +20,12 @@ const {
   printInstallSummary,
 } = require(path.join(ROOT, "scripts", "install.js"));
 const { createSafeInstallFs } = require(path.join(ROOT, "scripts", "lib", "install-fs.js"));
+const { MCP_TOP_LEVEL_RUNTIME_FILES } = require(path.join(
+  ROOT,
+  "scripts",
+  "lib",
+  "package-policy.js",
+));
 const {
   INSTALLED_FILE_OWNERSHIP_KEY,
   INSTALLED_FILE_OWNERSHIP_VERSION,
@@ -1248,7 +1254,7 @@ test("the mcp replace refuses a source below the runtime-module floor", () => {
         fs.mkdirSync(path.join(lib, runtimeTree), { recursive: true });
         fs.writeFileSync(path.join(lib, runtimeTree, "only-module.js"), "module.exports = {};\n", "utf8");
       }
-      for (const name of ["server.js", "auto-signup.js", "redaction.js", "browser-driver.js"]) {
+      for (const name of MCP_TOP_LEVEL_RUNTIME_FILES) {
         fs.copyFileSync(path.join(ROOT, "mcp", name), path.join(lib, name));
       }
     },

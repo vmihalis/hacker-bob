@@ -116,6 +116,8 @@ function baseFinding(domain, overrides = {}) {
     severity: "medium",
     cwe: "CWE-639",
     endpoint: `https://${domain}/api/records/1`,
+    request_method: "GET",
+    injection_point: "path:record_id",
     description: "Changing the record identifier returns another tenant payload.",
     proof_of_concept: "GET /api/records/1 as the attacker tenant returns private fields.",
     response_evidence: "Response leaked another tenant identifier and email.",
