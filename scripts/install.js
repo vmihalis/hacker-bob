@@ -62,10 +62,10 @@ const MAX_MCP_TOP_LEVEL_RUNTIME_FILE_BYTES = 16 * 1024 * 1024;
 const MCP_TOP_LEVEL_RUNTIME_NAME_PATTERN = /^[A-Za-z0-9._-]+\.js$/u;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_RUNTIME_DEPENDENCY_MANIFEST_BYTES = 1024 * 1024;
+// claude-agent-sdk-darwin-arm64 0.3.241 contains one 325,055,632-byte
+// executable, so the per-file ceiling needs real headroom above 256 MiB.
 const MAX_RUNTIME_DEPENDENCY_FILE_BYTES = 512 * 1024 * 1024;
 const MAX_RUNTIME_DEPENDENCY_FILES = 100_000;
-// The agent SDK ships a native Claude CLI. darwin-arm64 0.3.241 is about
-// 325 MB unpacked, so the per-file ceiling needs real headroom above 256 MB.
 // Linux installs may resolve both gnu and musl arm64 builds at about 240 MB
 // each, making the tree roughly 500 MB. Keep the aggregate graph bound as an
 // independent runaway-tree backstop with room for another platform variant.
