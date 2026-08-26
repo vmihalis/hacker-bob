@@ -266,6 +266,26 @@ test("payload parsing rejects secrets and ignores the retired payload path", () 
   delete process.env.BOB_PAYLOAD_PATH;
 });
 
+test("runtime envelope is exact, bounded, and read from stdin", async () => {
+  const runPayload = payload();
+  const envelope = {
+    schemaVersion: 1,
+    payload: runPayload,
+    projectionKey: "P".repeat(43),
+    runnerSecret: "runner-secret",
+    deepseekApiKey: "model-secret",
+    projectionUrl: "https://projection.invalid/api/findings",
+    convexUrl: "https://deployment.convex.cloud",
+  };
+  const input = new PassThrough();
+  input.end(JSON.stringify(envelope));
+  assert.deepEqual(await entrypoint.readRuntimeEnvelope(input), envelope);
+
+  const extra = new PassThrough();
+  extra.end(JSON.stringify({ ...envelope, unexpected: true }));
+  await assert.rejects(() => entrypoint.readRuntimeEnvelope(extra), /invalid shape/);
+});
+
 test("taskFor makes the kind-specific initializer the exact first Bob call", () => {
   const web = entrypoint.initialToolCall(payload());
   assert.deepEqual(web, {

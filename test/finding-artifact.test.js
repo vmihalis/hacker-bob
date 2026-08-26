@@ -181,6 +181,10 @@ test("safeRouteTemplate generalizes path ids and preserves sorted query-key plac
     "example.com/api/health",
   );
   assert.equal(
+    safeRouteTemplate("https://example.com/api/v1/checkout"),
+    "example.com/api/v1/checkout",
+  );
+  assert.equal(
     safeRouteTemplate("https://example.com:8080/api/health"),
     "example.com/api/health",
   );
@@ -223,6 +227,7 @@ test("fingerprint v1 separates continuity tuples while correlating concrete path
     sourceSurfaceType: "api",
   };
   const first = fingerprintV1(web);
+  assert.notEqual(first, fingerprintV1({ ...web, endpoint: "https://example.com/api/v1/checkout?expand=items" }));
   assert.equal(
     first,
     fingerprintV1({ ...web, endpoint: "https://example.com/api/orders/67890?expand=private" }),
@@ -470,6 +475,8 @@ test("sealed session assembles a schema-valid artifact and writes the sidecar", 
     assert.equal(artifact.findings[0].id, "F-1");
     assert.equal(artifact.findings[0].band, "high");
     assert.equal(artifact.receipt.evidenceHash, result.bundle.grade_verdict_hash);
+    const repeated = assembleFindingArtifact(DOMAIN, { findings: [FINDING] });
+    assert.deepEqual(repeated.document, artifact);
     const sidecar = fs.readFileSync(findingArtifactSidecarPath(DOMAIN), "utf8").trim();
     const expected = crypto.createHash("sha256")
       .update(fs.readFileSync(findingArtifactPath(DOMAIN)))
@@ -907,6 +914,24 @@ test("postProjection retries transient failures, fails fast on rejection, and ho
   assert.equal(oversizedSuccess.ok, false);
   assert.equal(oversizedSuccess.status, 200);
   assert.equal(oversizedSuccess.attempts, 1);
+
+  let readAttempts = 0;
+  const recoveredRead = await postProjection({
+    url: "https://projection.invalid/api/findings",
+    secret: "secret",
+    payload: { findings: [] },
+    fetchImpl: async () => {
+      readAttempts += 1;
+      if (readAttempts === 1) {
+        return { ok: true, status: 200, headers: new Headers(), text: async () => { throw new Error("socket reset"); } };
+      }
+      return new Response(JSON.stringify({ projected: 0, reopened: 0, closed: 0 }), { status: 200 });
+    },
+    maxAttempts: 2,
+    initialDelayMs: 1,
+  });
+  assert.equal(recoveredRead.ok, true);
+  assert.equal(recoveredRead.attempts, 2);
 
   let fetched = false;
   await assert.rejects(

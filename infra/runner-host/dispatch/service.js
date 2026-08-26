@@ -677,19 +677,23 @@ function minimalDockerEnvironment(hostEnvironment) {
 
 function dockerLaunchSpec(record, runnerImageUri, containerEnv, hostEnvironment = process.env) {
   const runnerEnvironment = {
-    BOB_PAYLOAD_JSON: JSON.stringify(runnerPayloadFor(record.payload)),
-    BOB_PROJECTION_KEY: record.projectionKey,
-    RUNNER_SECRET: containerEnv.RUNNER_SECRET || "",
-    DEEPSEEK_API_KEY: containerEnv.DEEPSEEK_API_KEY || "",
-    BOB_PROJECTION_URL: containerEnv.BOB_PROJECTION_URL || "",
-    BOB_CONVEX_URL: containerEnv.BOB_CONVEX_URL || "",
     BOB_RUN_SLUG: record.runSlug,
     BOB_RUN_KIND: record.kind,
     BOB_RETEST_OF: record.payload.retestOf.join(","),
     BOB_REPORT_SLUG: `${record.runSlug}-report`,
   };
+  const input = Buffer.from(JSON.stringify({
+    schemaVersion: 1,
+    payload: runnerPayloadFor(record.payload),
+    projectionKey: record.projectionKey,
+    runnerSecret: containerEnv.RUNNER_SECRET || "",
+    deepseekApiKey: containerEnv.DEEPSEEK_API_KEY || "",
+    projectionUrl: containerEnv.BOB_PROJECTION_URL || "",
+    convexUrl: containerEnv.BOB_CONVEX_URL || "",
+  }), "utf8");
   const args = [
     "run",
+    "-i",
     "--rm",
     "--pull=never",
     "--read-only",
@@ -697,12 +701,12 @@ function dockerLaunchSpec(record, runnerImageUri, containerEnv, hostEnvironment 
     "--security-opt", "no-new-privileges:true",
     "--user", "65532:65532",
     "--pids-limit", "512",
-    "--memory", "1536m",
-    "--memory-swap", "1536m",
+    "--memory", "3g",
+    "--memory-swap", "3g",
     "--cpus", "2",
     "--shm-size", "512m",
-    "--tmpfs", "/workspace:rw,nosuid,nodev,size=1g,uid=65532,gid=65532,mode=0700",
-    "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=1777",
+    "--tmpfs", "/workspace:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=0700",
+    "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,uid=65532,gid=65532,mode=1777",
     "--name", `bob-run-${record.runSlug}`,
     "--label", `bob.dispatch.run-id=${record.runId}`,
     "--label", `bob.dispatch.run-slug=${record.runSlug}`,
@@ -717,6 +721,7 @@ function dockerLaunchSpec(record, runnerImageUri, containerEnv, hostEnvironment 
       ...minimalDockerEnvironment(hostEnvironment),
       ...runnerEnvironment,
     },
+    input,
   };
 }
 
@@ -810,6 +815,7 @@ function createService({
   killFn = null,
   inspectContainerFn = null,
   waitContainerFn = null,
+  followContainerLogsFn = null,
   removeContainerFn = null,
   prepareRepositoryFn = null,
   cleanupRepositoryFn = null,
@@ -920,10 +926,16 @@ function createService({
     if (ledgerRows >= ledgerCompactRows) compactLedger();
   }
 
-  const defaultSpawn = (record, launch) => spawnProcessFn("docker", launch.args, {
-    env: launch.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const defaultSpawn = (record, launch) => {
+    const child = spawnProcessFn("docker", launch.args, {
+      env: launch.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin?.once("error", () => {});
+    child.stdin?.end(launch.input);
+    launch.input.fill(0);
+    return child;
+  };
   const defaultKill = (record) => spawnSyncFn("docker", ["kill", `bob-run-${record.runSlug}`], {
     env: minimalDockerEnvironment(process.env),
     stdio: "ignore",
@@ -1050,6 +1062,11 @@ function createService({
   const killRunner = killFn || defaultKill;
   const inspectContainer = inspectContainerFn || defaultInspect;
   const waitContainer = waitContainerFn || defaultWait;
+  const followContainerLogs = followContainerLogsFn || ((record) => spawnProcessFn(
+    "docker",
+    ["logs", "--follow", "--since", new Date(record.startedAt || 0).toISOString(), `bob-run-${record.runSlug}`],
+    { env: minimalDockerEnvironment(process.env), stdio: ["ignore", "pipe", "pipe"] },
+  ));
   const prepareRepo = prepareRepositoryFn || (
     (record) => prepareRepository(record, runsDir, spawnProcessFn, repositoryCommandTimeoutMs)
   );
@@ -1151,7 +1168,7 @@ function createService({
     }
   }
 
-  function attachLogCapture(record, child, logFd) {
+  function attachLogCapture(record, child, logFd, { stopChild = false } = {}) {
     const literals = [
       secret,
       containerEnv.RUNNER_SECRET,
@@ -1204,8 +1221,10 @@ function createService({
     const stderrOutput = createStreamingRedactor(literals, (text) => output.push(text));
     const onStdout = (chunk) => stdoutOutput.push(chunk);
     const onStderr = (chunk) => stderrOutput.push(chunk);
+    const onError = () => {};
     child.stdout?.on("data", onStdout);
     child.stderr?.on("data", onStderr);
+    child.on?.("error", onError);
     record.closeLog = () => {
       stdoutOutput.end();
       stderrOutput.end();
@@ -1216,6 +1235,9 @@ function createService({
       stderrOutput.clear();
       output.clear();
       literals.fill("");
+      if (stopChild) {
+        try { child.kill?.("SIGTERM"); } catch {}
+      }
       try { fs.closeSync(logFd); } catch { /* already closed */ }
       record.closeLog = null;
     };
@@ -1227,6 +1249,7 @@ function createService({
     if (record.launch?.env) {
       for (const name of Object.keys(record.launch.env)) record.launch.env[name] = "";
     }
+    if (Buffer.isBuffer(record.launch?.input)) record.launch.input.fill(0);
     record.launch = undefined;
     record.child = undefined;
   }
@@ -1387,9 +1410,19 @@ function createService({
       return;
     }
     let child;
+    let logChild;
+    let logFd = null;
     try {
+      logFd = openPrivateAppendFile(path.join(logsDir, `${record.runId}.log`));
+      logChild = followContainerLogs(record, container);
+      attachLogCapture(record, logChild, logFd, { stopChild: true });
+      logFd = null;
       child = waitContainer(record, container);
     } catch {
+      if (logFd !== null) {
+        try { fs.closeSync(logFd); } catch {}
+      }
+      record.closeLog?.();
       record.reconciliationPending = true;
       return;
     }

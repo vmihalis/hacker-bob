@@ -458,6 +458,11 @@ function readFinalizationReceipt(domain, { required = true } = {}) {
 
 function writeFinalizationReceipt(domain, value) {
   const receipt = normalizeFinalizationReceipt(value);
+  const sameCompletion = (left, right) => {
+    const { completedAt: _leftCompletedAt, ...leftStable } = left;
+    const { completedAt: _rightCompletedAt, ...rightStable } = right;
+    return JSON.stringify(leftStable) === JSON.stringify(rightStable);
+  };
   return withSessionLock(domain, () => {
     const jsonPath = finalizationReceiptPath(domain);
     const sidecarPath = finalizationReceiptSidecarPath(domain);
@@ -467,7 +472,7 @@ function writeFinalizationReceipt(domain, value) {
     }
     const existing = readFinalizationReceipt(domain, { required: false });
     if (existing) {
-      if (JSON.stringify(existing.receipt) === JSON.stringify(receipt)) {
+      if (sameCompletion(existing.receipt, receipt)) {
         return { ...existing, written: false };
       }
       throw receiptError("completed finalization receipt conflicts with the requested receipt");
@@ -478,7 +483,7 @@ function writeFinalizationReceipt(domain, value) {
     const wroteJson = writeFileExclusiveAtomic(jsonPath, content, { mode: 0o600 });
     if (!wroteJson) {
       const raced = readFinalizationReceipt(domain);
-      if (JSON.stringify(raced.receipt) === JSON.stringify(receipt)) {
+      if (sameCompletion(raced.receipt, receipt)) {
         return { ...raced, written: false };
       }
       throw receiptError("completed finalization receipt conflicts with the requested receipt");

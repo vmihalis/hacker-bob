@@ -149,6 +149,7 @@ function makeHarness(t, overrides = {}) {
     }),
     inspectContainerFn: overrides.inspectContainerFn,
     waitContainerFn: overrides.waitContainerFn,
+    followContainerLogsFn: overrides.followContainerLogsFn || (() => fakeChild()),
     removeContainerFn: overrides.removeContainerFn || (async (record) => {
       removals.push(record.runId);
       return true;
@@ -366,15 +367,20 @@ test("Docker launch keeps secrets out of argv, uses pinned pull policy, and moun
   assert.deepEqual(spec.args.slice(spec.args.indexOf("--user"), spec.args.indexOf("--user") + 2), [
     "--user", "65532:65532",
   ]);
-  assert.ok(spec.args.includes("/workspace:rw,nosuid,nodev,size=1g,uid=65532,gid=65532,mode=0700"));
-  assert.ok(spec.args.includes("/tmp:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=1777"));
+  assert.ok(spec.args.includes("/workspace:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=0700"));
+  assert.ok(spec.args.includes("/tmp:rw,nosuid,nodev,size=256m,uid=65532,gid=65532,mode=1777"));
+  assert.deepEqual(spec.args.slice(spec.args.indexOf("--memory"), spec.args.indexOf("--memory") + 2), ["--memory", "3g"]);
   assert.ok(spec.args.includes("type=bind,src=/run/bob-dispatch/repoRun_123456789/target-repo,dst=/workspace/target-repo,readonly"));
   assert.doesNotMatch(spec.args.join(" "), new RegExp(`${RUNNER_SECRET}|${DEEPSEEK_SECRET}|${PROJECTION_KEY}|${SECRET}|${payload.accessPassword}`, "u"));
-  assert.equal(spec.env.BOB_PROJECTION_KEY, PROJECTION_KEY);
-  assert.equal(spec.env.RUNNER_SECRET, RUNNER_SECRET);
-  assert.equal(spec.env.DEEPSEEK_API_KEY, DEEPSEEK_SECRET);
+  assert.equal(spec.env.BOB_PROJECTION_KEY, undefined);
+  assert.equal(spec.env.RUNNER_SECRET, undefined);
+  assert.equal(spec.env.DEEPSEEK_API_KEY, undefined);
   assert.equal(spec.env.DISPATCH_SECRET, undefined);
-  const runnerPayload = JSON.parse(spec.env.BOB_PAYLOAD_JSON);
+  const envelope = JSON.parse(spec.input.toString("utf8"));
+  assert.equal(envelope.projectionKey, PROJECTION_KEY);
+  assert.equal(envelope.runnerSecret, RUNNER_SECRET);
+  assert.equal(envelope.deepseekApiKey, DEEPSEEK_SECRET);
+  const runnerPayload = envelope.payload;
   assert.equal(runnerPayload.projectionKey, undefined);
   assert.equal(runnerPayload.accessPassword, payload.accessPassword);
   assert.equal(runnerPayload.sourceRef, payload.sourceRef);
@@ -410,11 +416,10 @@ test("service rejects noncanonical or non-TLS runner endpoints before startup", 
   }
 });
 
-test("CloudFormation restricts the 2 GiB host to one concurrent runner", () => {
+test("CloudFormation excludes hosts smaller than the runner memory budget", () => {
   const template = fs.readFileSync(path.join(__dirname, "..", "..", "template.yaml"), "utf8");
-  assert.match(template, /SmallInstanceSingleRun:/u);
-  assert.match(template, /RuleCondition: !Equals \[!Ref InstanceType, t4g\.small\]/u);
-  assert.match(template, /Assert: !Equals \[!Ref MaxConcurrentRuns, 1\]/u);
+  assert.match(template, /AllowedValues: \[t4g\.large, t4g\.xlarge, m7g\.large\]/u);
+  assert.doesNotMatch(template, /t4g\.small/u);
 });
 
 test("repository preflight verifies the exact commit and seals a runner-readable tree", async (t) => {
@@ -637,6 +642,7 @@ test("restart reattaches a matching running container without spawning", async (
     controlPlaneSink: async () => {},
     inspectContainerFn: () => ({ labels: {} }),
     waitContainerFn: () => reattached,
+    followContainerLogsFn: () => fakeChild(),
     spawnFn: () => { spawned += 1; return fakeChild(); },
     now: () => 1600,
     runTimeoutMs: 1000,
@@ -686,6 +692,12 @@ test("default reattach waits for confirmed container removal before reporting de
     },
     spawnFn: () => {
       throw new Error("reconciliation must not spawn a replacement");
+    },
+    followContainerLogsFn: () => {
+      const child = fakeChild();
+      child.kill = () => true;
+      setImmediate(() => child.stdout.write(`reattached output ${RUNNER_SECRET}\n`));
+      return child;
     },
     spawnSyncFn: (_command, args) => {
       assert.equal(args[0], "inspect");
@@ -748,6 +760,8 @@ test("default reattach waits for confirmed container removal before reporting de
   assert.deepEqual(timeline, ["remove:1", "remove:kill", "remove:2", "control:destroyed"]);
   assert.equal(removalKilled, 1);
   assert.equal(second.record(payload.runId).status, "succeeded");
+  const recoveredLog = fs.readFileSync(path.join(dirs.logsDir, `${payload.runId}.log`), "utf8");
+  assert.match(recoveredLog, /reattached output \[REDACTED\]/u);
 });
 
 test("restart reserves the live slot and retries an unavailable container inspection", async (t) => {
@@ -791,6 +805,7 @@ test("restart reserves the live slot and retries an unavailable container inspec
       waitCalls += 1;
       return reattached;
     },
+    followContainerLogsFn: () => fakeChild(),
     setIntervalFn: fakeInterval,
     clearIntervalFn: () => {},
     delay: async () => {},

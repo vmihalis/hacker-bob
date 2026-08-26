@@ -19,6 +19,7 @@ const CODEX_ARGS = Object.freeze([
   "-C",
   "/opt/bob-runner",
 ]);
+const STDERR_TAIL_MAX_BYTES = 8 * 1024;
 
 function waitForChild(child) {
   return new Promise((resolve, reject) => {
@@ -31,6 +32,27 @@ function drain(stream) {
   if (!stream) return;
   stream.on("data", () => {});
   stream.resume();
+}
+
+function captureTail(stream, maxBytes = STDERR_TAIL_MAX_BYTES) {
+  let tail = Buffer.alloc(0);
+  if (!stream) return () => "";
+  stream.on("data", (chunk) => {
+    tail = Buffer.concat([tail, Buffer.from(chunk)]);
+    if (tail.length > maxBytes) tail = tail.subarray(tail.length - maxBytes);
+  });
+  stream.resume();
+  return () => tail.toString("utf8");
+}
+
+function redactDiagnostic(value, secrets = []) {
+  let redacted = String(value || "");
+  for (const secret of secrets) {
+    if (typeof secret === "string" && secret.length >= 4) redacted = redacted.split(secret).join("[REDACTED]");
+  }
+  return redacted
+    .replace(/\b(api[_-]?key|authorization|cookie|password|secret|token)(\s*[:=]\s*)\S+/giu, "$1$2[REDACTED]")
+    .trim();
 }
 
 async function closeServer(server) {
@@ -70,13 +92,14 @@ async function main({
       stdio: ["ignore", "pipe", "pipe"],
     });
     drain(child.stdout);
-    drain(child.stderr);
+    const stderrTail = captureTail(child.stderr);
     const result = await waitForChild(child);
     if (result.code === 0) {
       process.stdout.write("Codex runner completed.\n");
       return 0;
     }
-    process.stderr.write("Codex runner failed.\n");
+    const diagnostic = redactDiagnostic(stderrTail(), [environment.DEEPSEEK_API_KEY, clientKey]);
+    process.stderr.write(`Codex runner failed.${diagnostic ? ` ${diagnostic}` : ""}\n`);
     return Number.isSafeInteger(result.code) ? result.code : 1;
   } finally {
     process.removeListener("SIGTERM", handleSigterm);
@@ -89,8 +112,10 @@ module.exports = {
   CODEX_ARGS,
   CODEX_BIN,
   closeServer,
+  captureTail,
   drain,
   main,
+  redactDiagnostic,
   waitForChild,
 };
 

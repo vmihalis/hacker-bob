@@ -339,6 +339,37 @@ test("Codex wrapper suppresses child output and uses the pinned headless invocat
   assert.equal(emitted.includes("sensitive tool arguments"), false);
 });
 
+test("Codex wrapper emits only a bounded redacted stderr diagnostic on failure", async (t) => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.killed = false;
+  child.kill = () => true;
+  const output = [];
+  t.mock.method(process.stderr, "write", (chunk) => { output.push(String(chunk)); return true; });
+  const secret = "model-secret-never-log";
+  const codePromise = codexRunner.main({
+    argv: ["one task"],
+    environment: { DEEPSEEK_API_KEY: secret },
+    spawnFactory: () => {
+      process.nextTick(() => {
+        child.stderr.end(`${"x".repeat(9000)} secret=${secret}`);
+        child.stdout.end("raw stdout");
+        child.emit("exit", 7, null);
+      });
+      return child;
+    },
+    startProxy: async () => ({ closeAllConnections() {}, close(callback) { callback(); } }),
+  });
+  assert.equal(await codePromise, 7);
+  const emitted = output.join("");
+  assert.match(emitted, /Codex runner failed\./u);
+  assert.match(emitted, /\[REDACTED\]/u);
+  assert.equal(emitted.includes(secret), false);
+  assert.equal(emitted.includes("raw stdout"), false);
+  assert.ok(Buffer.byteLength(emitted) < 9 * 1024);
+});
+
 test("pinned Codex request reaches DeepSeek with only real Bob MCP tools", {
   timeout: 60_000,
   skip: fs.existsSync(PINNED_CODEX_BIN) ? false : "pinned Codex runtime is installed by check:runner-codex-profile",

@@ -179,7 +179,6 @@ function assembleFindingArtifact(targetDomain, { findings = null } = {}) {
       verifierStatus: "passed",
       verificationStatus: "passed",
       integrityChecksPassed: 5,
-      generatedAt: new Date().toISOString(),
       profile: domain,
     },
   };

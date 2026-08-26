@@ -116,6 +116,13 @@ test("finalization receipt writes an exclusive atomic pair and replays identical
       fs.readdirSync(sessionDir(DOMAIN)).filter((name) => name.endsWith(".tmp")),
       [],
     );
+
+    const replayWithNewClock = writeFinalizationReceipt(
+      DOMAIN,
+      receipt({ completedAt: "2026-08-25T10:00:01.000Z" }),
+    );
+    assert.equal(replayWithNewClock.written, false);
+    assert.equal(replayWithNewClock.receipt.completedAt, first.receipt.completedAt);
   });
 });
 

@@ -200,7 +200,7 @@ function projectionSurfaceFields(finding, findingId, surfaceType) {
 }
 
 const DYNAMIC_IDENTITY_PREDECESSOR_RE = /^(?:account|accounts|email|emails|member|members|profile|profiles|user|users)$/i;
-const SECRET_PREDECESSOR_RE = /^(?:api|api[_-]?key|auth|credential|key|keys|project|projects|rpc|secret|session|token|tokens|v[0-9]+)$/i;
+const SECRET_PREDECESSOR_RE = /^(?:api|api[_-]?key|auth|credential|key|keys|project|projects|rpc|secret|session|token|tokens)$/i;
 
 function safeDecodeRouteSegment(segment) {
   try {

@@ -12,6 +12,7 @@ const {
 } = require("../../mcp/projection-client.js");
 
 const PAYLOAD_MAX_BYTES = 32 * 1024;
+const RUNTIME_ENVELOPE_MAX_BYTES = 64 * 1024;
 const STDERR_TAIL_MAX_BYTES = 2 * 1024;
 const REPOSITORY_PATH = "/workspace/target-repo";
 const ID_RE = /^[A-Za-z0-9_-]{10,128}$/;
@@ -74,10 +75,37 @@ const LIFECYCLE_BY_PHASE = Object.freeze({
   report: "REPORT",
 });
 
-function requiredEnvironment(name) {
-  const value = process.env[name];
+function requiredEnvironment(name, environment = process.env) {
+  const value = environment[name];
   if (typeof value !== "string" || value.length === 0) throw new Error(`${name} is required`);
   return value;
+}
+
+async function readRuntimeEnvelope(stream = process.stdin) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.from(chunk);
+    total += bytes.length;
+    if (total > RUNTIME_ENVELOPE_MAX_BYTES) {
+      throw new Error(`runner runtime envelope exceeds ${RUNTIME_ENVELOPE_MAX_BYTES} bytes`);
+    }
+    chunks.push(bytes);
+  }
+  let candidate;
+  try {
+    candidate = JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+  } catch {
+    throw new Error("runner runtime envelope must contain valid JSON");
+  }
+  const envelope = assertPlainObject(candidate, "runner runtime envelope");
+  const keys = ["schemaVersion", "payload", "projectionKey", "runnerSecret", "deepseekApiKey", "projectionUrl", "convexUrl"];
+  if (Object.keys(envelope).some((key) => !keys.includes(key)) || Object.keys(envelope).length !== keys.length) {
+    throw new Error("runner runtime envelope has an invalid shape");
+  }
+  if (envelope.schemaVersion !== 1) throw new Error("runner runtime envelope schemaVersion must equal 1");
+  for (const name of keys.slice(2)) requiredText(envelope[name], name, 4096);
+  return envelope;
 }
 
 function exactHttpsEndpoint(value, pathname) {
@@ -303,8 +331,8 @@ function taskFor(payload) {
   );
 }
 
-function makeConvexClient() {
-  const url = requiredEnvironment("BOB_CONVEX_URL");
+function makeConvexClient(environment = process.env) {
+  const url = requiredEnvironment("BOB_CONVEX_URL", environment);
   const runtimeRequire = require("module").createRequire("/opt/bob-runner/runtime/package.json");
   const { ConvexClient } = runtimeRequire("convex/browser");
   return new ConvexClient(url);
@@ -566,8 +594,8 @@ function successfulProjectionReceipt(summary) {
   };
 }
 
-async function projectHostedFindings(payload, receipt, poster = postProjection) {
-  const projectionKey = requiredEnvironment("BOB_PROJECTION_KEY");
+async function projectHostedFindings(payload, receipt, poster = postProjection, environment = process.env) {
+  const projectionKey = requiredEnvironment("BOB_PROJECTION_KEY", environment);
   if (!PROJECTION_KEY_RE.test(projectionKey)) throw new Error("BOB_PROJECTION_KEY has an invalid format");
   const { payload: projectionPayload, assembled } = buildProjectionPayload(payload.targetDomain, {
     runSlug: payload.runSlug,
@@ -580,8 +608,8 @@ async function projectHostedFindings(payload, receipt, poster = postProjection) 
     throw new Error("projection artifact does not match the finalization receipt");
   }
   const summary = await poster({
-    url: requiredEnvironment("BOB_PROJECTION_URL"),
-    secret: requiredEnvironment("RUNNER_SECRET"),
+    url: requiredEnvironment("BOB_PROJECTION_URL", environment),
+    secret: requiredEnvironment("RUNNER_SECRET", environment),
     payload: projectionPayload,
   });
   return {
@@ -624,7 +652,7 @@ async function completeHostedRun(client, secret, payload, receipt, sealedAt) {
   return result;
 }
 
-function redactFailure(value) {
+function redactFailure(value, environment = process.env) {
   let message = value instanceof Error ? value.message : String(value);
   for (const name of [
     "RUNNER_SECRET",
@@ -632,7 +660,7 @@ function redactFailure(value) {
     "DEEPSEEK_API_KEY",
     "BOB_CONVEX_URL",
   ]) {
-    const secret = process.env[name];
+    const secret = environment[name];
     if (secret && secret.length >= 4) message = message.split(secret).join("[REDACTED]");
   }
   message = message
@@ -649,6 +677,8 @@ async function main({
   projectionPoster = postProjection,
   clock = () => Date.now(),
   delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  runtimeEnvelope = null,
+  environment = process.env,
 } = {}) {
   let client = null;
   let payload = null;
@@ -662,14 +692,23 @@ async function main({
     phase: "setup",
     emittedLifecycle: new Set(),
   };
+  const runtimeEnvironment = runtimeEnvelope ? {
+    ...environment,
+    BOB_PAYLOAD_JSON: JSON.stringify(runtimeEnvelope.payload),
+    BOB_PROJECTION_KEY: runtimeEnvelope.projectionKey,
+    RUNNER_SECRET: runtimeEnvelope.runnerSecret,
+    DEEPSEEK_API_KEY: runtimeEnvelope.deepseekApiKey,
+    BOB_PROJECTION_URL: runtimeEnvelope.projectionUrl,
+    BOB_CONVEX_URL: runtimeEnvelope.convexUrl,
+  } : environment;
   try {
-    payload = parsePayloadJson();
-    secret = requiredEnvironment("RUNNER_SECRET");
-    requiredEnvironment("DEEPSEEK_API_KEY");
-    requiredEnvironment("BOB_SESSIONS_ROOT");
-    const projectionKey = requiredEnvironment("BOB_PROJECTION_KEY");
-    const projectionUrl = requiredEnvironment("BOB_PROJECTION_URL");
-    const convexUrl = requiredEnvironment("BOB_CONVEX_URL");
+    payload = parsePayloadJson(runtimeEnvironment.BOB_PAYLOAD_JSON);
+    secret = requiredEnvironment("RUNNER_SECRET", runtimeEnvironment);
+    requiredEnvironment("DEEPSEEK_API_KEY", runtimeEnvironment);
+    requiredEnvironment("BOB_SESSIONS_ROOT", runtimeEnvironment);
+    const projectionKey = requiredEnvironment("BOB_PROJECTION_KEY", runtimeEnvironment);
+    const projectionUrl = requiredEnvironment("BOB_PROJECTION_URL", runtimeEnvironment);
+    const convexUrl = requiredEnvironment("BOB_CONVEX_URL", runtimeEnvironment);
     if (!PROJECTION_KEY_RE.test(projectionKey)) throw new Error("BOB_PROJECTION_KEY has an invalid format");
     if (!exactHttpsEndpoint(projectionUrl, "/api/findings")) {
       throw new Error("BOB_PROJECTION_URL must be an exact HTTPS /api/findings endpoint");
@@ -677,15 +716,15 @@ async function main({
     if (!exactHttpsEndpoint(convexUrl, "/")) {
       throw new Error("BOB_CONVEX_URL must be an exact HTTPS origin");
     }
-    if (process.env.BOB_RUN_SLUG !== payload.runSlug) throw new Error("BOB_RUN_SLUG does not match runner payload");
-    if (process.env.BOB_RUN_KIND !== payload.kind) throw new Error("BOB_RUN_KIND does not match runner payload");
-    if (process.env.BOB_RETEST_OF !== payload.retestOf.join(",")) {
+    if (runtimeEnvironment.BOB_RUN_SLUG !== payload.runSlug) throw new Error("BOB_RUN_SLUG does not match runner payload");
+    if (runtimeEnvironment.BOB_RUN_KIND !== payload.kind) throw new Error("BOB_RUN_KIND does not match runner payload");
+    if (runtimeEnvironment.BOB_RETEST_OF !== payload.retestOf.join(",")) {
       throw new Error("BOB_RETEST_OF does not match runner payload");
     }
-    if (process.env.BOB_REPORT_SLUG !== `${payload.runSlug}-report`) {
+    if (runtimeEnvironment.BOB_REPORT_SLUG !== `${payload.runSlug}-report`) {
       throw new Error("BOB_REPORT_SLUG does not match deterministic report slug");
     }
-    client = await clientFactory();
+    client = await clientFactory(runtimeEnvironment);
     tracker = await resumeLifecycleTracker(client, payload.runSlug);
     sequenceInitialized = true;
     await transitionRun(client, secret, payload.runSlug, "provisioning", "setup");
@@ -696,7 +735,7 @@ async function main({
       ["/opt/codex-home/run-codex.js", taskFor(payload)],
       {
         cwd: "/opt/bob-runner",
-        env: codexEnvironment(),
+        env: codexEnvironment(runtimeEnvironment),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -719,7 +758,7 @@ async function main({
     }
 
     const receipt = verifyFinalizationReceipt(payload);
-    const hostedReceipt = await projector(payload, receipt, projectionPoster);
+    const hostedReceipt = await projector(payload, receipt, projectionPoster, runtimeEnvironment);
     const sealedAt = clock();
     await transitionRun(client, secret, payload.runSlug, "sealing", "report");
     tracker = await appendLifecycleEvent(client, secret, payload.runSlug, tracker, {
@@ -764,13 +803,13 @@ async function main({
         }
       }
     }
-    console.error(`[runner] ${redactFailure(error)}`);
+    console.error(`[runner] ${redactFailure(error, runtimeEnvironment)}`);
   } finally {
     if (client && typeof client.close === "function") {
       try {
         await client.close();
       } catch (error) {
-        console.error(`[runner] client close failed: ${redactFailure(error)}`);
+        console.error(`[runner] client close failed: ${redactFailure(error, runtimeEnvironment)}`);
         if (!completionCommitted) exitCode = 1;
       }
     }
@@ -780,6 +819,7 @@ async function main({
 
 module.exports = Object.freeze({
   PAYLOAD_MAX_BYTES,
+  RUNTIME_ENVELOPE_MAX_BYTES,
   REPOSITORY_PATH,
   appendLifecycleEvent,
   canonicalEventHash,
@@ -790,6 +830,7 @@ module.exports = Object.freeze({
   main,
   parsePayloadJson,
   projectHostedFindings,
+  readRuntimeEnvelope,
   redactFailure,
   runSpawnedRunner,
   resumeLifecycleTracker,
@@ -799,7 +840,7 @@ module.exports = Object.freeze({
 });
 
 if (require.main === module) {
-  main()
+  readRuntimeEnvelope(process.stdin).then((runtimeEnvelope) => main({ runtimeEnvelope }))
     .then((code) => {
       process.exitCode = code;
     })

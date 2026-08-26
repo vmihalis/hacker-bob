@@ -43,6 +43,8 @@ fast-follow if the design partner needs targets outside the static posture.
   `ProtectSystem=strict`, kernel/filesystem protections, and explicit writable
   paths. The service retains Docker-group access because it must launch and
   reattach runner containers; treat that account as host-privileged.
+- Docker-group membership is the intentional Release A host boundary. Moving
+  dispatch outside that trusted boundary requires a rootless control plane.
 - EC2 requires IMDSv2 with hop limit 1. A Docker-coupled `DOCKER-USER`
   firewall rule also drops container traffic to the IPv4 metadata endpoint.
 
@@ -79,7 +81,8 @@ aws s3 cp /tmp/dispatch.tar.gz s3://<bucket>/runner-host/dispatch.tar.gz
 #    Convex URLs, three parameter names, pinned image, and exact ECR repository
 #    are required.
 #    The sizing below is a cost-conscious staging profile: keep one active run
-#    and two queued runs on the 2 GiB t4g.small host.
+#    and two queued runs on the 8 GiB t4g.large host. The runner itself is capped
+#    at 3 GiB so Chromium and the tmpfs mounts have explicit headroom.
 #    RunnerSubnet defaults to the second configured AZ; set it to a only when
 #    that AZ has the required instance capacity.
 aws cloudformation validate-template \
@@ -102,7 +105,7 @@ aws cloudformation create-stack \
     ParameterKey=DispatchDomainName,ParameterValue=<dispatch.example.com> \
     ParameterKey=DispatchHostedZoneId,ParameterValue=<zone-id> \
     ParameterKey=RunnerAmiId,ParameterValue=$RUNNER_AMI_ID \
-    ParameterKey=InstanceType,ParameterValue=t4g.small \
+    ParameterKey=InstanceType,ParameterValue=t4g.large \
     ParameterKey=RunnerSubnet,ParameterValue=b \
     ParameterKey=MaxConcurrentRuns,ParameterValue=1 \
     ParameterKey=MaxQueuedRuns,ParameterValue=2 \
@@ -149,13 +152,17 @@ aws cloudformation delete-stack --stack-name bob-runner-host
   state without spawning again. A digest mismatch is 409. A replay of an
   interrupted run creates exactly one new generation. Queue saturation is 429
   with `Retry-After: 60`.
-- The host passes `BOB_PAYLOAD_JSON`, `RUNNER_SECRET`,
-  `DEEPSEEK_API_KEY`, `BOB_PROJECTION_URL`, and lifecycle metadata by named
-  Docker environment variables; secret values are not written to payload or
-  env files. The trusted container entrypoint retains the runner secret and
+- The host passes the payload and runtime credential values, including
+  the model key, projection capability, fixed endpoints, and lifecycle metadata through
+  a bounded one-shot stdin envelope; Docker argv/config and the initial
+  environment carry no credential values. The trusted container entrypoint
+  retains the runner secret and
   projection capability, invokes projection only after Codex exits, and does
   not forward either value to Codex or the Bob MCP. The Bob MCP receives only
   its explicit allowlist and never the model API key.
+- The runner credential remains fleet-scoped under the current www API
+  contract. Rotate it as one unit. Per-run credentials require matching issuer
+  and verifier support; stdin custody limits exposure but does not change scope.
 - Defaults: two concurrent runs, eight queued runs, 15-minute queue age, and a
   90-minute per-run timeout. Replay ledger and redacted logs live under
   mode-`0700` `/var/lib/bob-dispatch/{ledger,logs}`; transient repository

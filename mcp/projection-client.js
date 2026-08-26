@@ -10,10 +10,12 @@
 const DELAY_CAP_MS = 30000;
 const RESPONSE_BODY_MAX_BYTES = 64 * 1024;
 
+class ProjectionResponseContractError extends Error {}
+
 async function readBoundedResponseText(response) {
   const contentLength = response.headers?.get?.("content-length");
   if (/^\d+$/u.test(contentLength || "") && Number(contentLength) > RESPONSE_BODY_MAX_BYTES) {
-    throw new Error(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
+    throw new ProjectionResponseContractError(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
   }
   if (response.body && typeof response.body.getReader === "function") {
     const reader = response.body.getReader();
@@ -26,7 +28,7 @@ async function readBoundedResponseText(response) {
       total += chunk.length;
       if (total > RESPONSE_BODY_MAX_BYTES) {
         try { await reader.cancel(); } catch {}
-        throw new Error(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
+        throw new ProjectionResponseContractError(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
       }
       chunks.push(chunk);
     }
@@ -34,7 +36,7 @@ async function readBoundedResponseText(response) {
   }
   const text = await response.text();
   if (Buffer.byteLength(text, "utf8") > RESPONSE_BODY_MAX_BYTES) {
-    throw new Error(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
+    throw new ProjectionResponseContractError(`projection response exceeds ${RESPONSE_BODY_MAX_BYTES} bytes`);
   }
   return text;
 }
@@ -162,7 +164,7 @@ async function postProjection({
       retryReason = `HTTP ${response.status}`;
     } catch (error) {
       retryReason = error && error.message ? error.message : String(error);
-      if (responseStatus >= 200 && responseStatus < 300) {
+      if (error instanceof ProjectionResponseContractError) {
         return {
           ok: false,
           status: responseStatus,

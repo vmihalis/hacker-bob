@@ -89,7 +89,7 @@ Parameters:
   InstanceType:
     Type: String
     Default: t4g.large
-    AllowedValues: [t4g.small, t4g.large, t4g.xlarge, m7g.large]
+    AllowedValues: [t4g.large, t4g.xlarge, m7g.large]
   RunnerSubnet:
     Type: String
     Default: b
@@ -99,13 +99,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional EC2 key pair for break-glass console access. Empty = Session Manager only.
-
-Rules:
-  SmallInstanceSingleRun:
-    RuleCondition: !Equals [!Ref InstanceType, t4g.small]
-    Assertions:
-      - Assert: !Equals [!Ref MaxConcurrentRuns, 1]
-        AssertDescription: t4g.small has capacity for only one 1536 MiB runner container.
 
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
