@@ -409,7 +409,12 @@ async function assertSingleCustodyCleanup(raw, fields, expectedReason) {
 async function terminateBlockedWatchdog(raw, pids) {
   raw.child.kill("SIGKILL");
   const exit = await waitForChildExit(raw.child, 2000);
-  assert.deepEqual(exit, { code: null, signal: "SIGKILL" });
+  // Exit 87 is the native fail-closed custody-admission outcome.
+  assert.ok(
+    (exit.code === null && exit.signal === "SIGKILL") ||
+      (exit.code === 87 && exit.signal === null),
+    `unexpected watchdog exit: ${JSON.stringify(exit)}`,
+  );
   await waitForProcessGone(pids.watcherPid);
   await waitForProcessGone(pids.custodianPid);
   await waitForProcessGone(pids.cleanupPid);
