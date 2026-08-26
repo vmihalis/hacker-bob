@@ -268,8 +268,10 @@ test("MCP launcher exposes only the runner capability environment", () => {
     "HOME",
     "NODE_ENV",
     "PATH",
+    "PLAYWRIGHT_BROWSERS_PATH",
     "RUNNER_SECRET",
   ]);
+  assert.equal(environment.PLAYWRIGHT_BROWSERS_PATH, "/opt/ms-playwright");
   assert.equal(JSON.stringify(environment).includes("model-secret"), false);
   assert.equal(Object.hasOwn(environment, "BOB_CONVEX_URL"), false);
   assert.equal(Object.hasOwn(environment, "BOB_PAYLOAD_JSON"), false);

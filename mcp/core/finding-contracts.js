@@ -34,6 +34,7 @@ const {
 const {
   capabilityPackForLegacyFinding,
   getCapabilityPack,
+  techniqueCompatibilityPackId,
 } = require("./capability/capability-packs.js");
 const {
   normalizeCvssInputs,
@@ -527,10 +528,16 @@ function summarizeFindings(findings) {
 
 const CWE_REQUIRED_SEVERITIES = Object.freeze(["critical", "high", "medium"]);
 
+function findingUsesWebContinuity(finding) {
+  if (finding == null || finding.surface_type !== "web") return false;
+  if (finding.capability_pack == null) return true;
+  return techniqueCompatibilityPackId(finding.capability_pack) === "web";
+}
+
 function assertReportableContinuityOnWrite(finding, requireContinuity) {
   if (!requireContinuity) return;
   if (!CWE_REQUIRED_SEVERITIES.includes(finding.severity)) return;
-  if (finding.surface_type !== "web" || finding.capability_pack !== "web") return;
+  if (!findingUsesWebContinuity(finding)) return;
   const missing = [];
   for (const field of ["request_method", "injection_point", "auth_profile"]) {
     if (typeof finding[field] !== "string" || !finding[field].trim()) missing.push(field);
@@ -830,6 +837,7 @@ function renderFindingMarkdownEntry(finding) {
 module.exports = {
   computeFindingDedupeKey,
   declaredFindingRecordAdapter,
+  findingUsesWebContinuity,
   normalizeBech32Address,
   normalizeFindingRecord,
   normalizeEndpointForDedupe,

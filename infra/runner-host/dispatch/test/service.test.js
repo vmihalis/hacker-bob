@@ -50,6 +50,7 @@ function validPayload(overrides = {}) {
     runMode: "standard",
     autonomy: "operator-approved",
     objective: "Review the production attack surface",
+    accessPassword: "dispatch-access-password",
     kind: "assessment",
     retestOf: [],
     projectionKey: PROJECTION_KEY,
@@ -206,6 +207,8 @@ test("validatePayload rejects unknown, unbounded, noncanonical, and mismatched i
     [validPayload({ runSlug: "too-short" }), "invalid_run_slug"],
     [validPayload({ objective: "line one\nline two" }), "invalid_objective"],
     [validPayload({ objective: "x".repeat(4001) }), "invalid_objective"],
+    [validPayload({ accessPassword: "short" }), "invalid_access_password"],
+    [validPayload({ accessPassword: "x".repeat(257) }), "invalid_access_password"],
     [validPayload({ scope: { notes: "ok", extra: true } }), "invalid_scope"],
     [validPayload({ runMode: "x".repeat(81) }), "invalid_run_mode"],
     [validPayload({ projectionKey: "A".repeat(42) }), "invalid_projection_key"],
@@ -230,13 +233,17 @@ test("validatePayload rejects unknown, unbounded, noncanonical, and mismatched i
   }
 });
 
-test("canonical dispatch digest is key-order independent and binds a projection-key digest", () => {
+test("canonical dispatch digest is key-order independent and binds secret digests", () => {
   const payload = validPayload();
   const reordered = Object.fromEntries(Object.entries(payload).reverse());
   assert.equal(canonicalDispatchDigest(payload), canonicalDispatchDigest(reordered));
   assert.notEqual(
     canonicalDispatchDigest(payload),
     canonicalDispatchDigest(validPayload({ projectionKey: "Q".repeat(43) })),
+  );
+  assert.notEqual(
+    canonicalDispatchDigest(payload),
+    canonicalDispatchDigest(validPayload({ accessPassword: "different-access-password" })),
   );
   assert.match(canonicalDispatchDigest(payload), /^[0-9a-f]{64}$/);
 });
@@ -293,15 +300,22 @@ test("queue capacity returns 429 before allocation and advances FIFO", async (t)
   assert.equal(harness.spawned[1].record.runId, second.runId);
 });
 
-test("expired queued work reports failure before the next FIFO spawn", async (t) => {
+test("expired queued work does not block the next FIFO spawn on control-plane delivery", async (t) => {
   let clock = 1000;
   const order = [];
+  let releaseExpiredDelivery;
+  const expiredDelivery = new Promise((resolve) => {
+    releaseExpiredDelivery = resolve;
+  });
   const harness = makeHarness(t, {
     maxConcurrent: 1,
     maxQueued: 2,
     maxQueueAgeMs: 1000,
     now: () => clock,
-    controlPlaneSink: async (update) => { order.push(`control:${update.runSlug}`); },
+    controlPlaneSink: async (update) => {
+      order.push(`control:${update.runSlug}`);
+      if (update.runSlug === "expiredRun_123456") await expiredDelivery;
+    },
     spawnFn: (record, launch) => {
       order.push(`spawn:${record.runSlug}`);
       const child = fakeChild();
@@ -317,12 +331,16 @@ test("expired queued work reports failure before the next FIFO spawn", async (t)
   clock = 1900;
   accept(harness.service, next);
   clock = 2101;
-  await finishAndFlush(harness, 0, 0);
+  harness.spawned[0].child.finish(0);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.service.record(expired.runId).status, "failed");
-  assert.ok(order.indexOf(`control:${expired.runSlug}`) < order.indexOf(`spawn:${next.runSlug}`));
+  assert.equal(harness.spawned[1].record.runId, next.runId);
+  releaseExpiredDelivery();
+  harness.spawned[1].child.finish(0);
+  await harness.service.flush();
 });
 
-test("Docker launch uses named environment, a non-secret payload, pinned pull policy, and repo mount", () => {
+test("Docker launch keeps secrets out of argv, uses pinned pull policy, and mounts the repo", () => {
   const payload = repoPayload();
   const record = {
     payload,
@@ -350,13 +368,14 @@ test("Docker launch uses named environment, a non-secret payload, pinned pull po
   assert.ok(spec.args.includes("/workspace:rw,nosuid,nodev,size=1g,uid=65532,gid=65532,mode=0700"));
   assert.ok(spec.args.includes("/tmp:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=1777"));
   assert.ok(spec.args.includes("type=bind,src=/run/bob-dispatch/repoRun_123456789/target-repo,dst=/workspace/target-repo,readonly"));
-  assert.doesNotMatch(spec.args.join(" "), new RegExp(`${RUNNER_SECRET}|${DEEPSEEK_SECRET}|${PROJECTION_KEY}|${SECRET}`, "u"));
+  assert.doesNotMatch(spec.args.join(" "), new RegExp(`${RUNNER_SECRET}|${DEEPSEEK_SECRET}|${PROJECTION_KEY}|${SECRET}|${payload.accessPassword}`, "u"));
   assert.equal(spec.env.BOB_PROJECTION_KEY, PROJECTION_KEY);
   assert.equal(spec.env.RUNNER_SECRET, RUNNER_SECRET);
   assert.equal(spec.env.DEEPSEEK_API_KEY, DEEPSEEK_SECRET);
   assert.equal(spec.env.DISPATCH_SECRET, undefined);
   const runnerPayload = JSON.parse(spec.env.BOB_PAYLOAD_JSON);
   assert.equal(runnerPayload.projectionKey, undefined);
+  assert.equal(runnerPayload.accessPassword, payload.accessPassword);
   assert.equal(runnerPayload.sourceRef, payload.sourceRef);
 });
 
@@ -453,6 +472,7 @@ test("streaming logs redact configured and per-run secrets across chunk boundari
   child.stderr.write(`deepseek-${"secret-value"}\n`);
   child.stderr.write(PROJECTION_KEY.slice(0, 20));
   child.stderr.write(`${PROJECTION_KEY.slice(20)}\n`);
+  child.stdout.write(`${payload.accessPassword}\n`);
   child.finish(0);
   await harness.service.flush();
   assert.equal(child.stdout.listenerCount("data"), 0);
@@ -463,7 +483,7 @@ test("streaming logs redact configured and per-run secrets across chunk boundari
   const logPath = path.join(harness.dirs.logsDir, `${payload.runId}.log`);
   const ledger = fs.readFileSync(ledgerPath, "utf8");
   const log = fs.readFileSync(logPath, "utf8");
-  for (const literal of [SECRET, RUNNER_SECRET, DEEPSEEK_SECRET, PROJECTION_KEY]) {
+  for (const literal of [SECRET, RUNNER_SECRET, DEEPSEEK_SECRET, PROJECTION_KEY, payload.accessPassword]) {
     assert.doesNotMatch(ledger, new RegExp(literal, "u"));
     assert.doesNotMatch(log, new RegExp(literal, "u"));
   }

@@ -31,6 +31,8 @@ const {
 } = require("./core/io/envelope.js");
 const {
   loadJsonDocumentStrict,
+  withSessionLock,
+  writeFileAtomic,
 } = require("./core/io/storage.js");
 const {
   readSessionStateStrict,
@@ -204,32 +206,31 @@ function assembleFindingArtifact(targetDomain, { findings = null } = {}) {
 // (an audit-graded writer); the paths are audit-graded basenames.
 function writeFindingArtifact(targetDomain, options = {}) {
   const domain = assertSafeDomain(targetDomain);
-  const assembled = assembleFindingArtifact(domain, options);
-  if (!assembled.emitted) {
-    for (const generatedPath of [findingArtifactPath(domain), findingArtifactSidecarPath(domain)]) {
-      try {
-        fs.unlinkSync(generatedPath);
-      } catch (error) {
-        if (!error || error.code !== "ENOENT") throw error;
+  return withSessionLock(domain, () => {
+    const assembled = assembleFindingArtifact(domain, options);
+    if (!assembled.emitted) {
+      for (const generatedPath of [findingArtifactPath(domain), findingArtifactSidecarPath(domain)]) {
+        try {
+          fs.unlinkSync(generatedPath);
+        } catch (error) {
+          if (!error || error.code !== "ENOENT") throw error;
+        }
       }
+      return assembled;
     }
-    return assembled;
-  }
-  const artifactPath = findingArtifactPath(domain);
-  const content = JSON.stringify(assembled.document, null, 2) + "\n";
-  fs.writeFileSync(artifactPath, content, { encoding: "utf8", mode: 0o600 });
-  const contentHash = sha256Hex(Buffer.from(content, "utf8"));
-  fs.writeFileSync(
-    findingArtifactSidecarPath(domain),
-    `${contentHash}  finding-artifact.json\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
-  return {
-    ...assembled,
-    written_json: artifactPath,
-    sidecar: findingArtifactSidecarPath(domain),
-    content_hash: contentHash,
-  };
+    const artifactPath = findingArtifactPath(domain);
+    const sidecarPath = findingArtifactSidecarPath(domain);
+    const content = JSON.stringify(assembled.document, null, 2) + "\n";
+    const contentHash = sha256Hex(Buffer.from(content, "utf8"));
+    writeFileAtomic(artifactPath, content, { mode: 0o600 });
+    writeFileAtomic(sidecarPath, `${contentHash}  finding-artifact.json\n`, { mode: 0o600 });
+    return {
+      ...assembled,
+      written_json: artifactPath,
+      sidecar: sidecarPath,
+      content_hash: contentHash,
+    };
+  });
 }
 
 module.exports = {

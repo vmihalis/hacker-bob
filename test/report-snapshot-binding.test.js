@@ -581,6 +581,38 @@ test("projection retries reuse the exact snapshot while leaving no completion re
   });
 });
 
+test("definitive projection rejection is surfaced as non-retryable", async () => {
+  await withTempHome(async () => {
+    const domain = "projection-rejection.example.com";
+    const runSlug = "run-projection-rejection";
+    drivePipelineToReportWritten(domain);
+    const restoreProjection = finalizeReportTool._setProjectionProcessForTest(() => {
+      const error = new Error("projection rejected");
+      error.status = 2;
+      error.stdout = JSON.stringify({ ok: false, status: 400, error: "invalid capability" });
+      throw error;
+    });
+    try {
+      let captured = null;
+      withProjectionEnvironment(runSlug, () => {
+        assert.throws(
+          () => finalizeReportTool.handler({ target_domain: domain }),
+          (error) => {
+            captured = error;
+            return /projection rejected: invalid capability/.test(error.message);
+          },
+        );
+      });
+      assert.equal(captured.details.code, "projection_rejected");
+      assert.equal(captured.details.retryable, false);
+      assert.equal(captured.details.child_status, 2);
+      assert.equal(readFinalizationReceipt(domain, { required: false }), null);
+    } finally {
+      restoreProjection();
+    }
+  });
+});
+
 test("hosted finalization rejects an unknown dispatch kind before projection", async () => {
   await withTempHome(async () => {
     const domain = "projection-kind.example.com";

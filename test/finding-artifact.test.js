@@ -407,6 +407,22 @@ test("web and GraphQL continuity fields normalize and enforce bounded values", (
     }, { requireCwe: true, requireContinuity: true }),
     /reportable web finding requires continuity fields: request_method, injection_point/,
   );
+  assert.throws(
+    () => normalizeFindingRecord({
+      ...base,
+      capability_pack: "web_fanout",
+      request_method: undefined,
+      injection_point: undefined,
+    }, { requireCwe: true, requireContinuity: true }),
+    /reportable web finding requires continuity fields: request_method, injection_point/,
+  );
+  assert.doesNotThrow(() => normalizeFindingRecord({
+    ...base,
+    capability_pack: "oss_source",
+    request_method: undefined,
+    injection_point: undefined,
+    auth_profile: undefined,
+  }, { requireCwe: true, requireContinuity: true }));
 
   const properties = recordCandidateClaimTool.inputSchema.properties;
   assert.equal(properties.injection_point.maxLength, 200);
@@ -633,6 +649,48 @@ test("dispatched projection fails closed when structured continuity fields are m
         }],
       }),
       /finding F-1 lacks dispatched GraphQL continuity fields: graphql_resolver/,
+    );
+  });
+});
+
+test("projection continuity follows the registry web family and validates rows before POST", () => {
+  withTempHome(() => {
+    writeFixture(DOMAIN);
+    const options = {
+      runSlug: "run-registry-continuity",
+      projectionKey: "projection-registry-continuity",
+      kind: "assessment",
+    };
+    assert.throws(
+      () => buildProjectionPayload(DOMAIN, {
+        ...options,
+        findings: [{ ...FINDING, capability_pack: "web_fanout", request_method: null }],
+      }),
+      /finding F-1 lacks dispatched web continuity fields: request_method/,
+    );
+    assert.doesNotThrow(() => buildProjectionPayload(DOMAIN, {
+      ...options,
+      findings: [{
+        ...FINDING,
+        capability_pack: "oss_source",
+        request_method: null,
+        injection_point: null,
+        auth_profile: null,
+      }],
+    }));
+    assert.throws(
+      () => buildProjectionPayload(DOMAIN, {
+        ...options,
+        findings: [{ ...FINDING, endpoint: "https://example.com/path?=secret" }],
+      }),
+      /query values must use key=\* placeholders/,
+    );
+    assert.throws(
+      () => buildProjectionPayload(DOMAIN, {
+        ...options,
+        findings: [{ ...FINDING, endpoint: `https://example.com/${"a".repeat(600)}` }],
+      }),
+      /must be 512 characters or fewer/,
     );
   });
 });

@@ -38,6 +38,7 @@ const DISPATCH_KEYS = Object.freeze([
   "runMode",
   "autonomy",
   "objective",
+  "accessPassword",
   "scope",
   "sourceRef",
   "kind",
@@ -55,6 +56,7 @@ const REQUIRED_DISPATCH_KEYS = Object.freeze([
   "runMode",
   "autonomy",
   "objective",
+  "accessPassword",
   "kind",
   "retestOf",
   "projectionKey",
@@ -211,6 +213,9 @@ function validatePayload(body) {
   if (!safeText(body.objective, { maxLength: 4000 })) {
     return invalid("invalid_objective", "objective must be non-empty bounded text without controls");
   }
+  if (!safeText(body.accessPassword, { maxLength: 256 }) || body.accessPassword.length < 8) {
+    return invalid("invalid_access_password", "accessPassword must be 8-256 characters without controls");
+  }
   if (body.scope !== undefined) {
     if (!isPlainObject(body.scope) || Object.keys(body.scope).length !== 1 || !Object.hasOwn(body.scope, "notes")) {
       return invalid("invalid_scope", "scope must contain only notes");
@@ -255,7 +260,9 @@ function digestValidatedPayload(payload) {
   const canonical = {};
   for (const key of DISPATCH_KEYS) {
     if (!Object.hasOwn(payload, key)) continue;
-    canonical[key] = key === "projectionKey" ? sha256(payload.projectionKey) : payload[key];
+    canonical[key] = key === "projectionKey" || key === "accessPassword"
+      ? sha256(payload[key])
+      : payload[key];
   }
   return sha256(JSON.stringify(canonical));
 }
@@ -1109,6 +1116,7 @@ function createService({
       containerEnv.RUNNER_SECRET,
       containerEnv.DEEPSEEK_API_KEY,
       record.projectionKey,
+      record.payload?.accessPassword,
     ];
     let logBytes = fs.fstatSync(logFd).size;
     let logTruncated = logBytes >= maxLogBytes;
@@ -1287,7 +1295,7 @@ function createService({
     while (!closed && active.size < maxConcurrent && queue.length > 0) {
       const record = queue.shift();
       if (now() - record.queuedAt > maxQueueAgeMs) {
-        await expireQueuedRecord(record);
+        track(expireQueuedRecord(record));
         continue;
       }
       active.set(record.idempotencyKey, record);

@@ -61,6 +61,7 @@ function payload(overrides = {}) {
     runMode: "standard",
     autonomy: "operator-approved",
     objective: "Review the authorized production attack surface",
+    accessPassword: "test-access-password-123",
     kind: "assessment",
     retestOf: [],
     ...overrides,
@@ -319,8 +320,8 @@ test("spawned runner streams output, polls asynchronously, and bounds its stderr
   assert.equal(Buffer.concat(stdoutWrites).toString("utf8"), "runner output");
   assert.equal(Buffer.concat(stderrWrites).length, 4096);
 });
-test("persistent lifecycle polling failures terminate the still-running Codex child", async () => {
-  const child = fakeChild({ autoClose: false });
+test("persistent lifecycle polling failures remain observational and do not fail Codex", async () => {
+  const child = fakeChild();
   let killedWith = null;
   child.kill = (signal) => {
     killedWith = signal;
@@ -332,11 +333,9 @@ test("persistent lifecycle polling failures terminate the still-running Codex ch
   };
   poll.delay = immediateDelay;
 
-  await assert.rejects(
-    () => entrypoint.runSpawnedRunner(child, poll),
-    /control plane unavailable/,
-  );
-  assert.equal(killedWith, "SIGKILL");
+  const result = await entrypoint.runSpawnedRunner(child, poll);
+  assert.equal(result.code, 0);
+  assert.equal(killedWith, null);
 });
 
 
@@ -438,6 +437,16 @@ test("main awaits the observable lifecycle, verifies the receipt, and completes 
     assert.match(completion.accessHash, /^[0-9a-f]{64}$/);
     assert.match(completion.accessSalt, /^[0-9a-f]{32}$/);
     assert.equal(completion.accessIter, 100000);
+    assert.equal(
+      completion.accessHash,
+      crypto.pbkdf2Sync(
+        runPayload.accessPassword,
+        Buffer.from(completion.accessSalt, "hex"),
+        completion.accessIter,
+        32,
+        "sha256",
+      ).toString("hex"),
+    );
   });
 });
 

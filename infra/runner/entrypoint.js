@@ -39,6 +39,7 @@ const PAYLOAD_KEYS = Object.freeze([
   "runMode",
   "autonomy",
   "objective",
+  "accessPassword",
   "scope",
   "sourceRef",
   "kind",
@@ -158,6 +159,7 @@ function parsePayloadJson(serialized = process.env.BOB_PAYLOAD_JSON) {
     runMode: requiredText(payload.runMode, "runMode", 80),
     autonomy: payload.autonomy,
     objective: requiredText(payload.objective, "objective", 4000),
+    accessPassword: requiredText(payload.accessPassword, "accessPassword", 256),
     kind: payload.kind,
     retestOf: payload.retestOf,
   };
@@ -165,6 +167,7 @@ function parsePayloadJson(serialized = process.env.BOB_PAYLOAD_JSON) {
   if (!ID_RE.test(normalized.runId)) throw new Error("runId has an invalid format");
   if (!RUN_SLUG_RE.test(normalized.runSlug)) throw new Error("runSlug has an invalid format");
   if (!TARGET_DOMAIN_RE.test(normalized.targetDomain)) throw new Error("targetDomain has an invalid format");
+  if (normalized.accessPassword.length < 8) throw new Error("accessPassword must be at least 8 characters");
   if (!['web', 'repo', 'contract'].includes(normalized.targetKind)) throw new Error("targetKind is unsupported");
   if (normalized.autonomy !== "operator-approved") throw new Error("autonomy must be operator-approved");
   if (!['assessment', 'retest'].includes(normalized.kind)) throw new Error("kind is unsupported");
@@ -453,26 +456,19 @@ async function runSpawnedRunner(
   completion.then((value) => {
     outcome = value;
   });
-  let consecutivePollFailures = 0;
   try {
     while (outcome === null) {
       try {
         await poll();
-        consecutivePollFailures = 0;
-      } catch (error) {
-        consecutivePollFailures += 1;
-        if (consecutivePollFailures >= 3) throw error;
-      }
+      } catch {}
       if (outcome === null) await Promise.race([completion, poll.delay()]);
     }
-    for (;;) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await poll();
         break;
-      } catch (error) {
-        consecutivePollFailures += 1;
-        if (consecutivePollFailures >= 3) throw error;
-        await poll.delay();
+      } catch {
+        if (attempt < 2) await poll.delay();
       }
     }
   } catch (error) {
@@ -560,12 +556,11 @@ function pbkdf2Hash(password, saltHex, iterations) {
 async function completeHostedRun(client, secret, payload, receipt, sealedAt) {
   const accessSalt = crypto.randomBytes(16).toString("hex");
   const accessIter = 100000;
-  const password = crypto.randomBytes(24).toString("hex");
   const result = await client.mutation("reports:completeHostedRun", {
     secret,
     runSlug: payload.runSlug,
     modelJson: JSON.stringify(receipt.consoleReport),
-    accessHash: pbkdf2Hash(password, accessSalt, accessIter),
+    accessHash: pbkdf2Hash(payload.accessPassword, accessSalt, accessIter),
     accessSalt,
     accessIter,
     freezeHash: receipt.freezeHash,

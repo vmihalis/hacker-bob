@@ -17,8 +17,12 @@ const {
 } = require("./finding-artifact.js");
 const {
   computeFindingDedupeKey,
+  findingUsesWebContinuity,
   normalizeEndpointForDedupe,
 } = require("./core/finding-contracts.js");
+const {
+  normalizeSafeProjectedFinding,
+} = require("./finalization-receipt.js");
 const {
   assertValidCwe,
   cweTitle,
@@ -76,8 +80,8 @@ function projectionSurfaceType(surfaceType) {
   throw new Error(`unsupported projection surface_type: ${String(surfaceType)}`);
 }
 
-function assertProjectionContinuity(finding, findingId, surfaceType) {
-  if (surfaceType !== "web") return;
+function assertProjectionContinuity(finding, findingId) {
+  if (!findingUsesWebContinuity(finding)) return;
   const missingWeb = [];
   if (typeof finding.request_method !== "string" || !finding.request_method.trim()) {
     missingWeb.push("request_method");
@@ -253,6 +257,7 @@ function fingerprintV1({
   graphqlResolver,
   cwe,
   authProfile,
+  capabilityPack,
   surfaceType,
   sourceSurfaceType,
   scEvidence,
@@ -289,6 +294,16 @@ function fingerprintV1({
       functionSignature,
       primaryCwe,
       "smart_contract",
+    ];
+  } else if (capabilityPack != null && !findingUsesWebContinuity({
+    surface_type: surfaceType,
+    capability_pack: capabilityPack,
+  })) {
+    parts = [
+      requiredFingerprintText(domain, "domain", id).toLowerCase(),
+      requiredFingerprintText(fingerprintRouteTemplate(endpoint, domain), "safe_route_template", id),
+      primaryCwe,
+      requiredFingerprintText(capabilityPack, "capability_pack", id),
     ];
   } else {
     const canonicalDomain = requiredFingerprintText(domain, "domain", id).toLowerCase();
@@ -367,7 +382,7 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
     const severity = projectionSeverity(artifactFinding.severity);
     if (!severity) continue; // info-graded findings never enter the retained ledger
     const surfaceType = projectionSurfaceType(finding.surface_type);
-    assertProjectionContinuity(finding, artifactFinding.id, surfaceType);
+    assertProjectionContinuity(finding, artifactFinding.id);
     const projectedCwe = projectionCwe(finding.cwe, artifactFinding.id);
     const display = projectionDisplayFields(
       projectedCwe[0],
@@ -386,6 +401,7 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
       graphqlResolver: finding.graphql_resolver,
       cwe: finding.cwe,
       authProfile: finding.auth_profile,
+      capabilityPack: finding.capability_pack,
       surfaceType,
       sourceSurfaceType: finding.source_surface_type,
       scEvidence: finding.sc_evidence,
@@ -435,7 +451,7 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
       if (preferCurrent) rows[priorIndex] = row;
     }
   }
-  return rows;
+  return rows.map((row, index) => normalizeSafeProjectedFinding(row, index));
 }
 
 // Assemble the full www projection POST body for a dispatched run. kind is

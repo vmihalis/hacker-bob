@@ -139,8 +139,8 @@ aws cloudformation delete-stack --stack-name bob-runner-host
 - `POST /dispatch`; headers `Authorization: Bearer <DISPATCH_SECRET>` and
   `Idempotency-Key: <runId>`; body schema version 1 has exactly:
   `assessmentId`, `runId`, `runSlug`, `target`, `targetDomain`, `targetKind`,
-  `runMode`, `autonomy:"operator-approved"`, `objective`, optional `scope`,
-  optional `sourceRef`, `kind`, `retestOf`, and `projectionKey`.
+  `runMode`, `autonomy:"operator-approved"`, `objective`, `accessPassword`,
+  `kind`, `retestOf`, and `projectionKey`; `scope` and `sourceRef` are optional.
 - Web targets are canonical HTTPS URLs without userinfo; repositories are
   canonical GitHub clone URLs pinned by an exact commit; contracts are
   lowercase EVM CAIP-10 identities. `targetDomain` must match the shared

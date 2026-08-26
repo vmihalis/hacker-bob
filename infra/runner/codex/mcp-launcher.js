@@ -17,6 +17,7 @@ function sanitizedMcpEnvironment(environment = process.env) {
     HOME: "/workspace",
     NODE_ENV: "production",
     PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    PLAYWRIGHT_BROWSERS_PATH: "/opt/ms-playwright",
   };
   for (const name of MCP_FORWARD_ENVIRONMENT) {
     if (typeof environment[name] === "string" && environment[name].length > 0) {

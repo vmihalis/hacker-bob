@@ -385,10 +385,17 @@ function handler(args) {
           detail = null;
         }
       }
+      const childStatus = Number.isInteger(error && error.status) ? error.status : null;
+      const definitive = childStatus === 2;
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,
-        `projection failed: ${detail && detail.error ? detail.error : detail && detail.message ? detail.message : error.message || String(error)}`,
-        { code: "projection_failed", detail },
+        `projection ${definitive ? "rejected" : "failed"}: ${detail && detail.error ? detail.error : detail && detail.message ? detail.message : error.message || String(error)}`,
+        {
+          code: definitive ? "projection_rejected" : "projection_failed",
+          retryable: !definitive,
+          child_status: childStatus,
+          detail,
+        },
       );
     } finally {
       try { fs.rmSync(payloadDirectory, { recursive: true, force: true }); } catch { /* best-effort */ }
