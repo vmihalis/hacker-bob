@@ -16,9 +16,9 @@ Adapter-generated local commands may invoke packaged helper modules with
 `node -e` from an installed project. These are stable only for Bob-generated
 skills, commands, and lifecycle code, not for general package consumers:
 
-- `mcp/lib/update-check.js`
-- `mcp/lib/bob-export.js`
-- `mcp/lib/egress-profiles.js`
+- `mcp/core/update-check.js`
+- `mcp/core/bob-export.js`
+- `mcp/core/egress-profiles.js`
 
 External consumers should prefer the CLI or `mcp/server.js`. Adding another
 installed helper surface requires documenting it here and covering its package
@@ -26,7 +26,7 @@ presence in the shared package policy.
 
 ## Internal Surfaces
 
-Everything under `mcp/lib/**`, `mcp/lib/tools/**`, `scripts/**`, `adapters/**`,
+Everything under `mcp/core/**`, `mcp/domains/**`, `mcp/tools/**`, `scripts/**`, `adapters/**`,
 `prompts/**`, and `.claude/**` is internal implementation unless a document or
 test names it as an installed runtime surface. These files are packaged because
 the installer, generated prompts, and MCP runtime need them on disk. External
@@ -38,8 +38,8 @@ small facade for runtime entrypoints, not a dumping ground for lower-level
 helpers.
 
 Session authority lives behind the MCP dispatcher and tool envelopes. Files such
-as `mcp/lib/session-authority.js`, `mcp/lib/tool-policy.js`, and
-`mcp/lib/tool-telemetry.js` are packaged runtime implementation, not stable
+as `mcp/core/session/session-authority.js`, `mcp/core/dispatch/tool-policy.js`, and
+`mcp/core/telemetry/tool-telemetry.js` are packaged runtime implementation, not stable
 deep-import APIs. External consumers should observe authority through MCP errors
 and `bounty_read_tool_telemetry` aggregates.
 

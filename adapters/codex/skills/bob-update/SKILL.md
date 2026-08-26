@@ -10,13 +10,13 @@ Use this when the operator asks to check, plan, or apply Hacker Bob updates from
 ## Read Cache
 Read the passive local cache without network access:
 ```bash
-node -e "const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"
+node -e "const update=require('./mcp/core/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"
 ```
 
 ## Check Latest
 Run this only when the operator explicitly asks to check for updates:
 ```bash
-node -e "const update=require('./mcp/lib/update-check.js'); update.checkForUpdate(process.cwd(), { includeChangelog: true }).then((result) => console.log(update.renderUpdatePlan(result))).catch((error) => { console.error(error.message || String(error)); process.exit(1); });"
+node -e "const update=require('./mcp/core/update-check.js'); update.checkForUpdate(process.cwd(), { includeChangelog: true }).then((result) => console.log(update.renderUpdatePlan(result))).catch((error) => { console.error(error.message || String(error)); process.exit(1); });"
 ```
 
 ## Apply Update

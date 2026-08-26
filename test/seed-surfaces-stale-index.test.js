@@ -25,22 +25,22 @@ const path = require("node:path");
 
 const {
   evaluateSchedulerPrecondition,
-} = require("../mcp/lib/scheduler-preconditions.js");
+} = require("../mcp/core/waves/scheduler-preconditions.js");
 const {
   evaluateLifecycleTransition,
-} = require("../mcp/lib/lifecycle-gates.js");
+} = require("../mcp/core/session/lifecycle-gates.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   attackSurfacePath,
   sessionDir,
   surfaceIndexPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readJsonFile,
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -33,7 +33,7 @@ const {
 } = require("./ipc-contract.js");
 const {
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   assertConformanceNativeIpcPeerCredentialAdapter,
   inspectAcceptedSocketWithConformanceAdapter,

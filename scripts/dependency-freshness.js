@@ -120,7 +120,7 @@ function daysBetween(later, earlier) {
 }
 
 function checkOverlayEscapeHatch() {
-  const scopeSource = fs.readFileSync(path.join(ROOT, "mcp", "lib", "scope.js"), "utf8");
+  const scopeSource = fs.readFileSync(path.join(ROOT, "mcp", "core", "scope.js"), "utf8");
   const hasEnv = scopeSource.includes("BOB_PSL_OVERLAY_FILE");
   const hasSource = scopeSource.includes("operator_overlay");
   const hasUnlistedFallback = scopeSource.includes("psl_unlisted");

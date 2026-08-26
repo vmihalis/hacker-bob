@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
-const { hashCanonicalJson } = require("../../../mcp/lib/verification-contracts.js");
+const { hashCanonicalJson } = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   publicKeyDigest: requestPublicKeyDigest,
   signIpcDispatchRequest,

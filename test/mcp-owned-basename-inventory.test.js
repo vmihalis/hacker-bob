@@ -20,7 +20,7 @@ const {
   sessionRootPathInventory,
   sessionDir,
   INVENTORY_PROBE_DOMAIN,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 test("LIVE: every session-root basename is classified — no drift", () => {
   const { unclassified } = run();

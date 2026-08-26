@@ -8,18 +8,20 @@ const path = require("path");
 
 const {
   recordedBlockerPartialSurfaceIdSet,
-} = require("../mcp/lib/pipeline-session-artifacts.js");
+} = require("../mcp/core/telemetry/pipeline-session-artifacts.js");
 const {
   readSessionArtifactSummary,
   readPipelineAnalytics,
-} = require("../mcp/lib/pipeline-analytics.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { initSession } = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/telemetry/pipeline-analytics.js");
+const {
+  appendClosureRecordedEvent,
+} = require("../mcp/core/frontier/frontier-events.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
-const { attackSurfacePath, sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/session/session-state-store.js");
+const { attackSurfacePath, sessionDir } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -49,7 +51,7 @@ function seedCoverage(domain, { surfaces, blockedPrereqHistory = [] }) {
   fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({ surfaces }, null, 2)}\n`, "utf8");
   // surface-explored is closed via the frontier ledger; the other non-low
   // surface stays OPEN so closed_pct < 100 and the coverage gate evaluates.
-  appendFrontierEvent({
+  appendClosureRecordedEvent({
     target_domain: domain,
     kind: "closure.recorded",
     surface_id: "surface-explored",

@@ -18,13 +18,13 @@ const {
   scSubprocessContainerExec,
   SC_ISOLATION_REFUSED_CODE,
   SC_TOOLCHAIN_IMAGE_ENV,
-} = require("../mcp/lib/sc-container-exec.js");
-const { handoffSigningPrivateKeyPath } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/blockchain/smart-contracts/sc-container-exec.js");
+const { handoffSigningPrivateKeyPath } = require("../mcp/core/io/paths.js");
 const {
   SANDBOX_ATTESTATION_MODE_ENV,
   SANDBOX_SIGNER_UID_ENV,
   SANDBOX_AGENT_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 const DOMAIN = "sc-refuse.example.com";
 

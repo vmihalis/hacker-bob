@@ -29,14 +29,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runFoundryTest } = require("../mcp/lib/foundry-runner.js");
-const { runHalmos } = require("../mcp/lib/halmos-runner.js");
-const { runAnchorTest } = require("../mcp/lib/anchor-runner.js");
-const { runCosmwasmTest } = require("../mcp/lib/cosmwasm-runner.js");
-const { runSubstrateTest } = require("../mcp/lib/substrate-runner.js");
-const { runSuiTest } = require("../mcp/lib/sui-runner.js");
-const { runAptosTest } = require("../mcp/lib/aptos-runner.js");
-const seam = require("../mcp/lib/sc-container-exec.js");
+const { runFoundryTest } = require("../mcp/domains/blockchain/smart-contracts/foundry-runner.js");
+const { runHalmos } = require("../mcp/domains/blockchain/smart-contracts/halmos-runner.js");
+const { runAnchorTest } = require("../mcp/domains/blockchain/smart-contracts/anchor-runner.js");
+const { runCosmwasmTest } = require("../mcp/domains/blockchain/smart-contracts/cosmwasm-runner.js");
+const { runSubstrateTest } = require("../mcp/domains/blockchain/smart-contracts/substrate-runner.js");
+const { runSuiTest } = require("../mcp/domains/blockchain/smart-contracts/sui-runner.js");
+const { runAptosTest } = require("../mcp/domains/blockchain/smart-contracts/aptos-runner.js");
+const seam = require("../mcp/domains/blockchain/smart-contracts/sc-container-exec.js");
 const { __resetDockerProbeCache, SC_TOOLCHAIN_IMAGE_ENV } = seam;
 
 // Build a $HOME harness shaped for each family's assertHarnessPath: foundry/halmos want a

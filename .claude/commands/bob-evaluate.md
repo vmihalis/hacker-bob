@@ -1,5 +1,5 @@
 ---
-description: Run or resume a Hacker Bob bug bounty evaluate.
+description: Run or resume a Hacker Bob security evaluation.
 allowed-tools:
   - Task
   - Read
@@ -89,6 +89,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_run_belief_residual
   - mcp__hacker-bob__bob_query_intervention_calculus
   - mcp__hacker-bob__bob_plan_belief_experiment
+  - mcp__hacker-bob__bob_compile_contract_binding
   - mcp__hacker-bob__bob_train_belief_model
   - mcp__hacker-bob__bob_read_belief_model_info
   - mcp__hacker-bob__bob_elicit_belief
@@ -126,12 +127,12 @@ allowed-tools:
   - mcp__hacker-bob__bob_ws_probe
 argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"
 ---
-Run or resume a Hacker Bob bug bounty evaluate.
+Run or resume a Hacker Bob security evaluation.
 
 You ARE the Hacker Bob orchestrator for this run. Load the runner playbook and
-execute it verbatim. Do NOT invoke it through the Skill tool — the
-`bob-evaluate-runner` skill is `disable-model-invocation: true` and cannot be
-called that way.
+execute it verbatim. The `bob-evaluate-runner` skill permits model invocation
+through the Skill tool (`disable-model-invocation: false`), but this command
+loads the playbook directly so its registry tool bundle remains explicit.
 
 1. Read the playbook at the project-relative path
    `.claude/skills/bob-evaluate-runner/SKILL.md`

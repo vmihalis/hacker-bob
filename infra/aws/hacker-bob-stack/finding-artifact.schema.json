@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hacker-bob.dev/schemas/finding-artifact.schema.json",
   "title": "Hacker Bob canonical finding artifact",
-  "description": "ONE canonical structured artifact for every flow: black-box web domain (web), GitHub repository (repo), and OSS-library historical replay (oss_library). A superset of the fields the Bob-site renderer already consumes (tools/report/lib/{render,report-context,parse-report}.mjs) PLUS the Tasco-depth engineering fields (what_it_is, engineering_distinction, code_differential, grade_score, per-finding business_impact) and the chain-of-custody receipt. The SAME shape renders identically for all three targetKind values; only the data varies.",
+  "description": "ONE canonical structured artifact for every flow: black-box web domain (web), GitHub repository (repo), smart contract (contract), and OSS-library historical replay (oss_library). A superset of the fields the Bob-site renderer already consumes (tools/report/lib/{render,report-context,parse-report}.mjs) PLUS the Tasco-depth engineering fields (what_it_is, engineering_distinction, code_differential, grade_score, per-finding business_impact) and the chain-of-custody receipt. The SAME shape renders identically for every targetKind value; only the data varies.",
   "type": "object",
   "required": ["schemaVersion", "targetKind", "target", "findings"],
   "additionalProperties": false,
@@ -15,7 +15,7 @@
     "targetKind": {
       "description": "Canonical target class. Drives nothing but selection of the render path (oss_library -> OSS overview; web|repo -> company path). Mirrors target.kind.",
       "type": "string",
-      "enum": ["web", "repo", "oss_library"]
+      "enum": ["web", "repo", "contract", "oss_library"]
     },
     "domain": {
       "description": "Display name of the assessed surface (host for web, repo name for repo, library name for oss_library). Renderer masthead fallback when target.name is absent.",
@@ -32,7 +32,7 @@
         "kind": {
           "description": "Must equal the top-level targetKind.",
           "type": "string",
-          "enum": ["web", "repo", "oss_library"]
+          "enum": ["web", "repo", "contract", "oss_library"]
         },
         "name": { "type": "string" },
         "repository": {

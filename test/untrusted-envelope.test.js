@@ -22,7 +22,7 @@ const {
   fenceOverheadForLabel,
   untrustedEnvelopeByteLengthUpperBound,
   escapeRegExp,
-} = require("../mcp/lib/untrusted-envelope.js");
+} = require("../mcp/core/untrusted-envelope.js");
 
 const NONCE_PATTERN = `[0-9a-f]{${ENVELOPE_NONCE_HEX_CHARS}}`;
 

@@ -7,7 +7,7 @@
 // Walks every committed skill / role markdown file via the Y-D16
 // shared parser IR (`scripts/lib/skill-parser.js`) and evaluates every
 // non-frontmatter line against the runtime-constraint registry at
-// `mcp/lib/runtime-constraints.js`. The registry declares two closed
+// `scripts/lib/runtime-constraints.js`. The registry declares two closed
 // lists of constraints the runtime enforces below the model:
 //
 //   * BINARY_INTERNAL — patterns the Claude Code binary enforces on
@@ -38,7 +38,7 @@ const {
 } = require("./lib/skill-parser.js");
 const {
   evaluateBodyAgainstConstraints,
-} = require("../mcp/lib/runtime-constraints.js");
+} = require("./lib/runtime-constraints.js");
 
 const ROOT = path.join(__dirname, "..");
 

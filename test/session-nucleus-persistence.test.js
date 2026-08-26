@@ -8,20 +8,20 @@ const path = require("path");
 
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   readSessionNucleus,
   readVerifiedSessionNucleus,
-} = require("../mcp/lib/governance-store.js");
+} = require("../mcp/core/governance/index.js");
 const {
   sessionDir,
   sessionEventsJsonlPath,
   sessionNucleusPath,
   sessionsRoot,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readSessionEvents,
-} = require("../mcp/lib/session-events.js");
+} = require("../mcp/core/session/session-events.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

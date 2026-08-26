@@ -21,7 +21,7 @@ const {
 } = require("../../packages/bob-instrument-chameleon/lib/operations.js");
 const {
   hashCanonicalJson,
-} = require("../../mcp/lib/verification-contracts.js");
+} = require("../../mcp/core/verification/verification-contracts.js");
 
 const INVENTORY_PLAN_VERSION = 1;
 const INVENTORY_PLAN_ID = "chameleon_ultra_ph_p7_rf_off_inventory_v1";
@@ -181,7 +181,7 @@ function buildPlanBasis() {
         "packages/bob-instrument-chameleon/lib/bootstrap-operations.js",
       bootstrap_payload_contract_ref:
         "packages/bob-instrument-chameleon/lib/bootstrap-response-payloads.js",
-      inventory_checkpoint_contract_ref: "mcp/lib/physical-inventory-checkpoint.js",
+      inventory_checkpoint_contract_ref: "mcp/domains/physical/physical-inventory-checkpoint.js",
       usb_cdc_contract_ref:
         "packages/bob-instrument-chameleon-worker-runtime/lib/usb-cdc-custody.js",
       direct_cdc_contract_ref:

@@ -19,27 +19,27 @@ const {
   mergeWaveHandoffs,
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
-} = require("../mcp/lib/wave-handoff-store.js");
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   sessionDir,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   writeFileAtomic,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   loadWaveAssignments,
-} = require("../mcp/lib/assignments.js");
+} = require("../mcp/core/session/assignments.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   sha256Hex,
   signHandoffProvenance,
-} = require("../mcp/lib/wave-handoff-contracts.js");
+} = require("../mcp/core/waves/wave-handoff-contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -247,6 +247,8 @@ test("buildWaveReadiness accepts a handoff whose bypass_attempts cites a recorde
       severity: "high",
       cwe: "CWE-639",
       endpoint: "https://readiness-finding-bypass.com/api/records/7",
+      request_method: "GET",
+      injection_point: "path:record_id",
       description: "Changing the record identifier returns another tenant payload.",
       proof_of_concept: "GET /api/records/7 as the attacker tenant returns private fields.",
       response_evidence: "Response leaked tenant identifier and email for record 7.",

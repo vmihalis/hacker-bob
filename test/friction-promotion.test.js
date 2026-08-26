@@ -29,19 +29,19 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const proposeFrictionPromotionTool = require("../mcp/lib/tools/propose-friction-promotion.js");
-const logCapabilityFrictionTool = require("../mcp/lib/tools/log-capability-friction.js");
+const proposeFrictionPromotionTool = require("../mcp/tools/propose-friction-promotion.js");
+const logCapabilityFrictionTool = require("../mcp/tools/log-capability-friction.js");
 const {
   appendFrontierEvent,
   readFrontierEvents,
   FRONTIER_EVENT_KINDS,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   writeQueuePolicy,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -520,7 +520,7 @@ test("queue-policy normalizes friction_promotion_threshold + target_class_defaul
     });
     // Read back via loadQueuePolicy.
     // eslint-disable-next-line global-require
-    const { loadQueuePolicy } = require("../mcp/lib/queue-policy.js");
+    const { loadQueuePolicy } = require("../mcp/core/io/queue-policy.js");
     const policy = loadQueuePolicy(domain);
     assert.equal(policy.friction_promotion_threshold, 5);
     assert.equal(policy.target_class_default, "smart_contract");

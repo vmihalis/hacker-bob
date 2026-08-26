@@ -11,10 +11,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const readClaimsTool = require("../mcp/lib/tools/read-candidate-claims.js");
-const listClaimsTool = require("../mcp/lib/tools/list-candidate-claims.js");
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const readClaimsTool = require("../mcp/tools/read-candidate-claims.js");
+const listClaimsTool = require("../mcp/tools/list-candidate-claims.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 
 const DOMAIN = "degraded-reader.example.com";
 
@@ -37,6 +37,9 @@ function recordSignedFinding() {
     severity: "medium",
     cwe: "CWE-639",
     endpoint: `https://${DOMAIN}/api/orders/1`,
+    request_method: "GET",
+    injection_point: "path:order_id",
+    auth_profile: "attacker",
     description: "An attacker can read other users' orders.",
     proof_of_concept: `curl https://${DOMAIN}/api/orders/2`,
     response_evidence: "Cross-account order returned in attacker session",

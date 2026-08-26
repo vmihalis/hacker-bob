@@ -14,13 +14,13 @@ const {
   redactPhysicalSensitiveValues,
   redactPhysicalStructuredOutput,
   validateNoPhysicalSensitiveMaterial,
-} = require("../mcp/lib/physical-sensitive-material.js");
+} = require("../mcp/core/physical-sensitive-material-contracts.js");
 const {
   redactTextSensitiveValues,
-} = require("../mcp/lib/sensitive-material.js");
+} = require("../mcp/core/redaction/index.js");
 const {
   safeErrorMessage,
-} = require("../mcp/lib/tool-telemetry.js");
+} = require("../mcp/core/telemetry/tool-telemetry.js");
 
 test("physical field classifier distinguishes raw values from opaque metadata", () => {
   for (const field of [
@@ -114,7 +114,7 @@ test("physical validation and sanitization never execute getters or proxies", ()
 });
 
 test("structured sanitization bypasses inherited array-index setters", () => {
-  const modulePath = require.resolve("../mcp/lib/physical-sensitive-material.js");
+  const modulePath = require.resolve("../mcp/core/physical-sensitive-material-contracts.js");
   const script = String.raw`
     const physical = require(${JSON.stringify(modulePath)});
     const input = Array.from({ length: 401 }, (_, index) => String(index));
@@ -210,7 +210,7 @@ test("package-safe design sanitizer permits typed schemes but rejects live overl
     engineering_evidence_refs: [],
     hil_evidence_refs: [],
     hil_waiver_ref: null,
-    anchors: ["mcp/lib/physical-sensitive-material.js"],
+    anchors: ["mcp/core/physical-sensitive-material-contracts.js"],
   });
   assert.equal(safe.dependency, "vault_tool:classic_trace_recovery_v1");
 

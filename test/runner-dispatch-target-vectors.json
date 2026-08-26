@@ -1,0 +1,46 @@
+[
+  {
+    "asset": { "kind": "repo", "assetKey": "acme/api" },
+    "expected": {
+      "target": "https://github.com/acme/api.git",
+      "targetDomain": "repo-api-353c2715",
+      "targetKind": "repo"
+    }
+  },
+  {
+    "asset": { "kind": "repo", "assetKey": "open-source/security.tool" },
+    "expected": {
+      "target": "https://github.com/open-source/security.tool.git",
+      "targetDomain": "repo-security.tool-18367543",
+      "targetKind": "repo"
+    }
+  },
+  {
+    "asset": {
+      "kind": "contract",
+      "assetKey": "eip155:1:0x1234567890abcdef1234567890abcdef12345678",
+      "chainFamily": "evm",
+      "chainId": 1,
+      "contractAddress": "0x1234567890aBCDEF1234567890aBcdef12345678"
+    },
+    "expected": {
+      "target": "eip155:1:0x1234567890abcdef1234567890abcdef12345678",
+      "targetDomain": "sc-evm-1-12345678-424e3135",
+      "targetKind": "contract"
+    }
+  },
+  {
+    "asset": {
+      "kind": "contract",
+      "assetKey": "eip155:8453:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      "chainFamily": "evm",
+      "chainId": 8453,
+      "contractAddress": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    },
+    "expected": {
+      "target": "eip155:8453:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      "targetDomain": "sc-evm-8453-abcdefab-553f729c",
+      "targetKind": "contract"
+    }
+  }
+]

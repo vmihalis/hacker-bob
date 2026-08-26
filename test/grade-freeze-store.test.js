@@ -24,10 +24,10 @@ const {
   resolveBucket,
   writeGradeFreezeBundleSync,
   _setSyncPutObjectForTest,
-} = require("../mcp/lib/grade-freeze-store.js");
+} = require("../mcp/core/grade-freeze-store.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function sampleDocument() {
   return {

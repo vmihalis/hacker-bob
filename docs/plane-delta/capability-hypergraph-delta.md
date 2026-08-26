@@ -30,7 +30,7 @@ Legend: ✅ keep · ✏️ revised · ✂️ split · ➕ new (verification-surf
 |----|-------|---|---------|--------------|
 | **S15** | OSS-container substrate (register) | Δ1 | ➕ | **Missing S-node.** Register shipped Plane-O substrate (`bob_repo_prepare_env`/`repo_docker_run`/`init_repo_session`, `--network none`, init-never-clones, `/work` staging). Fixes the systemic S6 mislabel. |
 | **S12** | Test-manifest + consumer-registration integrity | Δ1 | ✏️ | Extend `test/mcp-test-discovery.test.js` (drop `mcp-` filter) + register reachability fields in `stigmergic-consumers.js`. **Absorbs demoted X9.** Same-PR fast-follow to I9, not a strict blocker. |
-| **S13** | Untrusted-content envelope | Δ2 | ✅ | new `mcp/lib/untrusted-envelope.js` (nonce like `session-cap.js`). pred S7→**S10**. |
+| **S13** | Untrusted-content envelope | Δ2 | ✅ | new `mcp/core/untrusted-envelope.js` (nonce like `session-cap.js`). pred S7→**S10**. |
 | **S14** | In-container differential checkout | Δ2 | ✏️ | NOT an init clone-flag (violates O-P1). New `git checkout`/`apply` on `/work` mount + shallow-clone guard. pred→**S15**. |
 | **S11** | Cross-session label/metric store | Δ4 | ✏️ | Extend **existing** cross-session substrate (`pipeline-analytics.js` `cross_session`, `cross_session_read` authority, `sensitive-material.js`). re-typed net-new→adopt; no new dir. |
 

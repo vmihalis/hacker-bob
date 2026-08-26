@@ -22,25 +22,25 @@ const {
   attackSurfacePath,
   sessionDir,
   statePath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readAgentRuns,
   latestAgentRunForWaveAgent,
   settleAgentRunFromHandoff,
   syntheticTaskIdForWaveAssignment,
-} = require("../mcp/lib/agent-runs.js");
+} = require("../mcp/core/session/agent-runs.js");
 const {
   startWave,
   writeWaveHandoff,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   buildWaveReadiness,
   loadWaveArtifacts,
   mergeWaveHandoffsInternal,
-} = require("../mcp/lib/wave-handoff-store.js");
-const { readAssignmentBrief } = require("../mcp/lib/assignment-brief.js");
-const { logTechniqueAttempt } = require("../mcp/lib/technique-packs.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/waves/wave-handoff-store.js");
+const { readAssignmentBrief } = require("../mcp/core/session/assignment-brief.js");
+const { logTechniqueAttempt } = require("../mcp/core/dispatch/technique-packs.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -57,7 +57,7 @@ function withTempHome(fn) {
 
 function seedSessionState(domain) {
   fs.mkdirSync(sessionDir(domain), { recursive: true });
-  writeFileAtomic(statePath(domain), `${JSON.stringify({
+  const state = {
     target: domain,
     target_url: `https://${domain}`,
     deep_mode: false,
@@ -81,7 +81,35 @@ function seedSessionState(domain) {
     verification_attempt_id: null,
     verification_snapshot_hash: null,
     verification_entered_at: null,
-  }, null, 2)}\n`);
+  };
+  writeFileAtomic(statePath(domain), `${JSON.stringify(state, null, 2)}\n`);
+  const nucleusPath = require("../mcp/core/io/paths.js").sessionNucleusPath(domain);
+  if (!fs.existsSync(nucleusPath)) {
+    const { buildSessionNucleus } = require("../mcp/core/governance/index.js");
+    const { writeJsonDocument } = require("../mcp/core/io/storage.js");
+    const nucleus = buildSessionNucleus({
+      target_domain: domain,
+      target_url: state.target_url,
+      scope_policy: {
+        target_url: state.target_url,
+        checkpoint_mode: state.checkpoint_mode,
+        deep_mode: state.deep_mode,
+        block_internal_hosts: state.block_internal_hosts ?? false,
+        allow_internal_hosts: false,
+      },
+      egress_identity: {
+        egress_profile: state.egress_profile,
+        egress_region: state.egress_region,
+        proxy_configured: state.proxy_configured,
+        egress_profile_identity_hash: state.egress_profile_identity_hash,
+        egress_profile_identity_version: state.egress_profile_identity_version,
+      },
+      auth_context: { auth_status: state.auth_status || "pending" },
+      operator_constraint: {},
+      lifecycle_state: state.lifecycle_state || "SETUP",
+    });
+    writeJsonDocument(nucleusPath, nucleus);
+  }
 }
 
 function seedSurfaces(domain, surfaces) {
@@ -248,8 +276,8 @@ test("start-recording on an already-settled run is a no-op (does not resurrect r
       content: "# Handoff\n\nbody",
     }));
 
-    const { loadWaveAssignments } = require("../mcp/lib/assignments.js");
-    const { readHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { loadWaveAssignments } = require("../mcp/core/session/assignments.js");
+    const { readHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
     const assignment = loadWaveAssignments(domain, 1).assignmentByAgent.get("a1");
     const handoffJson = JSON.parse(fs.readFileSync(
       path.join(sessionDir(domain), "handoff-w1-a1.json"), "utf8",

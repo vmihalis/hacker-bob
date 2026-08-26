@@ -17,10 +17,11 @@ const { spawn } = require("child_process");
 const {
   createMcpMessageHandler,
   createStdioServer,
-} = require("../mcp/lib/transport.js");
+} = require("../mcp/core/io/transport.js");
 
 const SERVER_PATH = path.join(__dirname, "..", "mcp", "server.js");
 const VALID_TOKEN = "a".repeat(64);
+const ROOT_PACKAGE_VERSION = require("../package.json").version;
 
 function fakeTools() {
   return [];
@@ -51,6 +52,7 @@ test("caller-auth gate is fully inert when BOB_AGENTCORE is unset (local/dev/CI 
   assert.equal(exitCalls.length, 0, "must never call exit when enforcement is inactive");
   assert.equal(sent.length, 1, "must respond normally when enforcement is inactive");
   assert.equal(sent[0].result.serverInfo.name, "hacker-bob");
+  assert.equal(sent[0].result.serverInfo.version, ROOT_PACKAGE_VERSION);
 });
 
 test("caller-auth gate is inert when BOB_AGENTCORE is set but not exactly \"1\"", async () => {
@@ -90,6 +92,13 @@ test("caller-auth gate accepts a well-formed 64-lowercase-hex token and dispatch
   assert.equal(exitCalls.length, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].result.serverInfo.name, "hacker-bob");
+});
+
+test("Y-D25: initialize response version always equals the root package.json version, never a hardcoded literal", async () => {
+  const { handleMessage, sent } = harness({ env: {} });
+  await handleMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  assert.equal(sent[0].result.serverInfo.version, ROOT_PACKAGE_VERSION);
+  assert.notEqual(ROOT_PACKAGE_VERSION, "1.0.0", "the fixture must exercise a real, non-placeholder version");
 });
 
 test("caller-auth gate only checks the FIRST message: a valid first message clears the gate for later messages regardless of later env drift", async () => {

@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   capabilityFrictionPayloads,
   aggregateFrictionByPack,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 
 function frictionPayload(surfaceId, wantedTool, extra = {}) {
   return {

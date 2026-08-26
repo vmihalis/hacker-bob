@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const update = require("../mcp/lib/update-check.js");
+const update = require("../mcp/core/update-check.js");
 
 function tempWorkspace() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-update-test-"));

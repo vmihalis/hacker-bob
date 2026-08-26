@@ -3,7 +3,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { FANOUT_ROLE_REGISTRY } = require("../../mcp/lib/nested-spawn.js");
+require("../../mcp/tools/tool-registry.js");
+const { FANOUT_ROLE_REGISTRY } = require("../../mcp/core/session/nested-spawn.js");
 
 const MARKER = "BOB_AGENT_RUN_DONE";
 const CHILD_MARKER = "BOB_CHILD_CELL_DONE";
@@ -223,7 +224,7 @@ function projectRoot() {
   return process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..", "..");
 }
 
-// This hook loads mcp/lib/paths.js in-process, and paths.js freezes the session
+// This hook loads mcp/core/io/paths.js in-process, and paths.js freezes the session
 // root from the environment at first require. The installer gives each
 // workspace its OWN session root so two workspaces can run engines
 // concurrently; if this hook resolved the default root instead, it would look
@@ -247,27 +248,27 @@ function seedConfiguredSessionsRoot() {
 }
 
 function loadAgentCompletion() {
-  return require(path.join(projectRoot(), "mcp", "lib", "agent-run-completion.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "agent-run-completion.js"));
 }
 
 function loadAgentRuns() {
-  return require(path.join(projectRoot(), "mcp", "lib", "agent-runs.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "agent-runs.js"));
 }
 
 function loadAssignments() {
-  return require(path.join(projectRoot(), "mcp", "lib", "assignments.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "session", "assignments.js"));
 }
 
 function loadPaths() {
-  return require(path.join(projectRoot(), "mcp", "lib", "paths.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "io", "paths.js"));
 }
 
 function loadHandoffSigningKey() {
-  return require(path.join(projectRoot(), "mcp", "lib", "handoff-signing-key.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "ledger-integrity", "index.js"));
 }
 
 function loadWaveHandoffStore() {
-  return require(path.join(projectRoot(), "mcp", "lib", "wave-handoff-store.js"));
+  return require(path.join(projectRoot(), "mcp", "core", "waves", "wave-handoff-store.js"));
 }
 
 // Step 2a: the maximum number of `failed` rows the stop hook will append for a

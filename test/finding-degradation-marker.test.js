@@ -15,14 +15,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
 const {
   computeFindingDedupeKey,
   normalizeFindingRecord,
   normalizeSignatureVerificationStatus,
-} = require("../mcp/lib/finding-contracts.js");
-const { SIGNATURE_VERIFICATION_STATUS_VALUES } = require("../mcp/lib/constants.js");
+} = require("../mcp/core/finding-contracts.js");
+const { SIGNATURE_VERIFICATION_STATUS_VALUES } = require("../mcp/core/constants/finding-vocabulary.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -116,6 +116,9 @@ test("a producer-marked finding projects the marker through findingPayloadsFromC
       severity: "medium",
       cwe: "CWE-639",
       endpoint: BASE_FINDING.endpoint,
+      request_method: "GET",
+      injection_point: "path:order_id",
+      auth_profile: "attacker",
       description: BASE_FINDING.description,
       proof_of_concept: BASE_FINDING.proof_of_concept,
       response_evidence: "Cross-account order returned in attacker session",

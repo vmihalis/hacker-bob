@@ -71,6 +71,8 @@ ENV PATH=/opt/agentcore-venv/bin:$PATH
 # --- hacker-bob engine (UNMODIFIED) ---
 WORKDIR /opt/hacker-bob
 COPY mcp/ ./mcp/
+COPY infra/aws/hacker-bob-stack/finding-artifact.schema.json ./infra/aws/hacker-bob-stack/finding-artifact.schema.json
+COPY packages/bob-instrument-contracts/ ./packages/bob-instrument-contracts/
 # Schema mirrors packages/bob-diff-review/src/bob-runner.ts buildMcpConfig().
 RUN printf '{"mcpServers":{"hacker-bob":{"command":"node","args":["/opt/hacker-bob/mcp/server.js"]}}}' > /opt/hacker-bob/mcp/agentcore-mcp-config.json
 COPY .claude/ ./.claude/
@@ -80,8 +82,8 @@ COPY .claude/ ./.claude/
 # .claude/settings.json is NEVER touched by this Dockerfile (it stays flag-off so
 # `npm run check:settings` remains green for normal dev off this image). The
 # generator's require graph (adapters/claude/config.js, scripts/merge-claude-config.js,
-# scripts/lib/claude-role-renderer.js, scripts/lib/package-policy.js, plus the mcp/lib/*
-# modules already copied above) reaches mcp/lib/scope.js (via tool-registry.js ->
+# scripts/lib/claude-role-renderer.js, scripts/lib/package-policy.js, plus the mcp/*
+# modules already copied above) reaches mcp/core/scope.js (via tool-registry.js ->
 # tools/index.js), which requires `psl` — a regular (non-dev) dependency. So the bake
 # must run AFTER `npm ci --omit=dev` has installed it, not before.
 COPY scripts/ ./scripts/

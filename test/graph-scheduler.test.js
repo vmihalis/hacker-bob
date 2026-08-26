@@ -19,25 +19,25 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
   appendHypothesisProposal,
   appendTransitionProposal,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   materializeTaskGraph,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   appendContract,
-} = require("../mcp/lib/contracts.js");
+} = require("../mcp/core/contract/index.js");
 const {
   GRAPH_SCHEDULED_KINDS,
   selectNextExecutableNodes,
-} = require("../mcp/lib/graph-scheduler.js");
+} = require("../mcp/core/waves/graph-scheduler.js");
 const {
   GRAPH_SCHEDULER_DECISION_KIND_VALUES,
   appendGraphSchedulerDecision,
@@ -46,7 +46,7 @@ const {
   readSchedulerDecisions,
   scheduleTasksFromQueue,
   isGraphSchedulerDecisionKind,
-} = require("../mcp/lib/scheduler-decisions.js");
+} = require("../mcp/core/waves/scheduler-decisions.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -316,7 +316,7 @@ test("graph-scheduler: critical priority overrides ts/node_id ordering", () => {
     // Emit a contracted→ready transition for the b node with priority=critical
     // so the materializer picks up the higher priority. The state stays
     // dispatch-eligible.
-    const { appendNodeTransition } = require("../mcp/lib/task-graph-events.js");
+    const { appendNodeTransition } = require("../mcp/core/waves/task-graph-events.js");
     appendNodeTransition({
       target_domain: domain,
       node_id: idB,
@@ -446,7 +446,7 @@ test("graph_hash_drift refusal: tool throws structured error when selection-time
     const domain = "x9-force-drift.example.com";
     seedSession(domain);
     seedContractedHypothesis(domain, "HP-force-drift");
-    const graphScheduler = require("../mcp/lib/graph-scheduler.js");
+    const graphScheduler = require("../mcp/core/waves/graph-scheduler.js");
     const originalSelect = graphScheduler.selectNextExecutableNodes;
     try {
       // Override to return a selection with a deliberately wrong source_graph_hash.
@@ -553,7 +553,7 @@ test("wave-scheduler still functions for Surface + Claim nodes after X.9 lands (
       },
     });
     // Materialize the FRONTIER (task-queue.json), not the task graph.
-    const { materializeFrontier } = require("../mcp/lib/frontier-materializer.js");
+    const { materializeFrontier } = require("../mcp/core/frontier/frontier-materializer.js");
     materializeFrontier(domain, {
       write: true,
       now: new Date("2026-05-26T03:02:00.000Z"),
@@ -588,7 +588,7 @@ test("bob_schedule_graph_nodes dispatches a contracted Hypothesis node via prepa
     // Explicit off-profile (no in-flight cap) so capacity_limit equals the
     // requested capacity through the single-cap path; the default's sized in-flight
     // cap (per-kind split) is exercised by the D2 test instead.
-    const { writeQueuePolicy: writeLean } = require("../mcp/lib/queue-policy.js");
+    const { writeQueuePolicy: writeLean } = require("../mcp/core/io/queue-policy.js");
     writeLean(domain, { max_concurrent_evaluators: null });
     const nodeId = seedContractedHypothesis(domain, "HP-e2e");
     const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
@@ -628,8 +628,8 @@ test("bob_schedule_graph_nodes reserves each dispatched closure cell in the spaw
     // the budget binds ACROSS drain cycles (without it, every cycle re-reads the
     // same reservedSpawnTotal=0 and could re-dispatch up to the budget forever).
     const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY: DQP } =
-      require("../mcp/lib/queue-policy.js");
-    const { readSpawnLedgerEntries, spawnLedgerTotal } = require("../mcp/lib/spawn-ledger.js");
+      require("../mcp/core/io/queue-policy.js");
+    const { readSpawnLedgerEntries, spawnLedgerTotal } = require("../mcp/core/session/spawn-ledger.js");
     writeQueuePolicy(domain, normalizeQueuePolicy({ ...DQP, max_total_spawned_agents: 50 }));
 
     const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
@@ -654,7 +654,7 @@ test("bob_schedule_graph_nodes closure dispatch with no governor writes no ledge
     const domain = "x9-closure-ledger-off.example.com";
     seedSession(domain);
     seedContractedHypothesis(domain, "HP-ledger-off");
-    const { readSpawnLedgerEntries } = require("../mcp/lib/spawn-ledger.js");
+    const { readSpawnLedgerEntries } = require("../mcp/core/session/spawn-ledger.js");
     const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
       target_domain: domain,
       capacity: 1,
@@ -791,7 +791,7 @@ test("graph-scheduler considers `contracted` AND `ready` per X.8 dispatch-eligib
     const contractedId = seedContractedHypothesis(domain, "HP-contracted");
     // Add a second node and promote it to `ready` explicitly.
     const readyId = seedContractedHypothesis(domain, "HP-ready");
-    const { appendNodeTransition } = require("../mcp/lib/task-graph-events.js");
+    const { appendNodeTransition } = require("../mcp/core/waves/task-graph-events.js");
     appendNodeTransition({
       target_domain: domain,
       node_id: readyId,
@@ -812,7 +812,7 @@ test("graph-scheduler ignores nodes in terminal states (finalized / abandoned)",
     seedSession(domain);
     const nodeId = seedContractedHypothesis(domain, "HP-terminal");
     // Promote through the full lifecycle to finalized.
-    const { appendNodeTransition } = require("../mcp/lib/task-graph-events.js");
+    const { appendNodeTransition } = require("../mcp/core/waves/task-graph-events.js");
     appendNodeTransition({
       target_domain: domain,
       node_id: nodeId,
@@ -867,28 +867,28 @@ test("graph-scheduler ignores nodes in terminal states (finalized / abandoned)",
 
 const {
   compareGraphCandidates,
-} = require("../mcp/lib/graph-scheduler.js");
+} = require("../mcp/core/waves/graph-scheduler.js");
 const {
   buildCellBeliefRank,
-} = require("../mcp/lib/belief/cell-scheduler-priority.js");
+} = require("../mcp/core/belief/cell-scheduler-priority.js");
 const {
   appendCellProposal: appendCellProposalE1,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   cellNodeId: cellNodeIdE1,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   buildCellCoverageContract: buildCellCoverageContractE1,
-} = require("../mcp/lib/cell-contract.js");
+} = require("../mcp/core/contract/index.js");
 const {
   materializeFrontier: materializeFrontierE1,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   appendEdges: appendEdgesE1,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   DEFAULT_QUEUE_POLICY: DEFAULT_QUEUE_POLICY_E1,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 
 const PRIORITY_RANK_E1 = new Map([
   ["critical", 0],
@@ -1149,7 +1149,7 @@ test("D2 per-kind cap split: max_concurrent_evaluators scales cells while transi
 
   // On-default: the shipped default's sized in-flight cap (128) scales the cell kind
   // while transition/hypothesis stay at the graph cap (the per-kind split is on).
-  const { DEFAULT_QUEUE_POLICY: DQP_D2 } = require("../mcp/lib/queue-policy.js");
+  const { DEFAULT_QUEUE_POLICY: DQP_D2 } = require("../mcp/core/io/queue-policy.js");
   const onDefault = selectNextExecutableNodes("d2-split.example.com", DQP_D2, 2, { document });
   assert.equal(onDefault.selected.filter((n) => n.kind === "cell").length, 6, "the on-default scales all 6 cells (cap 128 > 6)");
   assert.equal(onDefault.selected.filter((n) => n.kind !== "cell").length, 2, "transition/hypothesis stay at the graph cap 2");

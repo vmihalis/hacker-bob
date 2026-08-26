@@ -18,25 +18,25 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
-const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
-const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
-const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
+const { buildClaimFreeze } = require("../mcp/core/claims/claim-freeze.js");
+const { writeVerificationRound } = require("../mcp/core/verification/verification-round-store.js");
+const { writeEvidencePacks } = require("../mcp/core/evidence.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { appendCandidateClaim } = require("../mcp/core/claims/claims.js");
+const { ensureHandoffSigningKey, signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
+const { OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   handoffSigningPrivateKeyPath,
   reportMarkdownPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
-const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/lib/sandbox-isolation-attest.js");
-const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/io/paths.js");
+const { SANDBOX_ATTESTATION_MODE_ENV } = require("../mcp/core/ledger-integrity/index.js");
+const { resetForTests: resetMaterializationDebounce } = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function hex(char) { return char.repeat(64); }
 const WEB_SURFACE = "surface:billing-profile";
@@ -89,7 +89,7 @@ function seedStandaloneWebFinding(domain, { severity = "high" } = {}) {
   ensureHandoffSigningKey(domain);
   recordFindingTool.handler({
     target_domain: domain, title: "IDOR on billing profile", severity, cwe: "CWE-639",
-    endpoint: "https://victim.example/api/billing/1", description: "Tenant boundary allows cross-account view",
+    endpoint: "https://victim.example/api/billing/1", request_method: "GET", injection_point: "path:billing_id", description: "Tenant boundary allows cross-account view",
     proof_of_concept: "GET /api/billing/1 returns another tenant payload",
     response_evidence: "Cross-tenant billing payload", impact: "Cross-tenant billing disclosure",
     validated: true, auth_profile: "attacker", surface_id: WEB_SURFACE,

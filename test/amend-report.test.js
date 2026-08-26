@@ -13,13 +13,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const amendReportTool = require("../mcp/lib/tools/amend-report.js");
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
+const amendReportTool = require("../mcp/tools/amend-report.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
 const {
   reportAmendmentsJsonlPath,
   reportMarkdownPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

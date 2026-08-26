@@ -31,13 +31,13 @@ const {
   appendFrontierEvent,
   FRONTIER_EVENTS_MAX_RECORDS,
   normalizeFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendHypothesisProposal,
   appendNodeTransition,
   appendTransitionProposal,
   TASK_GRAPH_NODE_ID_PREFIX,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 const {
   DEFAULT_NODE_PRIORITY,
   LEDGER_PRESSURE_REFUSE_THRESHOLD,
@@ -52,20 +52,20 @@ const {
   summarizeTaskGraph,
   surfaceNodeId,
   transitionNodeId,
-} = require("../mcp/lib/task-graph-materializer.js");
+} = require("../mcp/core/waves/task-graph-materializer.js");
 const {
   pendingDomains,
   resetForTests,
   scheduleMaterialization,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   withSessionLock,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   frontierEventsJsonlPath,
   taskGraphPath,
-} = require("../mcp/lib/paths.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/core/io/paths.js");
+const { TOOL_HANDLERS } = require("../mcp/tools/tool-registry.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -714,7 +714,7 @@ test("bob_read_task_graph refuses an unknown view value", () => {
 
 // ─── Node id namespace disambiguation per pre-flight finding ─────────────
 
-test("TaskGraph node ids never collide with mcp/lib/surface-graph.js node ids", () => {
+test("TaskGraph node ids never collide with mcp/core/frontier/surface-graph.js node ids", () => {
   // The pre-flight sweep called out that mcp/lib/surface-graph.js uses bare
   // `node_id` strings for a separate adjacency graph. The TG- prefix is the
   // contract that prevents cross-tool joins from confusing the two

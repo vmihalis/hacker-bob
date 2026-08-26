@@ -16,18 +16,18 @@ const path = require("node:path");
 
 const {
   resolveReportFinalizationHashes,
-} = require("../mcp/lib/report-finalize.js");
+} = require("../mcp/core/report-finalize.js");
 const {
   ToolError,
   ERROR_CODES,
   errorEnvelope,
-} = require("../mcp/lib/envelope.js");
+} = require("../mcp/core/io/envelope.js");
 const {
   reportMarkdownPath,
   evidencePackPaths,
   verificationRoundPaths,
   gradeArtifactPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -115,12 +115,12 @@ test("All 6 STATE_CONFLICT remediation backfills are present in report-finalize.
   // ToolError constructions; the count must be ≥ 5 in report-finalize.js
   // alone (one per missing-artifact gate).
   const root = path.join(__dirname, "..");
-  const finalizeSrc = fs.readFileSync(path.join(root, "mcp", "lib", "report-finalize.js"), "utf8");
+  const finalizeSrc = fs.readFileSync(path.join(root, "mcp", "core", "report-finalize.js"), "utf8");
   const remediationCount = (finalizeSrc.match(/{\s*remediation:/g) || []).length;
   assert.ok(remediationCount >= 5,
     `expected ≥5 ToolError remediation options in report-finalize.js, found ${remediationCount}`);
 
-  const lifecycleSrc = fs.readFileSync(path.join(root, "mcp", "lib", "lifecycle-gates.js"), "utf8");
+  const lifecycleSrc = fs.readFileSync(path.join(root, "mcp", "core", "session", "lifecycle-gates.js"), "utf8");
   // The gateOpenFrontierToClaimFreeze blocker uses `remediation:` as a key
   // on the blocker object (which is later projected into the ToolError
   // options by advanceSession).

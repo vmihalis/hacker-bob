@@ -5,13 +5,47 @@ const path = require("node:path");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
-// Single source of truth for the npm pack-size tripwire. Imported by both
-// test/package.test.js and scripts/release-check.js so the ceiling cannot drift.
-// The README redesign deliberately ships every relative image, animation, and
-// reproducibility source it references; package consumers otherwise receive a
-// broken README. The resulting tarball is about 4.59 MB and leaves 2.4%
-// headroom while still catching an unexpected asset or vendored dependency.
-const CANONICAL_PACKAGE_MAX_BYTES = 4_700_000;
+// Single source of truth for the npm pack-size tripwire. Imported by BOTH
+// test/package.test.js and scripts/release-check.js so the ceiling cannot drift
+// between them (no duplicated magic number). The 921 KB docs/hacker-bob-social.png is
+// excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES). On this (core) line the lean
+// pack is larger than the public line because core ships the full
+// offensive arsenal (XSS/IDOR/CORS/OOB/nuclei producers + tools, ed25519/keyed-ledger MAC)
+// and the offensive-sandbox isolation arc (attestation + verdict gate + sc-container-exec +
+// the seven SC container runners) the public line does not. The provider-neutral physical
+// contract runtime plus the provider-neutral nested Plane-PH packages are kept within the ceiling
+// by excluding internal competitive analysis, roadmap authoring/review workbooks, and unreferenced
+// documentation screenshots along with the social-preview asset. The deliberate 3.70 MB ceiling
+// still fires early on a surprising regression (a re-added asset or vendored dependency). Bump it
+// deliberately (and only here) when a real runtime growth stream warrants it.
+// The 2026-07 Plane-PH transaction ledger added the broker-owned durable store,
+// compatibility alias, and intrinsic-poisoning defenses while retaining one
+// implementation in the tarball; that reviewed runtime growth warrants this
+// 50 KB increment and leaves less than 1.4% headroom.
+//
+// Raised to 3.85 MB for the install drift guard. Two things forced this, and the
+// docs were NOT one of them -- both engineering surveys written for that work
+// (docs/install-ownership.md 43,213 B and docs/report-md-format-facts.md 31,443 B)
+// are denied pack budget in EXCLUDED_CANONICAL_PACKAGE_FILES below rather than
+// shipped. Excluding them was measured, not assumed: it recovers only 24,723
+// compressed bytes, because ~75 KB of markdown gzips roughly 3x. What remains is:
+//   1. A PRE-EXISTING breach. The tarball was already 3,734,856 B at the branch
+//      point -- 34,856 B over the old 3.70 MB ceiling before this branch added a
+//      single byte, so `npm run test:package` was already red on main. The ceiling
+//      had been outgrown by earlier merges and the tripwire went unaddressed.
+//   2. Genuine shipped runtime growth: scripts/lib/install-drift.js (the guard
+//      itself, 27,458 B) plus the report-format contract, which by design is
+//      replicated into all four role surfaces it governs -- .claude/agents/
+//      report-writer.md, prompts/roles/reporter.md, and the codex and kimi
+//      bob-evaluate SKILL.md bundles -- at 17,911 B each.
+// Post-exclusion the lean tarball measured 3,795,479 B, so 3.85 MB left ~54 KB
+// (1.4%) of headroom. The authority-unit-of-work, exclusive storage receipts,
+// repo-host boundary, belief contract compiler, validity/lease kernel, and web
+// instrument plane are all shipped runtime rather than authoring artifacts. With
+// those surfaces present the measured lean tarball is 3,920,688 B. A deliberate
+// 4.00 MB ceiling retains ~79 KB (2.0%) of headroom while still catching a
+// re-added asset or vendored dependency.
+const CANONICAL_PACKAGE_MAX_BYTES = 4_000_000;
 
 // Explicit deny-by-default manifest for the JavaScript files installed at the
 // top level of mcp/. It is shared by install, doctor, and package tests so the
@@ -22,6 +56,10 @@ const MCP_TOP_LEVEL_RUNTIME_FILES = Object.freeze([
   "auto-signup.js",
   "redaction.js",
   "browser-driver.js",
+  "finalization-receipt.js",
+  "finding-artifact.js",
+  "projection-client.js",
+  "projection-payload.js",
 ]);
 
 const WRAPPER_PACKAGE_SPECS = Object.freeze([
@@ -65,7 +103,7 @@ const CANONICAL_RUNTIME_PACKAGE_ROOTS = Object.freeze([
   "packages/bob-instrument-principal-acl-darwin",
 ]);
 const CANONICAL_RUNTIME_OWNED_ROOTS = Object.freeze([
-  "mcp/lib",
+  "mcp",
   ...CANONICAL_RUNTIME_PACKAGE_ROOTS,
 ]);
 const CANONICAL_RUNTIME_PACKAGE_ROOT_SET = new Set(CANONICAL_RUNTIME_PACKAGE_ROOTS);
@@ -110,11 +148,11 @@ const REQUIRED_SUPPORT_SURFACES = Object.freeze([
   ".hacker-bob/bypass-tables/oauth-oidc.txt",
   "bin/hacker-bob.js",
   "mcp/server.js",
-  "mcp/lib/bob-export.js",
-  "mcp/lib/cve-feed-parser.js",
-  "mcp/lib/cve-scope-matcher.js",
-  "mcp/lib/egress-profiles.js",
-  "mcp/lib/update-check.js",
+  "mcp/core/bob-export.js",
+  "mcp/domains/repo/cve-feed-parser.js",
+  "mcp/domains/repo/cve-scope-matcher.js",
+  "mcp/core/egress-profiles.js",
+  "mcp/core/update-check.js",
   "docs/provider-authoring.md",
   "prompts/playbooks/C2_doc_vs_behavior.md",
   "prompts/playbooks/C4_multi_account_differential.md",
@@ -130,6 +168,11 @@ const REQUIRED_SUPPORT_SURFACES = Object.freeze([
 // not merely exist beside the npm package. Source and destination are explicit
 // so lifecycle ownership never expands to an operator's whole docs/ tree.
 const CANONICAL_INSTALL_SUPPORT_FILES = Object.freeze([
+  Object.freeze({
+    id: "finding_artifact_schema",
+    source: "infra/aws/hacker-bob-stack/finding-artifact.schema.json",
+    destination: "infra/aws/hacker-bob-stack/finding-artifact.schema.json",
+  }),
   Object.freeze({
     id: "physical_provider_authoring",
     source: "docs/provider-authoring.md",
@@ -161,10 +204,10 @@ const OPTIONAL_PROVIDER_EXCLUDED_PACKAGE_ROOTS = Object.freeze([
 const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   ...STALE_HOOK_SCRIPT_NAMES.map((name) => `.claude/hooks/${name}`),
   // Internal analysis is useful in the source tree but is not runtime or end-user package
-  // documentation. The media captures are referenced only by docs/media/README.md and are not
-  // embedded by the shipped README. The offline guide is retained in the source tree as an
-  // explicitly labelled v1.3.5/pre-v2 historical snapshot, but does not describe the installed
-  // v2 runtime and therefore must not consume canonical-package budget.
+  // documentation. README presentation media remains available in the source repository and on
+  // GitHub, but is not runtime material and must not consume canonical-package budget. The offline
+  // guide is retained in the source tree as an explicitly labelled v1.3.5/pre-v2 historical
+  // snapshot, but does not describe the installed v2 runtime.
   "docs/COMPETITOR_ANALYSIS.md",
   "docs/COMPETITOR_ANALYSIS_APPENDIX.md",
   "docs/LLM_AGENT_SECURITY_LANDSCAPE_2026.md",
@@ -181,6 +224,22 @@ const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   "docs/media/doctor-ok.png",
   "docs/media/evaluate-start.png",
   "docs/media/status-fresh.png",
+  "docs/media/hacker-bob-demo.gif",
+  "docs/media/hacker-bob-demo.tape",
+  "docs/media/hacker-bob-doctor-demo.gif",
+  "docs/media/hacker-bob-doctor-demo.tape",
+  "docs/media/hacker-bob-receipts-demo.gif",
+  "docs/media/hacker-bob-receipts-demo.sh",
+  "docs/media/hacker-bob-receipts-demo.tape",
+  "docs/media/readme-chapter-deploy.svg",
+  "docs/media/readme-chapter-operate.svg",
+  "docs/media/readme-chapter-proof.svg",
+  "docs/media/readme-community-header.svg",
+  "docs/media/readme-contributing-header.svg",
+  "docs/media/readme-footer.svg",
+  "docs/media/readme-hero.png",
+  "docs/media/readme-security-header.svg",
+  "docs/media/readme-signal-deck.svg",
   "docs/hacker-bob-offline-guide.pdf",
   // The 921 KB social-preview card is a web/marketing asset (referenced only by the
   // non-packed site/ and GitHub's social-preview, never by the installed runtime). It
@@ -292,10 +351,11 @@ function isPackableBobResource(file) {
 
 function isPackableMcpRuntimeFile(file) {
   if (typeof file !== "string") return false;
-  if (MCP_TOP_LEVEL_RUNTIME_FILES.some((name) => file === `mcp/${name}`)) return true;
-  if (/^mcp\/lib\/(?:[^/]+\/)*[^/]+\.js$/.test(file)) return true;
-  return file === "mcp/lib/fuzz/bob-multitu-build.sh"
-    || file === "mcp/lib/offensive-image.json";
+  if (/^mcp\/[^/]+\.js$/.test(file)) return true;
+  if (/^mcp\/(?:core|domains|tools|fuzz)\/(?:[^/]+\/)*[^/]+\.js$/.test(file)) return true;
+  if (/^mcp\/lib\/[^/]+\.js$/.test(file)) return true;
+  return file === "mcp/fuzz/bob-multitu-build.sh"
+    || file === "mcp/offensive-image.json";
 }
 
 function isPackedTextFile(file) {
@@ -360,7 +420,7 @@ function expectedCanonicalFiles(root = DEFAULT_ROOT) {
 function canonicalInstalledRuntimeFiles(root = DEFAULT_ROOT) {
   return Object.freeze(Array.from(new Set([
     ...MCP_TOP_LEVEL_RUNTIME_FILES.map((name) => `mcp/${name}`),
-    ...sourceTreeFiles(root, "mcp/lib").filter(isPackableMcpRuntimeFile),
+    ...sourceTreeFiles(root, "mcp").filter(isPackableMcpRuntimeFile),
     ...CANONICAL_RUNTIME_PACKAGE_ROOTS.flatMap((relativeRoot) => (
       sourceTreeFiles(root, relativeRoot).filter(isCanonicalRuntimePackageFile)
     )),

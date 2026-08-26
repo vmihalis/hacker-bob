@@ -36,44 +36,44 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const advanceSessionTool = require("../mcp/lib/tools/advance-session.js");
-const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
-const initRepoSessionTool = require("../mcp/lib/tools/init-repo-session.js");
-const repoCheckTool = require("../mcp/lib/tools/repo-check.js");
-const repoInventoryTool = require("../mcp/lib/tools/repo-inventory.js");
-const repoPrepareEnvTool = require("../mcp/lib/tools/repo-prepare-env.js");
-const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
-const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
-const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const advanceSessionTool = require("../mcp/tools/advance-session.js");
+const finalizeReportTool = require("../mcp/tools/finalize-report.js");
+const initRepoSessionTool = require("../mcp/tools/repo/init-repo-session.js");
+const repoCheckTool = require("../mcp/tools/repo/repo-check.js");
+const repoInventoryTool = require("../mcp/tools/repo/repo-inventory.js");
+const repoPrepareEnvTool = require("../mcp/tools/repo/repo-prepare-env.js");
+const scheduleTasksTool = require("../mcp/tools/schedule-tasks.js");
+const writeEvidencePacksTool = require("../mcp/tools/write-evidence-packs.js");
+const writeGradeVerdictTool = require("../mcp/tools/write-grade-verdict.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
+const writeVerificationRoundTool = require("../mcp/tools/write-verification-round.js");
 
 const {
   appendCandidateClaim,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   buildClaimFreeze,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   readReportSnapshots,
-} = require("../mcp/lib/report-snapshots.js");
+} = require("../mcp/core/report-snapshots.js");
 const {
   finalVerificationHash,
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   claimFreezePath,
   evidencePackPaths,
@@ -86,7 +86,7 @@ const {
   surfaceIndexPath,
   taskQueuePath,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   seedGenuineReproPair,
 } = require("./helpers/repro-run-pair.js");

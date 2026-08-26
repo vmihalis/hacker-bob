@@ -8,22 +8,31 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  CALLER_PROOF_BUNDLE_KINDS,
+  PROOF_BUNDLE_KINDS,
   normalizeProofBundlesDocument,
   writeProofBundles,
-} = require("../mcp/lib/proof-bundle.js");
+} = require("../mcp/core/proof-bundle.js");
 const {
   computeInvariantRunHash,
   invariantFoundryResultHash,
   verifyInvariantDifferential,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   verifyReproReproduction,
-} = require("../mcp/lib/repro-replay-verifier.js");
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/domains/repo/repro-replay-verifier.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
+const {
+  OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+} = require("../mcp/core/differential/index.js");
+const {
+  hashCanonicalJson,
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   pipelineEventsJsonlPath,
   proofBundlePaths,
@@ -33,13 +42,13 @@ const {
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const { persistingRunner } = require("./helpers/repro-run-pair.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
@@ -61,6 +70,147 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+test("observed invariant canary is a registered internal proof-bundle kind", () => {
+  assert.ok(PROOF_BUNDLE_KINDS.includes(OBSERVED_INVARIANT_CANARY_PROOF_MODE));
+  assert.equal(CALLER_PROOF_BUNDLE_KINDS.includes(OBSERVED_INVARIANT_CANARY_PROOF_MODE), false);
+});
+
+function canaryProofRecord({ findingId = "F-1", overrides = {}, recomputeHash = true } = {}) {
+  const body = {
+    version: 1,
+    proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+    design_hash: OBSERVED_INVARIANT_CANARY_DESIGN_HASH,
+    finding_id: findingId,
+    surface: {
+      surface_id: "surface-canary",
+      observation_target: "https://canary-proof.example.test/ai/search",
+    },
+    session_nucleus: {
+      target_domain: "canary-proof.example.test",
+      nucleus_hash: "a".repeat(64),
+      lifecycle_state: "VERIFY",
+    },
+    parsed_leaf: {
+      extractor: "secondorder_reread_json_exact_leaf_v1",
+      match: "exact_leaf",
+      canary_sha256: "b".repeat(64),
+      leaf_depth: 2,
+      positive_stdout_hash: "c".repeat(64),
+      positive_stderr_hash: "d".repeat(64),
+    },
+    control_refs: [
+      {
+        role: "positive_canary_reread",
+        ledger: "offensive_runs",
+        row_id: "so-positive-1",
+        row_hash: "1".repeat(64),
+        stdout_hash: "c".repeat(64),
+        stderr_hash: "d".repeat(64),
+      },
+      {
+        role: "decoy_silent_control",
+        ledger: "offensive_runs",
+        row_id: "so-control-1",
+        row_hash: "2".repeat(64),
+        stdout_hash: "e".repeat(64),
+        stderr_hash: "f".repeat(64),
+        decoy_sha256: "3".repeat(64),
+      },
+    ],
+    ...overrides,
+  };
+  if (recomputeHash) {
+    body.proof_hash = hashCanonicalJson(body);
+  } else if (overrides.proof_hash == null) {
+    body.proof_hash = "4".repeat(64);
+  }
+  return body;
+}
+
+function canaryProofBundle({ proofRecord = canaryProofRecord(), findingId = "F-1", overrides = {} } = {}) {
+  return {
+    finding_id: findingId,
+    bundle_kind: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+    artifacts: [{ proof_record: proofRecord }],
+    ...overrides,
+  };
+}
+
+test("observed-invariant canary proof bundle carries proof metadata and refuses forged soft rows", () => {
+  const baseSets = {
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+  };
+  const document = normalizeProofBundlesDocument({
+    version: 1,
+    target_domain: "canary-proof.example.test",
+    packs: [canaryProofBundle()],
+  }, baseSets);
+  const pack = document.packs[0];
+  assert.equal(pack.proof_mode, OBSERVED_INVARIANT_CANARY_PROOF_MODE);
+  assert.equal(pack.design_hash, OBSERVED_INVARIANT_CANARY_DESIGN_HASH);
+  assert.equal(pack.artifacts[0].proof_record.proof_mode, OBSERVED_INVARIANT_CANARY_PROOF_MODE);
+
+  const missingDesign = canaryProofRecord({ overrides: { design_hash: undefined } });
+  delete missingDesign.design_hash;
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: missingDesign })],
+    }, baseSets),
+    /proof_record\.design_hash/,
+  );
+
+  const softMode = canaryProofRecord({
+    overrides: { proof_mode: "soft_llm_verdict" },
+    recomputeHash: true,
+  });
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: softMode })],
+    }, baseSets),
+    /proof_record\.proof_mode must be observed_invariant_canary_v1/,
+  );
+
+  const wrongDesign = canaryProofRecord({
+    overrides: { design_hash: "5".repeat(64) },
+    recomputeHash: true,
+  });
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: wrongDesign })],
+    }, baseSets),
+    /design_hash does not match the registered observed_invariant_canary_v1 design/,
+  );
+
+  const tamperedHash = canaryProofRecord({
+    overrides: {
+      parsed_leaf: {
+        extractor: "secondorder_reread_json_exact_leaf_v1",
+        match: "exact_leaf",
+        canary_sha256: "6".repeat(64),
+        leaf_depth: 2,
+        positive_stdout_hash: "c".repeat(64),
+        positive_stderr_hash: "d".repeat(64),
+      },
+    },
+    recomputeHash: false,
+  });
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "canary-proof.example.test",
+      packs: [canaryProofBundle({ proofRecord: tamperedHash })],
+    }, baseSets),
+    /proof_hash does not match canonical canary proof record/,
+  );
+});
+
 function seedFinding(domain, overrides = {}) {
   return JSON.parse(recordFindingTool.handler({
     target_domain: domain,
@@ -68,6 +218,9 @@ function seedFinding(domain, overrides = {}) {
     severity: "high",
     cwe: "CWE-787",
     endpoint: "/src/parser.c",
+    request_method: "GET",
+    injection_point: "path:fixture",
+    auth_profile: "local-user",
     description: "The parser crashes on a crafted local file.",
     proof_of_concept: "Run the offline fixture replay command against the crafted input.",
     response_evidence: "ASAN reports a reproducible heap overflow in the parser.",
@@ -94,11 +247,11 @@ function seedFinding(domain, overrides = {}) {
 // compose fixtures (they render a final-reportable high finding). A real MAC-signed
 // exploited_safely positive + blocked_by_defense control + the verdict line that binds them.
 function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface-a") {
-  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
-  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+  const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
+  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/core/io/paths.js");
   const mkRow = (suffix, outcome, ch) => {
     const row = {
       version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",

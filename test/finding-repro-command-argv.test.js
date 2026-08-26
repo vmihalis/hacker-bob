@@ -12,7 +12,7 @@ const {
   normalizeFindingRecord,
   computeFindingDedupeKey,
   renderFindingMarkdownEntry,
-} = require("../mcp/lib/finding-contracts.js");
+} = require("../mcp/core/finding-contracts.js");
 
 const BASE = Object.freeze({
   id: "F-1",

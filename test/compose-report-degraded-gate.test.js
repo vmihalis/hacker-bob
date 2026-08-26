@@ -14,21 +14,21 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 const DEGRADED_SURFACE = "surface:export";
 

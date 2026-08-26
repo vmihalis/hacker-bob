@@ -27,7 +27,7 @@ const {
   assertPhysicalTrustedClockPort,
   assertPhysicalTrustedClockSample,
   samplePhysicalTrustedClock,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 
 const arrayIsArray = Array.isArray;
 const bufferIsBuffer = Buffer.isBuffer;

@@ -16,38 +16,38 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   findingPayloadsFromClaims,
-} = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/tools/record-candidate-claim.js");
 const {
   readCandidateClaims,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   claimsJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 const {
   buildRepoInventory,
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 const {
   routeSurfaces,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 const {
   advanceSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   startWave,
-} = require("../mcp/lib/waves.js");
+} = require("../mcp/core/waves/waves.js");
 const {
   materializeFrontier,
-} = require("../mcp/lib/frontier-materializer.js");
+} = require("../mcp/core/frontier/frontier-materializer.js");
 const {
   currentSurfaces,
-} = require("../mcp/lib/frontier-projections.js");
+} = require("../mcp/core/frontier/frontier-projections.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -75,6 +75,8 @@ function baseFinding(domain, overrides = {}) {
     severity: "medium",
     cwe: "CWE-639",
     endpoint: `https://${domain}/api/records/1`,
+    request_method: "GET",
+    injection_point: "path:record_id",
     description: "Changing the record identifier returns another tenant payload.",
     proof_of_concept: "GET /api/records/1 as the attacker tenant returns private fields.",
     response_evidence: "Response leaked another tenant identifier and email.",
@@ -92,6 +94,20 @@ function baseFinding(domain, overrides = {}) {
     ...overrides,
   };
 }
+
+test("write path requires continuity fields for reportable web findings", () => {
+  withTempHome(() => {
+    const domain = "continuity-required.example.com";
+    assert.throws(
+      () => recordCandidateClaimTool.handler(baseFinding(domain, {
+        request_method: undefined,
+        injection_point: undefined,
+        auth_profile: undefined,
+      })),
+      /reportable web finding requires continuity fields: request_method, injection_point, auth_profile/,
+    );
+  });
+});
 
 test("write path requires derivable cvss_inputs for medium/high/critical findings", () => {
   for (const severity of ["medium", "high", "critical"]) {

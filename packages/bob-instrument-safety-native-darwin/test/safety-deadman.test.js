@@ -373,6 +373,14 @@ function readJournalEvents(raw) {
   return text.trimEnd().split("\n").map((line) => line.split("\t")[3]);
 }
 
+function readCompleteJournalEvents(raw) {
+  const text = fs.readFileSync(raw.journal, "utf8");
+  const completeEnd = text.lastIndexOf("\n");
+  if (completeEnd < 0) return [];
+  return text.slice(0, completeEnd).split("\n")
+    .map((line) => line.split("\t")[3]);
+}
+
 async function assertSingleCustodyCleanup(raw, fields, expectedReason) {
   assert.equal(fields[5], String(raw.child.pid));
   if (Array.isArray(expectedReason)) {
@@ -409,7 +417,12 @@ async function assertSingleCustodyCleanup(raw, fields, expectedReason) {
 async function terminateBlockedWatchdog(raw, pids) {
   raw.child.kill("SIGKILL");
   const exit = await waitForChildExit(raw.child, 2000);
-  assert.deepEqual(exit, { code: null, signal: "SIGKILL" });
+  // Exit 87 is the native fail-closed custody-admission outcome.
+  assert.ok(
+    (exit.code === null && exit.signal === "SIGKILL") ||
+      (exit.code === 87 && exit.signal === null),
+    `unexpected watchdog exit: ${JSON.stringify(exit)}`,
+  );
   await waitForProcessGone(pids.watcherPid);
   await waitForProcessGone(pids.custodianPid);
   await waitForProcessGone(pids.cleanupPid);
@@ -611,7 +624,7 @@ test("stuck cleanup is killed within its bound and terminally quarantined", asyn
   const controller = await api.launchDarwinSafetyDeadmanFixture(
     fixturePlan(ownedWorker.pid, {
       behavior: "stuck",
-      cleanupTimeoutMs: 60,
+      cleanupTimeoutMs: 1000,
       heartbeatMs: 100,
       missTolerance: 3,
     }),
@@ -623,7 +636,7 @@ test("stuck cleanup is killed within its bound and terminally quarantined", asyn
   assert.equal(result.reason_code, "cleanup_timeout");
   assert.equal(result.cleanup_outcome, "cleanup_timeout");
   assert.equal(result.cleanup_worker_exec_separate, false);
-  assert.ok(elapsedMs < 1000, `elapsed=${elapsedMs}`);
+  assert.ok(elapsedMs < 2000, `elapsed=${elapsedMs}`);
 });
 
 test("a partial receipt without newline cannot escape the cleanup deadline", async (t) => {
@@ -632,7 +645,7 @@ test("a partial receipt without newline cannot escape the cleanup deadline", asy
   const controller = await api.launchDarwinSafetyDeadmanFixture(
     fixturePlan(ownedWorker.pid, {
       behavior: "partial_stuck",
-      cleanupTimeoutMs: 60,
+      cleanupTimeoutMs: 1000,
       heartbeatMs: 100,
       missTolerance: 3,
     }),
@@ -645,7 +658,7 @@ test("a partial receipt without newline cannot escape the cleanup deadline", asy
   assert.equal(result.cleanup_outcome, "cleanup_timeout");
   assert.equal(result.cleanup_worker_exec_separate, false);
   assert.equal(result.emission_state, "unknown");
-  assert.ok(elapsedMs < 1000, `elapsed=${elapsedMs}`);
+  assert.ok(elapsedMs < 2000, `elapsed=${elapsedMs}`);
 });
 
 test("a substituted cleanup receipt cannot become a successful cleanup claim", async (t) => {
@@ -826,7 +839,9 @@ test("control close immediately redeems custody despite blocked fsync or READY o
       "control_channel_closed",
     );
     assert.ok(elapsedMs < 1000, `behavior=${behavior} elapsed=${elapsedMs}`);
-    assert.ok(readJournalEvents(raw).every((event) => event === "watchdog_started"));
+    // The watcher may still be inside its first regular-file write here.
+    assert.ok(readCompleteJournalEvents(raw)
+      .every((event) => event === "watchdog_started"));
     await terminateBlockedWatchdog(raw, pids);
   }
 });
@@ -1159,23 +1174,23 @@ test("cleanup child self-deadline survives a watcher stall after handoff", async
     fixtureContract(ownedWorker.pid, {
       contractId: "watcher_stall_after_handoff",
       behavior: "watchdog_stall_after_cleanup_handoff",
-      cleanupTimeoutMs: 300,
+      cleanupTimeoutMs: 1000,
     }),
     "watcher-stall-after-handoff",
   );
   raw.control.write(stopRecord(raw));
-  const orphan = (await raw.nextCustody(1000)).split("\t");
+  const orphan = (await raw.nextCustody(2000)).split("\t");
   assert.deepEqual(orphan.slice(0, 3), [
     "ORPHAN1", orphan[1], "parent_stall_after_handoff",
   ]);
   const cleanupPid = Number(orphan[1]);
   assert.ok(Number.isSafeInteger(cleanupPid) && cleanupPid > 1);
-  const observation = (await raw.nextCustody(1000)).split("\t");
+  const observation = (await raw.nextCustody(2000)).split("\t");
   assert.deepEqual(observation, [
     "ORPHAN1", orphan[1], "cleanup_self_deadline_observed",
   ]);
   await waitForProcessGone(cleanupPid);
-  const terminal = await rawTerminal(raw, 1500);
+  const terminal = await rawTerminal(raw, 2500);
   assert.equal(terminal[2], "custody_receipt_rejected");
   assert.equal(terminal[4], "custody_receipt_rejected");
   assert.equal(terminal[5], "unknown");

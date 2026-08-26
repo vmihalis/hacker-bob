@@ -18,15 +18,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   buildBeliefWindow,
   requestEquivalenceScope,
   stableId,
-} = require("../mcp/lib/belief/belief-window.js");
-const { writeBeliefSignalScratch } = require("../mcp/lib/belief/authority.js");
-const { VERIFIED_EQUIVALENT_DISTRIBUTION } = require("../mcp/lib/belief/outcome-bridge.js");
+} = require("../mcp/core/belief/belief-window.js");
+const { writeBeliefSignalScratch } = require("../mcp/core/belief/authority.js");
+const { VERIFIED_EQUIVALENT_DISTRIBUTION } = require("../mcp/core/belief/outcome-bridge.js");
 
 const BASE_URL = "https://example.com";
 

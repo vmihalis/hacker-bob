@@ -13,8 +13,8 @@ glue); this spec is what that glue must satisfy.
 
 - **A publisher, not a new engine path.** The container runs the **existing mcp
   engine**. It selects an engine target family by `targetKind`, binds the
-  **existing** scope gate (`mcp/lib/scope.js`) and **existing** egress profiles
-  (`mcp/lib/egress-profiles.js`), and publishes the result on the **existing**
+  **existing** scope gate (`mcp/core/scope.js`) and **existing** egress profiles
+  (`mcp/core/egress-profiles.js`), and publishes the result on the **existing**
   ingest path (`POST /api/reports`, exactly as `bob-report publish`). The runner
   introduces no second grading path, no second seal, no second report surface.
   Where the contract says "the engine does X", it means the local rail's X,

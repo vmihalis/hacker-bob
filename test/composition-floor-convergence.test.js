@@ -6,12 +6,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
-const { TRANSITION_BUG_CLASS_AXIS } = require("../mcp/lib/capability-packs.js");
-const { transitionCellKey } = require("../mcp/lib/capability-pack-derivation.js");
-const { logCellCoverage, readCoverageRecordsFromJsonl } = require("../mcp/lib/coverage.js");
-const { appendTransitionProposal } = require("../mcp/lib/task-graph-events.js");
-const { handler: materializeCellFloor } = require("../mcp/lib/tools/materialize-cell-floor.js");
+const { transitionEdgeToken } = require("../mcp/core/session/assignment-brief.js");
+const { TRANSITION_BUG_CLASS_AXIS } = require("../mcp/core/capability/capability-packs.js");
+const { transitionCellKey } = require("../mcp/core/capability/capability-pack-derivation.js");
+const { logCellCoverage, readCoverageRecordsFromJsonl } = require("../mcp/core/frontier/coverage.js");
+const { appendTransitionProposal } = require("../mcp/core/waves/task-graph-events.js");
+const { handler: materializeCellFloor } = require("../mcp/tools/materialize-cell-floor.js");
 
 const PINNED_STUCK_CELL_EMISSION_THRESHOLD = 3;
 

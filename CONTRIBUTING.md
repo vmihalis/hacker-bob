@@ -58,7 +58,7 @@ npm run test:hooks
 |---|---|
 | `adapters/` | `adapters/` contains host-specific install, doctor, uninstall, render, and config ownership for Claude, Codex, Kimi, and generic MCP hosts. |
 | `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, `.claude/hooks/` | `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and `.claude/hooks/` are the generated Claude adapter surface. |
-| `prompts/roles/`, `mcp/lib/role-model.js` | `prompts/roles/` and `mcp/lib/role-model.js` define shared role contracts that adapters render into host-specific files. |
+| `prompts/roles/`, `mcp/core/dispatch/role-model.js` | `prompts/roles/` and `mcp/core/dispatch/role-model.js` define shared role contracts that adapters render into host-specific files. |
 | `mcp/` | `mcp/` contains the MCP server and runtime tool implementation. |
 | `.hacker-bob/` | `.hacker-bob/` contains neutral runtime resources copied into installs. |
 | `scripts/` | `scripts/` contains generation and config merge helpers. |

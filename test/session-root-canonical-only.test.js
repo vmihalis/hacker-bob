@@ -6,8 +6,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const paths = require("../mcp/lib/paths.js");
-const toolTelemetry = require("../mcp/lib/tool-telemetry.js");
+const paths = require("../mcp/core/io/paths.js");
+const toolTelemetry = require("../mcp/core/telemetry/tool-telemetry.js");
 
 // Build the retired legacy basename from parts so this file never embeds the
 // bare literal that the session-read-guard hook blocks.
@@ -21,14 +21,14 @@ test("legacySessionsRoot resolver is removed from paths.js", () => {
 
 test("telemetry-migration shim module is deleted", () => {
   assert.throws(
-    () => require("../mcp/lib/telemetry-migration.js"),
+    () => require.resolve("../mcp/lib/telemetry-migration.js"),
     (error) => error && error.code === "MODULE_NOT_FOUND",
   );
 });
 
 test("session-root-migration shim module is deleted", () => {
   assert.throws(
-    () => require("../mcp/lib/session-root-migration.js"),
+    () => require.resolve("../mcp/lib/session-root-migration.js"),
     (error) => error && error.code === "MODULE_NOT_FOUND",
   );
 });

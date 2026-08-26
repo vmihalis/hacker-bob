@@ -41,11 +41,11 @@ const fs = require("fs");
 const path = require("path");
 
 const { spawnCapableAgentNames } = require("../scripts/lib/claude-role-renderer.js");
-const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/core/session/nested-spawn.js");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const AGENTS_DIR = path.join(REPO_ROOT, ".claude", "agents");
-const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "lib", "tools");
+const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "tools");
 
 function readAgentFrontmatter(file) {
   const text = fs.readFileSync(file, "utf8");
@@ -183,18 +183,18 @@ test("mcp_server_internal is NOT exported from the role-model registry consumed 
   // Y-D13: mcp_server_internal is constructed inline inside
   // mcp/lib/tools/_write-base.js. It MUST NOT appear as an exported
   // bundle that any agent role could enumerate or be granted.
-  const roleModel = require("../mcp/lib/role-model.js");
+  const roleModel = require("../mcp/core/dispatch/role-model.js");
   for (const [exportName, exportedValue] of Object.entries(roleModel)) {
     if (exportName === "mcp_server_internal") {
       assert.fail(
-        `mcp/lib/role-model.js MUST NOT export mcp_server_internal directly`,
+        `mcp/core/dispatch/role-model.js MUST NOT export mcp_server_internal directly`,
       );
     }
     if (typeof exportedValue === "object" && exportedValue !== null) {
       for (const key of Object.keys(exportedValue)) {
         if (key === "mcp_server_internal") {
           assert.fail(
-            `mcp/lib/role-model.js export ${exportName} contains mcp_server_internal key (grantable bundle)`,
+            `mcp/core/dispatch/role-model.js export ${exportName} contains mcp_server_internal key (grantable bundle)`,
           );
         }
       }

@@ -26,12 +26,12 @@ const {
   TOOL_MANIFEST,
   TOOLS,
   toolNamesForRoleBundle,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 const {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
-} = require("../mcp/lib/session-authority.js");
-const browserSessions = require("../mcp/lib/browser-sessions.js");
-const browserToolsShared = require("../mcp/lib/browser-tools-shared.js");
+} = require("../mcp/core/session/session-authority.js");
+const browserSessions = require("../mcp/domains/web/browser-sessions.js");
+const browserToolsShared = require("../mcp/domains/web/browser-tools-shared.js");
 
 const BROWSER_TOOLS = Object.freeze([
   "bob_browser_session_start",
@@ -68,7 +68,7 @@ const PATCHRIGHT_SKIP_REASON =
 function loadHandler(toolName) {
   const moduleSlug = toolName.replace(/^bob_/, "").replace(/_/g, "-");
   // eslint-disable-next-line import/no-dynamic-require, node/no-missing-require
-  const mod = require(path.join("..", "mcp", "lib", "tools", `${moduleSlug}.js`));
+  const mod = require(path.join("..", "mcp", "tools", "web", `${moduleSlug}.js`));
   return mod.handler;
 }
 
@@ -350,7 +350,7 @@ test("smoke: start → navigate → snapshot → evaluate(1+1) → close all suc
 });
 
 test("bob_browser_evaluate declares an optional timeout_ms in its input schema", () => {
-  const mod = require(path.join("..", "mcp", "lib", "tools", "browser-evaluate.js"));
+  const mod = require(path.join("..", "mcp", "tools", "web", "browser-evaluate.js"));
   const prop = mod.inputSchema.properties.timeout_ms;
   assert.ok(prop, "bob_browser_evaluate must expose a timeout_ms property");
   assert.equal(prop.type, "number");

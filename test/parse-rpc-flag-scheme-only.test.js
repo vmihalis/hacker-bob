@@ -11,7 +11,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { parseRpcFlag } = require("../mcp/lib/target-intake.js");
+const { parseRpcFlag } = require("../mcp/core/target-intake.js");
 
 test("parseRpcFlag accepts a well-formed https rpc flag (scheme passes)", () => {
   const out = parseRpcFlag("evm:1=https://mainnet.example.com/rpc");

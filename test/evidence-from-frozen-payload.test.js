@@ -19,31 +19,31 @@ const {
   appendCandidateClaim,
   evidenceReferenceLookupKey,
   normalizeEvidenceReferenceShape,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   assertCompletenessAgainstFreeze,
   buildClaimFreeze,
   iterateFrozenEvidenceRefs,
   readCurrentClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   assertEvidenceCompletenessForFreeze,
   normalizeEvidencePacksDocument,
   readFrozenEvidenceFindingIdSet,
   renderEvidencePacksMarkdown,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   sessionDir,
   repoCommandRunsJsonlPath,
   repoRunsDir,
-} = require("../mcp/lib/paths.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/io/paths.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -65,6 +65,8 @@ function recordFindingViaTool(domain, overrides = {}) {
     severity: overrides.severity || "high",
     cwe: overrides.cwe || "CWE-639",
     endpoint: overrides.endpoint || "https://victim.example/api/billing/1",
+    request_method: overrides.request_method || "GET",
+    injection_point: overrides.injection_point || "path:billing_id",
     description: overrides.description || "Tenant boundary allows cross-account view",
     proof_of_concept: overrides.poc || "GET /api/billing/1 returns another tenant payload",
     response_evidence: overrides.response_evidence || "Cross-tenant billing payload",

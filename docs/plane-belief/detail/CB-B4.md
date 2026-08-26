@@ -4,7 +4,7 @@
 
 - `id`: `CB-B4`
 - `action`: `build_new`
-- `anchor`: `mcp/lib/belief/factor-graph.js`
+- `anchor`: `mcp/core/belief/factor-graph.js`
 - `status`: `done`
 
 ## Contract
@@ -16,7 +16,7 @@ becomes authoritative ordering.
 
 ## Implementation
 
-- `mcp/lib/belief/factor-graph.js` converts `belief-window.v1` into
+- `mcp/core/belief/factor-graph.js` converts `belief-window.v1` into
   `factor-graph-sampler.v1` aggregate marginals using a seeded pure-JS sampler.
 - Identical `seed + window_hash + sample_count` produces identical marginals and
   `sample_hash`.

@@ -15,21 +15,21 @@ const {
   appendEdges,
   createPhysicalSurfaceGraphServerService,
   normalizeEdge,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   buildDurableReceiptTrustRegistry,
-} = require("../mcp/lib/executed-evidence-registry.js");
+} = require("../mcp/core/executed-evidence-registry.js");
 const {
   normalizePhysicalSurfaceLiveRevalidationPayload,
   normalizePhysicalSurfaceTransitionPayload,
   physicalSurfaceTransitionClaimPredicateDigest,
-} = require("../mcp/lib/physical-surface-transition.js");
+} = require("../mcp/domains/physical/physical-surface-transition.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
-const { acquireSessionLock } = require("../mcp/lib/storage.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/governance/index.js");
+const { acquireSessionLock } = require("../mcp/core/io/storage.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");

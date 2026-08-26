@@ -36,18 +36,18 @@ BEDROCK_MODEL_OVERRIDES_PATH = os.path.join(
     REPO_ROOT, "infra", "runner", "bedrock-model-overrides.json"
 )
 # A REAL BOB_MCP_CONFIG path (dirname resolves to the real mcp/ dir this repo ships) so
-# _load_grade_verdict_hash's `os.path.dirname(env["BOB_MCP_CONFIG"]) + "/lib/report-finalize.js"`
+# _load_grade_verdict_hash's `os.path.dirname(env["BOB_MCP_CONFIG"]) + "/core/report-finalize.js"`
 # resolution finds the real module -- mirrors the Dockerfile's ENV BOB_MCP_CONFIG=
 # /opt/hacker-bob/mcp/agentcore-mcp-config.json (dirname = /opt/hacker-bob/mcp, the same
-# directory report-finalize.js ships under). The file itself need not exist; only its dirname
-# is used.
+# directory containing report-finalize.js). The file itself need not exist; only its dirname is
+# used.
 REAL_MCP_CONFIG_PATH = os.path.join(REPO_ROOT, "mcp", "agentcore-mcp-config.json")
-REPORT_FINALIZE_JS_PATH = os.path.join(REPO_ROOT, "mcp", "lib", "report-finalize.js")
+REPORT_FINALIZE_JS_PATH = os.path.join(REPO_ROOT, "mcp", "core", "report-finalize.js")
 
 
 def _independent_grade_verdict_hash(target_domain, env):
     """A companion node subprocess independently computing
-    mcp/lib/report-finalize.js's loadGradeVerdictHash(target_domain) -- a SEPARATE call site
+    mcp/core/report-finalize.js's loadGradeVerdictHash(target_domain) -- a SEPARATE call site
     from the entrypoint's own _load_grade_verdict_hash bridge, used ONLY to pin cross-language
     parity in tests (so a bug in the entrypoint's bridge cannot silently agree with itself)."""
     # `node -e <script> arg0 arg1` puts arg0 at process.argv[1] (matches
@@ -928,7 +928,7 @@ def main():
 
     # --- fx-hmac-content: grade_verdict_hash is populated from a REAL grade.json fixture, and
     #     the value is pinned against an INDEPENDENTLY computed reference (a companion node
-    #     subprocess calling mcp/lib/report-finalize.js's loadGradeVerdictHash directly) to
+    #     subprocess calling mcp/core/report-finalize.js's loadGradeVerdictHash directly) to
     #     guard cross-language (Python entrypoint <-> Node report-finalize.js) parity. ---
     with tempfile.TemporaryDirectory() as tmp_home:
         target = "kyberfork.internal"
@@ -1122,7 +1122,7 @@ def main():
     #     (KyberFork-shaped, "10.0.0.5:8545") must resolve_session_dir AND build the
     #     resume-skill-prompt argument using the port-STRIPPED host "10.0.0.5" -- the exact
     #     target_domain form the approval-gate consumers (bob-approval-gate-impl.py,
-    #     lifecycle-gates.js) and mcp/lib/scope.js's lab-target attestation key by. Using the
+    #     lifecycle-gates.js) and mcp/core/scope.js's lab-target attestation key by. Using the
     #     raw with-port string for either would silently desync the session/resume identity
     #     from what those consumers expect. ---
     with tempfile.TemporaryDirectory() as tmp_home:
@@ -1170,7 +1170,7 @@ def main():
     # --- fx-gate-bypass defense 4 (HIGH — CAIP-10 target handling): a payload carrying
     #     an engine-derived target_domain (the SFN Lambda computes this ONCE, upstream,
     #     from state.json's already-derived sc-<family>-<chainId>-<addr8>-<hash8> slug --
-    #     see mcp/lib/tools/init-contract-session.js's deriveContractTargetDomain) must be
+    #     see mcp/tools/blockchain/init-contract-session.js's deriveContractTargetDomain) must be
     #     used BYTE-FOR-BYTE by resolve_session_dir/run_invocation, taking precedence over
     #     the RFC1918/port-stripped derivation entirely -- mirrors the port-stripping
     #     fixture's own assertion style directly above. ---

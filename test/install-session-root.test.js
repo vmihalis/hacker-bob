@@ -165,8 +165,8 @@ test("engines on two installed workspaces run CONCURRENTLY, and same-root exclus
     // booted with exactly the env the installer generated.
     const probe = (workspace) => [
       "-e",
-      "const lock = require(process.argv[1] + '/mcp/lib/engine-lock.js');"
-      + "const paths = require(process.argv[1] + '/mcp/lib/paths.js');"
+      "const lock = require(process.argv[1] + '/mcp/core/io/engine-lock.js');"
+      + "const paths = require(process.argv[1] + '/mcp/core/io/paths.js');"
       + "const acquired = lock.acquireEngineSingletonLock();"
       + "process.stdout.write(JSON.stringify({ root: paths.sessionsRoot(), acquired }) + '\\n');"
       + "if (!acquired) process.exit(0);"

@@ -32,7 +32,7 @@ const path = require("node:path");
 const {
   CLI_TOOL_PACKS,
   selectCliToolPacks,
-} = require("../mcp/lib/cli-tool-packs.js");
+} = require("../mcp/core/dispatch/cli-tool-packs.js");
 const {
   DEFAULT_BASELINE_RATE,
   DEFAULT_CORRELATION_WINDOW_MS,
@@ -41,17 +41,17 @@ const {
   packTelemetryConfigPath,
   readPackTelemetryConfig,
   writePackTelemetryConfig,
-} = require("../mcp/lib/pack-telemetry.js");
+} = require("../mcp/core/telemetry/pack-telemetry.js");
 const {
   renderAvailableCliToolsSectionSync,
-} = require("../mcp/lib/assignment-brief.js");
+} = require("../mcp/core/session/assignment-brief.js");
 const {
   toolInvocationTelemetryPath,
-} = require("../mcp/lib/tool-telemetry.js");
+} = require("../mcp/core/telemetry/tool-telemetry.js");
 const {
   TOOL_HANDLERS,
   TOOL_MANIFEST,
-} = require("../mcp/lib/tool-registry.js");
+} = require("../mcp/tools/tool-registry.js");
 
 function withTempEnv(fn) {
   const prevHome = process.env.HOME;

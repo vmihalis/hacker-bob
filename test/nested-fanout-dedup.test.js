@@ -12,10 +12,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendCellProposal } = require("../mcp/lib/task-graph-events.js");
-const { fanoutPlanningKey } = require("../mcp/lib/capability-pack-derivation.js");
-const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
-const { cellFloorPlanningKeysForSurface, buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
+const { appendCellProposal } = require("../mcp/core/waves/task-graph-events.js");
+const { fanoutPlanningKey } = require("../mcp/core/capability/capability-pack-derivation.js");
+const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/core/io/queue-policy.js");
+const { cellFloorPlanningKeysForSurface, buildChildFanoutPlanForSurface } = require("../mcp/core/session/assignment-brief.js");
 
 function withTempHome(fn, host = "claude") {
   const prev = process.env.HOME;

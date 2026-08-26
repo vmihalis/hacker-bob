@@ -15,10 +15,10 @@ const path = require("node:path");
 
 const {
   buildClaimFreeze,
-} = require("../mcp/lib/claim-freeze.js");
+} = require("../mcp/core/claims/claim-freeze.js");
 const {
   appendJsonlLine,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 const {
   reproVerifiedJsonlPath,
   invariantVerifiedJsonlPath,
@@ -26,42 +26,42 @@ const {
   findingDifferentialVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   computeInvariantRunHash,
   invariantFoundryResultHash,
   verifyInvariantDifferential,
-} = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/invariant-runner.js");
 const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
-const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+} = require("../mcp/core/ledger-integrity/index.js");
+const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   writeVerificationRound,
-} = require("../mcp/lib/verification-round-store.js");
+} = require("../mcp/core/verification/verification-round-store.js");
 const {
   writeEvidencePacks,
-} = require("../mcp/lib/evidence.js");
+} = require("../mcp/core/evidence.js");
 const {
   writeGradeVerdict,
-} = require("../mcp/lib/grade-verdict-store.js");
+} = require("../mcp/core/grade-verdict-store.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   resetForTests: resetMaterializationDebounce,
-} = require("../mcp/lib/frontier-materialize-debounce.js");
+} = require("../mcp/core/frontier/frontier-materialize-debounce.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -138,6 +138,8 @@ function seedStandaloneWebFinding(domain, { severity = "high", reportable = true
     severity,
     cwe: "CWE-639",
     endpoint: "https://victim.example/api/billing/1",
+    request_method: "GET",
+    injection_point: "path:billing_id",
     description: "Tenant boundary allows cross-account view",
     proof_of_concept: "GET /api/billing/1 returns another tenant payload",
     response_evidence: "Cross-tenant billing payload",
@@ -202,7 +204,7 @@ function seedFindingDifferentialArm(domain, findingId, {
     run_id: controlRunId, offensive_outcome: "blocked_by_defense", command_hash: hex("2"),
     surface_id: surfaceId, demonstrated_severity: positiveSeverity,
   });
-  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const { offensiveRowHash } = require("../mcp/core/differential/index.js");
   appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
     version: 1,
     target_domain: domain,
@@ -318,7 +320,7 @@ test("a finding lowered below medium is inert (not in the reportable medium+ set
 
 const {
   findingDifferentialGapForStandaloneReportableFindings,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const REPRO_COMMAND_ARGV = ["sh", "-lc", "./harness crash-input.bin"];
 
 function observeSurface(domain, surfaceId, payload) {
@@ -384,7 +386,7 @@ test("a native finding with a repro-verified verified_pass needs NO finding-diff
   const domain = "fd-gate-native.example.com";
   const surfaceId = "repo:module:src-parser.c";
   observeSurface(domain, surfaceId, { kind: "code_module", language: "c" });
-  const { repoCommandRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { repoCommandRunsJsonlPath } = require("../mcp/core/io/paths.js");
   appendJsonlLine(repoCommandRunsJsonlPath(domain), {
     run_id: "grade-repro-run-1", command_hash: "b".repeat(64), exit_code: 134,
     stdout_hash: "c".repeat(64), stderr_hash: "d".repeat(64), dry_run: false,

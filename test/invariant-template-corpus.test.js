@@ -4,15 +4,24 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  INVARIANT_SCHEMA_BINDING_BOUND,
+  INVARIANT_SCHEMA_BINDING_HOLD,
   TEMPLATES,
+  UNIVERSAL_INVARIANT_SCHEMAS,
+  UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST,
+  buildInvariantSchemaSignatureContext,
   getMechanismTemplate,
   SUPPORTED_CLASSES,
+  verifyInvariantSchemaSignatureContext,
   loadMechanismTemplates,
   getTemplatesForClass,
   suggestInvariantsForFinding,
   suggestInvariantsForReport,
-} = require("../mcp/lib/invariant-template-corpus.js");
-const { buildTestSource } = require("../mcp/lib/invariant-runner.js");
+} = require("../mcp/core/mechanism/index.js");
+const {
+  resolveVerifierTemplateForInvariantClass,
+} = require("../mcp/core/mechanism-template-registry.js");
+const { buildTestSource } = require("../mcp/core/invariant-runner.js");
 
 test("SUPPORTED_CLASSES covers the smart-contract bug classes IP4 emits", () => {
   for (const cls of [
@@ -36,6 +45,95 @@ test("TEMPLATES every entry declares id, vulnerability_class, name, parameter_sl
     assert.ok(Array.isArray(template.parameter_slots));
     assert.ok(typeof template.foundry_test_template === "string" && template.foundry_test_template.length > 0);
   }
+});
+
+test("universal invariant schemas are digest-bound to their mandatory controls", () => {
+  assert.ok(UNIVERSAL_INVARIANT_SCHEMAS.length >= 8);
+  assert.ok(UNIVERSAL_INVARIANT_SCHEMAS.length <= 12);
+  const classIds = new Set();
+  for (const schema of UNIVERSAL_INVARIANT_SCHEMAS) {
+    assert.ok(typeof schema.id === "string" && schema.id.length > 0);
+    assert.ok(typeof schema.class_id === "string" && schema.class_id.length > 0);
+    assert.ok(!classIds.has(schema.class_id), `duplicate class_id: ${schema.class_id}`);
+    classIds.add(schema.class_id);
+    assert.match(schema.schema_digest, /^[a-f0-9]{64}$/);
+    assert.match(schema.mandatory_controls_digest, /^[a-f0-9]{64}$/);
+    assert.ok(Array.isArray(schema.mandatory_controls));
+    assert.ok(schema.mandatory_controls.length >= 4);
+    assert.deepEqual(
+      schema.mandatory_control_ids,
+      schema.mandatory_controls.map((control) => control.id).sort(),
+    );
+  }
+
+  const ctx = buildInvariantSchemaSignatureContext("render_vs_load_acl");
+  assert.equal(ctx.registry_digest, UNIVERSAL_INVARIANT_SCHEMA_REGISTRY_DIGEST);
+  const verified = verifyInvariantSchemaSignatureContext(ctx);
+  assert.equal(verified.disposition, INVARIANT_SCHEMA_BINDING_BOUND);
+  assert.equal(verified.closes, false, "schema binding alone never closes a finding");
+
+  const forgedControls = verifyInvariantSchemaSignatureContext({
+    ...ctx,
+    mandatory_control_ids: ctx.mandatory_control_ids.filter((id) => id !== "authorized_owner_positive"),
+  });
+  assert.equal(forgedControls.disposition, INVARIANT_SCHEMA_BINDING_HOLD);
+  assert.match(forgedControls.reason, /mandatory control set/);
+
+  const forgedDigest = verifyInvariantSchemaSignatureContext({
+    ...ctx,
+    mandatory_controls_digest: "0".repeat(64),
+  });
+  assert.equal(forgedDigest.disposition, INVARIANT_SCHEMA_BINDING_HOLD);
+  assert.match(forgedDigest.reason, /mandatory controls digest/);
+});
+
+test("universal invariant schema binding refuses forged, soft, and unknown-class inputs", () => {
+  const ctx = buildInvariantSchemaSignatureContext("effective_principal_scope");
+
+  const forged = verifyInvariantSchemaSignatureContext({
+    ...ctx,
+    schema_digest: "f".repeat(64),
+  });
+  assert.equal(forged.disposition, INVARIANT_SCHEMA_BINDING_HOLD);
+  assert.equal(forged.closes, false);
+  assert.match(forged.reason, /schema digest/);
+
+  const soft = verifyInvariantSchemaSignatureContext({
+    ...ctx,
+    generated_hypothesis: true,
+  });
+  assert.equal(soft.disposition, INVARIANT_SCHEMA_BINDING_HOLD);
+  assert.equal(soft.closes, false);
+  assert.match(soft.reason, /generated hypothesis is inert/);
+
+  const unknown = verifyInvariantSchemaSignatureContext({
+    class_id: "autonomous_new_class",
+    schema_id: "schema.autonomous_new_class.v1",
+    registry_digest: ctx.registry_digest,
+    schema_digest: ctx.schema_digest,
+    mandatory_controls_digest: ctx.mandatory_controls_digest,
+    mandatory_control_ids: ctx.mandatory_control_ids,
+  });
+  assert.equal(unknown.disposition, INVARIANT_SCHEMA_BINDING_HOLD);
+  assert.equal(unknown.closes, false);
+  assert.match(unknown.reason, /unknown invariant schema class/);
+});
+
+test("executable invariant-class resolver holds unknown class instead of falling back", () => {
+  const unknown = resolveVerifierTemplateForInvariantClass({
+    class_id: "novel_llm_discovered_class",
+    edge_type: "guard",
+  });
+  assert.equal(unknown.disposition, INVARIANT_SCHEMA_BINDING_HOLD);
+  assert.match(unknown.reason, /unknown invariant schema class/);
+
+  const known = resolveVerifierTemplateForInvariantClass({
+    ...buildInvariantSchemaSignatureContext("effective_principal_scope"),
+    edge_type: "guard",
+  });
+  assert.equal(known.disposition, "verifier_template_bound");
+  assert.equal(known.template.edge_type, "guard");
+  assert.equal(known.binding.disposition, INVARIANT_SCHEMA_BINDING_BOUND);
 });
 
 test("getTemplatesForClass returns the templates whose vulnerability_class matches", () => {
@@ -148,7 +246,7 @@ test("a SEALED template is not agent-substituted (fillSlots returns the marker);
   assert.ok(!/execute|capturedAuth|0xab/.test(filled.foundry_test), "no agent slot value substituted into the sealed marker");
   // The live consume helper + the gated call are produced by the SEALED GENERATOR from the DATA
   // slots (covered fully in sealed-cross-stack-harness.test.js); confirm the wiring aligns here.
-  const sealed = require("../mcp/lib/sealed-cross-stack-harness.js").buildSealedTestSource({
+  const sealed = require("../mcp/core/differential/index.js").buildSealedTestSource({
     contractName: "BobInvariantTest_consume",
     testFunctionName: "testBobInvariant_consume",
     targetAddress: `0x${"ab".repeat(20)}`,

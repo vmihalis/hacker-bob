@@ -18,11 +18,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
-const { runBeliefResidual } = require("../mcp/lib/belief/residual.js");
-const { queryBeliefSignals } = require("../mcp/lib/belief/authority.js");
-const { buildBeliefSchedulerHints } = require("../mcp/lib/belief/scheduler-priority.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
+const { runBeliefResidual } = require("../mcp/core/belief/residual.js");
+const { queryBeliefSignals } = require("../mcp/core/belief/authority.js");
+const { buildBeliefSchedulerHints } = require("../mcp/core/belief/scheduler-priority.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

@@ -203,7 +203,7 @@ compiler, compiled-command capability, and USB custody implementation and
 declares only the contracts package. The optional privilege-separated worker
 declares that runtime. MCP and the broader Chameleon development package use
 compatibility projections of those canonical packages; the signed worker never
-imports `mcp/lib` or another package through `../` traversal.
+imports `mcp/core` or another package through `../` traversal.
 
 | Surface | Distribution | License | Permitted dependency direction |
 | --- | --- | --- | --- |

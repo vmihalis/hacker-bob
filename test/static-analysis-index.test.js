@@ -15,28 +15,28 @@ const {
   readStaticAnalysisIndex,
   readStaticAnalysisIndexTool,
   registerStaticAnalysisLeadRecorder,
-} = require("../mcp/lib/static-analysis-index.js");
+} = require("../mcp/domains/repo/static-analysis-index.js");
 const {
   isAuditGradedPath,
   repoInventoryPath,
   repoRunsDir,
   staticAnalysisIndexPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   readFrontierEvents,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   normalizeSurfaceLead,
   readSurfaceLeadsDocument,
-} = require("../mcp/lib/lead-intake.js");
+} = require("../mcp/core/frontier/lead-intake.js");
 const {
   initSession,
-} = require("../mcp/lib/session-state.js");
+} = require("../mcp/core/session/session-state.js");
 const {
   initRepoSession,
-} = require("../mcp/lib/repo-target.js");
+} = require("../mcp/domains/repo/repo-target.js");
 
-require("../mcp/lib/lead-promotion.js");
+require("../mcp/core/frontier/lead-promotion.js");
 
 test.after(() => {
   registerStaticAnalysisLeadRecorder(null);

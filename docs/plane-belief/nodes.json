@@ -38,7 +38,7 @@
     "CB-1"
    ],
    "intent": "Belief outputs are advisory, derived, recomputable scratch; belief tools cannot mutate the claim/governance plane.",
-   "anchor": "mcp/lib/role-model.js read-only pattern; mcp/lib/paths.js AUDIT_GRADED_PATHS",
+   "anchor": "mcp/core/dispatch/role-model.js read-only pattern; mcp/core/io/paths.js AUDIT_GRADED_PATHS",
    "do": "Classify the mechanism projection + belief signal as derived scratch; mark belief read/query tools network_access:false, mutating:false.",
    "review": {
     "engineering": "Role-bundle test: belief tools cannot write claim/verification/grade/report/governance artifacts. Add a runtime-denial test (current suite proves grants, not denials).",
@@ -58,7 +58,7 @@
     "CB-1"
    ],
    "intent": "Provenance closed-enum + secret-safety by construction; residual_anomaly is a diagnostic class barred from evidence/prior.",
-   "anchor": "mcp/lib/sensitive-material.js validateNoSensitiveMaterial; mcp/redaction.js redactTextSensitiveValues; claims.js:84 EVIDENCE_REFERENCE_KIND_VALUES",
+   "anchor": "mcp/core/redaction/sensitive-material.js validateNoSensitiveMaterial; mcp/redaction.js redactTextSensitiveValues; claims.js:84 EVIDENCE_REFERENCE_KIND_VALUES",
    "do": "Add the frozen provenance enum (incl. residual_anomaly); thread redactTextSensitiveValues before validateNoSensitiveMaterial in the belief writer.",
    "review": {
     "engineering": "Belief artifacts carry names/keys/hashes only; canonical hashing stable across runs; residual_anomaly cannot enter the belief window as evidence or prior.",
@@ -81,7 +81,7 @@
     "CB-B1"
    ],
    "intent": "Typed mechanism view as a projection over surface-graph (principal/credential/policy_gate/effect/intervention), not a new store.",
-   "anchor": "mcp/lib/surface-graph.js NODE_TYPES/EDGE_TYPES; surface-graph-builder.js; fed by auth-differential.js, evm-role-table.js, symbol-surface-index.js, chain-state-tree.js",
+   "anchor": "mcp/core/frontier/surface-graph.js NODE_TYPES/EDGE_TYPES; surface-graph-builder.js; fed by auth-differential.js, evm-role-table.js, symbol-surface-index.js, chain-state-tree.js",
    "do": "Add principal/credential/policy_gate/effect/intervention node+edge types; one builder source projecting auth-differential rows, evm-role matrices, schema claimed_auth, chain outcomes; expose a bounded bob_query mode over surface-graph.jsonl.",
    "review": {
     "engineering": "Same ledgers -> same projection hash; IDOR fixture yields principal->effect via policy_gate; public-object fixture does not; reuses edge_hash, no second store.",
@@ -103,7 +103,7 @@
     "CB-B1"
    ],
    "intent": "object_authorization as a template record in existing corpora, not a new registry.",
-   "anchor": "mcp/lib/invariant-template-corpus.js; oss-rootcause-family-corpus.js; contracts.js witness DSL; cwe-catalog.js (CWE-284/862/863)",
+   "anchor": "mcp/core/mechanism/invariant-template-corpus.js; oss-rootcause-family-corpus.js; contracts.js witness DSL; cwe-catalog.js (CWE-284/862/863)",
    "do": "Add object_authorization template (required_entities/interventions/positive_controls/negative_controls/confounders/evidence_predicate) via the technique-packs.js loader pattern; mechanism id from cwe-catalog.",
    "review": {
     "engineering": "Validates under the bounded-warning loader; malformed record skipped not thrown; mechanism id resolves to a catalog family.",
@@ -125,7 +125,7 @@
     "CB-B1"
    ],
    "intent": "Reuse the frontier-events observation ledger for typed-fact intake; no second extractor tier.",
-   "anchor": "mcp/lib/frontier-events.js observation.recorded; frontier-materializer.js; http-records.js, schema-contracts-store.js; capability-observations.js",
+   "anchor": "mcp/core/frontier/frontier-events.js observation.recorded; frontier-materializer.js; http-records.js, schema-contracts-store.js; capability-observations.js",
    "do": "Read the typed facts the frontier-events ledger already emits; add any genuinely new derived fact via the capability-observations.js pattern.",
    "review": {
     "engineering": "No second typed-fact ledger; new facts use the existing producer/consumer registration.",
@@ -151,7 +151,7 @@
     "CB-B2"
    ],
    "intent": "Calibrated belief state over latent mechanism variables (effective_permission, object_ownership, request_equivalence, gate_effectiveness).",
-   "anchor": "NEW mcp/lib/belief/belief-window.js (reads CB-1 projection + auth-differential + schema)",
+   "anchor": "NEW mcp/core/belief/belief-window.js (reads CB-1 projection + auth-differential + schema)",
    "do": "Define the belief window schema, latent variables, factor bindings, provenance, content-addressed window hash; hard caps on variables/factors/size; refuse oversized with belief_window_too_large.",
    "review": {
     "engineering": "Same evidence -> same posterior; IDOR fixture yields high effective_permission mass on the attacker-victim pair, public-object fixture does not; no claim recorded from belief alone.",
@@ -179,7 +179,7 @@
     "CB-B2"
    ],
    "intent": "Factor-graph sampler (the inference algorithm) + composition search over registry templates (O(K^2) pairs, O(K^d) chains).",
-   "anchor": "NEW mcp/lib/belief/factor-graph.js (pure-JS deterministic sampler first; optional THRML/JAX backend later)",
+   "anchor": "NEW mcp/core/belief/factor-graph.js (pure-JS deterministic sampler first; optional THRML/JAX backend later)",
    "do": "Marginal inference + information-gain estimation over the belief window; composition search over multiple instantiated templates within the prior; seeded determinism; persist belief-samples scratch (model version, window hash, seed, sample count, marginals).",
    "review": {
     "engineering": "Identical seed+window reproduce marginals; sampler advisory (cannot record claims or schedule); ranks frontier leaves/interventions, never the authoritative order.",
@@ -209,7 +209,7 @@
     "CB-C1"
    ],
    "intent": "Residual anomaly surfacing: residual = -log p(evidence | all_templates, seed, window); the reachable, deterministic form of class-level novelty.",
-   "anchor": "NEW mcp/lib/belief/residual.js (derives residual from CB-B4 marginals)",
+   "anchor": "NEW mcp/core/belief/residual.js (derives residual from CB-B4 marginals)",
    "do": "Expose residual as a deterministic residual_anomaly diagnostic; two non-gating sinks (scheduler priority hint via CB-C1 + human router with a per-factor mispredict decomposition); LLM inverted to a downstream NL hypothesis that earns trust only through the one gate.",
    "review": {
     "engineering": "Residual is a pure function of seed/window/evidence/registry and replays; high-recall low-precision -> routes to a human, never adjudicates; no promotion path; nothing minted as a class.",
@@ -233,7 +233,7 @@
     "CB-B3"
    ],
    "intent": "Counterfactual intervention calculus: do-operations, predicted effect, expected-information-gain ranking.",
-   "anchor": "NEW mcp/lib/belief/intervention-calculus.js",
+   "anchor": "NEW mcp/core/belief/intervention-calculus.js",
    "do": "do-operator over the belief window; predicted-effect; per-control posterior deltas; information-gain ranking of candidate interventions; confounders as explicit latent alternatives the calculus must discriminate.",
    "review": {
     "engineering": "Deterministic given window+seed; IDOR fixture ranks the victim-object swap above re-running an attacker-owned control; public-object fixture ranks public_object_check first.",
@@ -260,7 +260,7 @@
     "CB-C1"
    ],
    "intent": "Active experiment loop: instantiate window -> rank by info gain -> dispatch via propose_hypothesis -> observe -> Bayesian update -> repeat/conclude.",
-   "anchor": "NEW mcp/lib/belief/experiment-loop.js; dispatches through bob_propose_hypothesis / the TaskGraph materializer",
+   "anchor": "NEW mcp/core/belief/experiment-loop.js; dispatches through bob_propose_hypothesis / the TaskGraph materializer",
    "do": "Advisory planner emitting propose_hypothesis Contracts (production_paths=intervention, relational_value_match=control) and consuming observed outcomes; bound loop iterations per hypothesis; full provenance on each belief update; never spawn its own dispatcher or record its own claims.",
    "review": {
     "engineering": "Loop uses MCP writers only; single-spawner topology preserved.",

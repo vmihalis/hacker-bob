@@ -7,7 +7,7 @@ const {
   parseHttpScanResult,
   makeHttpScanFetcher,
   makePerCallHttpScanFetcher,
-} = require("../mcp/lib/http-scan-adapter.js");
+} = require("../mcp/core/http-scan-adapter.js");
 
 test("parseHttpScanResult parses JSON string into normalized observed shape", () => {
   const raw = JSON.stringify({

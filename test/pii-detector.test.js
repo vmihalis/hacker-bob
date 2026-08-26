@@ -7,7 +7,7 @@ const {
   normalizeEmailForComparison,
   detectPiiShapes,
   emailMatchesOperatorDenylist,
-} = require("../mcp/lib/pii-detector.js");
+} = require("../mcp/core/pii-detector.js");
 
 function valuesByType(matches, type) {
   return matches

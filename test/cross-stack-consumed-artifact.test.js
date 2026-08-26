@@ -26,27 +26,27 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const writer = require("../mcp/lib/offensive-capture-writer.js");
-const { runInvariantForFinding, computeInvariantRunHash } = require("../mcp/lib/invariant-runner.js");
-const { readInvariantRuns } = require("../mcp/lib/invariant-runner.js");
-const { readOffensiveCaptureBytesSecure } = require("../mcp/lib/claim-freeze.js");
-const { readOffensiveRunRecords } = require("../mcp/lib/claims.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { withSessionLock } = require("../mcp/lib/storage.js");
+const writer = require("../mcp/domains/web/offensive-capture-writer.js");
+const { runInvariantForFinding, computeInvariantRunHash } = require("../mcp/core/invariant-runner.js");
+const { readInvariantRuns } = require("../mcp/core/invariant-runner.js");
+const { readOffensiveCaptureBytesSecure } = require("../mcp/core/claims/claim-freeze.js");
+const { readOffensiveRunRecords } = require("../mcp/core/claims/claims.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { withSessionLock } = require("../mcp/core/io/storage.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningPublicKey,
   resolveOffensiveRowVerifier,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   verifyRowWithMac,
   OFFENSIVE_ROW_MAC_CONTEXT,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   directSmartContractSubprocessEnv,
   SC_CONTROLLED_ARTIFACT_ENV_KEYS,
-} = require("../mcp/lib/sc-egress-policy.js");
-const { offensiveRunsDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/domains/blockchain/smart-contracts/sc-egress-policy.js");
+const { offensiveRunsDir } = require("../mcp/core/io/paths.js");
 
 function uniqueDomain(prefix = "bob-consumed-artifact-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -235,7 +235,7 @@ test("egress pass-through delivers BOB_CONSUMED_ARTIFACT even alongside stripped
 // (3) A corpus-generated test WITH the env differs from WITHOUT.
 // ---------------------------------------------------------------------------
 test("the corpus-generated scaffold reads BOB_CONSUMED_ARTIFACT so WITH the env differs from WITHOUT", () => {
-  const { buildTestSource } = require("../mcp/lib/invariant-runner.js");
+  const { buildTestSource } = require("../mcp/core/invariant-runner.js");
   const src = buildTestSource({ contractName: "BobInvariantTest_X_0001", functionBody: "function testX() public {}" });
   // The consumption is CORPUS-INJECTED (in the scaffold), not agent-authored: the
   // generated source references the env var via vm.envOr (the safe form that tolerates
@@ -373,8 +373,8 @@ test("invariant row binds consumed_artifact_hash INSIDE run_hash (present/absent
 
     // The sibling IS MAC-covered on the invariant row: flipping it breaks the row_mac.
     const verifier = resolveOffensiveRowVerifier(domain);
-    const { verifyRowWithMac: verifyInv } = require("../mcp/lib/offensive-row-mac.js");
-    const { INVARIANT_RUN_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+    const { verifyRowWithMac: verifyInv } = require("../mcp/core/ledger-integrity/index.js");
+    const { INVARIANT_RUN_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
     assert.ok(pRow.row_mac, "positive invariant row is signed");
     assert.equal(verifyInv(INVARIANT_RUN_MAC_CONTEXT, pRow, verifier), true, "intact invariant row verifies");
     const tamperedRow = { ...pRow, consumed_artifact_hash: "0".repeat(64) };

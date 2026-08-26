@@ -9,7 +9,7 @@ Use this when the operator asks to create a post-release improvement bundle from
 
 Run from the project root. The command has no v1 flags:
 ```bash
-node -e "const exporter=require('./mcp/lib/bob-export.js'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));"
+node -e "const exporter=require('./mcp/core/bob-export.js'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));"
 ```
 
 Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not evaluate, resume sessions, or interact with targets.

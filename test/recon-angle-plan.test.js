@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const {
   RECON_ANGLES,
   deriveReconAnglePlan,
-} = require("../mcp/lib/recon-angle-plan.js");
+} = require("../mcp/core/frontier/recon-angle-plan.js");
 
 const EXPECTED_ANGLE_IDS = ["host_family", "urls", "nuclei", "js_jwt"];
 
@@ -79,7 +79,7 @@ test("the shipped cross-role fan-out default (governor null) still fans recon on
   // The flipped DEFAULT_QUEUE_POLICY keeps max_total_spawned_agents null, so a
   // session loading it hands deriveReconAnglePlan a null lifetime governor and
   // recon fans out on claude/codex (and fails closed on a finite-pool host).
-  const { DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+  const { DEFAULT_QUEUE_POLICY } = require("../mcp/core/io/queue-policy.js");
   assert.equal(DEFAULT_QUEUE_POLICY.max_total_spawned_agents, null);
   const governor = { max_total_spawned_agents: DEFAULT_QUEUE_POLICY.max_total_spawned_agents, total_spawned: 0 };
   assert.equal(deriveReconAnglePlan({ host_id: "claude", governor }).mode, "fanout");

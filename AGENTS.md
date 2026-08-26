@@ -53,7 +53,7 @@ Treat these as high-priority findings when introduced by a PR:
   mutations that break the server-enforced v2 lifecycle
   (`SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT`)
   defined by `LIFECYCLE_STATE_VALUES` (exported from
-  `mcp/lib/governance-contracts.js`; imported by `mcp/lib/lifecycle-gates.js`
+  `mcp/core/governance/governance-contracts.js`; imported by `mcp/core/session/lifecycle-gates.js`
   for transition validation).
 - Packaging or release changes that omit required runtime files, include private
   local artifacts, break adapter installs, or make published packages drift from

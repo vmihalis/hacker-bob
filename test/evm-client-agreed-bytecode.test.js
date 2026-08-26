@@ -10,7 +10,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { decideAgreedBytecode } = require("../mcp/lib/evm-client.js");
+const { decideAgreedBytecode } = require("../mcp/domains/blockchain/smart-contracts/evm-client.js");
 
 const REAL = `0x${"60".repeat(64)}`; // a non-empty runtime bytecode
 const OTHER = `0x${"61".repeat(64)}`; // a DIFFERENT non-empty bytecode

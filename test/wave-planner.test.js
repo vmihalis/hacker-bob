@@ -6,22 +6,22 @@ const path = require("path");
 const {
   isOpenForAssignment,
   planNextWave,
-} = require("../mcp/lib/wave-planner.js");
+} = require("../mcp/core/waves/wave-planner.js");
 const {
   DEFAULT_QUEUE_POLICY,
   LEAN_PROFILE,
-} = require("../mcp/lib/queue-policy.js");
+} = require("../mcp/core/io/queue-policy.js");
 const {
   appendEdges,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   sessionDir,
   surfaceRoutesPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   SURFACE_ROUTE_VERSION,
   SURFACE_ROUTES_VERSION,
-} = require("../mcp/lib/surface-router.js");
+} = require("../mcp/core/frontier/surface-router.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -550,7 +550,7 @@ function writeCorruptRoutes(domain, content) {
 
 test("deriveUnroutableSurfacesFromRoutes: missing routes fail-open, valid routes yield the set/rows, corrupt routes surface a sanitized error", () => {
   withTempHome(() => {
-    const { deriveUnroutableSurfacesFromRoutes } = require("../mcp/lib/surface-router.js");
+    const { deriveUnroutableSurfacesFromRoutes } = require("../mcp/core/frontier/surface-router.js");
 
     // Missing routes file: fail-open (empty set, empty rows, no error).
     const missingDomain = "helper-missing.example.com";
@@ -652,7 +652,7 @@ test("planNextWave FAILS CLOSED when any route row is quarantined", () => {
 
 test("planNextWave + deriveUnroutableSurfacesFromRoutes derive the identical unroutable set from one file", () => {
   withTempHome(() => {
-    const { deriveUnroutableSurfacesFromRoutes } = require("../mcp/lib/surface-router.js");
+    const { deriveUnroutableSurfacesFromRoutes } = require("../mcp/core/frontier/surface-router.js");
     const domain = "planner-status-parity.example.com";
     writeUnroutableRoutes(domain, ["unroutable-sc"], ["routable-high"]);
 

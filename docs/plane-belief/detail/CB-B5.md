@@ -4,7 +4,7 @@
 
 - `id`: `CB-B5`
 - `action`: `build_new+layer_on_labels`
-- `anchor`: `mcp/lib/belief/model.js`
+- `anchor`: `mcp/core/belief/model.js`
 - `status`: `done`
 
 ## Contract
@@ -17,7 +17,7 @@ grades, and never schedules work.
 
 ## Implementation
 
-- `mcp/lib/belief/model.js` builds labeled examples from `claims.jsonl`,
+- `mcp/core/belief/model.js` builds labeled examples from `claims.jsonl`,
   final verification outcomes, and grade verdict summaries.
 - Feature extraction is limited to numeric/enum facts: causal-support presence,
   control/confounder counts, final disposition/reportability/confidence, replay
@@ -39,7 +39,7 @@ grades, and never schedules work.
 - REMOVED the fake trainer: `trainWeights = (mean_pos - mean_neg) * 2` (no loss, no
   gradient, no calibration), the logistic `scoreExample`, `featureStats`,
   `evaluateModel`, and the `calibrated_logistic_factors` misnomer.
-- REPLACED with a real monotonic **recalibration** (`mcp/lib/belief/recalibration.js`,
+- REPLACED with a real monotonic **recalibration** (`mcp/core/belief/recalibration.js`,
   isotonic / pool-adjacent-violators): the raw predictor is the transparent
   deterministic `handScore`; the map recalibrates it against pooled cross-session
   outcomes. Output is `recalibration_map` + a report with `brier_raw`,

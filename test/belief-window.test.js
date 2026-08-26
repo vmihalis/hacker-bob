@@ -8,18 +8,18 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
-} = require("../mcp/lib/frontier-events.js");
+} = require("../mcp/core/frontier/frontier-events.js");
 const {
   sessionDir,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   appendEdges,
-} = require("../mcp/lib/surface-graph.js");
+} = require("../mcp/core/frontier/surface-graph.js");
 const {
   buildBeliefWindow,
-} = require("../mcp/lib/belief/belief-window.js");
-const queryBeliefWindowTool = require("../mcp/lib/tools/query-belief-window.js");
-const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
+} = require("../mcp/core/belief/belief-window.js");
+const queryBeliefWindowTool = require("../mcp/tools/query-belief-window.js");
+const elicitBeliefTool = require("../mcp/tools/elicit-belief.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

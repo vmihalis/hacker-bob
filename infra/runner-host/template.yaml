@@ -1,0 +1,561 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Hacker Bob Release A runner host: one arm64 EC2 instance running the dispatch
+  service (systemd) that spawns per-run Bob runner containers. Restricted-port egress
+  posture at the port level (443 + DNS out only); per-run domain enforcement
+  rides Bob's own egress-profile/scope-kernel machinery inside the runner
+  container. See README.md for the full deploy runbook.
+
+Parameters:
+  DispatchServiceArtifactBucket:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: S3 bucket holding the packed dispatch service tarball (dispatch.tar.gz).
+  DispatchServiceArtifactKey:
+    Type: String
+    Default: runner-host/dispatch.tar.gz
+    AllowedPattern: '^[A-Za-z0-9._/-]{1,512}$'
+    Description: S3 key of the dispatch service tarball.
+  DispatchServiceArtifactSha256:
+    Type: String
+    AllowedPattern: '^[0-9a-f]{64}$'
+    Description: Lowercase SHA-256 digest of the packed dispatch service tarball.
+  RunnerImageUri:
+    Type: String
+    AllowedPattern: '^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$'
+    Description: Immutable ECR image URI for the runner, pinned by digest.
+  RunnerImageRepositoryArn:
+    Type: String
+    AllowedPattern: '^arn:aws(?:-[a-z]+)?:ecr:[a-z0-9-]+:[0-9]{12}:repository/[A-Za-z0-9._/-]+$'
+    Description: Exact ECR repository ARN containing RunnerImageUri.
+  ConvexProjectionBaseUrl:
+    Type: String
+    AllowedPattern: '^https://[a-z0-9-]+\.convex\.site$'
+    Description: The Convex .site base URL the runner projects into.
+  ConvexUrl:
+    Type: String
+    AllowedPattern: '^https://[a-z0-9-]+\.convex\.cloud$'
+    Description: The Convex .convex.cloud URL for runner and host lifecycle writes.
+  DispatchSecretParameterName:
+    Type: String
+    AllowedPattern: '^/[A-Za-z0-9_.\-/]+$'
+    Description: Existing SecureString parameter containing DISPATCH_SECRET.
+  RunnerSecretParameterName:
+    Type: String
+    AllowedPattern: '^/[A-Za-z0-9_.\-/]+$'
+    Description: Existing SecureString parameter containing RUNNER_SECRET.
+  DeepSeekApiKeyParameterName:
+    Type: String
+    AllowedPattern: '^/[A-Za-z0-9_.\-/]+$'
+    Description: Existing SecureString parameter containing DEEPSEEK_API_KEY.
+  DispatchCertificateArn:
+    Type: String
+    AllowedPattern: '^arn:aws(?:-[a-z]+)?:acm:[a-z0-9-]+:[0-9]{12}:certificate/[A-Za-z0-9-]+$'
+    Description: ACM certificate ARN covering DispatchDomainName.
+  DispatchDomainName:
+    Type: String
+    AllowedPattern: '^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+    Description: Required public TLS hostname for the dispatch endpoint.
+  DispatchHostedZoneId:
+    Type: String
+    AllowedPattern: '^Z[A-Z0-9]+$'
+    Description: Route53 hosted zone containing DispatchDomainName.
+  MaxConcurrentRuns:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 32
+  MaxQueuedRuns:
+    Type: Number
+    Default: 8
+    MinValue: 1
+    MaxValue: 256
+  MaxQueueAgeMs:
+    Type: Number
+    Default: 900000
+    MinValue: 1000
+  LedgerCompactRows:
+    Type: Number
+    Default: 10000
+    MinValue: 100
+  RunTimeoutMinutes:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    MaxValue: 1440
+  RunnerAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Operator-resolved Amazon Linux 2023 arm64 AMI ID for the deployment region.
+  InstanceType:
+    Type: String
+    Default: t4g.large
+    AllowedValues: [t4g.large, t4g.xlarge, m7g.large]
+  RunnerSubnet:
+    Type: String
+    Default: b
+    AllowedValues: [a, b]
+    Description: Public subnet for the runner instance; override when the selected AZ lacks capacity.
+  KeyPairName:
+    Type: String
+    Default: ""
+    Description: Optional EC2 key pair for break-glass console access. Empty = Session Manager only.
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+  UseRunnerSubnetA: !Equals [!Ref RunnerSubnet, a]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.64.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: bob-runner-vpc }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: bob-runner-igw }]
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.64.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: bob-runner-public-a }]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.64.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: bob-runner-public-b }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: bob-runner-public-rt }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: bob-dispatch-alb
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: bob-runner-instance
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      # Restricted-port egress posture: HTTPS + DNS only, nothing else.
+      # Per-run DOMAIN enforcement happens inside the runner container via
+      # Bob's egress-profile/scope kernel, not in this group (see README).
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      Tags: [{ Key: Name, Value: bob-dispatch-alb }]
+
+  AlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 8080
+      TargetType: instance
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Targets: [{ Id: !Ref RunnerInstance }]
+
+  AlbHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref DispatchCertificateArn }]
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AlbTargetGroup
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref DispatchHostedZoneId
+      Name: !Sub "${DispatchDomainName}."
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt Alb.CanonicalHostedZoneID
+        DNSName: !GetAtt Alb.DNSName
+
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: dispatch-secrets-and-artifacts
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DispatchSecretParameterName}"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${RunnerSecretParameterName}"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DeepSeekApiKeyParameterName}"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${DispatchServiceArtifactBucket}/${DispatchServiceArtifactKey}"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Ref RunnerImageRepositoryArn
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action: cloudformation:SignalResource
+                Resource: !Ref AWS::StackId
+
+  RunnerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref RunnerRole]
+
+
+  RunnerInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref RunnerAmiId
+      IamInstanceProfile: !Ref RunnerInstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
+      SubnetId: !If [UseRunnerSubnetA, !Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroupIds: [!Ref InstanceSecurityGroup]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 50
+            VolumeType: gp3
+            Encrypted: true
+      Tags: [{ Key: Name, Value: bob-runner-host }]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -Eeuo pipefail
+
+          signal_stack() {
+            /usr/bin/aws cloudformation signal-resource \
+              --region '${AWS::Region}' \
+              --stack-name '${AWS::StackName}' \
+              --logical-resource-id RunnerInstance \
+              --unique-id "$(/usr/bin/cat /etc/machine-id)" \
+              --status "$1"
+          }
+
+          signal_failure() {
+            status=$?
+            trap - ERR
+            if [ -x /usr/bin/aws ]; then
+              signal_stack FAILURE || true
+            fi
+            exit "$status"
+          }
+          trap signal_failure ERR
+
+          dnf update -y
+          dnf install -y awscli docker git jq tar nodejs22 nodejs22-npm
+          alternatives --set node /usr/bin/node-22
+          node --version | grep -Eq '^v22\.'
+          systemctl enable --now docker
+
+          if ! id -u bob-dispatch >/dev/null 2>&1; then
+            useradd --system --home-dir /opt/bob-dispatch --shell /sbin/nologin --no-create-home bob-dispatch
+          fi
+          usermod -aG docker bob-dispatch
+
+          install -d -o root -g root -m 0755 /opt/bob-dispatch
+          install -d -o root -g root -m 0700 /etc/bob-dispatch
+          install -d -o bob-dispatch -g bob-dispatch -m 0700 \
+            /var/lib/bob-dispatch \
+            /var/lib/bob-dispatch/ledger \
+            /var/lib/bob-dispatch/logs \
+            /run/bob-dispatch
+
+          aws s3 cp "s3://${DispatchServiceArtifactBucket}/${DispatchServiceArtifactKey}" /tmp/dispatch.tar.gz
+          printf '%s  %s\n' '${DispatchServiceArtifactSha256}' /tmp/dispatch.tar.gz \
+            | sha256sum -c -
+          tar -xzf /tmp/dispatch.tar.gz -C /opt/bob-dispatch
+          rm -f /tmp/dispatch.tar.gz
+          npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefix /opt/bob-dispatch
+          chown -R root:root /opt/bob-dispatch
+          chmod -R go-w /opt/bob-dispatch
+
+          cat > /etc/bob-dispatch/start <<'WRAPPER'
+          #!/bin/bash
+          set -euo pipefail
+          /usr/bin/install -d -o bob-dispatch -g bob-dispatch -m 0700 \
+            /var/lib/bob-dispatch/ledger \
+            /var/lib/bob-dispatch/logs \
+            /run/bob-dispatch
+
+
+          PARAMS=$(/usr/bin/aws ssm get-parameters \
+            --with-decryption \
+            --names \
+              '${DispatchSecretParameterName}' \
+              '${RunnerSecretParameterName}' \
+              '${DeepSeekApiKeyParameterName}' \
+            --output json)
+
+          if [ "$(/usr/bin/jq -r '.InvalidParameters | length' <<<"$PARAMS")" -ne 0 ]; then
+            echo "required SecureString parameter was not returned" >&2
+            exit 1
+          fi
+
+          extract_secret() {
+            /usr/bin/jq -er --arg name "$1" \
+              '.Parameters[] | select(.Name == $name) | .Value' <<<"$PARAMS"
+          }
+
+          validate_secret() {
+            local name="$1"
+            local value="$2"
+            local normalized
+            normalized=$(printf '%s' "$value" | /usr/bin/tr '[:lower:]' '[:upper:]')
+            case "$normalized" in
+              ""|CHANGE_ME|CHANGEME|PLACEHOLDER|REPLACE_ME|TODO|NULL|UNDEFINED)
+                echo "$name is empty or still a placeholder" >&2
+                exit 1
+                ;;
+            esac
+            case "$value" in
+              *$'\n'*|*$'\r'*)
+                echo "$name contains a line break" >&2
+                exit 1
+                ;;
+            esac
+          }
+
+          DISPATCH_SECRET=$(extract_secret '${DispatchSecretParameterName}')
+          RUNNER_SECRET=$(extract_secret '${RunnerSecretParameterName}')
+          DEEPSEEK_API_KEY=$(extract_secret '${DeepSeekApiKeyParameterName}')
+          unset PARAMS
+
+          validate_secret DISPATCH_SECRET "$DISPATCH_SECRET"
+          validate_secret RUNNER_SECRET "$RUNNER_SECRET"
+          validate_secret DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
+
+          RUNNER_IMAGE_URI='${RunnerImageUri}'
+          REGISTRY=$(printf '%s' "$RUNNER_IMAGE_URI" | /usr/bin/cut -d/ -f1)
+          ECR_CONFIG=$(/usr/bin/mktemp -d /run/bob-dispatch/ecr-auth.XXXXXX)
+          chmod 0700 "$ECR_CONFIG"
+          export DOCKER_CONFIG="$ECR_CONFIG"
+          trap '/usr/bin/rm -rf "$ECR_CONFIG"' EXIT
+          /usr/bin/aws ecr get-login-password --region '${AWS::Region}' \
+            | /usr/bin/docker login --username AWS --password-stdin "$REGISTRY"
+          /usr/bin/docker pull "$RUNNER_IMAGE_URI"
+          /usr/bin/docker logout "$REGISTRY" >/dev/null 2>&1 || true
+          /usr/bin/rm -rf "$ECR_CONFIG"
+          trap - EXIT
+          unset DOCKER_CONFIG ECR_CONFIG REGISTRY
+
+          exec /usr/bin/setpriv \
+            --reuid=bob-dispatch \
+            --regid=bob-dispatch \
+            --init-groups \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            --bounding-set=-all \
+            --no-new-privs \
+            /usr/bin/env -i \
+              PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin \
+              HOME=/opt/bob-dispatch \
+              NODE_ENV=production \
+              PORT=8080 \
+              AWS_REGION='${AWS::Region}' \
+              DISPATCH_SECRET="$DISPATCH_SECRET" \
+              RUNNER_SECRET="$RUNNER_SECRET" \
+              DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+              RUNNER_IMAGE_URI="$RUNNER_IMAGE_URI" \
+              BOB_PROJECTION_URL='${ConvexProjectionBaseUrl}/api/findings' \
+              BOB_CONVEX_URL='${ConvexUrl}' \
+              RUN_TIMEOUT_MINUTES='${RunTimeoutMinutes}' \
+              MAX_CONCURRENT_RUNS='${MaxConcurrentRuns}' \
+              MAX_QUEUED_RUNS='${MaxQueuedRuns}' \
+              MAX_QUEUE_AGE_MS='${MaxQueueAgeMs}' \
+              LEDGER_COMPACT_ROWS='${LedgerCompactRows}' \
+              RUNS_DIR=/run/bob-dispatch \
+              LOGS_DIR=/var/lib/bob-dispatch/logs \
+              LEDGER_DIR=/var/lib/bob-dispatch/ledger \
+              /usr/bin/node /opt/bob-dispatch/server.js
+          WRAPPER
+          chown root:root /etc/bob-dispatch/start
+          chmod 0700 /etc/bob-dispatch/start
+
+          cat > /etc/systemd/system/bob-docker-metadata-deny.service <<'UNIT'
+          [Unit]
+          Description=Block runner containers from EC2 instance metadata
+          Requires=docker.service
+          After=docker.service
+          PartOf=docker.service
+          Before=bob-dispatch.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/sh -c '/usr/sbin/iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || /usr/sbin/iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP'
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          cat > /etc/systemd/system/bob-dispatch.service <<'UNIT'
+          [Unit]
+          Description=Hacker Bob dispatch service
+          After=network-online.target docker.service bob-docker-metadata-deny.service
+          Wants=network-online.target docker.service
+          Requires=bob-docker-metadata-deny.service
+
+          [Service]
+          Type=simple
+          User=bob-dispatch
+          Group=bob-dispatch
+          SupplementaryGroups=docker
+          WorkingDirectory=/opt/bob-dispatch
+          ExecStart=!/etc/bob-dispatch/start
+          Restart=always
+          RestartSec=5
+          TimeoutStartSec=300
+          UMask=0077
+          RuntimeDirectory=bob-dispatch
+          RuntimeDirectoryMode=0700
+          NoNewPrivileges=true
+          PrivateDevices=true
+          PrivateTmp=true
+          ProtectClock=true
+          ProtectControlGroups=true
+          ProtectHome=true
+          ProtectHostname=true
+          ProtectKernelLogs=true
+          ProtectKernelModules=true
+          ProtectKernelTunables=true
+          ProtectSystem=strict
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          RestrictRealtime=true
+          RestrictSUIDSGID=true
+          LockPersonality=true
+          ReadWritePaths=/var/lib/bob-dispatch /run/bob-dispatch /run/docker.sock
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          systemctl daemon-reload
+          systemctl enable bob-docker-metadata-deny
+          systemctl enable --now bob-dispatch
+
+          healthy=0
+          for attempt in $(/usr/bin/seq 1 60); do
+            if systemctl is-active --quiet bob-dispatch \
+              && /usr/bin/curl --fail --silent --show-error \
+                http://127.0.0.1:8080/health >/dev/null; then
+              healthy=1
+              break
+            fi
+            /usr/bin/sleep 2
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "dispatch service did not become healthy" >&2
+            false
+          fi
+          signal_stack SUCCESS
+          trap - ERR
+
+Outputs:
+  DispatchUrl:
+    Description: The dispatch endpoint www must receive as RUNNER_DISPATCH_URL.
+    Value: !Sub "https://${DispatchDomainName}/dispatch"
+  RunnerInstanceId:
+    Value: !Ref RunnerInstance
+  InstanceSecurityGroupId:
+    Value: !GetAtt InstanceSecurityGroup.GroupId
+  DispatchServiceRoleArn:
+    Value: !GetAtt RunnerRole.Arn

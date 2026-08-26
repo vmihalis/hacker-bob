@@ -36,7 +36,7 @@ const EXECUTABLE_HOOKS = Object.freeze([
 ]);
 
 // Non-executable data the guards READ. write-guard-tables.json is the generated
-// allow/deny manifest (rendered from mcp/lib/paths.js AUDIT_GRADED_PATHS). It must
+// allow/deny manifest (rendered from mcp/core/io/paths.js AUDIT_GRADED_PATHS). It must
 // land beside the guards so $(dirname "$0")/write-guard-tables.json resolves. Kept
 // separate from HOOK_FILES so it never enters EXECUTABLE_HOOKS / the chmod loop /
 // the doctor executable-bit check. Mirrors the Claude HOOK_DATA_FILES.

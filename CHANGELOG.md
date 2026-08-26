@@ -26,7 +26,7 @@
 ### Installation and packaged documentation
 
 - The primary install path now installs the `hacker-bob` command globally before installing Bob into a project. This path works with the current npm release and leaves `hacker-bob doctor` available for verification.
-- The npm package now includes the images, animations, VHS tapes, and receipt source referenced by its README. Package and release checks keep these files inside a measured 4.7 MB tarball ceiling.
+- The npm package now includes the images, animations, VHS tapes, and receipt source referenced by its README. Package and release checks keep the packed tarball below the enforced 4 MB ceiling.
 - Raised the per-file runtime dependency copy ceiling from 256 MB to 512 MB. The previous limit rejected the 325 MB native Claude CLI shipped by `@anthropic-ai/claude-agent-sdk` 0.3.241 during a clean global install; the independent 2 GB graph ceiling remains unchanged.
 - Installer completion hints now use `<authorized-target>` and state the authorization requirement instead of suggesting a real domain.
 

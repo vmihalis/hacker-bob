@@ -40,7 +40,7 @@ const {
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const FIXED_NOW = "2026-07-18T09:00:00.100Z";
 

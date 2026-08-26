@@ -16,9 +16,9 @@ const {
   appendSpawnLedgerEntry,
   readSpawnLedgerEntries,
   spawnLedgerTotal,
-} = require("../mcp/lib/spawn-ledger.js");
-const { withSessionLock } = require("../mcp/lib/storage.js");
-const paths = require("../mcp/lib/paths.js");
+} = require("../mcp/core/session/spawn-ledger.js");
+const { withSessionLock } = require("../mcp/core/io/storage.js");
+const paths = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const prev = process.env.HOME;

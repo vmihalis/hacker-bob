@@ -36,29 +36,29 @@ const {
   rebuildPhysicalExperimentIndex,
   rowAuthorizationContextDigest,
   signatureInputDigest,
-} = require("../mcp/lib/physical-experiment-contract.js");
+} = require("../mcp/domains/physical/physical-experiment-contract.js");
 const {
   createProductionPhysicalVerdictResolverPort,
   installPhysicalVerdictResolver,
   resolvePhysicalVerdict,
-} = require("../mcp/lib/physical-verdict-runtime.js");
+} = require("../mcp/domains/physical/physical-verdict-runtime.js");
 const {
   assertReportSafePhysicalVerdict,
-} = require("../mcp/lib/physical-capability-consumers.js");
+} = require("../mcp/domains/physical/physical-capability-consumers.js");
 const {
   buildSessionNucleus,
   normalizePhysicalScopeNucleusAxis,
-} = require("../mcp/lib/governance-contracts.js");
-const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/governance/index.js");
+const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
 const {
   buildDurableReceiptTrustRegistry,
   buildExecutedEvidenceRegistry,
   createDurableEvidenceReceiptIssuer,
-} = require("../mcp/lib/executed-evidence-registry.js");
-const { buildEffectTemplateRegistry } = require("../mcp/lib/requested-effects.js");
+} = require("../mcp/core/executed-evidence-registry.js");
+const { buildEffectTemplateRegistry } = require("../mcp/core/requested-effects.js");
 const {
   physicalSurfaceTransitionClaimPredicateDigest,
-} = require("../mcp/lib/physical-surface-transition.js");
+} = require("../mcp/domains/physical/physical-surface-transition.js");
 const {
   createMechanismAPhysicalExperimentFixture,
   createProductionPhysicalVerdictFixture,
@@ -68,21 +68,21 @@ const {
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../mcp/lib/sandbox-isolation-attest.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   ingestMechanismAPhysicalExperimentReceipt,
   openMechanismAPhysicalExperimentDurableHeadPort,
-} = require("../mcp/lib/physical-experiment-store.js");
+} = require("../mcp/domains/physical/physical-experiment-store.js");
 const {
   PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
-} = require("../mcp/lib/signing-key-custody.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   compareAndSetPhysicalMonotonicOwnerState,
   readPhysicalMonotonicOwnerState,
-} = require("../mcp/lib/physical-monotonic-owner.js");
+} = require("../mcp/domains/physical/physical-monotonic-owner.js");
 const {
   FIXED_SOURCE_BLOCKER,
-} = require("../mcp/lib/physical-trusted-clock-store.js");
+} = require("../mcp/domains/physical/physical-trusted-clock-store.js");
 
 function digest(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
@@ -2752,6 +2752,7 @@ test("Mechanism-A experiment runtime detects local rollback but stays non-produc
       attempt_id: `attempt-${crypto.randomBytes(4).toString("hex")}`,
       session_nucleus_hash: session.nucleus.nucleus_hash,
       trust_registry_digest: signerFixture.registry.registry_digest,
+      ingestion_policy: { max_future_skew_ms: 10_000, max_ingestion_delay_ms: 20_000 },
     });
     const trustEnrollment = enrollProductionPhysicalExperimentTrust({
       version: 1,
@@ -2792,12 +2793,15 @@ test("Mechanism-A experiment runtime detects local rollback but stays non-produc
       effectRegistry: EFFECT_REGISTRY,
       evidenceRegistry: EVIDENCE_REGISTRY,
     };
-    const signingOptions = () => ({
-      signedAt: new Date().toISOString(),
-      appendIssuer: physicalAppendIssuerAt(new Date().toISOString()),
-      signers: signerFixture.signers,
-      sign: signerFixture.sign,
-    });
+    const signingOptions = () => {
+      const signedAt = new Date().toISOString();
+      return {
+        signedAt,
+        appendIssuer: physicalAppendIssuerAt(signedAt),
+        signers: signerFixture.signers,
+        sign: signerFixture.sign,
+      };
+    };
 
     const first = createMechanismAPhysicalExperimentLedger(productionInput);
     assert.equal(assertMechanismAPhysicalExperimentLedger(first), first);

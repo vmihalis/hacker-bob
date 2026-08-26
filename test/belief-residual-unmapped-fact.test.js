@@ -14,17 +14,17 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
 const {
   buildResidualDiagnostic,
   findUnmappedFacts,
   classifyUnmappedBand,
   UNMAPPED_FACT_REASON,
-} = require("../mcp/lib/belief/residual.js");
-const { buildBeliefWindow, RESOLUTION_THRESHOLD } = require("../mcp/lib/belief/belief-window.js");
-const { queryFrontierTypedFacts } = require("../mcp/lib/belief/frontier-facts.js");
+} = require("../mcp/core/belief/residual.js");
+const { buildBeliefWindow, RESOLUTION_THRESHOLD } = require("../mcp/core/belief/belief-window.js");
+const { queryFrontierTypedFacts } = require("../mcp/core/belief/frontier-facts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

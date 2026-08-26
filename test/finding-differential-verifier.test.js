@@ -14,28 +14,29 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  OBSERVED_INVARIANT_CANARY_PROOF_MODE,
   verifyFindingDifferential,
   readFindingDifferentialVerifiedSummary,
   offensiveRowHash,
-} = require("../mcp/lib/finding-differential-verifier.js");
+} = require("../mcp/core/differential/index.js");
 const {
   canonicalizeExploitTarget,
-} = require("../mcp/lib/claims.js");
+} = require("../mcp/core/claims/claims.js");
 const {
   offensiveRunsJsonlPath,
   findingDifferentialVerifiedJsonlPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   ensureHandoffSigningKey,
-} = require("../mcp/lib/handoff-signing-key.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   signOffensiveRunRow,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 const {
   buildAndSignOffensiveRow,
-} = require("../mcp/lib/offensive-capture-writer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { withSessionLock } = require("../mcp/lib/storage.js");
+} = require("../mcp/domains/web/offensive-capture-writer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { withSessionLock } = require("../mcp/core/io/storage.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -55,6 +56,18 @@ function hex(char) {
 }
 
 const SURFACE = "surface:billing-profile";
+const SECOND_ORDER_FLAGS = Object.freeze([
+  "oracle_kind",
+  "canary_minted_server_side",
+  "canary_present_exact_leaf",
+  "decoy_minted_server_side",
+  "decoy_absent",
+  "decoy_absent_against_reachable_endpoint",
+  "decoy_silent",
+  "observation_endpoint_distinct_from_injection",
+  "reread_read_only",
+  "reread_channel_bob_controlled",
+]);
 
 // Build + sign a single offensive-runs row. The runner hardcodes exploited_safely for a
 // real positive; a blocked control row is constructed directly here (its safe-variant
@@ -79,6 +92,9 @@ function buildSignedRow(domain, over = {}) {
     demonstrated_severity: over.demonstrated_severity || "medium",
     surface_id: over.surface_id === undefined ? SURFACE : over.surface_id,
   };
+  for (const key of SECOND_ORDER_FLAGS) {
+    if (over[key] !== undefined) row[key] = over[key];
+  }
   signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
   return row;
 }
@@ -272,6 +288,66 @@ test("an unsupported ledger ref (auth_differential, deferred) is REFUSED", () =>
   );
 }));
 
+test("unknown proof_mode is REFUSED before generic web fallback", () => withTempHome(() => {
+  const domain = "fd-unknown-proof.example.com";
+  seedFlippingPair(domain);
+  assert.throws(
+    () => verifyFindingDifferential({
+      target_domain: domain, finding_id: "F-2", surface_id: SURFACE,
+      positive_run_ref: REF_POS, control_run_ref: REF_CTL,
+      proof_mode: "soft_llm_verdict",
+    }),
+    /unknown proof_mode soft_llm_verdict; refusing to fall back to generic web differential/,
+  );
+  assert.equal(readFindingDifferentialVerifiedSummary(domain).total_runs, 0);
+}));
+
+test("second-order rows without signed capture proof mint inconclusive, not verified_pass", () => withTempHome(() => {
+  const domain = "fd-soft-canary.example.com";
+  appendRow(domain, buildSignedRow(domain, {
+    run_id: "fd-positive-1",
+    tool_id: "bob_secondorder_reread",
+    oracle_kind: "second_order_reread",
+    offensive_outcome: "exploited_safely",
+    command_hash: hex("1"),
+    canary_minted_server_side: true,
+    canary_present_exact_leaf: true,
+    decoy_minted_server_side: true,
+    decoy_absent: true,
+    observation_endpoint_distinct_from_injection: true,
+    reread_read_only: true,
+    reread_channel_bob_controlled: true,
+  }));
+  appendRow(domain, buildSignedRow(domain, {
+    run_id: "fd-control-1",
+    tool_id: "bob_secondorder_reread",
+    oracle_kind: "second_order_reread",
+    offensive_outcome: "blocked_by_defense",
+    command_hash: hex("2"),
+    canary_minted_server_side: true,
+    decoy_minted_server_side: true,
+    decoy_absent_against_reachable_endpoint: true,
+    decoy_silent: true,
+    observation_endpoint_distinct_from_injection: true,
+    reread_read_only: true,
+    reread_channel_bob_controlled: true,
+  }));
+  const out = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-SOFT",
+    surface_id: SURFACE,
+    positive_run_ref: REF_POS,
+    control_run_ref: REF_CTL,
+    proof_mode: OBSERVED_INVARIANT_CANARY_PROOF_MODE,
+  });
+  assert.equal(out.result, "inconclusive");
+  assert.match(out.reason, /observed_invariant_canary_v1_not_proven/);
+  assert.equal(out.proof_record, undefined);
+  const summary = readFindingDifferentialVerifiedSummary(domain);
+  assert.equal(summary.verified_pass_count, 0);
+  assert.equal(summary.verified_by_finding["F-SOFT"], undefined);
+}));
+
 test("ledger record shape + results_hash determinism, and the reader summary", () => withTempHome(() => {
   const domain = "fd-shape.example.com";
   seedFlippingPair(domain);
@@ -291,7 +367,7 @@ test("ledger record shape + results_hash determinism, and the reader summary", (
   }
   assert.equal(rec.source, "offensive_runs");
   // results_hash is over the body (excluding results_hash itself); recompute is stable.
-  const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+  const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
   const body = { ...rec };
   delete body.results_hash;
   assert.equal(rec.results_hash, hashCanonicalJson(body));
@@ -334,7 +410,7 @@ function appendVerdictLine(domain, over = {}) {
     control_run_id: over.control_run_id || "fd-control-1",
     control_row_hash: over.control_row_hash || hex("2"),
   };
-  const { hashCanonicalJson } = require("../mcp/lib/verification-contracts.js");
+  const { hashCanonicalJson } = require("../mcp/core/verification/verification-contracts.js");
   const record = { ...body, results_hash: hashCanonicalJson(body) };
   fs.mkdirSync(path.dirname(findingDifferentialVerifiedJsonlPath(domain)), { recursive: true });
   fs.appendFileSync(findingDifferentialVerifiedJsonlPath(domain), `${JSON.stringify(record)}\n`);

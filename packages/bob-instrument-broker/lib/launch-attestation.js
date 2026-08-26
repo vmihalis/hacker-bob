@@ -6,7 +6,7 @@ const { types: utilTypes } = require("node:util");
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 const {
   publicKeyDigest,
   _internals: {

@@ -23,14 +23,14 @@ const assert = require("node:assert/strict");
 const {
   FRICTION_HISTORY_HARD_CAP,
   derivePackForNode,
-} = require("../mcp/lib/capability-pack-derivation.js");
+} = require("../mcp/core/capability/capability-pack-derivation.js");
 const {
   selectRelevantFrictions,
   DEFAULT_LIMIT,
-} = require("../mcp/lib/friction-selection.js");
+} = require("../mcp/core/friction-selection.js");
 const {
   TASK_GRAPH_NODE_ID_PREFIX,
-} = require("../mcp/lib/task-graph-events.js");
+} = require("../mcp/core/waves/task-graph-events.js");
 
 function webSurfaceNode(nodeId, surfaceId) {
   return {

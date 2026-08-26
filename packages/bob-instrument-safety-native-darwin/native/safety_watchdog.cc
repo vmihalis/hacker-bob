@@ -40,7 +40,8 @@ constexpr uint64_t kNanosecondsPerMillisecond = 1000000ULL;
 constexpr uint64_t kMaximumDeadmanMs = 5000;
 constexpr uint64_t kMaximumCleanupMs = 2000;
 constexpr uint64_t kStartupCustodyMs = 10000;
-constexpr uint64_t kInjectedStartupCustodyMs = 300;
+constexpr uint64_t kInjectedBlockedStartupCustodyMs = 1000;
+constexpr uint64_t kInjectedExpiredStartupCustodyMs = 300;
 constexpr const char* kSemanticDomain =
     "hacker-bob/darwin-safety-semantic-cleanup/v1";
 constexpr const char* kJournalDomain =
@@ -196,17 +197,42 @@ void DisarmProcessDeadline() {
   setitimer(ITIMER_REAL, &timer, nullptr);
 }
 
-bool BuildChildDeadline(const AbsoluteDeadline& outer,
-                        AbsoluteDeadline* child) {
+bool BuildChildDeadlineAt(const AbsoluteDeadline& outer, uint64_t now,
+                          AbsoluteDeadline* child) {
   uint64_t remaining_ns = 0;
-  if (!Remaining(outer, &remaining_ns)) return false;
-  uint64_t reserve = remaining_ns / 4;
-  if (reserve > 10000000ULL) reserve = 10000000ULL;
+  if (!RemainingAt(outer, now, &remaining_ns)) return false;
+  // Every nested custodian must finish early enough for its parent to reap it,
+  // persist and read back evidence, and publish the terminal receipt inside the
+  // signed outer bound. Capping this reserve made the two-level hierarchy
+  // scheduler-dependent on hosted ARM runners for longer cleanup windows.
+  uint64_t reserve = remaining_ns / 3;
   if (reserve < 1000000ULL && remaining_ns > 1000000ULL) reserve = 1000000ULL;
   if (reserve == 0 || reserve >= remaining_ns) return false;
   child->expires = outer.expires - reserve;
   child->valid = true;
   return true;
+}
+
+bool BuildChildDeadline(const AbsoluteDeadline& outer,
+                        AbsoluteDeadline* child) {
+  return BuildChildDeadlineAt(outer, MonotonicNanoseconds(), child);
+}
+
+int ChildDeadlineHelperSelftest() {
+  const uint64_t now = 100000000ULL;
+  const AbsoluteDeadline outer = {1000000000ULL, true};
+  AbsoluteDeadline custody;
+  AbsoluteDeadline cleanup;
+  AbsoluteDeadline invalid = {1000000000ULL, false};
+  if (!BuildChildDeadlineAt(outer, now, &custody) || !custody.valid ||
+      custody.expires != 700000000ULL ||
+      !BuildChildDeadlineAt(custody, now, &cleanup) || !cleanup.valid ||
+      cleanup.expires != 500000000ULL ||
+      BuildChildDeadlineAt(invalid, now, &cleanup) ||
+      BuildChildDeadlineAt(outer, outer.expires, &cleanup)) {
+    return 67;
+  }
+  return 0;
 }
 
 bool BuildHandoffStallFixtureDeadlines(
@@ -2042,11 +2068,15 @@ bool StartCleanupCustodian(
   AbsoluteDeadline startup_deadline;
   const bool injected_block =
       config.fixture_behavior == "watchdog_block_first_journal_fsync" ||
-      config.fixture_behavior == "watchdog_block_ready_output" ||
+      config.fixture_behavior == "watchdog_block_ready_output";
+  const bool injected_expiry =
       config.fixture_behavior == "custody_late_arm_after_expiry";
+  const uint64_t startup_custody_ms = injected_block
+      ? kInjectedBlockedStartupCustodyMs
+      : injected_expiry ? kInjectedExpiredStartupCustodyMs : kStartupCustodyMs;
   if (!BuildAbsoluteDeadline(
-          injected_block ? kInjectedStartupCustodyMs : kStartupCustodyMs,
-          &startup_deadline) || !CreatePipe(command) || !CreatePipe(receipt)) {
+          startup_custody_ms, &startup_deadline) ||
+      !CreatePipe(command) || !CreatePipe(receipt)) {
     ClosePipe(command);
     ClosePipe(receipt);
     return false;
@@ -2195,20 +2225,26 @@ int RedeemCleanupAfterContract(
   AbsoluteDeadline deadline;
   const bool deadline_valid =
       BuildAbsoluteDeadline(config.cleanup_timeout_ms, &deadline);
+  AbsoluteDeadline custody_deadline;
+  const bool custody_deadline_valid =
+      deadline_valid && BuildChildDeadline(deadline, &custody_deadline);
   bool evidence_healthy = journal != nullptr && journal->initialized();
   if (deadline_valid && !ArmWatcherDeadline(deadline)) evidence_healthy = false;
+  if (!custody_deadline_valid) evidence_healthy = false;
 
   bool trigger_sent = false;
-  if (deadline_valid && channels != nullptr && channels->command_fd >= 0) {
+  if (custody_deadline_valid && channels != nullptr &&
+      channels->command_fd >= 0) {
     std::vector<std::string> fields = {
         "CUSTODY_TRIGGER1", "1"};
     AppendCustodyEnvelope(&fields, config, *channels, getpid());
     fields.emplace_back(trigger_reason);
     fields.emplace_back(std::to_string(last_sequence));
-    fields.emplace_back(std::to_string(deadline.expires));
+    fields.emplace_back(std::to_string(custody_deadline.expires));
     AppendCustodyBindings(&fields, config);
     SignFields(&fields, command_key);
-    trigger_sent = WriteLineUntil(channels->command_fd, fields, deadline);
+    trigger_sent = WriteLineUntil(
+        channels->command_fd, fields, custody_deadline);
     if (!trigger_sent) {
       close(channels->command_fd);
       channels->command_fd = -1;
@@ -2712,7 +2748,12 @@ int WatchdogMain() {
   }
   uint64_t deadline =
       arm_issued + config.deadman_ms * kNanosecondsPerMillisecond;
-  const AbsoluteDeadline arm_write_deadline = {deadline, true};
+  // Bound this exchange by the earlier absolute deadline.
+  const AbsoluteDeadline arm_write_deadline = {
+      custody.startup_deadline.valid &&
+              deadline < custody.startup_deadline.expires
+          ? deadline : custody.startup_deadline.expires,
+      custody.startup_deadline.valid};
   std::vector<std::string> arm_acceptance;
   if (!SendCustodyArm(config, custody, custody_command_key,
                       custody_evidence_key, arm_issued, deadline,
@@ -2995,7 +3036,9 @@ int main(int argc, char** argv) {
     return CleanupWorkerMain();
   }
   if (std::strcmp(argv[1], "--deadline-helper-selftest") == 0) {
-    return DeadlineHelperSelftest();
+    const int absolute_result = DeadlineHelperSelftest();
+    return absolute_result == 0 ? ChildDeadlineHelperSelftest()
+                                : absolute_result;
   }
   if (std::strcmp(argv[1], "--child-lifecycle-selftest") == 0) {
     return ChildLifecycleSelftest();

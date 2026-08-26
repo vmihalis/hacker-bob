@@ -23,12 +23,12 @@ const path = require("path");
 
 const {
   compareGraphCandidates,
-} = require("../mcp/lib/graph-scheduler.js");
+} = require("../mcp/core/waves/graph-scheduler.js");
 const {
   buildCellBeliefRank,
-} = require("../mcp/lib/belief/cell-scheduler-priority.js");
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/belief/cell-scheduler-priority.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
 
 const PRIORITY_RANK = new Map([
   ["critical", 0],

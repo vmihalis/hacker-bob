@@ -1,0 +1,53 @@
+model = "deepseek-v4-pro"
+model_provider = "deepseek"
+model_reasoning_effort = "high"
+model_catalog_json = "/opt/codex-home/models.json"
+model_instructions_file = "/opt/codex-home/instructions.txt"
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+check_for_update_on_startup = false
+
+[feedback]
+enabled = false
+
+[analytics]
+enabled = false
+
+[agents]
+enabled = false
+
+[features]
+shell_tool = false
+view_image = false
+default_mode_request_user_input = false
+enable_request_compression = false
+
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "http://127.0.0.1:48125/"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+request_max_retries = 3
+stream_max_retries = 3
+stream_idle_timeout_ms = 300000
+supports_websockets = false
+supports_standalone_web_search = false
+
+[mcp_servers."hacker-bob"]
+command = "node"
+args = ["/opt/codex-home/mcp-launcher.js"]
+cwd = "/opt/hacker-bob"
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "approve"
+env_vars = [
+  "BOB_SESSIONS_ROOT",
+  "BOB_RUN_SLUG",
+  "BOB_RUN_KIND",
+  "BOB_RETEST_OF",
+  "BOB_REPORT_SLUG"
+]

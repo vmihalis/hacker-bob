@@ -14,7 +14,7 @@ const fs = require("fs");
 const {
   WRITE_GUARD_TABLES,
   AUDIT_GRADED_PATHS,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const { render, MANIFEST_PATHS } = require("../scripts/generate-write-guard-tables.js");
 
 test("EVERY rendered manifest is checked in and byte-identical to paths.js projection", () => {

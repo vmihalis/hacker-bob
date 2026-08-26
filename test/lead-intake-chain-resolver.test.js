@@ -3,8 +3,8 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
-const { normalizeSurfaceLead } = require("../mcp/lib/lead-intake.js");
+const { classifySurfaceCapability } = require("../mcp/core/capability/capability-packs.js");
+const { normalizeSurfaceLead } = require("../mcp/core/frontier/lead-intake.js");
 
 const BASE_CONTRACT = "0x1111111111111111111111111111111111111111";
 const UNKNOWN_CONTRACT = "0x2222222222222222222222222222222222222222";

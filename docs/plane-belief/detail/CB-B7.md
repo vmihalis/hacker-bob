@@ -10,7 +10,7 @@ provenance-disciplined shell around that judgment; it never makes an LLM call.
 
 ## What it does
 
-- `bob_elicit_belief` (`mcp/lib/tools/elicit-belief.js`): the host agent records a
+- `bob_elicit_belief` (`mcp/tools/elicit-belief.js`): the host agent records a
   belief. The tool hardcodes `provenance: "llm_inferred"`, `role: "prior"` and writes
   through `writeBeliefSignalScratch` -- advisory scratch only.
 - `normalizeElicitation` (`elicitation.js:39`): validates a proper distribution over

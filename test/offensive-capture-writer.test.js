@@ -17,18 +17,18 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const writer = require("../mcp/lib/offensive-capture-writer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
+const writer = require("../mcp/domains/web/offensive-capture-writer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningPublicKey,
   readHandoffSigningKey,
   resolveOffensiveRowVerifier,
-} = require("../mcp/lib/handoff-signing-key.js");
-const { withSessionLock } = require("../mcp/lib/storage.js");
-const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
-const { offensiveRunsDir } = require("../mcp/lib/paths.js");
-const { classifyConsumableShape } = require("../mcp/lib/consumable-shape.js");
+} = require("../mcp/core/ledger-integrity/index.js");
+const { withSessionLock } = require("../mcp/core/io/storage.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
+const { offensiveRunsDir } = require("../mcp/core/io/paths.js");
+const { classifyConsumableShape } = require("../mcp/core/verification/consumable-shape.js");
 
 // Read a minted row's .consumed capture bytes off disk (the leaf the cross-stack consume
 // path injects + the verifier shape-binds).
@@ -268,7 +268,7 @@ test("SEVERITY_VALUES is DESCENDING (most-severe first) — the invariant the ca
   // = less severe, so Math.max picks the less-severe value). If anyone reorders it or inserts a tier,
   // the clamp would silently invert and an override could RAISE the signed ceiling. Lock the ordering
   // so a regression fails loudly HERE, not by mis-signing a row in production.
-  const { SEVERITY_VALUES } = require("../mcp/lib/constants.js");
+  const { SEVERITY_VALUES } = require("../mcp/core/constants/shared-vocabulary.js");
   assert.deepEqual(
     SEVERITY_VALUES,
     ["critical", "high", "medium", "low", "info"],

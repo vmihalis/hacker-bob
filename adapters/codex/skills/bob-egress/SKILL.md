@@ -11,7 +11,7 @@ Use this when the operator asks to list, add, test, enable, disable, or remove H
 
 Run from the project root:
 ```bash
-node ./mcp/lib/egress-cli.js "$PWD" $ARGUMENTS
+node ./mcp/core/egress-cli.js "$PWD" $ARGUMENTS
 ```
 
 Rules:

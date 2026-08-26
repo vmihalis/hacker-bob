@@ -23,7 +23,7 @@ const {
   REPO_COMMAND_RUN_MAC_CONTEXT,
   CLAIM_FREEZE_MAC_CONTEXT,
   MAC_SCHEME_ED25519,
-} = require("../mcp/lib/offensive-row-mac.js");
+} = require("../mcp/core/ledger-integrity/index.js");
 
 const CONTEXTS = [
   OFFENSIVE_ROW_MAC_CONTEXT,

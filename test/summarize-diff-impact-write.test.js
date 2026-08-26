@@ -22,20 +22,20 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const summarizeDiffImpactTool = require("../mcp/lib/tools/summarize-diff-impact.js");
+const summarizeDiffImpactTool = require("../mcp/tools/repo/summarize-diff-impact.js");
 const {
   buildSymbolSurfaceIndex,
-} = require("../mcp/lib/symbol-surface-index.js");
+} = require("../mcp/domains/repo/symbol-surface-index.js");
 const {
   extractRoutesFromFiles,
-} = require("../mcp/lib/route-extractor.js");
+} = require("../mcp/core/route-extractor.js");
 const {
   diffImpactPath,
   isAuditGradedPath,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 const {
   acquireSessionLock,
-} = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/storage.js");
 
 function uniqueDomain(prefix = "bob-diff-impact-write-test") {
   const suffix = crypto.randomBytes(4).toString("hex");

@@ -19,22 +19,22 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const composeReportTool = require("../mcp/tools/compose-report.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
-const { deriveCvss31 } = require("../mcp/lib/cvss31.js");
-const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { appendJsonlLine } = require("../mcp/lib/storage.js");
-const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
-const { initSession } = require("../mcp/lib/session-state.js");
+const { deriveCvss31 } = require("../mcp/core/scoring/cvss31.js");
+const { ERROR_CODES } = require("../mcp/core/io/envelope.js");
+const { appendJsonlLine } = require("../mcp/core/io/storage.js");
+const { canonicalizeExploitTarget } = require("../mcp/core/claims/claims.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { signOffensiveRunRow } = require("../mcp/core/ledger-integrity/index.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
 const {
   readSessionStateStrict,
   writeSessionStateDocument,
-} = require("../mcp/lib/session-state-store.js");
-const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
-const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+} = require("../mcp/core/session/session-state-store.js");
+const { appendFrontierEvent } = require("../mcp/core/frontier/frontier-events.js");
+const { offensiveRowHash } = require("../mcp/core/differential/index.js");
 const {
   claimsJsonlPath,
   findingDifferentialVerifiedJsonlPath,
@@ -42,7 +42,7 @@ const {
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
-} = require("../mcp/lib/paths.js");
+} = require("../mcp/core/io/paths.js");
 
 // The web surface the CVSS-render tests bind their reportable medium+ finding to, so a
 // matching executed-flip arm satisfies the C1 report gate while the CVSS block renders.
@@ -299,6 +299,9 @@ function recordWebClaim(domain, overrides = {}) {
     severity: overrides.severity || "high",
     cwe: overrides.cwe || "CWE-639",
     endpoint: overrides.endpoint || "https://audit.example.com/api/orders/1",
+    request_method: overrides.request_method || "GET",
+    injection_point: overrides.injection_point || "path:order_id",
+    auth_profile: overrides.auth_profile || "attacker",
     description: overrides.description || "An attacker can read other users' orders.",
     proof_of_concept: overrides.proof_of_concept || "curl https://audit.example.com/api/orders/2",
     validated: true,

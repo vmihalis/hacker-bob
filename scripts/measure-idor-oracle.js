@@ -30,13 +30,13 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { idorConfirm } = require("../mcp/lib/offensive-idor-producer.js");
-const { initSession } = require("../mcp/lib/session-state.js");
-const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/lib/auth.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { attackSurfacePath } = require("../mcp/lib/paths.js");
-const { readOffensiveRunRecords } = require("../mcp/lib/claims.js");
+const { idorConfirm } = require("../mcp/domains/web/offensive-idor-producer.js");
+const { initSession } = require("../mcp/core/session/session-state.js");
+const { routeSurfaces } = require("../mcp/core/frontier/surface-router.js");
+const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/core/auth/index.js");
+const { ensureHandoffSigningKey } = require("../mcp/core/ledger-integrity/index.js");
+const { attackSurfacePath } = require("../mcp/core/io/paths.js");
+const { readOffensiveRunRecords } = require("../mcp/core/claims/claims.js");
 
 // Distinct 256-bit hex canaries (pass /^[0-9a-f]{64}$/, pairwise-distinct).
 const CANARY_A = "a".repeat(64);

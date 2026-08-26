@@ -6,17 +6,17 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
-const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
-const { logCoverage } = require("../mcp/lib/coverage.js");
-const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
-const { startWave, writeWaveHandoff: writeWaveHandoffRaw } = require("../mcp/lib/waves.js");
+const recordCandidateClaimTool = require("../mcp/tools/record-candidate-claim.js");
+const { completionDepthGapForCompleteSurfaces } = require("../mcp/core/claims/claims.js");
+const { logCoverage } = require("../mcp/core/frontier/coverage.js");
+const { initSession, advanceSession } = require("../mcp/core/session/session-state.js");
+const { startWave, writeWaveHandoff: writeWaveHandoffRaw } = require("../mcp/core/waves/waves.js");
 const {
   attackSurfacePath,
   authDifferentialResultsPath,
   surfaceRoutesPath,
-} = require("../mcp/lib/paths.js");
-const { writeFileAtomic } = require("../mcp/lib/storage.js");
+} = require("../mcp/core/io/paths.js");
+const { writeFileAtomic } = require("../mcp/core/io/storage.js");
 const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {
@@ -79,6 +79,9 @@ function setAuthDifferentialRequired(domain, surfaceId, required) {
 
 function recordFinding(args) {
   return recordCandidateClaimTool.handler({
+    request_method: "GET",
+    injection_point: "path:id",
+    auth_profile: "attacker",
     ...args,
     cvss_inputs: {
       attack_vector: "network",
@@ -193,8 +196,8 @@ function writeAuthDifferentialRows(domain, rows) {
 }
 
 function writeAuthDifferentialResults(domain, endpoint, opts = {}) {
-  const { signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+  const { signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+  const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
   const row = buildAuthDifferentialRow(domain, endpoint, opts);
   // Sign the row the way the runner does (each persisted row carries a row_mac under the
   // auth-differential context) so the MAC-verifying grade-time consumer credits a genuine flip.
@@ -274,8 +277,8 @@ test("id-bearing complete surface does NOT clear on a TAMPERED flip (content mut
     const domain = "idbearing-tampered-flip.example.com";
     const { endpoint, surfaceId } = seedCompleteSurface(domain, { idBearing: true });
     writeCoverageRow(domain, surfaceId, endpoint);
-    const { signRowViaIsolatedSignerOrLocal } = require("../mcp/lib/handoff-signing-key.js");
-    const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+    const { signRowViaIsolatedSignerOrLocal } = require("../mcp/core/ledger-integrity/index.js");
+    const { AUTH_DIFFERENTIAL_ROW_MAC_CONTEXT } = require("../mcp/core/ledger-integrity/index.js");
     // Sign a NON-flip row (cross_tenant_flip:false), then MUTATE it to flip true AFTER signing.
     // The row_mac binds cross_tenant_flip, so the mutated field no longer verifies -> fail closed.
     const row = buildAuthDifferentialRow(domain, endpoint, { authenticatedAccess: false });

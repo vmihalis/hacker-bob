@@ -13,7 +13,7 @@ const {
   normalizeInstrumentBootstrapPrecommitRequest,
   normalizeInstrumentBootstrapProviderRedemptionRequest,
   normalizeInstrumentBootstrapRedemptionExpected,
-} = require("../mcp/lib/instrument-bootstrap-contract.js");
+} = require("../mcp/domains/physical/instrument-bootstrap-contract.js");
 const {
   assertDurableInstrumentBootstrapStore,
   assertInstrumentBootstrapBrokerPort,
@@ -25,10 +25,10 @@ const {
   createInstrumentBootstrapBrokerPort,
   createInstrumentBootstrapProviderRedemptionPort,
   readInstrumentBootstrapCustodyProjection,
-} = require("../mcp/lib/instrument-bootstrap-store.js");
+} = require("../mcp/domains/physical/instrument-bootstrap-store.js");
 const {
   hashCanonicalJson,
-} = require("../mcp/lib/verification-contracts.js");
+} = require("../mcp/core/verification/verification-contracts.js");
 
 function digest(label) {
   return hashCanonicalJson({ label });

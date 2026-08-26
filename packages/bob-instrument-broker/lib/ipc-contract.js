@@ -5,7 +5,7 @@ const crypto = require("node:crypto");
 const {
   canonicalJson,
   hashCanonicalJson,
-} = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/verification/verification-contracts.js");
 
 const IPC_PROTOCOL_VERSION = 1;
 const IPC_REQUEST_DOMAIN = "hacker-bob/instrument-broker-ipc-request/v1";

@@ -11,7 +11,7 @@ const {
   resolveOffensiveImageDigest,
   assertOffensiveImagePresent,
   OFFENSIVE_IMAGE_LOCK_BASENAME,
-} = require("../mcp/lib/offensive-image.js");
+} = require("../mcp/domains/web/offensive-image.js");
 
 const GOOD = "ghcr.io/bobnetsec/bob-offense@sha256:" + "a".repeat(64);
 
@@ -23,9 +23,9 @@ function tmpLock(contents) {
   return p;
 }
 
-test("offensiveImageLockPath resolves to mcp/lib/offensive-image.json", () => {
+test("offensiveImageLockPath resolves to mcp/offensive-image.json", () => {
   assert.equal(OFFENSIVE_IMAGE_LOCK_BASENAME, "offensive-image.json");
-  assert.ok(offensiveImageLockPath().endsWith(path.join("mcp", "lib", "offensive-image.json")));
+  assert.ok(offensiveImageLockPath().endsWith(path.join("mcp", "offensive-image.json")));
 });
 
 test("resolveOffensiveImageDigest: fail-closed when the lockfile is absent", () => {

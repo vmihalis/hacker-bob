@@ -73,9 +73,10 @@ on:
       BOB_INSTALL_TOKEN:
         required: false
         description: >
-          GitHub App installation token or fine-grained PAT with read:packages
-          and contents:read scopes. Used to install @bobnetsec/* packages.
-          Store as an org-level secret named BOB_INSTALL_TOKEN.
+          Classic PAT with read:packages, used to install @bobnetsec/*
+          packages. Add classic repo scope only when the same token must check
+          out a private workflow source; otherwise use a separate checkout
+          credential. Store as an org-level secret named BOB_INSTALL_TOKEN.
 
 jobs:
   bob-diff-review:
@@ -112,7 +113,7 @@ jobs:
       # Fetch full history so the diff computation covers the entire branch.
       # -----------------------------------------------------------------------
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -139,7 +140,7 @@ jobs:
 
       - name: Checkout Bob workflows source with install token
         if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-secrets.outputs.has_install_token == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bobnetsec/bob-workflows
           ref: ${{ inputs.bob-workflows-ref }}
@@ -149,7 +150,7 @@ jobs:
 
       - name: Checkout Bob workflows source with workflow token
         if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-secrets.outputs.has_install_token != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bobnetsec/bob-workflows
           ref: ${{ inputs.bob-workflows-ref }}

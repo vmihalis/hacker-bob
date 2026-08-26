@@ -15,12 +15,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const recordClaimTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   computeFindingDedupeKey,
   normalizeFindingRecord,
-} = require("../mcp/lib/finding-contracts.js");
-const { normalizeCvssInputs } = require("../mcp/lib/cvss31.js");
+} = require("../mcp/core/finding-contracts.js");
+const { normalizeCvssInputs } = require("../mcp/core/scoring/cvss31.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -39,6 +39,9 @@ const BASE_CLAIM = Object.freeze({
   severity: "high",
   cwe: "CWE-639",
   endpoint: "https://audit.example.com/api/orders/1",
+  request_method: "GET",
+  injection_point: "path:order_id",
+  auth_profile: "attacker",
   description: "An attacker can read other users' orders.",
   proof_of_concept: "curl https://audit.example.com/api/orders/2",
   validated: true,

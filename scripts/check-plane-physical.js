@@ -6,11 +6,11 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const {
   assertPackageSafePhysicalDesignDocument,
-} = require("../mcp/lib/physical-sensitive-material.js");
+} = require("../mcp/core/physical-sensitive-material-contracts.js");
 const {
   canonicalPlanePhysicalHyperedgeRegistry,
   canonicalPlanePhysicalNodeContractRegistry,
-} = require("../mcp/lib/plane-physical-release-contracts.js");
+} = require("../mcp/domains/physical/plane-physical-release-contracts.js");
 
 const ROOT = path.join(__dirname, "..");
 const DOCUMENTS = Object.freeze({

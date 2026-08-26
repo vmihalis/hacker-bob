@@ -22,12 +22,12 @@ const REPO_ROOT = path.join(__dirname, "..");
 
 const {
   buildCellBeliefRank,
-} = require("../mcp/lib/belief/cell-scheduler-priority.js");
+} = require("../mcp/core/belief/cell-scheduler-priority.js");
 const {
   buildBeliefSchedulerHints,
-} = require("../mcp/lib/belief/scheduler-priority.js");
-const { appendEdges } = require("../mcp/lib/surface-graph.js");
-const { sessionDir } = require("../mcp/lib/paths.js");
+} = require("../mcp/core/belief/scheduler-priority.js");
+const { appendEdges } = require("../mcp/core/frontier/surface-graph.js");
+const { sessionDir } = require("../mcp/core/io/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -131,10 +131,10 @@ test("the dispatch-order belief modules contain NO unseeded RNG (no Math.random 
   // order-bearing modules are RNG-free at the source.
   const UNSEEDED_RNG = /Math\.random\s*\(|randomBytes\s*\(|randomUUID\s*\(|Date\.now\s*\(/;
   const ORDER_MODULES = [
-    "mcp/lib/belief/cell-scheduler-priority.js",
-    "mcp/lib/belief/scheduler-priority.js",
-    "mcp/lib/belief/intervention-calculus.js",
-    "mcp/lib/graph-scheduler.js",
+    "mcp/core/belief/cell-scheduler-priority.js",
+    "mcp/core/belief/scheduler-priority.js",
+    "mcp/core/belief/intervention-calculus.js",
+    "mcp/core/waves/graph-scheduler.js",
   ];
   for (const rel of ORDER_MODULES) {
     const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");

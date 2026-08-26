@@ -12,9 +12,9 @@ const {
   ELICITATION_ROLE,
   normalizeElicitation,
   evidenceSensitivity,
-} = require("../mcp/lib/belief/elicitation.js");
-const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
-const { queryBeliefSignals } = require("../mcp/lib/belief/authority.js");
+} = require("../mcp/core/belief/elicitation.js");
+const elicitBeliefTool = require("../mcp/tools/elicit-belief.js");
+const { queryBeliefSignals } = require("../mcp/core/belief/authority.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;

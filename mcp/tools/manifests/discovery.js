@@ -1,0 +1,59 @@
+"use strict";
+
+const discoveryBeforePhysicalClaimTools = Object.freeze([
+  require("../web/http-scan.js"),
+  require("../web/bob-http-confirm.js"),
+  require("../web/bob-http-cors-confirm.js"),
+  require("../web/bob-http-massread-confirm.js"),
+  require("../web/bob-http-idor-confirm.js"),
+  require("../web/bob-http-xss-reflect.js"),
+  require("../web/bob-http-xss-confirm.js"),
+  require("../web/bob-oob-mint.js"),
+  require("../web/bob-oob-poll.js"),
+  require("../web/bob-secondorder-mint.js"),
+  require("../web/bob-secondorder-reread.js"),
+  require("../web/bob-nuclei-scan.js"),
+  require("../read-http-audit.js"),
+  require("../start-next-wave.js"),
+  require("../start-wave.js"),
+  require("../route-surfaces.js"),
+  require("../read-surface-routes.js"),
+  require("../import-http-traffic.js"),
+  require("../public-intel.js"),
+  require("../repo/import-static-artifact.js"),
+  require("../ingest-schema-doc.js"),
+  require("../query-schema-contracts.js"),
+  require("../repo/run-doc-delta.js"),
+  require("../repo/read-doc-delta-results.js"),
+  require("../web/run-auth-differential.js"),
+  require("../web/read-auth-differential-results.js"),
+  require("../repo/static-scan.js"),
+  require("../repo/ingest-sarif.js"),
+  require("../repo/read-static-analysis-index.js"),
+  require("../record-candidate-claim.js"),
+]);
+
+const discoveryAfterPhysicalClaimTools = Object.freeze([
+  require("../read-candidate-claims.js"),
+  require("../list-candidate-claims.js"),
+]);
+
+const discoveryTools = [
+  ...discoveryBeforePhysicalClaimTools,
+  ...discoveryAfterPhysicalClaimTools,
+];
+
+Object.defineProperty(discoveryTools, "discoveryBeforePhysicalClaimTools", {
+  value: discoveryBeforePhysicalClaimTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+Object.defineProperty(discoveryTools, "discoveryAfterPhysicalClaimTools", {
+  value: discoveryAfterPhysicalClaimTools,
+  enumerable: false,
+  writable: false,
+  configurable: false,
+});
+
+module.exports = Object.freeze(discoveryTools);

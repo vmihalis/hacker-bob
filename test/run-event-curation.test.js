@@ -14,7 +14,7 @@ const {
   curate,
   DEFENDER_DISPOSITION_VALUES,
   PHASE,
-} = require("../mcp/lib/run-event-curation.js");
+} = require("../mcp/core/telemetry/run-event-curation.js");
 
 // ---- routing + fail-closed drops -----------------------------------------
 

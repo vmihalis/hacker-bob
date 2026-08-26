@@ -30,12 +30,12 @@ const {
 const {
   evaluatePackagedPlanePhysicalReleaseReadiness,
   evaluatePlanePhysicalReleaseReadiness,
-} = require("../mcp/lib/plane-physical-release-readiness.js");
+} = require("../mcp/domains/physical/plane-physical-release-readiness.js");
 const {
   PLANE_PHYSICAL_PACKAGED_RELEASE_SNAPSHOT,
   assertPackagedPlanePhysicalReleaseSnapshot,
   compilePlanePhysicalReleaseSnapshot,
-} = require("../mcp/lib/plane-physical-release-snapshot.js");
+} = require("../mcp/domains/physical/plane-physical-release-snapshot.js");
 
 const ROOT = path.join(__dirname, "..");
 const WRAPPER_PACKAGES = wrapperPackages(ROOT);
@@ -233,9 +233,10 @@ function checkCanonicalPack(rootPackage) {
     }
   }
 
-  // README-relative media is an intentional package surface. The ceiling lives
-  // in package-policy.js and is shared with package.test.js so release and test
-  // gates cannot drift.
+  // The package ceiling is a single source of truth in package-policy.js and is
+  // shared with package.test.js so release and test gates cannot drift. It is
+  // calibrated against the complete shipped runtime after presentation-only
+  // README media and other explicitly denied authoring artifacts are excluded.
   if (canonical.size < CANONICAL_PACKAGE_MAX_BYTES) {
     pass(`canonical pack size ${canonical.size} bytes is under the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   } else {

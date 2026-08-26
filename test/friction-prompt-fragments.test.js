@@ -29,7 +29,7 @@ const {
   FRAGMENT_IDS,
   isKnownFragmentId,
   getFragmentText,
-} = require("../mcp/lib/friction-prompt-fragments.js");
+} = require("../mcp/core/friction-prompt-fragments.js");
 
 const CANONICAL_FRAGMENT_IDS = [
   "internal_error_retry",
@@ -118,13 +118,7 @@ test("getFragmentText returns the registered text for known ids and null otherwi
 // bash_curl_on_target_detected, setup_setup_rejection) are injected at
 // dispatch-layer friction points and have no per-role expectation entry.
 test("cross-reference role-trace-expectations.js (Y.6) when present: role-referenced fragment_ids resolve mechanically", () => {
-  const expectationsPath = path.resolve(
-    __dirname,
-    "..",
-    "mcp",
-    "lib",
-    "role-trace-expectations.js",
-  );
+  const expectationsPath = path.resolve(__dirname, "..", "mcp", "core", "role-trace-expectations.js");
   if (!fs.existsSync(expectationsPath)) {
     // Y.6 has not landed yet; cross-reference will activate when it does.
     return;

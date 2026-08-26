@@ -12,7 +12,7 @@ const {
 } = require("../../packages/bob-instrument-chameleon/lib/manual-actions.js");
 const {
   hashCanonicalJson,
-} = require("../../mcp/lib/verification-contracts.js");
+} = require("../../mcp/core/verification/verification-contracts.js");
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;

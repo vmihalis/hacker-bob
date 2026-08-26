@@ -1,7 +1,7 @@
 {
   "name": "hacker-bob",
   "version": "2.1.0",
-  "description": "Codex MCP wiring for the Hacker Bob bug bounty evaluating runtime.",
+  "description": "Codex MCP wiring for the Hacker Bob security-evaluation runtime.",
   "author": {
     "name": "Hacker Bob contributors",
     "email": "maintainers@example.invalid",
@@ -19,7 +19,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Hacker Bob",
-    "shortDescription": "Autonomous bug bounty evaluating through a portable MCP runtime.",
+    "shortDescription": "Autonomous security evaluation through a portable MCP runtime.",
     "longDescription": "Run Hacker Bob evaluations, status checks, debug reviews, and package updates from Codex while durable state remains in the shared MCP runtime.",
     "developerName": "Hacker Bob contributors",
     "category": "Developer Tools",

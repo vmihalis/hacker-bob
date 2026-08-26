@@ -38,31 +38,31 @@ const {
 const {
   openProductionPhysicalMonotonicOwner,
   readPhysicalMonotonicOwnerState,
-} = require("../../../mcp/lib/physical-monotonic-owner.js");
+} = require("../../../mcp/domains/physical/physical-monotonic-owner.js");
 const {
   TRUSTED_CLOCK_MAPPING_DOMAIN,
   physicalClockMappingSigningMessage,
   publicKeyDigest: physicalClockPublicKeyDigest,
-} = require("../../../mcp/lib/physical-trusted-clock.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock.js");
 const {
   PHYSICAL_TRUSTED_CLOCK_AUTHORITY_BUNDLE_DOMAIN,
   PHYSICAL_TRUSTED_CLOCK_AUTHORITY_FILE,
   PHYSICAL_TRUSTED_CLOCK_TRUST_DOMAIN,
   openProductionPhysicalTrustedClockPort,
   physicalClockTrustSigningMessage,
-} = require("../../../mcp/lib/physical-trusted-clock-store.js");
-const { sessionNucleusFromState } = require("../../../mcp/lib/governance-contracts.js");
-const { sessionDir } = require("../../../mcp/lib/paths.js");
-const { normalizePhysicalScopeNucleusAxis } = require("../../../mcp/lib/physical-scope-axis.js");
-const { buildInitialSessionState } = require("../../../mcp/lib/session-state-contracts.js");
-const { writeSessionStateDocument } = require("../../../mcp/lib/session-state-store.js");
+} = require("../../../mcp/domains/physical/physical-trusted-clock-store.js");
+const { sessionNucleusFromState } = require("../../../mcp/core/governance/index.js");
+const { sessionDir } = require("../../../mcp/core/io/paths.js");
+const { normalizePhysicalScopeNucleusAxis } = require("../../../mcp/core/session/physical-scope-axis-contract.js");
+const { buildInitialSessionState } = require("../../../mcp/core/session/session-state-contracts.js");
+const { writeSessionStateDocument } = require("../../../mcp/core/session/session-state-store.js");
 const {
   SANDBOX_AGENT_UID_ENV,
   SANDBOX_ISOLATION_ACK_ENV,
   SANDBOX_ISOLATION_ACK_TOKEN,
   SANDBOX_SIGNER_UID_ENV,
-} = require("../../../mcp/lib/sandbox-isolation-attest.js");
-const { hashCanonicalJson } = require("../../../mcp/lib/verification-contracts.js");
+} = require("../../../mcp/core/ledger-integrity/index.js");
+const { hashCanonicalJson } = require("../../../mcp/core/verification/verification-contracts.js");
 
 const CLOCK_OWNER_CONTEXT = "hacker-bob/physical-trusted-clock-high-water/v1";
 const DEPENDENCY_PROOF_BINDING_FIELDS = Object.freeze([
