@@ -141,18 +141,19 @@ function writeCleanReceipt(runPayload) {
   });
 }
 
-function fakeChild({ code = 0, stdout = "", stderr = "", beforeClose = null } = {}) {
+function fakeChild({ code = 0, stdout = "", stderr = "", beforeClose = null, autoClose = true } = {}) {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
-  setImmediate(() => {
+  child.finish = (exitCode = code) => {
     if (stdout) child.stdout.write(stdout);
     if (stderr) child.stderr.write(stderr);
     child.stdout.end();
     child.stderr.end();
     if (beforeClose) beforeClose();
-    child.emit("close", code, null);
-  });
+    child.emit("close", exitCode, null);
+  };
+  if (autoClose) setImmediate(() => child.finish());
   return child;
 }
 
@@ -318,8 +319,8 @@ test("spawned runner streams output, polls asynchronously, and bounds its stderr
   assert.equal(Buffer.concat(stdoutWrites).toString("utf8"), "runner output");
   assert.equal(Buffer.concat(stderrWrites).length, 4096);
 });
-test("a lifecycle polling failure terminates the still-running Codex child", async () => {
-  const child = fakeChild();
+test("persistent lifecycle polling failures terminate the still-running Codex child", async () => {
+  const child = fakeChild({ autoClose: false });
   let killedWith = null;
   child.kill = (signal) => {
     killedWith = signal;

@@ -339,6 +339,16 @@ test("Docker launch uses named environment, a non-secret payload, pinned pull po
     DISPATCH_SECRET: SECRET,
   });
   assert.ok(spec.args.includes("--pull=never"));
+  assert.ok(spec.args.includes("--read-only"));
+  assert.ok(spec.args.includes("--cap-drop=ALL"));
+  assert.deepEqual(spec.args.slice(spec.args.indexOf("--security-opt"), spec.args.indexOf("--security-opt") + 2), [
+    "--security-opt", "no-new-privileges:true",
+  ]);
+  assert.deepEqual(spec.args.slice(spec.args.indexOf("--user"), spec.args.indexOf("--user") + 2), [
+    "--user", "65532:65532",
+  ]);
+  assert.ok(spec.args.includes("/workspace:rw,nosuid,nodev,size=1g,uid=65532,gid=65532,mode=0700"));
+  assert.ok(spec.args.includes("/tmp:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=1777"));
   assert.ok(spec.args.includes("type=bind,src=/run/bob-dispatch/repoRun_123456789/target-repo,dst=/workspace/target-repo,readonly"));
   assert.doesNotMatch(spec.args.join(" "), new RegExp(`${RUNNER_SECRET}|${DEEPSEEK_SECRET}|${PROJECTION_KEY}|${SECRET}`, "u"));
   assert.equal(spec.env.BOB_PROJECTION_KEY, PROJECTION_KEY);
@@ -380,14 +390,14 @@ test("service rejects noncanonical or non-TLS runner endpoints before startup", 
   }
 });
 
-test("repository preflight fetches and verifies the exact commit in a mode-0700 run directory", (t) => {
+test("repository preflight fetches and verifies the exact commit in a mode-0700 run directory", async (t) => {
   const dirs = tempDirs();
   t.after(() => fs.rmSync(dirs.root, { recursive: true, force: true }));
   fs.mkdirSync(dirs.runsDir, { recursive: true });
   const payload = repoPayload();
   const record = { payload, runSlug: payload.runSlug };
   const calls = [];
-  prepareRepository(record, dirs.runsDir, (command, args, options) => {
+  await prepareRepository(record, dirs.runsDir, (command, args, options) => {
     calls.push({ command, args, options });
     if (args[0] === "init") fs.mkdirSync(args.at(-1), { recursive: true });
     return {
@@ -402,7 +412,6 @@ test("repository preflight fetches and verifies the exact commit in a mode-0700 
   assert.equal(calls.some((call) => Object.hasOwn(call.options, "shell")), false);
   assert.ok(calls.every((call) => call.options.timeout === 2 * 60 * 1000));
   assert.ok(calls.every((call) => call.options.killSignal === "SIGKILL"));
-  assert.ok(calls.every((call) => call.options.maxBuffer === 1024 * 1024));
   assert.equal(fs.statSync(record.runRoot).mode & 0o777, 0o700);
   assert.equal(record.repoPath, path.join(record.runRoot, "target-repo"));
 });
@@ -965,6 +974,48 @@ test("Convex control-plane sink sends status then a canonical monotonic event", 
     event.eventHash,
     canonicalEventHash(update.runSlug, update.event.kind, update.event.phase, update.event.message),
   );
+});
+
+test("Convex control-plane sink retries a concurrent sequence collision idempotently", async () => {
+  const eventHash = canonicalEventHash(
+    "runSlug_123456789",
+    "destroy",
+    "report",
+    "Runner container destroyed.",
+  );
+  let queryCount = 0;
+  const appendSequences = [];
+  const client = {
+    async mutation(name, args) {
+      if (name === "runs:setStatus") {
+        return { runId: "run-id", status: args.status, applied: true };
+      }
+      appendSequences.push(args.seq);
+      if (appendSequences.length === 1) throw new Error("sequence already exists");
+      return "event-id";
+    },
+    async query() {
+      queryCount += 1;
+      return queryCount === 1
+        ? [{ seq: 7 }]
+        : [{ seq: 7 }, { seq: 8, eventHash: "f".repeat(64) }];
+    },
+  };
+  const sink = createConvexControlPlaneSink({
+    url: "https://convex.example",
+    secret: RUNNER_SECRET,
+    clientFactory: () => client,
+  });
+  await sink({
+    runSlug: "runSlug_123456789",
+    status: "destroyed",
+    phase: "report",
+    at: 1770000000000,
+    event: { kind: "destroy", register: "breath", phase: "report", message: "Runner container destroyed." },
+  });
+  assert.deepEqual(appendSequences, [8, 9]);
+  assert.equal(queryCount, 2);
+  assert.match(eventHash, /^[0-9a-f]{64}$/u);
 });
 
 test("Convex control-plane sink completes host teardown after a committed seal", async () => {

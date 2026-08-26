@@ -53,6 +53,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+// Install the registry-owned capability contract before direct tool handlers
+// exercise lifecycle gates. This keeps the smoke test independent of test-file
+// execution order.
+require("../mcp/tools/tool-registry.js");
+
 const initSessionTool = require("../mcp/tools/init-session.js");
 const advanceSessionTool = require("../mcp/tools/advance-session.js");
 const recordSurfaceLeadsTool = require("../mcp/tools/record-surface-leads.js");
@@ -214,6 +219,8 @@ function driveRealizationFlow(domain) {
     severity: "high",
     cwe: "CWE-639",
     endpoint: `https://${domain}/api/admin/billing/1`,
+    request_method: "GET",
+    injection_point: "path:billing_id",
     description: "Tenant boundary allows cross-account view of billing metadata.",
     proof_of_concept: `GET /api/admin/billing/1 returns another tenant's payload`,
     response_evidence: "Cross-tenant billing payload observed in attacker session",
@@ -232,6 +239,8 @@ function driveRealizationFlow(domain) {
     severity: "medium",
     cwe: "CWE-915",
     endpoint: `https://${domain}/api/admin/billing/1`,
+    request_method: "PATCH",
+    injection_point: "json:role",
     description: "PATCH accepts privileged fields outside the documented schema.",
     proof_of_concept: `PATCH /api/admin/billing/1 with {"role":"admin"} succeeds`,
     response_evidence: "Privileged field accepted in attacker session",

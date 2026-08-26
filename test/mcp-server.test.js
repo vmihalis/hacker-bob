@@ -238,6 +238,15 @@ function defaultCvssInputsForFixture(args) {
   return { attack_vector: "network", privileges_required: "low", confidentiality: "high" };
 }
 function recordFinding(args) {
+  const continuity = args
+    && args.sc_evidence == null
+    && REPORTABLE_SEVERITIES.has(args.severity)
+    ? {
+      request_method: "GET",
+      injection_point: "path:id",
+      auth_profile: "test-attacker",
+    }
+    : {};
   if (
     args
     && typeof args === "object"
@@ -245,9 +254,9 @@ function recordFinding(args) {
     && args.cvss_inputs === undefined
     && args.reachability_assertion == null
   ) {
-    return recordCandidateClaimTool.handler({ ...args, cvss_inputs: defaultCvssInputsForFixture(args) });
+    return recordCandidateClaimTool.handler({ ...continuity, ...args, cvss_inputs: defaultCvssInputsForFixture(args) });
   }
-  return recordCandidateClaimTool.handler(args);
+  return recordCandidateClaimTool.handler({ ...continuity, ...args });
 }
 const listFindings = listCandidateClaimsTool.handler;
 const readFindings = readCandidateClaimsTool.handler;
@@ -10290,8 +10299,8 @@ test("bob_record_finding appends findings.jsonl and bob_read_findings preserves 
           severity: "high",
           cwe: "CWE-639",
           endpoint: "/api/export",
-          request_method: null,
-          injection_point: null,
+          request_method: "GET",
+          injection_point: "path:id",
           graphql_operation: null,
           graphql_resolver: null,
           source_surface_type: null,
@@ -10315,7 +10324,7 @@ test("bob_record_finding appends findings.jsonl and bob_read_findings preserves 
           evaluator_agent: "evaluator-agent",
           brief_profile: "web",
           sc_evidence: null,
-          auth_profile: null,
+          auth_profile: "test-attacker",
           cvss_inputs: { attack_vector: "network", privileges_required: "low", confidentiality: "high" },
         },
         {
@@ -10325,8 +10334,8 @@ test("bob_record_finding appends findings.jsonl and bob_read_findings preserves 
           severity: "medium",
           cwe: "CWE-639",
           endpoint: "/comments",
-          request_method: null,
-          injection_point: null,
+          request_method: "GET",
+          injection_point: "path:id",
           graphql_operation: null,
           graphql_resolver: null,
           source_surface_type: null,
@@ -10350,7 +10359,7 @@ test("bob_record_finding appends findings.jsonl and bob_read_findings preserves 
           evaluator_agent: "evaluator-agent",
           brief_profile: "web",
           sc_evidence: null,
-          auth_profile: null,
+          auth_profile: "test-attacker",
           cvss_inputs: { attack_vector: "network", privileges_required: "low", confidentiality: "high", integrity: "high" },
         },
       ],

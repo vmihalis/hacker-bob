@@ -336,26 +336,37 @@ function createConvexControlPlaneSink({ url, secret, clientFactory } = {}) {
         `control-plane rejected ${effectiveUpdate.status} transition from ${statusResult.status}`,
       );
     }
-    const events = await client.query("runs:events", { slug: effectiveUpdate.runSlug });
-    const seq = events.reduce((highest, event) => Math.max(highest, event.seq), 0) + 1;
-    if (!Number.isSafeInteger(seq)) throw new Error("control-plane event sequence overflow");
     const event = effectiveUpdate.event;
-    await client.mutation("runs:appendEvent", {
-      secret,
-      slug: effectiveUpdate.runSlug,
-      seq,
-      kind: event.kind,
-      register: event.register,
-      phase: event.phase,
-      eventHash: canonicalEventHash(
-        effectiveUpdate.runSlug,
-        event.kind,
-        event.phase,
-        event.message,
-      ),
-      payloadJson: JSON.stringify({ message: event.message }),
-      at: effectiveUpdate.at,
-    });
+    const eventHash = canonicalEventHash(
+      effectiveUpdate.runSlug,
+      event.kind,
+      event.phase,
+      event.message,
+    );
+    let failure = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const events = await client.query("runs:events", { slug: effectiveUpdate.runSlug });
+      if (events.some((candidate) => candidate && candidate.eventHash === eventHash)) return;
+      const seq = events.reduce((highest, candidate) => Math.max(highest, candidate.seq), 0) + 1;
+      if (!Number.isSafeInteger(seq)) throw new Error("control-plane event sequence overflow");
+      try {
+        await client.mutation("runs:appendEvent", {
+          secret,
+          slug: effectiveUpdate.runSlug,
+          seq,
+          kind: event.kind,
+          register: event.register,
+          phase: event.phase,
+          eventHash,
+          payloadJson: JSON.stringify({ message: event.message }),
+          at: effectiveUpdate.at,
+        });
+        return;
+      } catch (error) {
+        failure = error;
+      }
+    }
+    throw failure || new Error("control-plane event append failed");
   };
 }
 
@@ -636,6 +647,17 @@ function dockerLaunchSpec(record, runnerImageUri, containerEnv, hostEnvironment 
     "run",
     "--rm",
     "--pull=never",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt", "no-new-privileges:true",
+    "--user", "65532:65532",
+    "--pids-limit", "512",
+    "--memory", "1536m",
+    "--memory-swap", "1536m",
+    "--cpus", "2",
+    "--shm-size", "512m",
+    "--tmpfs", "/workspace:rw,nosuid,nodev,size=1g,uid=65532,gid=65532,mode=0700",
+    "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,uid=65532,gid=65532,mode=1777",
     "--name", `bob-run-${record.runSlug}`,
     "--label", `bob.dispatch.run-id=${record.runId}`,
     "--label", `bob.dispatch.run-slug=${record.runSlug}`,
@@ -653,8 +675,8 @@ function dockerLaunchSpec(record, runnerImageUri, containerEnv, hostEnvironment 
   };
 }
 
-function runGit(spawnSyncFn, args, timeoutMs) {
-  const result = spawnSyncFn("git", args, {
+function runGit(spawnFn, args, timeoutMs) {
+  const child = spawnFn("git", args, {
     encoding: "utf8",
     env: {
       PATH: process.env.PATH || "",
@@ -665,23 +687,55 @@ function runGit(spawnSyncFn, args, timeoutMs) {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: timeoutMs,
     killSignal: "SIGKILL",
-    maxBuffer: 1024 * 1024,
   });
-  if (!result || result.status !== 0) throw new Error("repository preflight failed");
-  return typeof result.stdout === "string" ? result.stdout.trim() : "";
+  // Test adapters may return a completed spawn-like result. Production always
+  // follows the asynchronous child-process branch below.
+  if (child && Number.isInteger(child.status)) {
+    if (child.status !== 0) throw new Error("repository preflight failed");
+    return Promise.resolve(typeof child.stdout === "string" ? child.stdout.trim() : "");
+  }
+  if (!child || typeof child.once !== "function") {
+    return Promise.reject(new Error("repository preflight failed"));
+  }
+  return new Promise((resolve, reject) => {
+    const stdout = [];
+    let stdoutBytes = 0;
+    let settled = false;
+    const finish = (error, value = "") => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve(value);
+    };
+    child.stdout?.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > 1024 * 1024) {
+        try { child.kill("SIGKILL"); } catch {}
+        finish(new Error("repository preflight failed"));
+        return;
+      }
+      stdout.push(Buffer.from(chunk));
+    });
+    child.stderr?.resume?.();
+    child.once("error", () => finish(new Error("repository preflight failed")));
+    child.once("close", (code) => {
+      if (code !== 0) finish(new Error("repository preflight failed"));
+      else finish(null, Buffer.concat(stdout).toString("utf8").trim());
+    });
+  });
 }
 
-function prepareRepository(record, runsDir, spawnSyncFn, commandTimeoutMs = REPOSITORY_COMMAND_TIMEOUT_MS) {
+async function prepareRepository(record, runsDir, spawnFn, commandTimeoutMs = REPOSITORY_COMMAND_TIMEOUT_MS) {
   const runRoot = path.join(runsDir, record.runSlug);
   const repoPath = path.join(runRoot, "target-repo");
   fs.rmSync(runRoot, { recursive: true, force: true });
   ensurePrivateDirectory(runRoot);
   try {
-    runGit(spawnSyncFn, ["init", "--quiet", repoPath], commandTimeoutMs);
-    runGit(spawnSyncFn, ["-C", repoPath, "remote", "add", "origin", record.payload.target], commandTimeoutMs);
-    runGit(spawnSyncFn, ["-C", repoPath, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", record.payload.sourceRef], commandTimeoutMs);
-    runGit(spawnSyncFn, ["-C", repoPath, "checkout", "--quiet", "--detach", "FETCH_HEAD"], commandTimeoutMs);
-    const resolved = runGit(spawnSyncFn, ["-C", repoPath, "rev-parse", "HEAD"], commandTimeoutMs);
+    await runGit(spawnFn, ["init", "--quiet", repoPath], commandTimeoutMs);
+    await runGit(spawnFn, ["-C", repoPath, "remote", "add", "origin", record.payload.target], commandTimeoutMs);
+    await runGit(spawnFn, ["-C", repoPath, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", record.payload.sourceRef], commandTimeoutMs);
+    await runGit(spawnFn, ["-C", repoPath, "checkout", "--quiet", "--detach", "FETCH_HEAD"], commandTimeoutMs);
+    const resolved = await runGit(spawnFn, ["-C", repoPath, "rev-parse", "HEAD"], commandTimeoutMs);
     if (resolved !== record.payload.sourceRef) throw new Error("repository preflight resolved a different commit");
     record.runRoot = runRoot;
     record.repoPath = repoPath;
@@ -951,7 +1005,7 @@ function createService({
   const inspectContainer = inspectContainerFn || defaultInspect;
   const waitContainer = waitContainerFn || defaultWait;
   const prepareRepo = prepareRepositoryFn || (
-    (record) => prepareRepository(record, runsDir, spawnSyncFn, repositoryCommandTimeoutMs)
+    (record) => prepareRepository(record, runsDir, spawnProcessFn, repositoryCommandTimeoutMs)
   );
   const cleanupRepo = cleanupRepositoryFn || ((record) => {
     if (record.runRoot) fs.rmSync(record.runRoot, { recursive: true, force: true });

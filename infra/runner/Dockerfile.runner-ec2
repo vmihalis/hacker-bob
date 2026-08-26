@@ -13,6 +13,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 ENV HOME=/workspace
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 
 # --- hacker-bob engine (UNMODIFIED) ---
@@ -68,5 +69,9 @@ ENV BOB_SESSIONS_ROOT=/workspace/hacker-bob-sessions
 WORKDIR /opt/bob-runner
 RUN node -e 'const server=require("/opt/hacker-bob/mcp/server.js");if(!Array.isArray(server.TOOLS)||server.TOOLS.length===0)throw new Error("Bob MCP tool registry is empty")'
 RUN node /opt/codex-home/assert-profile.js
+
+# The host also pins this identity at docker run. Keeping it in the image makes
+# local/operator launches fail closed to the same non-root posture.
+USER 65532:65532
 
 ENTRYPOINT ["node", "/opt/bob-runner/entrypoint.js"]

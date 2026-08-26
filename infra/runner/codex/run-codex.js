@@ -2,6 +2,7 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const { startToolFilterProxy } = require("./tool-filter-proxy.js");
 
 const CODEX_BIN = "/opt/codex-runtime/node_modules/.bin/codex";
@@ -61,10 +62,11 @@ async function main({
   process.once("SIGTERM", handleSigterm);
   process.once("SIGINT", handleSigint);
   try {
-    server = await startProxy({ apiKey: environment.DEEPSEEK_API_KEY });
+    const clientKey = crypto.randomBytes(32).toString("base64url");
+    server = await startProxy({ apiKey: environment.DEEPSEEK_API_KEY, clientKey });
     child = spawnFactory(CODEX_BIN, [...CODEX_ARGS, argv[0]], {
       cwd: "/opt/bob-runner",
-      env: environment,
+      env: { ...environment, DEEPSEEK_API_KEY: clientKey },
       stdio: ["ignore", "pipe", "pipe"],
     });
     drain(child.stdout);

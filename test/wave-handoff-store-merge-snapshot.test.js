@@ -247,6 +247,8 @@ test("buildWaveReadiness accepts a handoff whose bypass_attempts cites a recorde
       severity: "high",
       cwe: "CWE-639",
       endpoint: "https://readiness-finding-bypass.com/api/records/7",
+      request_method: "GET",
+      injection_point: "path:record_id",
       description: "Changing the record identifier returns another tenant payload.",
       proof_of_concept: "GET /api/records/7 as the attacker tenant returns private fields.",
       response_evidence: "Response leaked tenant identifier and email for record 7.",

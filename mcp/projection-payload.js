@@ -226,6 +226,13 @@ function safeRouteTemplate(endpoint) {
   return `${route}${query}`;
 }
 
+function fingerprintRouteTemplate(endpoint, domain) {
+  const route = safeRouteTemplate(endpoint);
+  const canonicalDomain = requiredFingerprintText(domain, "domain", "unknown").toLowerCase();
+  if (route === canonicalDomain || route.startsWith(`${canonicalDomain}/`)) return route;
+  return route.startsWith("/") ? `${canonicalDomain}${route}` : `${canonicalDomain}/${route}`;
+}
+
 function requiredFingerprintText(value, fieldName, findingId) {
   const text = typeof value === "number" ? String(value) : (typeof value === "string" ? value.trim() : "");
   if (!text) {
@@ -303,7 +310,11 @@ function fingerprintV1({
       parts = [
         canonicalDomain,
         requiredFingerprintText(requestMethod, "request_method", id).toUpperCase(),
-        requiredFingerprintText(safeRouteTemplate(endpoint), "safe_route_template", id),
+        requiredFingerprintText(
+          fingerprintRouteTemplate(endpoint, canonicalDomain),
+          "safe_route_template",
+          id,
+        ),
         injection,
         primaryCwe,
         auth,
@@ -348,7 +359,7 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
     if (entry && entry.finding_id) gradesById.set(entry.finding_id, entry);
   }
   const rows = [];
-  const findingIdsByFingerprint = new Map();
+  const rowIndexesByFingerprint = new Map();
   for (const artifactFinding of document.findings) {
     const result = resultsById.get(artifactFinding.id);
     const finding = findingsById.get(artifactFinding.id) || {};
@@ -379,13 +390,6 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
       sourceSurfaceType: finding.source_surface_type,
       scEvidence: finding.sc_evidence,
     });
-    const priorFindingId = findingIdsByFingerprint.get(fingerprint);
-    if (priorFindingId) {
-      throw new Error(
-        `findings ${priorFindingId} and ${artifactFinding.id} resolve to duplicate projection fingerprint ${fingerprint}`,
-      );
-    }
-    findingIdsByFingerprint.set(fingerprint, artifactFinding.id);
     const row = {
       fingerprint,
       fingerprintVersion: FINGERPRINT_VERSION,
@@ -414,7 +418,22 @@ function buildProjectionFindings(domain, document, bundle, findings, gradeDocume
       snapshotHash: bundle.final_verification_hash,
       open: true,
     };
-    rows.push(row);
+    const priorIndex = rowIndexesByFingerprint.get(fingerprint);
+    if (priorIndex === undefined) {
+      rowIndexesByFingerprint.set(fingerprint, rows.length);
+      rows.push(row);
+    } else {
+      const prior = rows[priorIndex];
+      const severityRank = { critical: 4, high: 3, medium: 2, low: 1 };
+      const preferCurrent = severityRank[row.severity] > severityRank[prior.severity]
+        || (severityRank[row.severity] === severityRank[prior.severity] && row.score > prior.score)
+        || (
+          severityRank[row.severity] === severityRank[prior.severity]
+          && row.score === prior.score
+          && row.refId.localeCompare(prior.refId) < 0
+        );
+      if (preferCurrent) rows[priorIndex] = row;
+    }
   }
   return rows;
 }
@@ -429,6 +448,7 @@ function buildProjectionPayload(targetDomain, {
   kind = "assessment",
   retestOf = [],
   findings = null,
+  assembledArtifact = null,
 } = {}) {
   if (kind !== "assessment" && kind !== "retest") {
     throw new Error(`unsupported dispatch kind: ${String(kind)}`);
@@ -449,7 +469,17 @@ function buildProjectionPayload(targetDomain, {
   }
 
   const domain = targetDomain;
-  const assembled = assembleFindingArtifact(domain, { findings });
+  const assembled = assembledArtifact || assembleFindingArtifact(domain, { findings });
+  if (
+    assembledArtifact
+    && (
+      !assembled.bundle
+      || assembled.bundle.target_domain !== domain
+      || (assembled.emitted && !Array.isArray(assembled.findings))
+    )
+  ) {
+    throw new Error("assembledArtifact does not belong to the requested target domain");
+  }
   const gradeDocument = loadJsonDocumentStrict(
     gradeArtifactPaths(domain).json,
     "grade verdict JSON",
@@ -485,6 +515,7 @@ module.exports = {
   buildProjectionFindings,
   buildProjectionPayload,
   fingerprintV1,
+  fingerprintRouteTemplate,
   projectionCwe,
   projectionDisposition,
   projectionSeverity,

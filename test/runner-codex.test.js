@@ -286,6 +286,7 @@ test("Codex wrapper suppresses child output and uses the pinned headless invocat
   };
   let spawnInvocation;
   let proxyKey;
+  let proxyClientKey;
   let closed = false;
   const output = [];
   t.mock.method(process.stdout, "write", (chunk) => {
@@ -309,8 +310,9 @@ test("Codex wrapper suppresses child output and uses the pinned headless invocat
       });
       return child;
     },
-    startProxy: async ({ apiKey }) => {
+    startProxy: async ({ apiKey, clientKey }) => {
       proxyKey = apiKey;
+      proxyClientKey = clientKey;
       return {
         closeAllConnections() {},
         close(callback) {
@@ -322,6 +324,9 @@ test("Codex wrapper suppresses child output and uses the pinned headless invocat
   });
   assert.equal(await codePromise, 0);
   assert.equal(proxyKey, "model-secret");
+  assert.match(proxyClientKey, /^[A-Za-z0-9_-]{43}$/u);
+  assert.equal(spawnInvocation.options.env.DEEPSEEK_API_KEY, proxyClientKey);
+  assert.notEqual(spawnInvocation.options.env.DEEPSEEK_API_KEY, proxyKey);
   assert.equal(spawnInvocation.command, codexRunner.CODEX_BIN);
   assert.deepEqual(spawnInvocation.args, [...codexRunner.CODEX_ARGS, "one task"]);
   assert.deepEqual(spawnInvocation.options.stdio, ["ignore", "pipe", "pipe"]);

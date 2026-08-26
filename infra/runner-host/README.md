@@ -8,7 +8,7 @@ digest-pinned Bob runner container per admitted run.
 ## Layout
 
 - `template.yaml` — CloudFormation for the VPC, mandatory ALB TLS hostname,
-  deny-egress instance security group, least-privilege IAM role, hardened
+  restricted-port egress instance security group, least-privilege IAM role, hardened
   systemd service, and arm64 AL2023 host. The stack references three existing
   SSM `SecureString` parameters; it never creates or stores their values.
 - `dispatch/` — HTTP service, replayable dispatch core, focused tests, and a
@@ -16,7 +16,7 @@ digest-pinned Bob runner container per admitted run.
 
 ## Egress honesty
 
-The instance security group is **port-level deny-egress** (HTTPS + DNS only).
+The instance security group is **port-restricted egress** (HTTPS + DNS only).
 Security groups cannot enforce domain allowlists, so per-run DOMAIN
 enforcement is Bob's own egress-profile/scope kernel inside the runner
 container (the same machinery the engine already uses for

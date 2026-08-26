@@ -365,7 +365,10 @@ function assertReportableCvssInputsOnWrite(finding) {
   );
 }
 
-function buildFindingPayloadRecord(args, context, findingId, { requireCwe = false } = {}) {
+function buildFindingPayloadRecord(args, context, findingId, {
+  requireCwe = false,
+  requireContinuity = true,
+} = {}) {
   return normalizeFindingRecord({
     id: findingId,
     target_domain: context.domain,
@@ -406,7 +409,7 @@ function buildFindingPayloadRecord(args, context, findingId, { requireCwe = fals
     dedupe_key: args.dedupe_key,
     auth_profile: args.auth_profile,
     force_record: args.force_record === true,
-  }, { expectedDomain: context.domain, requireCwe });
+  }, { expectedDomain: context.domain, requireCwe, requireContinuity });
 }
 
 function deriveSubjectId(finding) {

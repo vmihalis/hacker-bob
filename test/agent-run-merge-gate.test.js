@@ -800,6 +800,8 @@ test("Test D + finding: a finding-bearing handoff is honored on the recovery pat
       severity: "high",
       cwe: "CWE-682",
       endpoint: "onchain://ethereum-mainnet/0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A",
+      request_method: "POST",
+      injection_point: "body:donation_amount",
       description: "Donating to the distributor before distribution swings the pool share.",
       proof_of_concept: "Mainnet-fork test donates aUSDC, then distributeRewards redirects emissions.",
       response_evidence: "Fork run shows the USDC pool jump from ~1.2% to ~98.4% of the daily window.",

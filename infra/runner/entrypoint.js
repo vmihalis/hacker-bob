@@ -453,12 +453,28 @@ async function runSpawnedRunner(
   completion.then((value) => {
     outcome = value;
   });
+  let consecutivePollFailures = 0;
   try {
     while (outcome === null) {
-      await poll();
+      try {
+        await poll();
+        consecutivePollFailures = 0;
+      } catch (error) {
+        consecutivePollFailures += 1;
+        if (consecutivePollFailures >= 3) throw error;
+      }
       if (outcome === null) await Promise.race([completion, poll.delay()]);
     }
-    await poll();
+    for (;;) {
+      try {
+        await poll();
+        break;
+      } catch (error) {
+        consecutivePollFailures += 1;
+        if (consecutivePollFailures >= 3) throw error;
+        await poll.delay();
+      }
+    }
   } catch (error) {
     if (outcome === null) {
       if (typeof child.kill === "function") {

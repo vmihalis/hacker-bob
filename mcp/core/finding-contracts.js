@@ -527,6 +527,32 @@ function summarizeFindings(findings) {
 
 const CWE_REQUIRED_SEVERITIES = Object.freeze(["critical", "high", "medium"]);
 
+function assertReportableContinuityOnWrite(finding, requireContinuity) {
+  if (!requireContinuity) return;
+  if (!CWE_REQUIRED_SEVERITIES.includes(finding.severity)) return;
+  if (finding.surface_type !== "web" || finding.capability_pack !== "web") return;
+  const missing = [];
+  for (const field of ["request_method", "injection_point", "auth_profile"]) {
+    if (typeof finding[field] !== "string" || !finding[field].trim()) missing.push(field);
+  }
+  const source = typeof finding.source_surface_type === "string"
+    ? finding.source_surface_type.trim().toLowerCase()
+    : "";
+  const graphql = source === "graphql"
+    || finding.graphql_operation != null
+    || finding.graphql_resolver != null;
+  if (graphql) {
+    for (const field of ["graphql_operation", "graphql_resolver"]) {
+      if (typeof finding[field] !== "string" || !finding[field].trim()) missing.push(field);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `reportable web finding requires continuity fields: ${missing.join(", ")}`,
+    );
+  }
+}
+
 // Trust-degradation marker on a finding, present only when the finding's source
 // could not be signature-verified. Absent => signature-verified; the marker is
 // never auto-materialized, so signed findings stay byte-identical and the
@@ -541,7 +567,12 @@ function normalizeSignatureVerificationStatus(value, { strict = false } = {}) {
   return SIGNATURE_VERIFICATION_STATUS_VALUES.includes(value) ? value : null;
 }
 
-function normalizeEndpointPocFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
+function normalizeEndpointPocFindingRecord(record, {
+  expectedDomain = null,
+  lineNumber = null,
+  requireCwe = false,
+  requireContinuity = false,
+} = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
     throw new Error(lineNumber == null
       ? "finding record must be an object"
@@ -606,6 +637,7 @@ function normalizeEndpointPocFindingRecord(record, { expectedDomain = null, line
         if (!finding.brief_profile) finding.brief_profile = backfill.brief_profile;
       }
     }
+    assertReportableContinuityOnWrite(finding, requireContinuity);
     const reachabilityAssertion = normalizeReachabilityAssertion(record.reachability_assertion);
     if (reachabilityAssertion) {
       assertReachabilityAssertionScope(finding);

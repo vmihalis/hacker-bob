@@ -282,6 +282,8 @@ function recordChainWorkFindings(domain) {
       severity: "high",
       cwe: "CWE-639",
       endpoint: `https://${domain}/api/records/${index}`,
+      request_method: "GET",
+      injection_point: "path:record_id",
       description: `Changing record ${index} identifier returns another tenant payload.`,
       proof_of_concept: `GET /api/records/${index} as the attacker tenant returns private fields.`,
       response_evidence: `Response leaked tenant identifier and email for record ${index}.`,

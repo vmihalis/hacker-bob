@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Hacker Bob Release A runner host: one arm64 EC2 instance running the dispatch
-  service (systemd) that spawns per-run Bob runner containers. Deny-egress
+  service (systemd) that spawns per-run Bob runner containers. Restricted-port egress
   posture at the port level (443 + DNS out only); per-run domain enforcement
   rides Bob's own egress-profile/scope-kernel machinery inside the runner
   container. See README.md for the full deploy runbook.
@@ -189,7 +189,7 @@ Resources:
           FromPort: 8080
           ToPort: 8080
           SourceSecurityGroupId: !Ref AlbSecurityGroup
-      # Deny-egress posture at the port level: HTTPS + DNS only, nothing else.
+      # Restricted-port egress posture: HTTPS + DNS only, nothing else.
       # Per-run DOMAIN enforcement happens inside the runner container via
       # Bob's egress-profile/scope kernel, not in this group (see README).
       SecurityGroupEgress:

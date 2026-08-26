@@ -130,9 +130,12 @@ function safeResponseHeaders(headers) {
   return result;
 }
 
-function createToolFilterHandler({ apiKey, fetchImpl = fetch } = {}) {
+function createToolFilterHandler({ apiKey, clientKey = apiKey, fetchImpl = fetch } = {}) {
   if (typeof apiKey !== "string" || apiKey.length === 0) {
     throw new Error("DEEPSEEK_API_KEY is required");
+  }
+  if (typeof clientKey !== "string" || clientKey.length === 0) {
+    throw new Error("proxy client key is required");
   }
   return async function toolFilterHandler(request, response) {
     if (request.method !== "POST" || request.url !== "/responses") {
@@ -140,7 +143,7 @@ function createToolFilterHandler({ apiKey, fetchImpl = fetch } = {}) {
       response.end('{"error":"not_found"}');
       return;
     }
-    if (!fixedWorkEqual(bearerToken(request.headers.authorization), apiKey)) {
+    if (!fixedWorkEqual(bearerToken(request.headers.authorization), clientKey)) {
       response.writeHead(401, { "content-type": "application/json" });
       response.end('{"error":"unauthorized"}');
       return;
@@ -198,11 +201,12 @@ function createToolFilterHandler({ apiKey, fetchImpl = fetch } = {}) {
 
 function startToolFilterProxy({
   apiKey = process.env.DEEPSEEK_API_KEY,
+  clientKey = apiKey,
   fetchImpl = fetch,
   host = LISTEN_HOST,
   port = LISTEN_PORT,
 } = {}) {
-  const server = http.createServer(createToolFilterHandler({ apiKey, fetchImpl }));
+  const server = http.createServer(createToolFilterHandler({ apiKey, clientKey, fetchImpl }));
   server.keepAliveTimeout = 5_000;
   server.headersTimeout = 10_000;
   server.requestTimeout = 310_000;

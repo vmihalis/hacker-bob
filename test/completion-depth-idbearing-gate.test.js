@@ -79,6 +79,9 @@ function setAuthDifferentialRequired(domain, surfaceId, required) {
 
 function recordFinding(args) {
   return recordCandidateClaimTool.handler({
+    request_method: "GET",
+    injection_point: "path:id",
+    auth_profile: "attacker",
     ...args,
     cvss_inputs: {
       attack_vector: "network",

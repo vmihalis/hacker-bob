@@ -37,6 +37,8 @@ function recordFinding(domain, overrides = {}) {
     severity: overrides.severity || "high",
     cwe: overrides.cwe || "CWE-639",
     endpoint: overrides.endpoint || `https://${domain}/api/billing/1`,
+    request_method: overrides.request_method || "GET",
+    injection_point: overrides.injection_point || "path:billing_id",
     description: overrides.description || "Tenant boundary allows cross-account view of billing data",
     proof_of_concept: overrides.poc || "GET /api/billing/1 returns another tenant payload",
     response_evidence: overrides.response_evidence || "Cross-tenant billing payload",

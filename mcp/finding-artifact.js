@@ -33,6 +33,9 @@ const {
   loadJsonDocumentStrict,
 } = require("./core/io/storage.js");
 const {
+  readSessionStateStrict,
+} = require("./core/session/session-state-store.js");
+const {
   loadFinalVerificationDocument,
   resolveReportFinalizationHashes,
   sha256Hex,
@@ -112,6 +115,30 @@ function buildArtifactFindings(domain, reportableResults, findings, gradeDocumen
   return artifactFindings;
 }
 
+function artifactTargetForSession(domain) {
+  const { state } = readSessionStateStrict(domain);
+  if (state.target_repo) {
+    return {
+      targetKind: "repo",
+      target: {
+        kind: "repo",
+        name: domain,
+        ...(state.target_repo.source_url ? { repository: state.target_repo.source_url } : {}),
+      },
+    };
+  }
+  if (!state.target_url && Array.isArray(state.target_contracts) && state.target_contracts.length > 0) {
+    return {
+      targetKind: "contract",
+      target: { kind: "contract", name: domain },
+    };
+  }
+  return {
+    targetKind: "web",
+    target: { kind: "web", name: domain },
+  };
+}
+
 // Assemble the canonical artifact document. Returns {emitted, document,
 // bundle, reportableCount}. Throws ToolError with a structured pointer when
 // any upstream artifact is missing (the same contract as finalization).
@@ -136,11 +163,12 @@ function assembleFindingArtifact(targetDomain, { findings = null } = {}) {
       reportableCount: 0,
     };
   }
+  const artifactTarget = artifactTargetForSession(domain);
   const document = {
     schemaVersion: 1,
-    targetKind: "web",
+    targetKind: artifactTarget.targetKind,
     domain,
-    target: { kind: "web", name: domain },
+    target: artifactTarget.target,
     findings: buildArtifactFindings(domain, reportableResults, findingsList, gradeDocument),
     receipt: {
       evidenceHash: bundle.grade_verdict_hash,
@@ -205,6 +233,7 @@ function writeFindingArtifact(targetDomain, options = {}) {
 }
 
 module.exports = {
+  artifactTargetForSession,
   assembleFindingArtifact,
   buildArtifactFindings,
   gradedSeverityFor,

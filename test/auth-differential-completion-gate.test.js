@@ -241,6 +241,8 @@ function recordCrownFinding(domain, cwe) {
     severity: "high",
     cwe,
     endpoint: `https://${domain}/api/accounts/789`,
+    request_method: "GET",
+    injection_point: "path:account_id",
     description: "recorded finding for the crown surface",
     proof_of_concept: "GET /api/accounts/789 returns an object",
     response_evidence: "response body observed",

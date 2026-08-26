@@ -617,10 +617,16 @@ test("successful projection writes the receipt last and identical replay skips t
     let projectionDirectory = null;
     const restoreProjection = finalizeReportTool._setProjectionProcessForTest((_executable, argv, options) => {
       calls += 1;
+      assert.equal(argv[0], path.join(__dirname, "..", "scripts", "project-findings.js"));
       postedPayload = JSON.parse(fs.readFileSync(argv[1], "utf8"));
       projectionDirectory = path.dirname(argv[1]);
+      assert.equal(options.killSignal, "SIGKILL");
+      assert.equal(options.maxBuffer, 1024 * 1024);
       assert.deepEqual(options.env, {
         BOB_PROJECTION_URL: "https://projection.example/api/findings",
+        HOME: os.tmpdir(),
+        NODE_ENV: "production",
+        PATH: process.env.PATH || "/usr/bin:/bin",
         RUNNER_SECRET: "runner-shared-secret",
       });
       return `${JSON.stringify({

@@ -15,6 +15,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 const {
+  artifactTargetForSession,
   assembleFindingArtifact,
   buildArtifactFindings,
   writeFindingArtifact,
@@ -49,9 +50,20 @@ const {
   findingArtifactPath,
   findingArtifactSidecarPath,
 } = require("../mcp/core/io/paths.js");
+const {
+  buildInitialSessionState,
+} = require("../mcp/core/session/session-state-contracts.js");
 
 const DOMAIN = "example.com";
 const HASH64 = "a".repeat(64);
+const DEFAULT_EGRESS_PROFILE = Object.freeze({
+  name: "default",
+  region: null,
+  proxy_configured: false,
+  egress_profile_identity_hash: null,
+  egress_profile_identity_version: null,
+  egress_profile_identity_source: null,
+});
 
 const FINDING = {
   id: "F-1",
@@ -88,6 +100,12 @@ function writeFixture(
 ) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "state.json"),
+    JSON.stringify(buildInitialSessionState(domain, `https://${domain}`, {
+      egressProfile: DEFAULT_EGRESS_PROFILE,
+    })),
+  );
   fs.writeFileSync(reportMarkdownPath(domain), "# Sealed report\n\nFixture report content.\n");
   fs.writeFileSync(claimFreezePath(domain), JSON.stringify({
     freeze_id: "FZ-1",
@@ -189,6 +207,10 @@ test("fingerprint v1 separates continuity tuples while correlating concrete path
     first,
     fingerprintV1({ ...web, endpoint: "https://example.com/api/orders/67890?expand=private" }),
   );
+  assert.equal(
+    first,
+    fingerprintV1({ ...web, endpoint: "/api/orders/67890?expand=private" }),
+  );
   assert.notEqual(first, fingerprintV1({ ...web, endpoint: "https://example.com/api/orders/12345?view=items" }));
   assert.notEqual(first, fingerprintV1({ ...web, requestMethod: "POST" }));
   assert.notEqual(first, fingerprintV1({ ...web, injectionPoint: "header:X-Order" }));
@@ -234,6 +256,44 @@ test("fingerprint v1 separates continuity tuples while correlating concrete path
     /finding F-web lacks fingerprint input: auth_profile/,
   );
   assert.match(first, /^[0-9a-f]{64}$/);
+});
+
+test("artifact target identity follows the canonical session axes", () => {
+  withTempHome(() => {
+    const repoDomain = "repo-api-12345678";
+    fs.mkdirSync(sessionDir(repoDomain), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir(repoDomain), "state.json"), JSON.stringify(
+      buildInitialSessionState(repoDomain, null, {
+        egressProfile: DEFAULT_EGRESS_PROFILE,
+        targetRepo: {
+          root_path: "/workspace/target-repo",
+          source_url: "https://github.com/acme/api.git",
+        },
+        repoHash: "a".repeat(40),
+      }),
+    ));
+    assert.deepEqual(artifactTargetForSession(repoDomain), {
+      targetKind: "repo",
+      target: {
+        kind: "repo",
+        name: repoDomain,
+        repository: "https://github.com/acme/api.git",
+      },
+    });
+
+    const contractDomain = "contract-12345678";
+    fs.mkdirSync(sessionDir(contractDomain), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir(contractDomain), "state.json"), JSON.stringify(
+      buildInitialSessionState(contractDomain, null, {
+        egressProfile: DEFAULT_EGRESS_PROFILE,
+        targetContracts: ["eip155:1:0x1234567890abcdef1234567890abcdef12345678"],
+      }),
+    ));
+    assert.deepEqual(artifactTargetForSession(contractDomain), {
+      targetKind: "contract",
+      target: { kind: "contract", name: contractDomain },
+    });
+  });
 });
 
 test("projection mappings follow the www vocabulary", () => {
@@ -339,6 +399,14 @@ test("web and GraphQL continuity fields normalize and enforce bounded values", (
   });
   assert.equal(legacy.request_method, null);
   assert.equal(legacy.injection_point, null);
+  assert.throws(
+    () => normalizeFindingRecord({
+      ...base,
+      request_method: undefined,
+      injection_point: undefined,
+    }, { requireCwe: true, requireContinuity: true }),
+    /reportable web finding requires continuity fields: request_method, injection_point/,
+  );
 
   const properties = recordCandidateClaimTool.inputSchema.properties;
   assert.equal(properties.injection_point.maxLength, 200);
@@ -432,21 +500,20 @@ test("projection payload maps the sealed run into the www shape", () => {
   });
 });
 
-test("projection rejects distinct findings with the same continuity fingerprint", () => {
+test("projection deterministically collapses distinct findings with the same continuity fingerprint", () => {
   withTempHome(() => {
     writeFixture(DOMAIN, { findingIds: ["F-1", "F-2"] });
-    assert.throws(
-      () => buildProjectionPayload(DOMAIN, {
-        runSlug: "run-duplicate-continuity",
-        projectionKey: "projection-duplicate-continuity",
-        kind: "assessment",
-        findings: [
-          FINDING,
-          { ...FINDING, id: "F-2" },
-        ],
-      }),
-      /findings F-1 and F-2 resolve to duplicate projection fingerprint/u,
-    );
+    const { payload } = buildProjectionPayload(DOMAIN, {
+      runSlug: "run-duplicate-continuity",
+      projectionKey: "projection-duplicate-continuity",
+      kind: "assessment",
+      findings: [
+        FINDING,
+        { ...FINDING, id: "F-2" },
+      ],
+    });
+    assert.equal(payload.findings.length, 1);
+    assert.equal(payload.findings[0].refId, "F-1");
   });
 });
 

@@ -340,6 +340,7 @@ function handler(args) {
       retestOf: process.env.BOB_RETEST_OF
         ? process.env.BOB_RETEST_OF.split(",").map((value) => value.trim()).filter(Boolean)
         : [],
+      assembledArtifact: artifactSummary,
     });
     const payloadDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "bob-projection-"));
     fs.chmodSync(payloadDirectory, 0o700);
@@ -352,11 +353,16 @@ function handler(args) {
     try {
       const stdout = projectionProcess(
         process.execPath,
-        [path.join(__dirname, "../../../scripts/project-findings.js"), payloadFile],
+        [path.join(__dirname, "../../scripts/project-findings.js"), payloadFile],
         {
           encoding: "utf8",
           timeout: 180000,
+          killSignal: "SIGKILL",
+          maxBuffer: 1024 * 1024,
           env: {
+            PATH: process.env.PATH || "/usr/bin:/bin",
+            HOME: os.tmpdir(),
+            NODE_ENV: "production",
             BOB_PROJECTION_URL: process.env.BOB_PROJECTION_URL,
             RUNNER_SECRET: runnerSecret,
           },
