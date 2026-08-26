@@ -116,7 +116,7 @@ function assertIsoTimestamp(value, label) {
 }
 
 function normalizeEndpointTemplate(value, label) {
-  const endpoint = assertText(value, label, 512);
+  const endpoint = assertText(value, label, 512, { displaySafe: true });
   if (ENCODED_CONTROL_CHARACTER_RE.test(endpoint)) {
     throw receiptError(`${label} must not contain encoded control characters`);
   }

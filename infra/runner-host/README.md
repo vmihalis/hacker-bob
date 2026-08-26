@@ -152,8 +152,10 @@ aws cloudformation delete-stack --stack-name bob-runner-host
 - The host passes `BOB_PAYLOAD_JSON`, `RUNNER_SECRET`,
   `DEEPSEEK_API_KEY`, `BOB_PROJECTION_URL`, and lifecycle metadata by named
   Docker environment variables; secret values are not written to payload or
-  env files. The Bob MCP receives only its explicit allowlist and never the
-  model API key.
+  env files. The trusted container entrypoint retains the runner secret and
+  projection capability, invokes projection only after Codex exits, and does
+  not forward either value to Codex or the Bob MCP. The Bob MCP receives only
+  its explicit allowlist and never the model API key.
 - Defaults: two concurrent runs, eight queued runs, 15-minute queue age, and a
   90-minute per-run timeout. Replay ledger and redacted logs live under
   mode-`0700` `/var/lib/bob-dispatch/{ledger,logs}`; transient repository

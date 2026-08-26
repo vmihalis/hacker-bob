@@ -2,10 +2,10 @@
 
 // runner-wiring: projection POST client.
 //
-// Runs as a child CLI from bob_finalize_report (whose wrapped handler is
-// synchronous) and doubles as the dispatch service's redrive path. Bounded
-// retry with backoff; fails closed: a dispatched run that cannot project
-// refuses to complete rather than silently losing sealed findings.
+// Used by the trusted hosted-runner parent after the untrusted Codex/MCP child
+// exits, and by the standalone operations CLI. Bounded retry with backoff;
+// fails closed so a dispatched run that cannot project never completes while
+// silently losing sealed findings.
 
 const DELAY_CAP_MS = 30000;
 const RESPONSE_BODY_MAX_BYTES = 64 * 1024;

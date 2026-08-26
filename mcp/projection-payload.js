@@ -39,6 +39,9 @@ const {
 const {
   CHAIN_FAMILY_VALUES,
 } = require("./core/constants/shared-vocabulary.js");
+const {
+  detectPiiShapes,
+} = require("./core/pii-detector.js");
 
 const FINGERPRINT_VERSION = 1;
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -196,10 +199,39 @@ function projectionSurfaceFields(finding, findingId, surfaceType) {
   };
 }
 
-// Generalize an endpoint to a browser-safe route template: numeric,
-// UUID-shaped, and long-hex path segments become {param}. Query values are
-// discarded by normalizeEndpointForDedupe while sorted key placeholders are
-// retained, so continuity distinguishes parameter shape without exposing data.
+const DYNAMIC_IDENTITY_PREDECESSOR_RE = /^(?:account|accounts|email|emails|member|members|profile|profiles|user|users)$/i;
+const SECRET_PREDECESSOR_RE = /^(?:api|api[_-]?key|auth|credential|key|keys|project|projects|rpc|secret|session|token|tokens|v[0-9]+)$/i;
+
+function safeDecodeRouteSegment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function isSensitiveRouteSegment(segment, index, segments) {
+  const decoded = safeDecodeRouteSegment(segment || "").trim();
+  if (!decoded) return false;
+  if (/^\d+$/.test(decoded)) return true;
+  if (/^[0-9a-f]{8,64}$/i.test(decoded)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decoded)) return true;
+  if (detectPiiShapes(decoded).length > 0) return true;
+  if (/^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(decoded)) return true;
+  if (/^(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,})$/.test(decoded)) return true;
+  const previous = safeDecodeRouteSegment(segments[index - 1] || "");
+  if (DYNAMIC_IDENTITY_PREDECESSOR_RE.test(previous)) return true;
+  const mixedAlphaNumeric = /[A-Za-z]/.test(decoded) && /[0-9]/.test(decoded);
+  if (SECRET_PREDECESSOR_RE.test(previous) && (decoded.length >= 8 || (decoded.length >= 6 && mixedAlphaNumeric))) {
+    return true;
+  }
+  if (decoded.length >= 24 && mixedAlphaNumeric && /^[A-Za-z0-9._~%-]+$/.test(segment)) return true;
+  return decoded.length >= 6 && mixedAlphaNumeric && /(?:auth|credential|secret|token)/i.test(decoded);
+}
+
+// Generalize an endpoint to a browser-safe route template. Besides common ID
+// shapes, identity-bearing and credential-shaped path segments become
+// {param}; query values are discarded while sorted key placeholders remain.
 function safeRouteTemplate(endpoint) {
   const normalized = normalizeEndpointForDedupe(endpoint);
   if (!normalized) return "";
@@ -219,16 +251,9 @@ function safeRouteTemplate(endpoint) {
       query = normalized.slice(queryIndex);
     }
   }
-  const route = hostPath
-    .split("/")
-    .map((segment) => {
-      if (/^\d+$/.test(segment)) return "{param}";
-      if (/^[0-9a-f]{8,64}$/i.test(segment)) return "{param}";
-      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) {
-        return "{param}";
-      }
-      return segment;
-    })
+  const segments = hostPath.split("/");
+  const route = segments
+    .map((segment, index) => (isSensitiveRouteSegment(segment, index, segments) ? "{param}" : segment))
     .join("/");
   return `${route}${query}`;
 }

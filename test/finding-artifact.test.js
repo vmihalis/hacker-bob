@@ -189,6 +189,22 @@ test("safeRouteTemplate generalizes path ids and preserves sorted query-key plac
     "example.com/orders/{param}?a=*&z=*",
   );
   assert.equal(
+    safeRouteTemplate("https://example.com/users/alice@example.com"),
+    "example.com/users/{param}",
+  );
+  assert.equal(
+    safeRouteTemplate("https://example.com/users/alice"),
+    "example.com/users/{param}",
+  );
+  assert.equal(
+    safeRouteTemplate("https://example.com/reset/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123"),
+    "example.com/reset/{param}",
+  );
+  assert.equal(
+    safeRouteTemplate("https://example.com/tokens/notHexSecretToken123456789"),
+    "example.com/tokens/{param}",
+  );
+  assert.equal(
     normalizeEndpointForDedupe("HTTPS://Example.COM/api/orders/123/?z=secret&A=private#raw"),
     "https://example.com/api/orders/123?a=*&z=*",
   );

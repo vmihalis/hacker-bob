@@ -247,6 +247,11 @@ test("receipt rejects extra fields and unsafe browser content", () => {
       expected: /query values must use key=\* placeholders/,
     },
     {
+      label: "endpoint markup",
+      mutate: (finding) => ({ ...finding, endpoint: "receipt.example.com/<img>?tenant=*" }),
+      expected: /must not contain markup delimiters/,
+    },
+    {
       label: "URI credentials",
       mutate: (finding) => ({ ...finding, endpoint: "https://user:pass@receipt.example.com/admin" }),
       expected: /must not contain URI userinfo/,

@@ -12,8 +12,9 @@
 //   3  retries exhausted (5xx / network)
 //   64 usage error
 //
-// Called synchronously from bob_finalize_report via execFileSync; also the
-// dispatch service's redrive path.
+// Standalone operations/redrive entrypoint. The hosted runner imports the
+// shared client directly and keeps its control-plane credential in the trusted
+// parent process rather than forwarding it to Codex or MCP.
 
 const fs = require("fs");
 const {

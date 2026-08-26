@@ -100,6 +100,13 @@ Parameters:
     Default: ""
     Description: Optional EC2 key pair for break-glass console access. Empty = Session Manager only.
 
+Rules:
+  SmallInstanceSingleRun:
+    RuleCondition: !Equals [!Ref InstanceType, t4g.small]
+    Assertions:
+      - Assert: !Equals [!Ref MaxConcurrentRuns, 1]
+        AssertDescription: t4g.small has capacity for only one 1536 MiB runner container.
+
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
   UseRunnerSubnetA: !Equals [!Ref RunnerSubnet, a]

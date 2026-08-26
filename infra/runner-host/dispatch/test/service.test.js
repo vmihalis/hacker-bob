@@ -410,6 +410,13 @@ test("service rejects noncanonical or non-TLS runner endpoints before startup", 
   }
 });
 
+test("CloudFormation restricts the 2 GiB host to one concurrent runner", () => {
+  const template = fs.readFileSync(path.join(__dirname, "..", "..", "template.yaml"), "utf8");
+  assert.match(template, /SmallInstanceSingleRun:/u);
+  assert.match(template, /RuleCondition: !Equals \[!Ref InstanceType, t4g\.small\]/u);
+  assert.match(template, /Assert: !Equals \[!Ref MaxConcurrentRuns, 1\]/u);
+});
+
 test("repository preflight verifies the exact commit and seals a runner-readable tree", async (t) => {
   const dirs = tempDirs();
   fs.mkdirSync(dirs.runsDir, { recursive: true });
@@ -939,6 +946,33 @@ test("control-plane delivery retries, persists a safe pending update, and replay
   assert.equal(delivered.length, 1);
   assert.equal(harness.service.record(payload.runId).controlPlanePending, null);
 });
+
+test("pending redrive skips a delivery that is already in flight", async (t) => {
+  let deliveryCalls = 0;
+  let releaseRetryDelay;
+  const retryDelay = new Promise((resolve) => {
+    releaseRetryDelay = resolve;
+  });
+  const harness = makeHarness(t, {
+    controlPlaneSink: async () => {
+      deliveryCalls += 1;
+      if (deliveryCalls === 1) throw new Error("transient delivery failure");
+    },
+    delay: async () => retryDelay,
+  });
+  const payload = validPayload();
+  accept(harness.service, payload);
+  harness.spawned[0].child.finish(0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(deliveryCalls, 1);
+
+  await harness.service.retryPending();
+  assert.equal(deliveryCalls, 1);
+  releaseRetryDelay();
+  await harness.service.flush();
+  assert.equal(deliveryCalls, 2);
+  assert.equal(harness.service.record(payload.runId).controlPlanePending, null);
+});
 test("terminal ledger row contains the pending control update before delivery completes", async (t) => {
   let releaseDelivery;
   const delivery = new Promise((resolve) => {
@@ -1027,6 +1061,35 @@ test("Convex control-plane sink sends status then a canonical monotonic event", 
     event.eventHash,
     canonicalEventHash(update.runSlug, update.event.kind, update.event.phase, update.event.message),
   );
+});
+
+test("Convex control-plane sink ignores malformed event sequence rows", async () => {
+  let appendedSequence = null;
+  const client = {
+    async mutation(name, args) {
+      if (name === "runs:setStatus") {
+        return { runId: "run-id", status: args.status, applied: true };
+      }
+      appendedSequence = args.seq;
+      return "event-id";
+    },
+    async query() {
+      return [{ seq: "poison" }, { seq: Number.NaN }, { seq: -1 }, { seq: 7 }];
+    },
+  };
+  const sink = createConvexControlPlaneSink({
+    url: "https://convex.example",
+    secret: RUNNER_SECRET,
+    clientFactory: () => client,
+  });
+  await sink({
+    runSlug: "runSlug_123456789",
+    status: "destroyed",
+    phase: "report",
+    at: 1770000000000,
+    event: { kind: "destroy", register: "breath", phase: "report", message: "Runner container destroyed." },
+  });
+  assert.equal(appendedSequence, 8);
 });
 
 test("Convex control-plane sink retries a concurrent sequence collision idempotently", async () => {

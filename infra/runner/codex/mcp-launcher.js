@@ -3,13 +3,10 @@
 
 const MCP_FORWARD_ENVIRONMENT = Object.freeze([
   "BOB_SESSIONS_ROOT",
-  "BOB_PROJECTION_URL",
   "BOB_RUN_SLUG",
-  "BOB_PROJECTION_KEY",
   "BOB_RUN_KIND",
   "BOB_RETEST_OF",
   "BOB_REPORT_SLUG",
-  "RUNNER_SECRET",
 ]);
 
 function sanitizedMcpEnvironment(environment = process.env) {

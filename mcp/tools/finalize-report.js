@@ -31,31 +31,13 @@ const {
   gradeToReportApprovalBlocker,
 } = require("../core/session/lifecycle-gates.js");
 const { wrapWriteTool } = require("./_write-base.js");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { execFileSync } = require("child_process");
 const {
   writeFindingArtifact,
 } = require("../finding-artifact.js");
 const {
-  buildProjectionPayload,
-} = require("../projection-payload.js");
-const {
   readFinalizationReceipt,
   writeFinalizationReceipt,
 } = require("../finalization-receipt.js");
-
-let projectionProcess = execFileSync;
-
-function setProjectionProcessForTest(executor) {
-  if (typeof executor !== "function") throw new TypeError("projection executor must be a function");
-  const previous = projectionProcess;
-  projectionProcess = executor;
-  return () => {
-    projectionProcess = previous;
-  };
-}
 
 function artifactRefsForBundle(bundle) {
   const refs = [
@@ -101,17 +83,9 @@ function resolveReportSnapshot(bundle) {
 }
 
 function finalizationIdentity(bundle) {
-  const projectionRequired = Boolean(process.env.BOB_PROJECTION_URL);
   const configuredRunSlug = typeof process.env.BOB_RUN_SLUG === "string"
     ? process.env.BOB_RUN_SLUG.trim()
     : "";
-  if (projectionRequired && !configuredRunSlug) {
-    throw new ToolError(
-      ERROR_CODES.STATE_CONFLICT,
-      "projection URL is set but the run slug is missing",
-      { code: "projection_env_incomplete" },
-    );
-  }
   const runSlug = configuredRunSlug || `local-${crypto
     .createHash("sha256")
     .update(bundle.target_domain)
@@ -128,7 +102,7 @@ function finalizationIdentity(bundle) {
       { code: "report_slug_mismatch", run_slug: runSlug },
     );
   }
-  return { projectionRequired, runSlug, reportSlug };
+  return { projectionRequired: false, runSlug, reportSlug };
 }
 
 function assertExistingReceiptIdentity(existing, bundle, identity) {
@@ -170,34 +144,6 @@ function replayResponse(existing) {
     finalization_receipt: receipt,
     finalization_receipt_sha256: existing.sha256,
   });
-}
-
-function successfulProjectionReceipt(summary) {
-  if (!summary || summary.ok !== true || summary.result == null || typeof summary.result !== "object") {
-    throw new ToolError(
-      ERROR_CODES.STATE_CONFLICT,
-      "projection returned no committed result",
-      { code: "projection_result_invalid" },
-    );
-  }
-  const counts = {};
-  for (const field of ["projected", "reopened", "closed"]) {
-    const value = summary.result[field];
-    if (!Number.isInteger(value) || value < 0) {
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        `projection returned an invalid ${field} count`,
-        { code: "projection_result_invalid", field },
-      );
-    }
-    counts[field] = value;
-  }
-  return {
-    required: true,
-    succeeded: true,
-    duplicate: summary.result.duplicate === true,
-    ...counts,
-  };
 }
 
 function handler(args) {
@@ -283,11 +229,10 @@ function handler(args) {
     // ReportSnapshot append.
   }
   }
-  // runner-wiring: emit the canonical structured finding artifact and
-  // project the sealed findings into the retained console ledger. The
-  // artifact write is unconditional (sealed evidence); projection runs only
-  // when the runner dispatched this run (BOB_PROJECTION_URL set) and fails
-  // closed — an unprojected dispatched run must not complete.
+  // Emit the canonical structured finding artifact. Hosted projection is
+  // deliberately owned by the trusted runner parent after Codex exits; this
+  // MCP process never receives the control-plane credential or performs
+  // network I/O.
   let artifactSummary;
   try {
     artifactSummary = writeFindingArtifact(bundle.target_domain);
@@ -299,8 +244,7 @@ function handler(args) {
       { artifact: "finding-artifact.json" },
     );
   }
-  let projectionSummary = { skipped: true, reason: "no_projection_url" };
-  let projectionReceipt = {
+  const projectionReceipt = {
     required: false,
     succeeded: false,
     duplicate: false,
@@ -308,99 +252,11 @@ function handler(args) {
     reopened: 0,
     closed: 0,
   };
-  let consoleReport = {
+  const consoleReport = {
     schemaVersion: 1,
     domain: bundle.target_domain,
     findings: [],
   };
-  if (identity.projectionRequired) {
-    const runSlug = identity.runSlug;
-    const projectionKey = process.env.BOB_PROJECTION_KEY;
-    const runnerSecret = process.env.RUNNER_SECRET;
-    if (!runSlug || !projectionKey || !runnerSecret) {
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        "projection URL is set but the run slug, projection key, or runner secret is missing",
-        { code: "projection_env_incomplete" },
-      );
-    }
-    const runKind = process.env.BOB_RUN_KIND;
-    if (runKind !== "assessment" && runKind !== "retest") {
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        "projection URL is set but BOB_RUN_KIND is not assessment or retest",
-        { code: "projection_env_incomplete" },
-      );
-    }
-    const { payload } = buildProjectionPayload(bundle.target_domain, {
-      runSlug,
-      projectionKey,
-      reportSlug: identity.reportSlug,
-      kind: runKind,
-      retestOf: process.env.BOB_RETEST_OF
-        ? process.env.BOB_RETEST_OF.split(",").map((value) => value.trim()).filter(Boolean)
-        : [],
-      assembledArtifact: artifactSummary,
-    });
-    const payloadDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "bob-projection-"));
-    fs.chmodSync(payloadDirectory, 0o700);
-    const payloadFile = path.join(payloadDirectory, "payload.json");
-    fs.writeFileSync(payloadFile, JSON.stringify(payload), {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    try {
-      const stdout = projectionProcess(
-        process.execPath,
-        [path.join(__dirname, "../../scripts/project-findings.js"), payloadFile],
-        {
-          encoding: "utf8",
-          timeout: 180000,
-          killSignal: "SIGKILL",
-          maxBuffer: 1024 * 1024,
-          env: {
-            PATH: process.env.PATH || "/usr/bin:/bin",
-            HOME: os.tmpdir(),
-            NODE_ENV: "production",
-            BOB_PROJECTION_URL: process.env.BOB_PROJECTION_URL,
-            RUNNER_SECRET: runnerSecret,
-          },
-        },
-      );
-      const lastLine = String(stdout).trim().split("\n").pop();
-      projectionSummary = JSON.parse(lastLine || "{}");
-      projectionReceipt = successfulProjectionReceipt(projectionSummary);
-      consoleReport = {
-        schemaVersion: 1,
-        domain: bundle.target_domain,
-        findings: payload.findings.filter((finding) => finding.open === true),
-      };
-    } catch (error) {
-      let detail = null;
-      if (error && error.stdout) {
-        try {
-          detail = JSON.parse(String(error.stdout).trim().split("\n").pop());
-        } catch {
-          detail = null;
-        }
-      }
-      const childStatus = Number.isInteger(error && error.status) ? error.status : null;
-      const definitive = childStatus === 2;
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        `projection ${definitive ? "rejected" : "failed"}: ${detail && detail.error ? detail.error : detail && detail.message ? detail.message : error.message || String(error)}`,
-        {
-          code: definitive ? "projection_rejected" : "projection_failed",
-          retryable: !definitive,
-          child_status: childStatus,
-          detail,
-        },
-      );
-    } finally {
-      try { fs.rmSync(payloadDirectory, { recursive: true, force: true }); } catch { /* best-effort */ }
-    }
-  }
 
   const receiptWrite = writeFinalizationReceipt(bundle.target_domain, {
     schemaVersion: 1,
@@ -460,7 +316,8 @@ const finalizeReportTool = wrapWriteTool({
     "cites proof_bundle refs it also binds proof-bundles.json. Refuses if any " +
     "required upstream artifact is missing. Completion is immutable once the " +
     "hash-verified finalization receipt is written; identical redelivery returns " +
-    "that receipt without appending another snapshot or repeating projection.",
+    "that receipt without appending another snapshot. Hosted projection is " +
+    "performed by the trusted runner parent after this tool completes.",
   inputSchema: {
     type: "object",
     properties: {
@@ -489,7 +346,4 @@ const finalizeReportTool = wrapWriteTool({
   ],
 });
 
-module.exports = Object.freeze({
-  ...finalizeReportTool,
-  _setProjectionProcessForTest: setProjectionProcessForTest,
-});
+module.exports = Object.freeze({ ...finalizeReportTool });

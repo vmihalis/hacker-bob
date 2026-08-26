@@ -127,8 +127,8 @@ function writeCleanReceipt(runPayload) {
       findingCount: 0,
     },
     projection: {
-      required: true,
-      succeeded: true,
+      required: false,
+      succeeded: false,
       duplicate: false,
       projected: 0,
       reopened: 0,
@@ -140,6 +140,20 @@ function writeCleanReceipt(runPayload) {
       findings: [],
     },
   });
+}
+
+async function successfulProjector(_payload, receipt) {
+  return {
+    ...receipt,
+    projection: {
+      required: true,
+      succeeded: true,
+      duplicate: false,
+      projected: 0,
+      reopened: 0,
+      closed: 0,
+    },
+  };
 }
 
 function fakeChild({ code = 0, stdout = "", stderr = "", beforeClose = null, autoClose = true } = {}) {
@@ -355,6 +369,7 @@ test("main awaits the observable lifecycle, verifies the receipt, and completes 
 
     const code = await entrypoint.main({
       clientFactory: async () => client,
+      projector: successfulProjector,
       spawnFactory: (command, args, options) => {
         spawnInvocation = { command, args, options };
         return fakeChild();
@@ -369,8 +384,6 @@ test("main awaits the observable lifecycle, verifies the receipt, and completes 
     assert.equal(spawnInvocation.options.env.CODEX_HOME, "/opt/codex-home");
     assert.equal(spawnInvocation.options.stdio[1], "pipe");
     assert.deepEqual(Object.keys(spawnInvocation.options.env).sort(), [
-      "BOB_PROJECTION_KEY",
-      "BOB_PROJECTION_URL",
       "BOB_REPORT_SLUG",
       "BOB_RETEST_OF",
       "BOB_RUN_KIND",
@@ -380,8 +393,10 @@ test("main awaits the observable lifecycle, verifies the receipt, and completes 
       "DEEPSEEK_API_KEY",
       "HOME",
       "PATH",
-      "RUNNER_SECRET",
     ]);
+    assert.equal(spawnInvocation.options.env.RUNNER_SECRET, undefined);
+    assert.equal(spawnInvocation.options.env.BOB_PROJECTION_KEY, undefined);
+    assert.equal(spawnInvocation.options.env.BOB_PROJECTION_URL, undefined);
     assert.equal(spawnInvocation.options.env.BOB_CONVEX_URL, undefined);
     assert.equal(spawnInvocation.options.env.BOB_PAYLOAD_JSON, undefined);
     assert.equal(spawnInvocation.args[0], "/opt/codex-home/run-codex.js");
@@ -466,6 +481,7 @@ test("main resumes when host replay finds the control plane already running", as
 
     const code = await entrypoint.main({
       clientFactory: async () => client,
+      projector: successfulProjector,
       spawnFactory: () => fakeChild(),
       clock: () => Date.UTC(2026, 7, 25, 12),
       delay: immediateDelay,
@@ -505,6 +521,7 @@ test("hosted completion conflict marks the sealing run failed and closes", async
 
     const code = await entrypoint.main({
       clientFactory: async () => client,
+      projector: successfulProjector,
       spawnFactory: () => fakeChild(),
       clock: () => Date.UTC(2026, 7, 25, 12),
       delay: immediateDelay,
@@ -547,6 +564,7 @@ test("replay resumes event sequence and committed completion survives client-clo
 
     const code = await entrypoint.main({
       clientFactory: async () => client,
+      projector: successfulProjector,
       spawnFactory: () => fakeChild(),
       clock: () => ++now,
       delay: immediateDelay,
@@ -603,8 +621,8 @@ test("receipt verification accepts an emitted info artifact with no projected co
         findingCount: 1,
       },
       projection: {
-        required: true,
-        succeeded: true,
+        required: false,
+        succeeded: false,
         duplicate: false,
         projected: 0,
         reopened: 0,
@@ -644,6 +662,7 @@ test("missing receipt fails before sealing, emits one fixed failure event, and c
     });
     const code = await entrypoint.main({
       clientFactory: async () => client,
+      projector: successfulProjector,
       spawnFactory: () => fakeChild(),
       clock: () => Date.UTC(2026, 7, 25, 12),
       delay: immediateDelay,
@@ -674,6 +693,7 @@ test("awaited mutation failure marks the run failed without spawning and still c
     t.mock.method(console, "error", () => {});
     const code = await entrypoint.main({
       clientFactory: async () => client,
+      projector: successfulProjector,
       spawnFactory: () => {
         spawned = true;
         return fakeChild();

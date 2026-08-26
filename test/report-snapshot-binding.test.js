@@ -13,7 +13,8 @@
 // a downstream consumer can read one snapshot row, hash the on-disk artifacts,
 // and prove the report was finalized over an exact CLAIM_FREEZE → VERIFY →
 // GRADE → REPORT chain. A completed receipt makes finalization immutable:
-// identical redelivery does not append another snapshot or repeat projection.
+// identical redelivery does not append another snapshot. Hosted projection is
+// performed later by the trusted runner parent.
 // A missing upstream (no freeze / no final verification / no grade verdict /
 // no evidence pack) refuses finalization.
 
@@ -25,6 +26,7 @@ const os = require("os");
 const path = require("path");
 
 const finalizeReportTool = require("../mcp/tools/finalize-report.js");
+const runnerEntrypoint = require("../infra/runner/entrypoint.js");
 const recordFindingTool = require("../mcp/tools/record-candidate-claim.js");
 const {
   _setApprovalBackendForTest,
@@ -111,7 +113,7 @@ function withProjectionEnvironment(runSlug, fn) {
     BOB_PROJECTION_URL: "https://projection.example/api/findings",
     BOB_RUN_SLUG: runSlug,
     BOB_REPORT_SLUG: `${runSlug}-report`,
-    BOB_PROJECTION_KEY: "projection-capability",
+    BOB_PROJECTION_KEY: "P".repeat(43),
     RUNNER_SECRET: "runner-shared-secret",
     BOB_RUN_KIND: "assessment",
     BOB_RETEST_OF: undefined,
@@ -547,228 +549,85 @@ test("bob_finalize_report appends a five-hash ReportSnapshot row after a full pi
   });
 });
 
-test("projection retries reuse the exact snapshot while leaving no completion receipt", async () => {
-  await withTempHome(async () => {
-    const domain = "projection-failure.example.com";
-    const runSlug = "run-projection-failure";
-    drivePipelineToReportWritten(domain);
-    let calls = 0;
-    const restoreProjection = finalizeReportTool._setProjectionProcessForTest(() => {
-      calls += 1;
-      const error = new Error("projection transport failed");
-      error.stdout = JSON.stringify({ ok: false, error: "projection unavailable" });
-      throw error;
-    });
-    try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        withProjectionEnvironment(runSlug, () => {
-          assert.throws(
-            () => finalizeReportTool.handler({ target_domain: domain }),
-            /projection failed: projection unavailable/,
-          );
-        });
-      }
-      assert.equal(calls, 2);
-      assert.equal(readReportSnapshots(domain).length, 1);
-      assert.equal(
-        readFrontierEvents(domain).filter((event) => event.kind === "claim.report_snapshot.appended").length,
-        1,
-      );
-      assert.equal(readFinalizationReceipt(domain, { required: false }), null);
-    } finally {
-      restoreProjection();
-    }
-  });
-});
-
-test("definitive projection rejection is surfaced as non-retryable", async () => {
-  await withTempHome(async () => {
-    const domain = "projection-rejection.example.com";
-    const runSlug = "run-projection-rejection";
-    drivePipelineToReportWritten(domain);
-    const restoreProjection = finalizeReportTool._setProjectionProcessForTest(() => {
-      const error = new Error("projection rejected");
-      error.status = 2;
-      error.stdout = JSON.stringify({ ok: false, status: 400, error: "invalid capability" });
-      throw error;
-    });
-    try {
-      let captured = null;
-      withProjectionEnvironment(runSlug, () => {
-        assert.throws(
-          () => finalizeReportTool.handler({ target_domain: domain }),
-          (error) => {
-            captured = error;
-            return /projection rejected: invalid capability/.test(error.message);
-          },
-        );
-      });
-      assert.equal(captured.details.code, "projection_rejected");
-      assert.equal(captured.details.retryable, false);
-      assert.equal(captured.details.child_status, 2);
-      assert.equal(readFinalizationReceipt(domain, { required: false }), null);
-    } finally {
-      restoreProjection();
-    }
-  });
-});
-
-test("hosted finalization rejects an unknown dispatch kind before projection", async () => {
-  await withTempHome(async () => {
-    const domain = "projection-kind.example.com";
-    const runSlug = "run-projection-kind";
-    drivePipelineToReportWritten(domain);
-    let calls = 0;
-    const restoreProjection = finalizeReportTool._setProjectionProcessForTest(() => {
-      calls += 1;
-      throw new Error("projection must not run");
-    });
-    try {
-      withProjectionEnvironment(runSlug, () => {
-        process.env.BOB_RUN_KIND = "scan";
-        assert.throws(
-          () => finalizeReportTool.handler({ target_domain: domain }),
-          /BOB_RUN_KIND is not assessment or retest/,
-        );
-      });
-      assert.equal(calls, 0);
-      assert.equal(readFinalizationReceipt(domain, { required: false }), null);
-    } finally {
-      restoreProjection();
-    }
-  });
-});
-
-test("successful projection writes the receipt last and identical replay skips the POST", async () => {
+test("MCP finalization stays network-inert under hosted environment and replays locally", async () => {
   await withTempHome(async () => {
     const domain = "projection-success.example.com";
     const runSlug = "run-projection-success";
     drivePipelineToReportWritten(domain);
-    let calls = 0;
-    let postedPayload = null;
-    let projectionDirectory = null;
-    const restoreProjection = finalizeReportTool._setProjectionProcessForTest((_executable, argv, options) => {
-      calls += 1;
-      assert.equal(argv[0], path.join(__dirname, "..", "scripts", "project-findings.js"));
-      postedPayload = JSON.parse(fs.readFileSync(argv[1], "utf8"));
-      projectionDirectory = path.dirname(argv[1]);
-      assert.equal(options.killSignal, "SIGKILL");
-      assert.equal(options.maxBuffer, 1024 * 1024);
-      assert.deepEqual(options.env, {
-        BOB_PROJECTION_URL: "https://projection.example/api/findings",
-        HOME: os.tmpdir(),
-        NODE_ENV: "production",
-        PATH: process.env.PATH || "/usr/bin:/bin",
-        RUNNER_SECRET: "runner-shared-secret",
-      });
-      return `${JSON.stringify({
-        ok: true,
-        status: 200,
-        result: {
-          projected: 1,
-          reopened: 0,
-          closed: 0,
-          duplicate: false,
-        },
-        attempts: 1,
-      })}\n`;
+    const first = withProjectionEnvironment(runSlug, () => (
+      JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
+    ));
+    const stored = readFinalizationReceipt(domain);
+    assert.equal(stored.receipt.runSlug, runSlug);
+    assert.equal(stored.receipt.reportSlug, `${runSlug}-report`);
+    assert.deepEqual(stored.receipt.projection, {
+      required: false,
+      succeeded: false,
+      duplicate: false,
+      projected: 0,
+      reopened: 0,
+      closed: 0,
     });
-    try {
-      const first = withProjectionEnvironment(runSlug, () => (
-        JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
-      ));
-      assert.equal(calls, 1);
-      assert.equal(postedPayload.runSlug, runSlug);
-      assert.equal(postedPayload.reportSlug, `${runSlug}-report`);
-      assert.equal(postedPayload.projectionKey, "projection-capability");
-      assert.equal(fs.existsSync(projectionDirectory), false);
+    assert.equal(stored.receipt.artifact.emitted, true);
+    assert.equal(stored.receipt.artifact.findingCount, 1);
+    assert.deepEqual(stored.receipt.consoleReport.findings, []);
+    assert.deepEqual(first.finalization_receipt, stored.receipt);
 
-      const stored = readFinalizationReceipt(domain);
-      assert.equal(stored.receipt.runSlug, runSlug);
-      assert.equal(stored.receipt.reportSlug, `${runSlug}-report`);
-      assert.deepEqual(stored.receipt.projection, {
-        required: true,
-        succeeded: true,
-        duplicate: false,
-        projected: 1,
-        reopened: 0,
-        closed: 0,
-      });
-      assert.equal(stored.receipt.artifact.emitted, true);
-      assert.equal(stored.receipt.artifact.findingCount, 1);
-      assert.equal(stored.receipt.consoleReport.findings.length, 1);
-      assert.equal(
-        JSON.stringify(stored.receipt).includes("projection-capability"),
-        false,
+    let projectedRequest = null;
+    const hostedReceipt = await withProjectionEnvironment(runSlug, () => (
+      runnerEntrypoint.projectHostedFindings({
+        runSlug,
+        targetDomain: domain,
+        kind: "assessment",
+        retestOf: [],
+      }, stored.receipt, async (request) => {
+        projectedRequest = request;
+        return {
+          ok: true,
+          status: 200,
+          result: { projected: 1, reopened: 0, closed: 0, duplicate: false },
+        };
+      })
+    ));
+    assert.equal(projectedRequest.secret, "runner-shared-secret");
+    assert.equal(projectedRequest.payload.projectionKey, "P".repeat(43));
+    assert.equal(hostedReceipt.projection.required, true);
+    assert.equal(hostedReceipt.projection.succeeded, true);
+    assert.equal(hostedReceipt.consoleReport.findings.length, 1);
+
+    const replay = withProjectionEnvironment(runSlug, () => (
+      JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
+    ));
+    assert.equal(replay.replayed, true);
+    assert.equal(readReportSnapshots(domain).length, 1);
+
+    withProjectionEnvironment("different-run", () => {
+      assert.throws(
+        () => finalizeReportTool.handler({ target_domain: domain }),
+        /completed finalization receipt conflicts with current identity/,
       );
-      assert.equal(
-        JSON.stringify(stored.receipt).includes("GET /api/billing/1 returns another tenant payload"),
-        false,
-      );
-      assert.deepEqual(first.finalization_receipt, stored.receipt);
-
-      const replay = withProjectionEnvironment(runSlug, () => (
-        JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
-      ));
-      assert.equal(replay.replayed, true);
-      assert.equal(calls, 1);
-      assert.equal(readReportSnapshots(domain).length, 1);
-
-      withProjectionEnvironment("different-run", () => {
-        assert.throws(
-          () => finalizeReportTool.handler({ target_domain: domain }),
-          /completed finalization receipt conflicts with current identity/,
-        );
-      });
-      assert.equal(calls, 1);
-    } finally {
-      restoreProjection();
-    }
+    });
   });
 });
 
-test("clean hosted scan writes an honest zero-finding completion receipt", async () => {
+test("clean hosted-shaped finalization writes an honest local zero-finding receipt", async () => {
   await withTempHome(async () => {
     const domain = "projection-clean.example.com";
     const runSlug = "run-projection-clean";
     driveCleanPipelineToReportWritten(domain);
-    const restoreProjection = finalizeReportTool._setProjectionProcessForTest(() => (
-      `${JSON.stringify({
-        ok: true,
-        status: 200,
-        result: {
-          projected: 0,
-          reopened: 0,
-          closed: 0,
-          duplicate: false,
-        },
-        attempts: 1,
-      })}\n`
+    const response = withProjectionEnvironment(runSlug, () => (
+      JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
     ));
-    try {
-      const response = withProjectionEnvironment(runSlug, () => (
-        JSON.parse(finalizeReportTool.handler({ target_domain: domain }))
-      ));
-      const stored = readFinalizationReceipt(domain);
-      assert.equal(response.artifact.emitted, false);
-      assert.deepEqual(stored.receipt.artifact, {
-        emitted: false,
-        sha256: null,
-        findingCount: 0,
-      });
-      assert.deepEqual(stored.receipt.consoleReport.findings, []);
-      assert.deepEqual(stored.receipt.projection, {
-        required: true,
-        succeeded: true,
-        duplicate: false,
-        projected: 0,
-        reopened: 0,
-        closed: 0,
-      });
-      assert.equal(fs.existsSync(findingArtifactPath(domain)), false);
-    } finally {
-      restoreProjection();
-    }
+    const stored = readFinalizationReceipt(domain);
+    assert.equal(response.artifact.emitted, false);
+    assert.deepEqual(stored.receipt.artifact, {
+      emitted: false,
+      sha256: null,
+      findingCount: 0,
+    });
+    assert.deepEqual(stored.receipt.consoleReport.findings, []);
+    assert.equal(stored.receipt.projection.required, false);
+    assert.equal(fs.existsSync(findingArtifactPath(domain)), false);
   });
 });
 

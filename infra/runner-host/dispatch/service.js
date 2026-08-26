@@ -354,7 +354,11 @@ function createConvexControlPlaneSink({ url, secret, clientFactory } = {}) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const events = await client.query("runs:events", { slug: effectiveUpdate.runSlug });
       if (events.some((candidate) => candidate && candidate.eventHash === eventHash)) return;
-      const seq = events.reduce((highest, candidate) => Math.max(highest, candidate.seq), 0) + 1;
+      const seq = events.reduce((highest, candidate) => (
+        Number.isSafeInteger(candidate?.seq) && candidate.seq >= 0
+          ? Math.max(highest, candidate.seq)
+          : highest
+      ), 0) + 1;
       if (!Number.isSafeInteger(seq)) throw new Error("control-plane event sequence overflow");
       try {
         await client.mutation("runs:appendEvent", {
@@ -1113,35 +1117,37 @@ function createService({
     }
   }
 
+  const controlPlaneDeliveries = new Set();
+
   async function deliverControlPlane(record, update) {
+    if (controlPlaneDeliveries.has(record.idempotencyKey)) return false;
+    controlPlaneDeliveries.add(record.idempotencyKey);
     let failure = null;
-    for (let attempt = 0; attempt <= CONTROL_RETRY_DELAYS_MS.length; attempt += 1) {
-      if (attempt > 0) await delay(CONTROL_RETRY_DELAYS_MS[attempt - 1]);
-      try {
-        await callControlPlane(update);
-        record.controlPlanePending = null;
-        persist(record, "control_plane_delivered");
-        return true;
-      } catch (error) {
-        failure = error;
+    try {
+      for (let attempt = 0; attempt <= CONTROL_RETRY_DELAYS_MS.length; attempt += 1) {
+        if (attempt > 0) await delay(CONTROL_RETRY_DELAYS_MS[attempt - 1]);
+        try {
+          await callControlPlane(update);
+          record.controlPlanePending = null;
+          persist(record, "control_plane_delivered");
+          return true;
+        } catch (error) {
+          failure = error;
+        }
       }
+      record.controlPlanePending = update;
+      persist(record, "control_plane_pending");
+      return failure === null ? true : false;
+    } finally {
+      controlPlaneDeliveries.delete(record.idempotencyKey);
     }
-    record.controlPlanePending = update;
-    persist(record, "control_plane_pending");
-    return failure === null ? true : false;
   }
 
   async function retryPending() {
     retryReconciliation();
     for (const record of ledger.values()) {
-      if (!record.controlPlanePending) continue;
-      try {
-        await callControlPlane(record.controlPlanePending);
-        record.controlPlanePending = null;
-        persist(record, "control_plane_delivered");
-      } catch {
-        // Keep the existing non-secret pending update for the next minute.
-      }
+      if (!record.controlPlanePending || controlPlaneDeliveries.has(record.idempotencyKey)) continue;
+      await deliverControlPlane(record, record.controlPlanePending);
     }
   }
 

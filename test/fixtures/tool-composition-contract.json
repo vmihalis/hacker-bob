@@ -5500,7 +5500,7 @@
     },
     {
       "name": "bob_finalize_report",
-      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Completion is immutable once the hash-verified finalization receipt is written; identical redelivery returns that receipt without appending another snapshot or repeating projection.",
+      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Completion is immutable once the hash-verified finalization receipt is written; identical redelivery returns that receipt without appending another snapshot. Hosted projection is performed by the trusted runner parent after this tool completes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -17126,7 +17126,7 @@
     },
     {
       "name": "bob_finalize_report",
-      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Completion is immutable once the hash-verified finalization receipt is written; identical redelivery returns that receipt without appending another snapshot or repeating projection.",
+      "description": "Finalize the canonical session report.md by appending a hash-bound ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream hashes (claim_freeze_hash, final_verification_hash, evidence_hash, grade_verdict_hash) plus the report.md content hash, and when report.md cites proof_bundle refs it also binds proof-bundles.json. Refuses if any required upstream artifact is missing. Completion is immutable once the hash-verified finalization receipt is written; identical redelivery returns that receipt without appending another snapshot. Hosted projection is performed by the trusted runner parent after this tool completes.",
       "inputSchema": {
         "type": "object",
         "properties": {

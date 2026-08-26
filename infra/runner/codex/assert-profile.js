@@ -17,8 +17,11 @@ const EXPECTED_CODEX_VERSION = "0.149.1";
 const FORBIDDEN_MCP_ENV = Object.freeze([
   "BOB_CONVEX_URL",
   "BOB_PAYLOAD_JSON",
+  "BOB_PROJECTION_KEY",
+  "BOB_PROJECTION_URL",
   "DEEPSEEK_API_KEY",
   "OPENAI_API_KEY",
+  "RUNNER_SECRET",
 ]);
 
 function waitForExit(child, timeoutMs) {
@@ -88,9 +91,6 @@ async function assertEffectiveToolSurface() {
         BOB_REPORT_SLUG: "run-profile-assertion-report",
         BOB_RUN_KIND: "assessment",
         BOB_RETEST_OF: "",
-        BOB_PROJECTION_URL: "https://projection.example/api/findings",
-        BOB_PROJECTION_KEY: "P".repeat(43),
-        RUNNER_SECRET: "runner-secret-assertion",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -180,8 +180,9 @@ async function main() {
     OPENAI_API_KEY: "unused-openai-secret",
   });
   for (const name of FORBIDDEN_MCP_ENV) assert.equal(Object.hasOwn(sanitized, name), false);
-  assert.equal(sanitized.RUNNER_SECRET, "runner-secret");
-  assert.equal(sanitized.BOB_PROJECTION_KEY, "P".repeat(43));
+  assert.equal(sanitized.RUNNER_SECRET, undefined);
+  assert.equal(sanitized.BOB_PROJECTION_KEY, undefined);
+  assert.equal(sanitized.BOB_PROJECTION_URL, undefined);
 
   const toolCount = await assertEffectiveToolSurface();
   process.stdout.write(`bob Codex profile verified (${toolCount} Bob tools)\n`);

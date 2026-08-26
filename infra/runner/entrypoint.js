@@ -4,6 +4,12 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const {
+  buildProjectionPayload,
+} = require("../../mcp/projection-payload.js");
+const {
+  postProjection,
+} = require("../../mcp/projection-client.js");
 
 const PAYLOAD_MAX_BYTES = 32 * 1024;
 const STDERR_TAIL_MAX_BYTES = 2 * 1024;
@@ -19,13 +25,10 @@ const PROJECTION_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
 const CODEX_FORWARD_ENVIRONMENT = Object.freeze([
   "DEEPSEEK_API_KEY",
   "BOB_SESSIONS_ROOT",
-  "BOB_PROJECTION_URL",
   "BOB_RUN_SLUG",
-  "BOB_PROJECTION_KEY",
   "BOB_RUN_KIND",
   "BOB_RETEST_OF",
   "BOB_REPORT_SLUG",
-  "RUNNER_SECRET",
 ]);
 
 const PAYLOAD_KEYS = Object.freeze([
@@ -501,12 +504,8 @@ function verifyFinalizationReceipt(payload) {
   if (receipt.runSlug !== payload.runSlug) throw new Error("finalization receipt runSlug mismatch");
   if (receipt.targetDomain !== payload.targetDomain) throw new Error("finalization receipt targetDomain mismatch");
   if (receipt.reportSlug !== expectedReportSlug) throw new Error("finalization receipt reportSlug mismatch");
-  const projectionRequired = Boolean(process.env.BOB_PROJECTION_URL);
-  if (receipt.projection.required !== projectionRequired) {
-    throw new Error("finalization receipt projection requirement mismatch");
-  }
-  if (receipt.projection.required && !receipt.projection.succeeded) {
-    throw new Error("finalization receipt does not prove successful projection");
+  if (receipt.projection.required || receipt.projection.succeeded) {
+    throw new Error("the untrusted MCP process must not perform hosted projection");
   }
 
   const directory = sessionDirectory(payload.targetDomain);
@@ -545,6 +544,55 @@ function verifyFinalizationReceipt(payload) {
     throw new Error("finding artifact count does not match receipt");
   }
   return receipt;
+}
+
+function successfulProjectionReceipt(summary) {
+  if (!summary || summary.ok !== true || !summary.result || typeof summary.result !== "object") {
+    throw new Error(`hosted projection was rejected: ${summary?.error || "no committed result"}`);
+  }
+  const counts = {};
+  for (const field of ["projected", "reopened", "closed"]) {
+    const value = summary.result[field];
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`hosted projection returned an invalid ${field} count`);
+    }
+    counts[field] = value;
+  }
+  return {
+    required: true,
+    succeeded: true,
+    duplicate: summary.result.duplicate === true,
+    ...counts,
+  };
+}
+
+async function projectHostedFindings(payload, receipt, poster = postProjection) {
+  const projectionKey = requiredEnvironment("BOB_PROJECTION_KEY");
+  if (!PROJECTION_KEY_RE.test(projectionKey)) throw new Error("BOB_PROJECTION_KEY has an invalid format");
+  const { payload: projectionPayload, assembled } = buildProjectionPayload(payload.targetDomain, {
+    runSlug: payload.runSlug,
+    projectionKey,
+    reportSlug: `${payload.runSlug}-report`,
+    kind: payload.kind,
+    retestOf: payload.retestOf,
+  });
+  if (assembled.emitted !== receipt.artifact.emitted || assembled.reportableCount !== receipt.artifact.findingCount) {
+    throw new Error("projection artifact does not match the finalization receipt");
+  }
+  const summary = await poster({
+    url: requiredEnvironment("BOB_PROJECTION_URL"),
+    secret: requiredEnvironment("RUNNER_SECRET"),
+    payload: projectionPayload,
+  });
+  return {
+    ...receipt,
+    projection: successfulProjectionReceipt(summary),
+    consoleReport: {
+      schemaVersion: 1,
+      domain: payload.targetDomain,
+      findings: projectionPayload.findings.filter((finding) => finding.open === true),
+    },
+  };
 }
 
 function pbkdf2Hash(password, saltHex, iterations) {
@@ -597,6 +645,8 @@ function redactFailure(value) {
 async function main({
   clientFactory = makeConvexClient,
   spawnFactory = spawn,
+  projector = projectHostedFindings,
+  projectionPoster = postProjection,
   clock = () => Date.now(),
   delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
@@ -669,6 +719,7 @@ async function main({
     }
 
     const receipt = verifyFinalizationReceipt(payload);
+    const hostedReceipt = await projector(payload, receipt, projectionPoster);
     const sealedAt = clock();
     await transitionRun(client, secret, payload.runSlug, "sealing", "report");
     tracker = await appendLifecycleEvent(client, secret, payload.runSlug, tracker, {
@@ -677,14 +728,14 @@ async function main({
       phase: "report",
       message: "The finalization receipt was verified.",
     }, clock);
-    const report = await completeHostedRun(client, secret, payload, receipt, sealedAt);
+    const report = await completeHostedRun(client, secret, payload, hostedReceipt, sealedAt);
     completionCommitted = true;
     exitCode = 0;
     console.log(JSON.stringify({
       status: "done",
       runSlug: payload.runSlug,
       reportSlug: report.slug,
-      findingCount: receipt.consoleReport.findings.length,
+      findingCount: hostedReceipt.consoleReport.findings.length,
     }));
   } catch (error) {
     if (client && payload && secret && !completionCommitted) {
@@ -738,6 +789,7 @@ module.exports = Object.freeze({
   initialToolCall,
   main,
   parsePayloadJson,
+  projectHostedFindings,
   redactFailure,
   runSpawnedRunner,
   resumeLifecycleTracker,

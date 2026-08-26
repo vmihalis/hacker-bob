@@ -4,7 +4,7 @@ This inventory is the post-N1, pre-DIP structural-debt baseline for the physical
 
 ## Census
 
-- The walk holds **603 `.js` files** — **544 core, 59 plane** — and **3032 `require()` call sites**.
+- The walk holds **603 `.js` files** — **544 core, 59 plane** — and **3028 `require()` call sites**.
 - **21** of those edges run core -> plane, from **8 distinct core files**.
 - **0** call sites have a computed specifier.
 - **17** edges leave the walk root; **7** of them run from core into a plane-named package.

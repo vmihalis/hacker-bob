@@ -258,8 +258,6 @@ test("MCP launcher exposes only the runner capability environment", () => {
     DEEPSEEK_API_KEY: "model-secret",
   });
   assert.deepEqual(Object.keys(environment).sort(), [
-    "BOB_PROJECTION_KEY",
-    "BOB_PROJECTION_URL",
     "BOB_REPORT_SLUG",
     "BOB_RETEST_OF",
     "BOB_RUN_KIND",
@@ -269,12 +267,14 @@ test("MCP launcher exposes only the runner capability environment", () => {
     "NODE_ENV",
     "PATH",
     "PLAYWRIGHT_BROWSERS_PATH",
-    "RUNNER_SECRET",
   ]);
   assert.equal(environment.PLAYWRIGHT_BROWSERS_PATH, "/opt/ms-playwright");
   assert.equal(JSON.stringify(environment).includes("model-secret"), false);
   assert.equal(Object.hasOwn(environment, "BOB_CONVEX_URL"), false);
   assert.equal(Object.hasOwn(environment, "BOB_PAYLOAD_JSON"), false);
+  assert.equal(Object.hasOwn(environment, "RUNNER_SECRET"), false);
+  assert.equal(Object.hasOwn(environment, "BOB_PROJECTION_KEY"), false);
+  assert.equal(Object.hasOwn(environment, "BOB_PROJECTION_URL"), false);
 });
 
 test("Codex wrapper suppresses child output and uses the pinned headless invocation", async (t) => {
@@ -403,9 +403,6 @@ test("pinned Codex request reaches DeepSeek with only real Bob MCP tools", {
         BOB_REPORT_SLUG: "runner-contract-1234-report",
         BOB_RUN_KIND: "assessment",
         BOB_RETEST_OF: "",
-        BOB_PROJECTION_URL: "https://projection.example/api/findings",
-        BOB_PROJECTION_KEY: "Q".repeat(43),
-        RUNNER_SECRET: "runner-contract-secret",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
