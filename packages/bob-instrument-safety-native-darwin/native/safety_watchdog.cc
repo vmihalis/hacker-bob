@@ -2748,7 +2748,12 @@ int WatchdogMain() {
   }
   uint64_t deadline =
       arm_issued + config.deadman_ms * kNanosecondsPerMillisecond;
-  const AbsoluteDeadline arm_write_deadline = {deadline, true};
+  // Bound this exchange by the earlier absolute deadline.
+  const AbsoluteDeadline arm_write_deadline = {
+      custody.startup_deadline.valid &&
+              deadline < custody.startup_deadline.expires
+          ? deadline : custody.startup_deadline.expires,
+      custody.startup_deadline.valid};
   std::vector<std::string> arm_acceptance;
   if (!SendCustodyArm(config, custody, custody_command_key,
                       custody_evidence_key, arm_issued, deadline,
