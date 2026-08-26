@@ -727,8 +727,30 @@ async function main({
     client = await clientFactory(runtimeEnvironment);
     tracker = await resumeLifecycleTracker(client, payload.runSlug);
     sequenceInitialized = true;
-    await transitionRun(client, secret, payload.runSlug, "provisioning", "setup");
-    await transitionRun(client, secret, payload.runSlug, "running", "open frontier");
+    const provisioning = await transitionRun(client, secret, payload.runSlug, "provisioning", "setup");
+    if (provisioning.status === "sealed") {
+      completionCommitted = true;
+      exitCode = 0;
+      console.log(JSON.stringify({
+        status: "done",
+        runSlug: payload.runSlug,
+        reportSlug: `${payload.runSlug}-report`,
+        resumed: true,
+      }));
+      return exitCode;
+    }
+    const running = await transitionRun(client, secret, payload.runSlug, "running", "open frontier");
+    if (running.status === "sealed") {
+      completionCommitted = true;
+      exitCode = 0;
+      console.log(JSON.stringify({
+        status: "done",
+        runSlug: payload.runSlug,
+        reportSlug: `${payload.runSlug}-report`,
+        resumed: true,
+      }));
+      return exitCode;
+    }
 
     const child = spawnFactory(
       "node",
