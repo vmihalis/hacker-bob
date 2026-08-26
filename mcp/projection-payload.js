@@ -207,7 +207,10 @@ function safeRouteTemplate(endpoint) {
   let query = "";
   try {
     const parsed = new URL(normalized);
-    hostPath = `${parsed.host}${parsed.pathname}`;
+    // The continuity asset key is the canonical target domain, not a socket.
+    // Dropping an explicit port here prevents domain/host mismatches from
+    // prefixing the domain twice in fingerprintRouteTemplate.
+    hostPath = `${parsed.hostname}${parsed.pathname}`;
     query = parsed.search;
   } catch {
     const queryIndex = normalized.indexOf("?");

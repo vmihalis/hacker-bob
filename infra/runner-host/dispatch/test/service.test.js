@@ -19,6 +19,7 @@ const {
   dockerLaunchSpec,
   repositorySelector,
   prepareRepository,
+  removePreparedRepository,
   validatePayload,
 } = require("../service.js");
 const {
@@ -409,16 +410,23 @@ test("service rejects noncanonical or non-TLS runner endpoints before startup", 
   }
 });
 
-test("repository preflight fetches and verifies the exact commit in a mode-0700 run directory", async (t) => {
+test("repository preflight verifies the exact commit and seals a runner-readable tree", async (t) => {
   const dirs = tempDirs();
-  t.after(() => fs.rmSync(dirs.root, { recursive: true, force: true }));
   fs.mkdirSync(dirs.runsDir, { recursive: true });
   const payload = repoPayload();
   const record = { payload, runSlug: payload.runSlug };
+  t.after(() => {
+    removePreparedRepository(path.join(dirs.runsDir, record.runSlug));
+    fs.rmSync(dirs.root, { recursive: true, force: true });
+  });
   const calls = [];
   await prepareRepository(record, dirs.runsDir, (command, args, options) => {
     calls.push({ command, args, options });
-    if (args[0] === "init") fs.mkdirSync(args.at(-1), { recursive: true });
+    if (args[0] === "init") {
+      fs.mkdirSync(path.join(args.at(-1), "nested"), { recursive: true });
+      fs.writeFileSync(path.join(args.at(-1), "nested", "plain.js"), "plain\n", { mode: 0o600 });
+      fs.writeFileSync(path.join(args.at(-1), "run.sh"), "#!/bin/sh\n", { mode: 0o700 });
+    }
     return {
       status: 0,
       stdout: args.includes("rev-parse") ? `${payload.sourceRef}\n` : "",
@@ -432,7 +440,13 @@ test("repository preflight fetches and verifies the exact commit in a mode-0700 
   assert.ok(calls.every((call) => call.options.timeout === 2 * 60 * 1000));
   assert.ok(calls.every((call) => call.options.killSignal === "SIGKILL"));
   assert.equal(fs.statSync(record.runRoot).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(record.repoPath).mode & 0o777, 0o555);
+  assert.equal(fs.statSync(path.join(record.repoPath, "nested")).mode & 0o777, 0o555);
+  assert.equal(fs.statSync(path.join(record.repoPath, "nested", "plain.js")).mode & 0o777, 0o444);
+  assert.equal(fs.statSync(path.join(record.repoPath, "run.sh")).mode & 0o777, 0o555);
   assert.equal(record.repoPath, path.join(record.runRoot, "target-repo"));
+  removePreparedRepository(record.runRoot);
+  assert.equal(fs.existsSync(record.runRoot), false);
 });
 
 test("repo preflight completes before spawn and per-run secrets are cleared after exit", async (t) => {
@@ -525,6 +539,25 @@ test("streaming logs redact a secret split across stdout and stderr", async (t) 
 
   const logPath = path.join(harness.dirs.logsDir, `${payload.runId}.log`);
   assert.equal(fs.readFileSync(logPath, "utf8"), "[REDACTED]\n");
+});
+
+test("stderr interleaving cannot expose a secret split across stdout chunks", async (t) => {
+  const harness = makeHarness(t);
+  const payload = validPayload();
+  accept(harness.service, payload);
+  const child = harness.spawned[0].child;
+  const split = Math.floor(RUNNER_SECRET.length / 2);
+  child.stdout.write(RUNNER_SECRET.slice(0, split));
+  child.stderr.write("stderr between stdout chunks\n");
+  child.stdout.write(`${RUNNER_SECRET.slice(split)}\n`);
+  child.finish(0);
+  await harness.service.flush();
+
+  const logPath = path.join(harness.dirs.logsDir, `${payload.runId}.log`);
+  const log = fs.readFileSync(logPath, "utf8");
+  assert.doesNotMatch(log, new RegExp(RUNNER_SECRET, "u"));
+  assert.match(log, /\[REDACTED\]/u);
+  assert.match(log, /stderr between stdout chunks/u);
 });
 
 test("runner logs are bounded per run without buffering discarded output", async (t) => {

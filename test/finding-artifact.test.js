@@ -181,6 +181,10 @@ test("safeRouteTemplate generalizes path ids and preserves sorted query-key plac
     "example.com/api/health",
   );
   assert.equal(
+    safeRouteTemplate("https://example.com:8080/api/health"),
+    "example.com/api/health",
+  );
+  assert.equal(
     safeRouteTemplate("example.com/orders/123?z=secret&a=private"),
     "example.com/orders/{param}?a=*&z=*",
   );
@@ -210,6 +214,10 @@ test("fingerprint v1 separates continuity tuples while correlating concrete path
   assert.equal(
     first,
     fingerprintV1({ ...web, endpoint: "/api/orders/67890?expand=private" }),
+  );
+  assert.equal(
+    first,
+    fingerprintV1({ ...web, endpoint: "https://example.com:8080/api/orders/67890?expand=private" }),
   );
   assert.notEqual(first, fingerprintV1({ ...web, endpoint: "https://example.com/api/orders/12345?view=items" }));
   assert.notEqual(first, fingerprintV1({ ...web, requestMethod: "POST" }));
@@ -771,7 +779,7 @@ test("postProjection retries transient failures, fails fast on rejection, and ho
   const flaky = async () => {
     calls.push(1);
     if (calls.length < 3) return new Response(null, { status: 503 });
-    return new Response(JSON.stringify({ projected: 1 }), { status: 200 });
+    return new Response(JSON.stringify({ projected: 1, reopened: 0, closed: 0 }), { status: 200 });
   };
   const recovered = await postProjection({
     url: "https://projection.invalid/api/findings",
@@ -793,6 +801,41 @@ test("postProjection retries transient failures, fails fast on rejection, and ho
   assert.equal(rejected.ok, false);
   assert.equal(rejected.status, 400);
   assert.equal(rejected.attempts, 1);
+
+  for (const transientStatus of [408, 425, 429]) {
+    let transientCalls = 0;
+    const transient = await postProjection({
+      url: "https://projection.invalid/api/findings",
+      secret: "secret",
+      payload: { findings: [] },
+      fetchImpl: async () => {
+        transientCalls += 1;
+        if (transientCalls === 1) return new Response(null, { status: transientStatus });
+        return new Response(
+          JSON.stringify({ projected: 0, reopened: 0, closed: 0 }),
+          { status: 200 },
+        );
+      },
+      maxAttempts: 2,
+      initialDelayMs: 1,
+    });
+    assert.equal(transient.ok, true);
+    assert.equal(transient.attempts, 2);
+  }
+
+  for (const invalidBody of ["", "not-json", JSON.stringify({ projected: 1 })]) {
+    const invalidSuccess = await postProjection({
+      url: "https://projection.invalid/api/findings",
+      secret: "secret",
+      payload: { findings: [] },
+      fetchImpl: async () => new Response(invalidBody, { status: 200 }),
+      maxAttempts: 2,
+      initialDelayMs: 1,
+    });
+    assert.equal(invalidSuccess.ok, false);
+    assert.equal(invalidSuccess.status, 200);
+    assert.equal(invalidSuccess.attempts, 1);
+  }
 
   await assert.rejects(
     () => postProjection({
@@ -838,16 +881,16 @@ test("postProjection retries transient failures, fails fast on rejection, and ho
     /response body aborted/,
   );
 
-  await assert.rejects(
-    () => postProjection({
+  const oversizedSuccess = await postProjection({
       url: "https://projection.invalid/api/findings",
       secret: "secret",
       payload: { findings: [] },
       fetchImpl: async () => new Response("x".repeat(64 * 1024 + 1), { status: 200 }),
       maxAttempts: 1,
-    }),
-    /response exceeds 65536 bytes/,
-  );
+    });
+  assert.equal(oversizedSuccess.ok, false);
+  assert.equal(oversizedSuccess.status, 200);
+  assert.equal(oversizedSuccess.attempts, 1);
 
   let fetched = false;
   await assert.rejects(

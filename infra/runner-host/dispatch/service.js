@@ -467,6 +467,40 @@ function ensurePrivateDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(directory, 0o700);
 }
+
+function sealRepositoryForRunner(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      sealRepositoryForRunner(entryPath);
+      continue;
+    }
+    if (entry.isFile()) {
+      const mode = fs.statSync(entryPath).mode;
+      fs.chmodSync(entryPath, mode & 0o111 ? 0o555 : 0o444);
+      continue;
+    }
+    if (!entry.isSymbolicLink()) {
+      throw new Error("repository preflight produced an unsupported file type");
+    }
+  }
+  // The run root stays mode 0700 on the host. Docker bind-mounts this exact
+  // directory, so only the pinned container UID needs traversal beneath it.
+  fs.chmodSync(directory, 0o555);
+}
+
+function removePreparedRepository(runRoot) {
+  if (!fs.existsSync(runRoot)) return;
+  const restoreDirectoryWrites = (directory) => {
+    fs.chmodSync(directory, 0o700);
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) restoreDirectoryWrites(path.join(directory, entry.name));
+    }
+  };
+  restoreDirectoryWrites(runRoot);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+}
+
 function syncDirectory(directory) {
   const fd = fs.openSync(directory, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
   try {
@@ -735,7 +769,7 @@ function runGit(spawnFn, args, timeoutMs) {
 async function prepareRepository(record, runsDir, spawnFn, commandTimeoutMs = REPOSITORY_COMMAND_TIMEOUT_MS) {
   const runRoot = path.join(runsDir, record.runSlug);
   const repoPath = path.join(runRoot, "target-repo");
-  fs.rmSync(runRoot, { recursive: true, force: true });
+  removePreparedRepository(runRoot);
   ensurePrivateDirectory(runRoot);
   try {
     await runGit(spawnFn, ["init", "--quiet", repoPath], commandTimeoutMs);
@@ -744,10 +778,11 @@ async function prepareRepository(record, runsDir, spawnFn, commandTimeoutMs = RE
     await runGit(spawnFn, ["-C", repoPath, "checkout", "--quiet", "--detach", "FETCH_HEAD"], commandTimeoutMs);
     const resolved = await runGit(spawnFn, ["-C", repoPath, "rev-parse", "HEAD"], commandTimeoutMs);
     if (resolved !== record.payload.sourceRef) throw new Error("repository preflight resolved a different commit");
+    sealRepositoryForRunner(repoPath);
     record.runRoot = runRoot;
     record.repoPath = repoPath;
   } catch (error) {
-    fs.rmSync(runRoot, { recursive: true, force: true });
+    removePreparedRepository(runRoot);
     throw error;
   }
 }
@@ -1015,9 +1050,9 @@ function createService({
     (record) => prepareRepository(record, runsDir, spawnProcessFn, repositoryCommandTimeoutMs)
   );
   const cleanupRepo = cleanupRepositoryFn || ((record) => {
-    if (record.runRoot) fs.rmSync(record.runRoot, { recursive: true, force: true });
+    if (record.runRoot) removePreparedRepository(record.runRoot);
     else if (record.targetKind === "repo") {
-      fs.rmSync(path.join(runsDir, record.runSlug), { recursive: true, force: true });
+      removePreparedRepository(path.join(runsDir, record.runSlug));
     }
   });
 
@@ -1155,19 +1190,24 @@ function createService({
       logBytes = maxLogBytes;
       logTruncated = true;
     };
+    // Redact each pipe independently so stderr interleaving cannot break a
+    // literal split across stdout chunks. Feed both into a final redactor so a
+    // literal split across the two pipes is also never persisted.
     const output = createStreamingRedactor(literals, write);
-    const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
-    const onStdout = (chunk) => output.push(stdoutDecoder.write(chunk));
-    const onStderr = (chunk) => output.push(stderrDecoder.write(chunk));
+    const stdoutOutput = createStreamingRedactor(literals, (text) => output.push(text));
+    const stderrOutput = createStreamingRedactor(literals, (text) => output.push(text));
+    const onStdout = (chunk) => stdoutOutput.push(chunk);
+    const onStderr = (chunk) => stderrOutput.push(chunk);
     child.stdout?.on("data", onStdout);
     child.stderr?.on("data", onStderr);
     record.closeLog = () => {
-      output.push(stdoutDecoder.end());
-      output.push(stderrDecoder.end());
+      stdoutOutput.end();
+      stderrOutput.end();
       output.end();
       child.stdout?.off("data", onStdout);
       child.stderr?.off("data", onStderr);
+      stdoutOutput.clear();
+      stderrOutput.clear();
       output.clear();
       literals.fill("");
       try { fs.closeSync(logFd); } catch { /* already closed */ }
@@ -1502,6 +1542,7 @@ module.exports = {
   createStreamingRedactor,
   dockerLaunchSpec,
   prepareRepository,
+  removePreparedRepository,
   repositorySelector,
   runnerPayloadFor,
   validatePayload,
