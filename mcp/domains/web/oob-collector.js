@@ -75,6 +75,7 @@ const {
   urlFromEndpoint,
   assertNoForbiddenInputs,
   sensitiveShapesPresent,
+  mintSensitiveShapeSafeToken,
   SCOPE_VALIDATION_OPTS,
 } = require("./offensive-http-common.js");
 const {
@@ -238,8 +239,8 @@ function normalizeExpect(value) {
 // prefix + 128 bits of hex = a DNS-label-safe ([a-z0-9], <= 63 chars), high-entropy
 // nonce. No metacharacters, never an action verb — the only thing the sink ever
 // keys on.
-function mintToken(prefix) {
-  return `${prefix}${crypto.randomBytes(16).toString("hex")}`;
+function mintToken(prefix, randomBytes = crypto.randomBytes) {
+  return mintSensitiveShapeSafeToken(prefix, { randomBytes });
 }
 
 function notConfirmed(outcome, reason, extra = {}) {
@@ -427,7 +428,7 @@ function resolveInScopeEndpoint(domain, surface, state) {
 
 // ── bob_oob_mint ──────────────────────────────────────────────────────────────
 
-async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
+async function oobMint(args, { config = OOB_CONFIG, clock = Date.now, randomBytes = crypto.randomBytes } = {}) {
   assertNoForbiddenInputs(args, MINT_TOOL_ID, OOB_FORBIDDEN_EXTRAS);
   const domain = assertRequiredText(args.target_domain, "target_domain");
   const surfaceId = assertRequiredText(args.surface_id, "surface_id");
@@ -461,8 +462,8 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
     return notConfirmed("blocked_by_infra", "oob_token_cap_reached", { minted: false });
   }
 
-  const tokenHandle = mintToken("oobh");
-  const token = mintToken("oob");
+  const tokenHandle = mintToken("oobh", randomBytes);
+  const token = mintToken("oob", randomBytes);
   const binding = {
     kind: "binding",
     token_handle: tokenHandle,
