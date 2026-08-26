@@ -522,6 +522,53 @@ test("main resumes when host replay finds the control plane already running", as
   });
 });
 
+test("host replay treats an already sealed run as completed without rerunning", async (t) => {
+  const runPayload = payload({ runSlug: "runner-host-sealed" });
+  await withRunnerEnvironment(runPayload, async () => {
+    const client = recordingClient({
+      statusResult: () => "sealed",
+    });
+    const logs = [];
+    let spawnCalls = 0;
+    t.mock.method(console, "log", (message) => logs.push(String(message)));
+    t.mock.method(console, "error", () => {});
+
+    const code = await entrypoint.main({
+      clientFactory: async () => client,
+      spawnFactory: () => {
+        spawnCalls += 1;
+        return fakeChild();
+      },
+      clock: () => Date.UTC(2026, 7, 25, 12),
+      delay: immediateDelay,
+    });
+
+    assert.equal(code, 0);
+    assert.equal(client.closed, true);
+    assert.equal(spawnCalls, 0);
+    assert.deepEqual(
+      client.calls
+        .filter((call) => call.name === "runs:setStatus")
+        .map((call) => call.args.status),
+      ["provisioning"],
+    );
+    assert.equal(
+      client.calls.some((call) => call.name === "reports:completeHostedRun"),
+      false,
+    );
+    assert.equal(
+      client.calls.some((call) => call.name === "runs:appendEvent"),
+      false,
+    );
+    assert.deepEqual(JSON.parse(logs.at(-1)), {
+      status: "done",
+      runSlug: runPayload.runSlug,
+      reportSlug: `${runPayload.runSlug}-report`,
+      resumed: true,
+    });
+  });
+});
+
 test("hosted completion conflict marks the sealing run failed and closes", async (t) => {
   const runPayload = payload({ runSlug: "runner-completion-conflict" });
   await withRunnerEnvironment(runPayload, async ({ sessionsRoot }) => {
