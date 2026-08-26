@@ -233,21 +233,10 @@ function checkCanonicalPack(rootPackage) {
     }
   }
 
-  // Pack-size budget raised to 3.1 MB to accommodate the kimi adapter family
-  // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
-  // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
-  // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
-  // Raised alongside the capability-layer + native-fuzz surfaces,
-  // measured against the lean tarball (mcp/node_modules excluded from the pack).
-  // Also raised for the container-runner-backed offensive tool surface
-  // (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
-  // channel), then for the provider-neutral physical contract runtime. Mirrors the
-  // test/package.test.js ceiling (keep the two in lockstep).
-  // The 921 KB docs/hacker-bob-social.png (a web/marketing asset never read by the installed
-  // runtime) is excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES). The ceiling is a single
-  // source of truth (CANONICAL_PACKAGE_MAX_BYTES in scripts/lib/package-policy.js) shared with
-  // test/package.test.js so the two cannot drift; it is calibrated to core's full offensive +
-  // sandbox-isolation surface, a larger lean tarball than the public line.
+  // The package ceiling is a single source of truth in package-policy.js and is
+  // shared with package.test.js so release and test gates cannot drift. It is
+  // calibrated against the complete shipped runtime after presentation-only
+  // README media and other explicitly denied authoring artifacts are excluded.
   if (canonical.size < CANONICAL_PACKAGE_MAX_BYTES) {
     pass(`canonical pack size ${canonical.size} bytes is under the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   } else {
