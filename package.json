@@ -190,6 +190,6 @@
     "ws": "^8.18.0"
   },
   "optionalDependencies": {
-    "patchright": "^1.60.2"
+    "patchright": "^1.62.1"
   }
 }
