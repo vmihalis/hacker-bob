@@ -185,7 +185,7 @@
     "@aws-sdk/client-securityhub": "^3.709.0",
     "@babel/parser": "^7.29.7",
     "ajv": "^8.20.0",
-    "proxy-agent": "^8.0.1",
+    "proxy-agent": "^8.0.2",
     "psl": "^1.15.0",
     "ws": "^8.18.0"
   },
