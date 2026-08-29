@@ -18,7 +18,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@actions/core": "^2.0.3",
+    "@actions/core": "^3.0.1",
     "@actions/github": "^8.0.1",
     "@types/node": "^26.3.0",
     "@vercel/ncc": "^0.45.0",
