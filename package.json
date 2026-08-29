@@ -187,7 +187,7 @@
     "ajv": "^8.20.0",
     "proxy-agent": "^8.0.1",
     "psl": "^1.15.0",
-    "ws": "^8.18.0"
+    "ws": "^8.21.3"
   },
   "optionalDependencies": {
     "patchright": "^1.60.2"
