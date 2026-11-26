@@ -1,3 +1,7 @@
+<!-- yarkr:badges:start -->
+[![Indexed on Yarkr](https://api.yarkr.com/functions/v1/api/api/v1/badges/repos/vmihalis/hacker-bob/version.svg)](https://yarkr.com/arks/vmihalis/hacker-bob)
+<!-- yarkr:badges:end -->
+
 <h1 align="center">Hacker Bob</h1>
 
 <p align="center">
@@ -411,6 +415,40 @@ hacker-bob install /path/to/your/project --adapter all
 The installer is idempotent and preserves unrelated host configuration. It writes the shared MCP runtime to `mcp/`, neutral Bob resources to `.hacker-bob/`, and adapter-specific files for the selected host.
 
 Underneath that narrative, the engine drives a strict six-state lifecycle FSM (`SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT`, with defined back-edges so an operator can re-enter `OPEN_FRONTIER` from any later state). The persisted `SessionNucleus` (`session-nucleus.json`) is the sole authority for a session's identity, scope, and lifecycle state; `state.json` is a grant-free READ PROJECTION derived from it, never a second write path; and `session-events.jsonl` is provenance/audit only. A session that predates (or somehow lost) its nucleus gains one exactly once through `migrateLegacySessionAuthority`, and its legacy projection stays readable but grant-free until that migration runs. `bob_read_session_nucleus` and `bob_read_session_summary` both surface a `verified` boolean alongside the nucleus so callers can distinguish a cryptographically verified nucleus from an unverified state-derived fallback.
+
+<!-- yarkr:install:start -->
+### Install with Yarkr
+
+This repo is indexed on [Yarkr](https://yarkr.com/arks/vmihalis/hacker-bob) as the ark [vmihalis/hacker-bob](https://yarkr.com/arks/vmihalis/hacker-bob), so its skills install into Claude Code, Codex, Cursor and other agent harnesses with one command.
+
+#### CLI
+
+Install the whole ark, which Yarkr keeps equal to this repo:
+
+```bash
+npx yarkr-cli sync vmihalis/hacker-bob
+```
+
+Or add individual skills:
+
+```bash
+npx yarkr-cli add skill:vmihalis/hacker-bob/bob-debug
+npx yarkr-cli add skill:vmihalis/hacker-bob/bob-diff-review
+npx yarkr-cli add skill:vmihalis/hacker-bob/bob-egress
+```
+
+No Node.js? `curl -fsSL https://yarkr.com/install.sh | sh` (macOS, Linux) or `irm https://yarkr.com/install.ps1 | iex` (Windows PowerShell) installs `yarkr` as a standalone binary; then type `yarkr` in place of `npx yarkr-cli`.
+
+#### MCP
+
+Connect your agent to the ark over MCP:
+
+```bash
+npx yarkr-cli mcp add vmihalis/hacker-bob
+```
+
+Or point any MCP client at `https://api.yarkr.com/functions/v1/api/mcp/o/vmihalis/hacker-bob`.
+<!-- yarkr:install:end -->
 
 ### OSS Project Review Mode
 
